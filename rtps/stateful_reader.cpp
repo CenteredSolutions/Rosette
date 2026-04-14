@@ -5,6 +5,7 @@
 
 #include "stateful_reader.hpp"
 #include "stateful_writer.hpp"   // ITransport
+#include "log.hpp"
 #include <string.h>
 
 #ifndef RTPS_NO_FREERTOS
@@ -71,8 +72,17 @@ bool StatefulReader::matched_writer_add(const Guid&    writer_guid,
 {
     if (find_proxy(writer_guid)) return false;
     DefaultWriterProxy* slot = find_free_slot();
-    if (!slot) return false;
+    if (!slot) {
+        RTPS_LOG_W("reader", "writer proxy table full (max=%d)",
+                   RTPS_MAX_MATCHED_WRITERS);
+        return false;
+    }
     slot->init(writer_guid, unicast_locators, locator_count);
+    RTPS_LOG_I("reader", "writer matched %02x%02x%02x%02x entity=%02x%02x%02x%02x",
+               writer_guid.prefix.value[0], writer_guid.prefix.value[1],
+               writer_guid.prefix.value[2], writer_guid.prefix.value[3],
+               writer_guid.entityId.value[0], writer_guid.entityId.value[1],
+               writer_guid.entityId.value[2], writer_guid.entityId.value[3]);
     return true;
 }
 
@@ -113,16 +123,31 @@ void StatefulReader::on_data(const ParseContext& ctx,
     DefaultWriterProxy* proxy = find_proxy_by_sender(
         ctx.senderGuidPrefix, msg.writerId);
 
-    if (!proxy && reliability_ == ReliabilityKind::RELIABLE) return;
+    if (!proxy && reliability_ == ReliabilityKind::RELIABLE) {
+        RTPS_LOG_D("reader", "DATA from unmatched writer %02x%02x%02x%02x, dropped (RELIABLE)",
+                   ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
+                   ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
+        return;
+    }
 
     // Duplicate check — §8.4.8, p. 142.
-    if (proxy && msg.writerSN <= proxy->highestSNReceived) return;
+    if (proxy && msg.writerSN <= proxy->highestSNReceived) {
+        RTPS_LOG_T("reader", "duplicate DATA SN=%d:%lu from %02x%02x%02x%02x, dropped",
+                   msg.writerSN.high, (unsigned long)msg.writerSN.low,
+                   ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
+                   ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
+        return;
+    }
 
     if (!msg.dataFlag && !msg.keyFlag) return;
 
     // Allocate the smallest pool class that fits the payload.
     BufRef payload = buf_alloc(msg.serializedPayloadSize);
-    if (!payload.valid()) return;
+    if (!payload.valid()) {
+        RTPS_LOG_E("reader", "buf_alloc failed for DATA payload size=%lu",
+                   (unsigned long)msg.serializedPayloadSize);
+        return;
+    }
 
     const uint32_t copy_size =
         (msg.serializedPayloadSize <= payload.capacity())
@@ -139,6 +164,12 @@ void StatefulReader::on_data(const ParseContext& ctx,
     change.sequenceNumber  = msg.writerSN;
     change.sourceTimestamp = ctx.sourceTimestamp;
     change.payload         = static_cast<BufRef&&>(payload);
+
+    RTPS_LOG_D("reader", "DATA accepted SN=%d:%lu from %02x%02x%02x%02x size=%lu",
+               msg.writerSN.high, (unsigned long)msg.writerSN.low,
+               ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
+               ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3],
+               (unsigned long)copy_size);
 
     if (proxy) {
         proxy->received_change_set(msg.writerSN);
@@ -164,10 +195,25 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     const Guid writer_guid{ ctx.senderGuidPrefix, msg.writerId };
 
     DefaultWriterProxy* proxy = find_proxy(writer_guid);
-    if (!proxy && reliability_ == ReliabilityKind::RELIABLE) return;
+    if (!proxy && reliability_ == ReliabilityKind::RELIABLE) {
+        RTPS_LOG_D("reader", "DATA_FRAG from unmatched writer, dropped (RELIABLE)");
+        return;
+    }
 
     if (msg.fragmentStartingNum == 0 || msg.fragmentSize == 0 ||
-        msg.dataSize == 0) return;
+        msg.dataSize == 0) {
+        RTPS_LOG_W("reader", "DATA_FRAG invalid fields: startFrag=%lu fragSize=%lu dataSize=%lu",
+                   (unsigned long)msg.fragmentStartingNum,
+                   (unsigned long)msg.fragmentSize,
+                   (unsigned long)msg.dataSize);
+        return;
+    }
+
+    RTPS_LOG_T("reader", "DATA_FRAG SN=%d:%lu frag=%lu/%lu size=%lu",
+               msg.writerSN.high, (unsigned long)msg.writerSN.low,
+               (unsigned long)msg.fragmentStartingNum,
+               (unsigned long)msg.fragmentsInSubmessage,
+               (unsigned long)msg.dataSize);
 
     // Attempt to deliver this fragment to the assembler.
     // §8.4.14, p. 156: on_data_frag() returns true when the sample
@@ -212,7 +258,12 @@ void StatefulReader::on_heartbeat(const ParseContext&    ctx,
 {
     DefaultWriterProxy* proxy = find_proxy_by_sender(
         ctx.senderGuidPrefix, msg.writerId);
-    if (!proxy) return;
+    if (!proxy) {
+        RTPS_LOG_T("reader", "HEARTBEAT from unknown writer %02x%02x%02x%02x, ignored",
+                   ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
+                   ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
+        return;
+    }
 
     if (msg.readerId != entity_id::UNKNOWN &&
         msg.readerId != guid_.entityId) return;
@@ -221,6 +272,11 @@ void StatefulReader::on_heartbeat(const ParseContext&    ctx,
     const bool needs_acknack = proxy->on_heartbeat(
         msg.firstSN, msg.lastSN, msg.count,
         msg.finalFlag, now_ms, hb_response_ms_);
+
+    RTPS_LOG_D("reader", "HEARTBEAT first=%d:%lu last=%d:%lu final=%d needs_ack=%d",
+               msg.firstSN.high, (unsigned long)msg.firstSN.low,
+               msg.lastSN.high,  (unsigned long)msg.lastSN.low,
+               (int)msg.finalFlag, (int)needs_acknack);
 
     if (needs_acknack && hb_response_ms_ == 0) {
         send_acknack(*proxy, !proxy->has_missing_changes());
@@ -300,10 +356,18 @@ void StatefulReader::on_gap(const ParseContext& ctx,
 {
     DefaultWriterProxy* proxy = find_proxy_by_sender(
         ctx.senderGuidPrefix, msg.writerId);
-    if (!proxy) return;
+    if (!proxy) {
+        RTPS_LOG_T("reader", "GAP from unknown writer, ignored");
+        return;
+    }
 
     if (msg.readerId != entity_id::UNKNOWN &&
         msg.readerId != guid_.entityId) return;
+
+    RTPS_LOG_D("reader", "GAP start=%d:%lu from %02x%02x%02x%02x",
+               msg.gapStart.high, (unsigned long)msg.gapStart.low,
+               ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
+               ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
 
     const Guid writer_guid{ ctx.senderGuidPrefix, msg.writerId };
 
@@ -367,10 +431,14 @@ void StatefulReader::send_acknack(DefaultWriterProxy& proxy,
         final_flag);
 
     if (ok) {
+        RTPS_LOG_D("reader", "ACKNACK sent base=%d:%lu final=%d",
+                   sn_state.bitmapBase.high, (unsigned long)sn_state.bitmapBase.low,
+                   (int)final_flag);
         BufRef buf = builder_.finish();
         transport_.send_unicast(buf, dest);
         buf.reset();
     } else {
+        RTPS_LOG_W("reader", "ACKNACK builder failed (pool exhausted?)");
         builder_.abort();
     }
 }

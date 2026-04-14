@@ -1,0 +1,4 @@
+sensor_msgs/CameraInfo camera_info
+---
+bool success
+string status_message

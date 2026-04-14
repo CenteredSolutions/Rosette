@@ -4,6 +4,7 @@
  */
 
 #include "participant.hpp"
+#include "log.hpp"
 #include <new>
 #include <string.h>
 
@@ -82,7 +83,10 @@ StatefulReader* RTPSParticipant::create_reader(
     int slot = -1;
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i)
         if (!reader_alive_[i]) { slot = i; break; }
-    if (slot < 0) return nullptr;
+    if (slot < 0) {
+        RTPS_LOG_E("participant", "reader table full (max=%d)", RTPS_MAX_USER_READERS);
+        return nullptr;
+    }
 
     const Guid reader_guid{ participant_guid_.prefix, cfg.entityId };
 
@@ -104,6 +108,8 @@ StatefulReader* RTPSParticipant::create_reader(
     sedp_writer_.register_reader(rd);
     match_table_.add_reader(rd);
 
+    RTPS_LOG_I("participant", "reader created: slot=%d topic=%s type=%s",
+               slot, cfg.topicName.str, cfg.typeName.str);
     return r;
 }
 
@@ -134,8 +140,13 @@ void RTPSParticipant::register_writer_endpoint(const Guid&         writer_guid,
 ParseResult RTPSParticipant::parse_received(const Octet* buf,
                                             uint32_t     len) noexcept
 {
-    return parse_message(buf, len, participant_guid_.prefix,
-                         parse_ops_, this);
+    const ParseResult r = parse_message(buf, len, participant_guid_.prefix,
+                                        parse_ops_, this);
+    if (r != ParseResult::OK) {
+        RTPS_LOG_W("participant", "parse_message failed: result=%d len=%lu",
+                   (int)r, (unsigned long)len);
+    }
+    return r;
 }
 
 void RTPSParticipant::tick(uint32_t now_ms) noexcept {
@@ -161,7 +172,14 @@ void RTPSParticipant::on_spdp_new_peer(const PeerEntry& peer,
                                        void*            self) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(self);
-    if (peer.data.metatrafficUnicastLocatorCount == 0) return;
+    RTPS_LOG_I("participant", "SPDP new peer %02x%02x%02x%02x%02x%02x",
+               peer.data.guidPrefix.value[0], peer.data.guidPrefix.value[1],
+               peer.data.guidPrefix.value[2], peer.data.guidPrefix.value[3],
+               peer.data.guidPrefix.value[4], peer.data.guidPrefix.value[5]);
+    if (peer.data.metatrafficUnicastLocatorCount == 0) {
+        RTPS_LOG_W("participant", "new peer has no metatraffic locator, skipping SEDP");
+        return;
+    }
     const Locator& dest = peer.data.metatrafficUnicastLocatorList[0];
     p->sedp_writer_.announce_to_peer(p->participant_guid_.prefix, dest);
     p->spdp_reader_.mark_sedp_announced(peer.data.guidPrefix);
@@ -171,6 +189,10 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
                                            void*            self) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(self);
+    RTPS_LOG_I("participant", "SPDP peer removed %02x%02x%02x%02x%02x%02x",
+               peer.data.guidPrefix.value[0], peer.data.guidPrefix.value[1],
+               peer.data.guidPrefix.value[2], peer.data.guidPrefix.value[3],
+               peer.data.guidPrefix.value[4], peer.data.guidPrefix.value[5]);
 
     // Remove all writer and reader endpoints announced by this participant
     // and fire on_unmatch for every affected proxy pair.
@@ -193,6 +215,8 @@ void RTPSParticipant::on_endpoint_match(const DiscoveredWriterData& wd,
                                         void*                       self) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(self);
+    RTPS_LOG_I("participant", "endpoint match: topic=%s type=%s",
+               wd.topicName.str, wd.typeName.str);
 
     // Local writer matched to a remote reader.
     if (wd.writerGuid.prefix == p->participant_guid_.prefix) {
@@ -217,6 +241,11 @@ void RTPSParticipant::on_endpoint_unmatch(const Guid& writer_guid,
                                           void*       self) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(self);
+    RTPS_LOG_I("participant", "endpoint unmatch: writer %02x%02x%02x%02x reader %02x%02x%02x%02x",
+               writer_guid.prefix.value[0], writer_guid.prefix.value[1],
+               writer_guid.prefix.value[2], writer_guid.prefix.value[3],
+               reader_guid.prefix.value[0], reader_guid.prefix.value[1],
+               reader_guid.prefix.value[2], reader_guid.prefix.value[3]);
     if (writer_guid.prefix == p->participant_guid_.prefix) {
         IStatefulWriter* iw = p->find_writer_iface(writer_guid.entityId);
         if (iw) iw->matched_reader_remove(reader_guid);
@@ -281,6 +310,11 @@ void RTPSParticipant::dispatch_heartbeat(const ParseContext&    ctx,
                                          const ParsedHeartbeat& msg) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(ctx.user_data);
+    RTPS_LOG_T("participant", "HEARTBEAT writer=%02x%02x%02x%02x first=%d:%lu last=%d:%lu",
+               ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
+               ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3],
+               msg.firstSN.high, (unsigned long)msg.firstSN.low,
+               msg.lastSN.high,  (unsigned long)msg.lastSN.low);
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
         if (!p->reader_alive_[i]) continue;
         auto* r = reinterpret_cast<StatefulReader*>(p->reader_storage_[i]);
@@ -307,6 +341,12 @@ void RTPSParticipant::dispatch_acknack(const ParseContext&  ctx,
                                        const ParsedAckNack& msg) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(ctx.user_data);
+    RTPS_LOG_T("participant", "ACKNACK reader=%02x%02x%02x%02x base=%d:%lu count=%lu",
+               ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
+               ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3],
+               msg.readerSNState.bitmapBase.high,
+               (unsigned long)msg.readerSNState.bitmapBase.low,
+               (unsigned long)msg.count);
     IStatefulWriter* iw = p->find_writer_iface(msg.writerId);
     if (iw) iw->on_acknack(ctx, msg);
 }

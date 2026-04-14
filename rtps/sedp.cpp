@@ -22,6 +22,88 @@ namespace rtps {
 static constexpr uint16_t RELIABILITY_POLICY_LEN = 4u;
 static constexpr uint16_t DURABILITY_POLICY_LEN  = 4u;
 
+static uint32_t plcdr_param_size_estimate(uint32_t value_len) noexcept
+{
+    return 4u + ((value_len + 3u) & ~3u);
+}
+
+static uint32_t plcdr_string_size_estimate(const char* str) noexcept
+{
+    uint32_t str_len = 0;
+    while (str && str[str_len]) ++str_len;
+    ++str_len;   // Include null terminator.
+    return plcdr_param_size_estimate(4u + str_len);
+}
+
+static uint32_t writer_payload_size_estimate(const DiscoveredWriterData& wd) noexcept
+{
+    return 4u +                                   // RepresentationHeader
+           plcdr_param_size_estimate(16u) +       // PID_ENDPOINT_GUID
+           plcdr_string_size_estimate(wd.topicName.str) +
+           plcdr_string_size_estimate(wd.typeName.str) +
+           plcdr_param_size_estimate(RELIABILITY_POLICY_LEN) +
+           plcdr_param_size_estimate(DURABILITY_POLICY_LEN) +
+           static_cast<uint32_t>(wd.unicastLocatorCount) *
+               plcdr_param_size_estimate(24u) +
+           4u;                                    // PID_SENTINEL
+}
+
+static uint32_t reader_payload_size_estimate(const DiscoveredReaderData& rd) noexcept
+{
+    return 4u +                                   // RepresentationHeader
+           plcdr_param_size_estimate(16u) +       // PID_ENDPOINT_GUID
+           plcdr_string_size_estimate(rd.topicName.str) +
+           plcdr_string_size_estimate(rd.typeName.str) +
+           plcdr_param_size_estimate(RELIABILITY_POLICY_LEN) +
+           plcdr_param_size_estimate(DURABILITY_POLICY_LEN) +
+           static_cast<uint32_t>(rd.unicastLocatorCount) *
+               plcdr_param_size_estimate(24u) +
+           4u;                                    // PID_SENTINEL
+}
+
+template<typename EndpointData, typename EstimateFn, typename SerialiseFn>
+static void announce_endpoints(MessageBuilder& builder,
+                               ITransport&     transport,
+                               const GuidPrefix& local_prefix,
+                               const Locator&  dest,
+                               const EndpointData* endpoints,
+                               const EntityId& reader_id,
+                               const EntityId& writer_id,
+                               EstimateFn      estimate,
+                               SerialiseFn     serialise) noexcept
+{
+    for (uint8_t i = 0; i < RTPS_MAX_LOCAL_ENDPOINTS; ++i) {
+        if (!endpoints[i].is_valid()) continue;
+
+        BufRef msg = buf_alloc_with_headroom(
+            estimate(endpoints[i]), kRtpsDataHeadroom);
+        if (!msg.valid()) continue;
+
+        const uint32_t plen = serialise(endpoints[i], msg.data, msg.capacity());
+        if (plen == 0) {
+            msg.reset();
+            continue;
+        }
+        msg.size = plen;
+
+        const bool ok = builder.begin_with_payload(static_cast<BufRef&&>(msg)) &&
+                        builder.prepend_data_message(
+                            local_prefix,
+                            reader_id,
+                            writer_id,
+                            SequenceNumber::from_int64(1),
+                            /*key_flag=*/false);
+
+        if (ok) {
+            BufRef out = builder.finish();
+            transport.send_unicast(out, dest);
+            out.reset();
+        } else {
+            builder.abort();
+        }
+    }
+}
+
 // ============================================================
 // SedpWriter::serialise_writer()
 //
@@ -150,71 +232,35 @@ uint32_t SedpWriter::serialise_reader(const DiscoveredReaderData& rd,
 void SedpWriter::announce_to_peer(const GuidPrefix& local_prefix,
                                   const Locator&    dest) noexcept
 {
-    // --- Publications (local writers) ---
-    for (uint8_t i = 0; i < RTPS_MAX_LOCAL_ENDPOINTS; ++i) {
-        if (!local_writers_[i].is_valid()) continue;
+    announce_endpoints(
+        builder_,
+        transport_,
+        local_prefix,
+        dest,
+        local_writers_,
+        entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR,
+        entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER,
+        writer_payload_size_estimate,
+        [this](const DiscoveredWriterData& wd,
+               Octet* buf,
+               uint32_t cap) noexcept {
+            return serialise_writer(wd, buf, cap);
+        });
 
-        if (!builder_.begin(local_prefix)) continue;
-
-        BufRef payload = buf_alloc(kPoolMaxBlockSize);
-        if (!payload.valid()) { builder_.abort(); continue; }
-
-        const uint32_t plen = serialise_writer(local_writers_[i],
-                                               payload.data,
-                                               payload.capacity());
-        if (plen == 0) { payload.reset(); builder_.abort(); continue; }
-        payload.size = plen;
-
-        bool ok = builder_.append_data(
-            entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR,
-            entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER,
-            SequenceNumber::from_int64(1),
-            payload,
-            /*key_flag=*/false);
-
-        payload.reset();
-
-        if (ok) {
-            BufRef msg = builder_.finish();
-            transport_.send_unicast(msg, dest);
-            msg.reset();
-        } else {
-            builder_.abort();
-        }
-    }
-
-    // --- Subscriptions (local readers) ---
-    for (uint8_t i = 0; i < RTPS_MAX_LOCAL_ENDPOINTS; ++i) {
-        if (!local_readers_[i].is_valid()) continue;
-
-        if (!builder_.begin(local_prefix)) continue;
-
-        BufRef payload = buf_alloc(kPoolMaxBlockSize);
-        if (!payload.valid()) { builder_.abort(); continue; }
-
-        const uint32_t plen = serialise_reader(local_readers_[i],
-                                               payload.data,
-                                               payload.capacity());
-        if (plen == 0) { payload.reset(); builder_.abort(); continue; }
-        payload.size = plen;
-
-        bool ok = builder_.append_data(
-            entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR,
-            entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER,
-            SequenceNumber::from_int64(1),
-            payload,
-            /*key_flag=*/false);
-
-        payload.reset();
-
-        if (ok) {
-            BufRef msg = builder_.finish();
-            transport_.send_unicast(msg, dest);
-            msg.reset();
-        } else {
-            builder_.abort();
-        }
-    }
+    announce_endpoints(
+        builder_,
+        transport_,
+        local_prefix,
+        dest,
+        local_readers_,
+        entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR,
+        entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER,
+        reader_payload_size_estimate,
+        [this](const DiscoveredReaderData& rd,
+               Octet* buf,
+               uint32_t cap) noexcept {
+            return serialise_reader(rd, buf, cap);
+        });
 }
 
 // ============================================================

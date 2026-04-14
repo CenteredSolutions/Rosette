@@ -7,6 +7,7 @@
  */
 
 #include "message_parser.hpp"
+#include "log.hpp"
 #include <string.h>     // memcpy
 
 namespace rtps {
@@ -20,16 +21,33 @@ namespace rtps {
 // another LE sender, which is the overwhelming common case.
 // ============================================================
 
+#ifndef NO_INSTRINSICS
+static inline uint16_t bswap16(uint16_t v) noexcept {
+    // Generally theres a built-in bswap16 intrinsic that compiles to a single
+    // instruction on Cortex-M33 and Cortex-M0+.
+    return __builtin_bswap16(v);
+}
+#else
 static inline uint16_t bswap16(uint16_t v) noexcept {
     return static_cast<uint16_t>((v >> 8u) | (v << 8u));
 }
+#endif
 
+
+#ifndef NO_INSTRINSICS
+static inline uint32_t bswap32(uint32_t v) noexcept {
+    // Generally theres a built-in bswap32 intrinsic that compiles to a single
+    // instruction on Cortex-M33 and Cortex-M0+.
+    return __builtin_bswap32(v);
+}
+#else
 static inline uint32_t bswap32(uint32_t v) noexcept {
     return ((v & 0x000000FFu) << 24u) |
            ((v & 0x0000FF00u) <<  8u) |
            ((v & 0x00FF0000u) >>  8u) |
            ((v & 0xFF000000u) >> 24u);
 }
+#endif
 
 static inline int32_t bswap32s(int32_t v) noexcept {
     return static_cast<int32_t>(bswap32(static_cast<uint32_t>(v)));
@@ -547,16 +565,31 @@ ParseResult parse_message(const Octet*      buf,
     // --------------------------------------------------------
     // 1. Validate RTPS message header — §9.4.2, p. 222.
     // --------------------------------------------------------
-    if (len < sizeof(RTPSMessageHeader)) return ParseResult::BAD_HEADER;
+    if (len < sizeof(RTPSMessageHeader)) {
+        RTPS_LOG_W("parser", "message too short: %lu bytes", (unsigned long)len);
+        return ParseResult::BAD_HEADER;
+    }
 
     RTPSMessageHeader msg_hdr{};
     memcpy(&msg_hdr, buf, sizeof(msg_hdr));
 
     // §9.4.2.1: magic must be {'R','T','P','S'}.
-    if (!rtps_header_valid(msg_hdr)) return ParseResult::BAD_HEADER;
+    if (!rtps_header_valid(msg_hdr)) {
+        RTPS_LOG_W("parser", "invalid RTPS magic bytes");
+        return ParseResult::BAD_HEADER;
+    }
 
     // §9.4.2.2: this implementation supports version 2.x only.
-    if (msg_hdr.version.major != 2) return ParseResult::VERSION_MISMATCH;
+    if (msg_hdr.version.major != 2) {
+        RTPS_LOG_W("parser", "unsupported RTPS version %u.%u",
+                   msg_hdr.version.major, msg_hdr.version.minor);
+        return ParseResult::VERSION_MISMATCH;
+    }
+
+    RTPS_LOG_T("parser", "rx %lu bytes from %02x%02x%02x%02x...",
+               (unsigned long)len,
+               msg_hdr.guidPrefix.value[0], msg_hdr.guidPrefix.value[1],
+               msg_hdr.guidPrefix.value[2], msg_hdr.guidPrefix.value[3]);
 
     // --------------------------------------------------------
     // 2. Populate ParseContext.
@@ -575,8 +608,11 @@ ParseResult parse_message(const Octet*      buf,
 
     while (cursor < len) {
         // Read 4-byte SubmessageHeader — §9.4.5.1, p. 226.
-        if (cursor + sizeof(SubmessageHeader) > len)
+        if (cursor + sizeof(SubmessageHeader) > len) {
+            RTPS_LOG_W("parser", "truncated submessage header at offset %lu",
+                       (unsigned long)cursor);
             return ParseResult::MALFORMED;
+        }
 
         SubmessageHeader smh{};
         memcpy(&smh, buf + cursor, sizeof(smh));
@@ -601,7 +637,15 @@ ParseResult parse_message(const Octet*      buf,
             extent = smlen;
         }
 
-        if (cursor + extent > len) return ParseResult::MALFORMED;
+        if (cursor + extent > len) {
+            RTPS_LOG_W("parser", "submsg 0x%02x extent %lu overflows message",
+                       (unsigned)smh.submessageId, (unsigned long)extent);
+            return ParseResult::MALFORMED;
+        }
+
+        RTPS_LOG_T("parser", "submsg 0x%02x flags=0x%02x extent=%lu",
+                   (unsigned)smh.submessageId, (unsigned)smh.flags,
+                   (unsigned long)extent);
 
         // Build a Reader window limited to this submessage's payload.
         Reader r(buf, cursor, cursor + extent);
@@ -704,7 +748,11 @@ ParseResult parse_message(const Octet*      buf,
                 break;
         }
 
-        if (!ok) return ParseResult::MALFORMED;
+        if (!ok) {
+            RTPS_LOG_W("parser", "submsg 0x%02x parse failed (malformed)",
+                       (unsigned)smh.submessageId);
+            return ParseResult::MALFORMED;
+        }
 
         // --------------------------------------------------------
         // Advance cursor.

@@ -51,15 +51,37 @@ public:
     //  protocol."  — §9.4.1, Table 9.1, p. 193
     //
     // @param guid_prefix  GuidPrefix of the sending participant.
+    // @param pool_size    Size of the buffer to allocate from the pool.
     // @returns false if the pool is exhausted.
     // ----------------------------------------------------------
-    bool begin(const GuidPrefix& guid_prefix) noexcept {
-        buf_ = buf_alloc(kPoolMaxBlockSize);
+    bool begin(const GuidPrefix& guid_prefix, uint32_t pool_size = kPoolMaxBlockSize) noexcept {
+        buf_ = buf_alloc(pool_size);
         if (!buf_.valid()) return false;
         cursor_ = 0;
         RTPSMessageHeader hdr{};
         hdr.guidPrefix = guid_prefix;
         write_bytes(&hdr, sizeof(hdr));
+        return true;
+    }
+
+    // ----------------------------------------------------------
+    // begin_with_payload()
+    //
+    // Adopts a caller-provided payload buffer that was allocated
+    // with enough headroom for an RTPS message header plus a DATA
+    // submessage header. The payload bytes must already be written
+    // at buf.data and buf.size must reflect their length.
+    // ----------------------------------------------------------
+    bool begin_with_payload(BufRef&& payload) noexcept {
+        if (buf_.valid()) abort();
+        if (!payload.valid() ||
+            payload.headroom_available() < kRtpsDataHeadroom) {
+            payload.reset();
+            return false;
+        }
+
+        buf_ = static_cast<BufRef&&>(payload);
+        cursor_ = static_cast<uint16_t>(buf_.size);
         return true;
     }
 
@@ -91,6 +113,50 @@ public:
     }
 
     uint16_t bytes_written() const noexcept { return cursor_; }
+
+    // ----------------------------------------------------------
+    // prepend_data_message()
+    //
+    // Finalises an adopted headroom-backed payload buffer by
+    // prepending the DATA submessage framing and RTPS header
+    // in place. This avoids allocating a second message buffer
+    // and copying the serialized payload into it.
+    // ----------------------------------------------------------
+    bool prepend_data_message(const GuidPrefix&    guid_prefix,
+                              const EntityId&      reader_id,
+                              const EntityId&      writer_id,
+                              const SequenceNumber& writer_sn,
+                              bool                 key_flag = false) noexcept
+    {
+        if (!buf_.valid()) return false;
+        if (buf_.headroom_available() < kRtpsDataHeadroom) return false;
+
+        auto* sm = reinterpret_cast<DataSubmessageFixed*>(
+            buf_.prepend(sizeof(DataSubmessageFixed)));
+        if (!sm) return false;
+        sm->extraFlags        = 0;
+        sm->octetsToInlineQos = 16u;
+        sm->readerId          = reader_id;
+        sm->writerId          = writer_id;
+        sm->writerSN          = writer_sn;
+
+        auto* smh = reinterpret_cast<SubmessageHeader*>(
+            buf_.prepend(sizeof(SubmessageHeader)));
+        if (!smh) return false;
+        smh->submessageId = SubmessageKind::DATA;
+        smh->flags        = FLAG_E | (key_flag ? data_flags::K : data_flags::D);
+        smh->submessageLength = static_cast<uint16_t>(
+            buf_.size - sizeof(SubmessageHeader));
+
+        auto* mh = reinterpret_cast<RTPSMessageHeader*>(
+            buf_.prepend(sizeof(RTPSMessageHeader)));
+        if (!mh) return false;
+        *mh = RTPSMessageHeader{};
+        mh->guidPrefix = guid_prefix;
+
+        cursor_ = static_cast<uint16_t>(buf_.size);
+        return true;
+    }
 
     // ----------------------------------------------------------
     // append_heartbeat()

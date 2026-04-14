@@ -5,6 +5,7 @@
 
 #include "spdp.hpp"
 #include "stateful_writer.hpp"   // ITransport
+#include "log.hpp"
 #include <string.h>
 
 namespace rtps {
@@ -145,16 +146,22 @@ uint32_t SpdpWriter::serialise(Octet* buf, uint32_t cap) const noexcept {
 // ----------------------------------------------------------
 
 void SpdpWriter::announce() noexcept {
-    if (!builder_.begin(local_data_.guidPrefix)) return;
+    if (!builder_.begin(local_data_.guidPrefix, 512)) return;
 
     // Allocate a temporary buffer for the PL_CDR payload.
-    BufRef payload_buf = buf_alloc(kPoolMaxBlockSize);
-    if (!payload_buf.valid()) { builder_.abort(); return; }
+    BufRef payload_buf = buf_alloc(256);
+    if (!payload_buf.valid()) {
+        RTPS_LOG_E("spdp", "buf_alloc failed for participant announce");
+        builder_.abort();
+        return;
+    }
 
     const uint32_t serialised_len =
         serialise(payload_buf.data, payload_buf.capacity());
 
     if (serialised_len == 0) {
+        RTPS_LOG_E("spdp", "participant data serialisation failed (capacity=%lu)",
+                   (unsigned long)payload_buf.capacity());
         payload_buf.reset();
         builder_.abort();
         return;
@@ -178,6 +185,8 @@ void SpdpWriter::announce() noexcept {
     payload_buf.reset();
 
     if (ok) {
+        RTPS_LOG_D("spdp", "announcing participant (%lu bytes)",
+                   (unsigned long)serialised_len);
         BufRef msg = builder_.finish();
         transport_.send_multicast(msg, dest_);
         msg.reset();
@@ -349,7 +358,11 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
                           uint32_t          now_ms) noexcept
 {
     SPDPdiscoveredParticipantData parsed{};
-    if (!deserialise(payload, payload_len, parsed)) return false;
+    if (!deserialise(payload, payload_len, parsed)) {
+        RTPS_LOG_W("spdp", "failed to deserialise participant data (%lu bytes)",
+                   (unsigned long)payload_len);
+        return false;
+    }
 
     // Use the sender_prefix from the RTPS header if the payload's GUID
     // prefix is still zeroed after parsing (robustness).
@@ -371,17 +384,33 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
         // stays true).
         existing->data          = parsed;
         existing->leaseExpiryMs = now_ms + lease_ms;
+        RTPS_LOG_D("spdp", "lease refreshed for %02x%02x%02x%02x (expires in %lums)",
+                   parsed.guidPrefix.value[0], parsed.guidPrefix.value[1],
+                   parsed.guidPrefix.value[2], parsed.guidPrefix.value[3],
+                   (unsigned long)lease_ms);
         return true;
     }
 
     // New participant — insert into peer table.
     PeerEntry* slot = find_free();
-    if (!slot) return false;   // Table full; drop.
+    if (!slot) {
+        RTPS_LOG_W("spdp", "peer table full, dropping %02x%02x%02x%02x",
+                   parsed.guidPrefix.value[0], parsed.guidPrefix.value[1],
+                   parsed.guidPrefix.value[2], parsed.guidPrefix.value[3]);
+        return false;   // Table full; drop.
+    }
 
     slot->data           = parsed;
     slot->alive          = true;
     slot->sedp_announced = false;
     slot->leaseExpiryMs  = now_ms + lease_ms;
+
+    RTPS_LOG_I("spdp", "new participant %02x%02x%02x%02x%02x%02x"
+               " lease=%lums",
+               parsed.guidPrefix.value[0], parsed.guidPrefix.value[1],
+               parsed.guidPrefix.value[2], parsed.guidPrefix.value[3],
+               parsed.guidPrefix.value[4], parsed.guidPrefix.value[5],
+               (unsigned long)lease_ms);
 
     if (on_new_peer_) on_new_peer_(*slot, user_data_);
     return true;
@@ -406,6 +435,13 @@ void SpdpReader::tick(uint32_t now_ms) noexcept {
             ((peers_[i].leaseExpiryMs - now_ms) > 0x80000000u);
 
         if (expired) {
+            RTPS_LOG_I("spdp", "participant lease expired: %02x%02x%02x%02x%02x%02x",
+                       peers_[i].data.guidPrefix.value[0],
+                       peers_[i].data.guidPrefix.value[1],
+                       peers_[i].data.guidPrefix.value[2],
+                       peers_[i].data.guidPrefix.value[3],
+                       peers_[i].data.guidPrefix.value[4],
+                       peers_[i].data.guidPrefix.value[5]);
             if (on_peer_removed_) on_peer_removed_(peers_[i], user_data_);
             peers_[i].alive = false;
         }

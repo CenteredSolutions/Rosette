@@ -1,0 +1,4 @@
+---
+string firmware_version
+string hardware_version
+uint32 build_number

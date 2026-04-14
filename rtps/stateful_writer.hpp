@@ -58,6 +58,7 @@
 #include "message_builder.hpp"
 #include "message_parser.hpp"
 #include "transport.hpp"
+#include "log.hpp"
 #include <string.h>
 
 #ifndef RTPS_NO_FREERTOS
@@ -192,12 +193,21 @@ public:
     //
     // @param kind         ChangeKind (ALIVE, NOT_ALIVE_DISPOSED, …).
     // @param out_payload  Set to the allocated pool buffer on success.
+    // @param payload_size Optional hint for the expected payload size; the
+    //                     pool may return a larger buffer.
     // @returns            Pointer to the staging CacheChange, or nullptr
     //                     if the pool is exhausted.
     // ----------------------------------------------------------
-    CacheChange* new_change(ChangeKind kind, BufRef& out_payload) noexcept {
-        out_payload = buf_alloc(kPoolMaxBlockSize);
-        if (!out_payload.valid()) return nullptr;
+    CacheChange* new_change(
+        ChangeKind kind,
+        BufRef& out_payload,
+        size_t payload_size = kPoolMaxBlockSize
+    ) noexcept {
+        out_payload = buf_alloc(payload_size);
+        if (!out_payload.valid()) {
+            RTPS_LOG_E("writer", "buf_alloc failed for new_change (pool exhausted)");
+            return nullptr;
+        }
         staging_.kind           = kind;
         staging_.writerGuid     = guid_;
         staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN; // Assigned in add_change.
@@ -240,7 +250,18 @@ public:
 
         CacheChange* inserted = writer_cache_.add_change(
             static_cast<CacheChange&&>(change));
-        if (!inserted) { unlock(); return false; }
+        if (!inserted) {
+            RTPS_LOG_E("writer", "cache add_change failed (SN=%ld:%lu)",
+                       change.sequenceNumber.high,
+                       (unsigned long)change.sequenceNumber.low);
+            unlock();
+            return false;
+        }
+
+        RTPS_LOG_D("writer", "add_change SN=%ld:%lu size=%lu",
+                   inserted->sequenceNumber.high,
+                   (unsigned long)inserted->sequenceNumber.low,
+                   (unsigned long)inserted->payload.size);
 
         // Mark the new change UNSENT on every active proxy.
         for (uint8_t i = 0; i < MaxReaders; ++i)
@@ -291,17 +312,22 @@ public:
                         uint32_t     payload_size,
                         uint32_t     timeout_ms = 0) noexcept
     {
-        BufRef payload_buf;
-        CacheChange* ch = new_change(kind, payload_buf);
-        if (!ch) return false;
-
-        if (payload_data && payload_size > 0) {
-            const uint32_t sz = (payload_size < payload_buf.capacity())
-                                ? payload_size : payload_buf.capacity();
-            memcpy(payload_buf.data, payload_data, sz);
-            payload_buf.size = sz;
-            ch->payload.size = sz;
+        if (!payload_data || payload_size == 0) {
+            return false;
         }
+
+        BufRef payload_buf;
+        CacheChange* ch = new_change(kind, payload_buf, payload_size);
+        if (!ch) {
+            RTPS_LOG_E("writer", "write_reliable: new_change failed");
+            return false;
+        }
+
+        const uint32_t sz = (payload_size < payload_buf.capacity())
+                            ? payload_size : payload_buf.capacity();
+        memcpy(payload_buf.data, payload_data, sz);
+        payload_buf.size = sz;
+        ch->payload.size = sz;
 
 #ifndef RTPS_NO_FREERTOS
         lock();
@@ -332,6 +358,9 @@ public:
         while (!all_readers_acked(my_sn)) {
             const TickType_t now = xTaskGetTickCount();
             if (now >= deadline) {
+                RTPS_LOG_W("writer", "write_reliable timeout after %lums SN=%ld:%lu",
+                           (unsigned long)to,
+                           my_sn.high, (unsigned long)my_sn.low);
                 lock(); writeTask_ = nullptr; unlock();
                 return false;
             }
@@ -363,10 +392,20 @@ public:
         lock();
         if (find_proxy(reader_guid)) { unlock(); return false; }
         Proxy* slot = find_free_slot();
-        if (!slot) { unlock(); return false; }
+        if (!slot) {
+            RTPS_LOG_W("writer", "reader proxy table full (max=%d)", MaxReaders);
+            unlock();
+            return false;
+        }
 
         slot->init(reader_guid, unicast_locators, locator_count,
                    expects_inline_qos);
+
+        RTPS_LOG_I("writer", "reader matched %02x%02x%02x%02x entity=%02x%02x%02x%02x",
+                   reader_guid.prefix.value[0], reader_guid.prefix.value[1],
+                   reader_guid.prefix.value[2], reader_guid.prefix.value[3],
+                   reader_guid.entityId.value[0], reader_guid.entityId.value[1],
+                   reader_guid.entityId.value[2], reader_guid.entityId.value[3]);
 
         // TRANSIENT_LOCAL: replay every cached change to the new reader.
         if (durability_ == DurabilityKind::TRANSIENT_LOCAL) {
@@ -407,6 +446,8 @@ public:
                         const Guid directed_to = GUID_UNKNOWN) noexcept
     {
         ++heartbeatCount_;
+        RTPS_LOG_D("writer", "HEARTBEAT count=%lu final=%d",
+                   (unsigned long)heartbeatCount_, (int)final_flag);
         SequenceNumber fsn = writer_cache_.get_seq_num_min();
         SequenceNumber lsn = writer_cache_.get_seq_num_max();
         // Empty cache: first > last signals "nothing available" — §8.4.2.2.
@@ -443,7 +484,13 @@ public:
         lock();
         Guid sg{ ctx.senderGuidPrefix, msg.readerId };
         Proxy* proxy = find_proxy(sg);
-        if (!proxy) { unlock(); return; }
+        if (!proxy) {
+            RTPS_LOG_T("writer", "ACKNACK from unknown reader %02x%02x%02x%02x, ignored",
+                       ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
+                       ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
+            unlock();
+            return;
+        }
 
         // Discard duplicate / reordered ACKNACKs.
         if (msg.count <= proxy->lastAcknackCount) { unlock(); return; }
@@ -452,6 +499,13 @@ public:
         // Cumulative ACK: all SNs below bitmapBase are acknowledged.
         if (msg.readerSNState.bitmapBase > SEQUENCENUMBER_ZERO)
             proxy->acked_changes_set(msg.readerSNState.bitmapBase - 1);
+
+        RTPS_LOG_D("writer", "ACKNACK base=%d:%lu count=%lu from %02x%02x%02x%02x",
+                   msg.readerSNState.bitmapBase.high,
+                   (unsigned long)msg.readerSNState.bitmapBase.low,
+                   (unsigned long)msg.count,
+                   ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
+                   ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
 
         // NACKed SNs: arm the nackResponseDelay timer.
         proxy->requested_changes_set(msg.readerSNState, RTPS_GET_MS());

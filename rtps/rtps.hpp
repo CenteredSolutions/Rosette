@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include "log.hpp"
 #include "types.hpp"
 #include "buf_pool.hpp"
 #include "submessage.hpp"

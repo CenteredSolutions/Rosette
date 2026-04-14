@@ -87,13 +87,13 @@ namespace rtps {
 #  define RTPS_POOL_CLASS1_SIZE   256u
 #endif
 #ifndef RTPS_POOL_CLASS1_COUNT
-#  define RTPS_POOL_CLASS1_COUNT    6u
+#  define RTPS_POOL_CLASS1_COUNT    8u
 #endif
 #ifndef RTPS_POOL_CLASS2_SIZE
 #  define RTPS_POOL_CLASS2_SIZE   512u
 #endif
 #ifndef RTPS_POOL_CLASS2_COUNT
-#  define RTPS_POOL_CLASS2_COUNT    4u
+#  define RTPS_POOL_CLASS2_COUNT    8u
 #endif
 #ifndef RTPS_POOL_CLASS3_SIZE
 #  define RTPS_POOL_CLASS3_SIZE  1024u
@@ -268,6 +268,15 @@ struct BufRef {
     // Move-only — no accidental copies.
     BufRef() noexcept = default;
 
+    /**
+     * @brief Move constructor for BufRef.
+     *
+     * Transfers ownership of the buffer resources from another BufRef instance (`o`)
+     * to this instance. After the move, the source BufRef (`o`) is left in a
+     * valid but empty state (its pointers are set to nullptr and size to 0).
+     *
+     * @param o The BufRef instance to move from.
+     */
     BufRef(BufRef&& o) noexcept
         : block(o.block), data(o.data), size(o.size)
     { o.block = nullptr; o.data = nullptr; o.size = 0; }
@@ -487,7 +496,7 @@ private:
         c3_.init(3); c4_.init(4);
     }
 
-    BufBlock* dispatch_alloc(uint8_t c) noexcept {
+    BufBlock* dispatch_alloc(uint8_t c) {
         switch (c) {
             case 0: return c0_.alloc();
             case 1: return c1_.alloc();
