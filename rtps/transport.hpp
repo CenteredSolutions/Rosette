@@ -53,6 +53,10 @@ public:
                        uint16_t meta_port,
                        uint16_t user_port,
                        uint32_t multicast_addr) noexcept;
+    SocketUdpTransport(milkdds::net::SocketProvider& provider,
+                       uint16_t meta_port,
+                       uint16_t user_port,
+                       const Locator& multicast_locator) noexcept;
     ~SocketUdpTransport() noexcept;
 
     bool open() noexcept;
@@ -75,13 +79,16 @@ public:
 
 private:
     milkdds::net::Socket* socket_for(const Locator& dest) const noexcept;
-    static milkdds::net::SocketAddressV4 locator_to_socket_address(
+    static milkdds::net::SocketAddress locator_to_socket_address(
         const Locator& dest) noexcept;
+    static milkdds::net::SocketMulticastMembership locator_to_multicast_membership(
+        const Locator& dest) noexcept;
+    milkdds::net::SocketAddress any_bind_address(uint16_t port) const noexcept;
 
     milkdds::net::SocketProvider& provider_;
     uint16_t meta_port_;
     uint16_t user_port_;
-    uint32_t multicast_addr_;
+    Locator multicast_locator_{};
     std::unique_ptr<milkdds::net::Socket> meta_socket_;
     std::unique_ptr<milkdds::net::Socket> user_socket_;
     bool meta_open_ = false;

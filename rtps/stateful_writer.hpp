@@ -203,6 +203,9 @@ public:
         BufRef& out_payload,
         size_t payload_size = kPoolMaxBlockSize
     ) noexcept {
+        if (staging_.payload.valid()) {
+            staging_.payload.reset();
+        }
         out_payload = buf_alloc(payload_size);
         if (!out_payload.valid()) {
             RTPS_LOG_E("writer", "buf_alloc failed for new_change (pool exhausted)");
@@ -211,7 +214,11 @@ public:
         staging_.kind           = kind;
         staging_.writerGuid     = guid_;
         staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN; // Assigned in add_change.
-        staging_.payload        = static_cast<BufRef&&>(out_payload);
+        staging_.inlineQos      = {};
+        staging_.payload.block  = out_payload.block;
+        staging_.payload.data   = out_payload.data;
+        staging_.payload.size   = out_payload.size;
+        out_payload.retain();
         return &staging_;
     }
 
@@ -312,6 +319,17 @@ public:
                         uint32_t     payload_size,
                         uint32_t     timeout_ms = 0) noexcept
     {
+        return write_reliable(kind, payload_data, payload_size, InlineQos{}, nullptr,
+                              timeout_ms);
+    }
+
+    bool write_reliable(ChangeKind         kind,
+                        const Octet*       payload_data,
+                        uint32_t           payload_size,
+                        const InlineQos&   inline_qos,
+                        SequenceNumber*    out_sn = nullptr,
+                        uint32_t           timeout_ms = 0) noexcept
+    {
         if (!payload_data || payload_size == 0) {
             return false;
         }
@@ -328,6 +346,7 @@ public:
         memcpy(payload_buf.data, payload_data, sz);
         payload_buf.size = sz;
         ch->payload.size = sz;
+        ch->inlineQos    = inline_qos;
 
 #ifndef RTPS_NO_FREERTOS
         lock();
@@ -342,6 +361,7 @@ public:
 
         // Capture the SN that add_change() assigned (nextSN_ - 1).
         const SequenceNumber my_sn = nextSN_ - 1;
+        if (out_sn) *out_sn = my_sn;
 
         send_unsent_changes();
 
@@ -404,8 +424,8 @@ public:
         RTPS_LOG_I("writer", "reader matched %02x%02x%02x%02x entity=%02x%02x%02x%02x",
                    reader_guid.prefix.value[0], reader_guid.prefix.value[1],
                    reader_guid.prefix.value[2], reader_guid.prefix.value[3],
-                   reader_guid.entityId.value[0], reader_guid.entityId.value[1],
-                   reader_guid.entityId.value[2], reader_guid.entityId.value[3]);
+                   reader_guid.entityId.entityKey[0], reader_guid.entityId.entityKey[1],
+                   reader_guid.entityId.entityKey[2], reader_guid.entityId.entityKind);
 
         // TRANSIENT_LOCAL: replay every cached change to the new reader.
         if (durability_ == DurabilityKind::TRANSIENT_LOCAL) {
@@ -711,7 +731,8 @@ private:
         // headroom_available() == (ch.payload.data - block->payload()),
         // i.e. the reserved bytes before the CDR data.
         // ----------------------------------------------------------
-        if (ch.payload.valid() &&
+        if (ch.inlineQos.empty() &&
+            ch.payload.valid() &&
             ch.payload.headroom_available() >= kRtpsDataHeadroom)
         {
             // Work on a non-owning view — we retain the block before
@@ -768,7 +789,7 @@ private:
         bool ok = builder_.append_data(
             proxy.remoteReaderGuid.entityId, guid_.entityId,
             ch.sequenceNumber, ch.payload,
-            ch.kind != ChangeKind::ALIVE);
+            ch.kind != ChangeKind::ALIVE, ch.inlineQos);
         if (!ok) { builder_.abort(); return false; }
         BufRef buf = builder_.finish();
         bool sent = transport_.send_unicast(buf, dest);

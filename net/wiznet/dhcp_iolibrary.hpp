@@ -356,8 +356,8 @@ private:
         const std::size_t length = build_discover(packet, xid);
         return socket.send_to(packet.data(),
                               length,
-                              {.address = {255u, 255u, 255u, 255u},
-                               .port = config_.server_port}) ==
+                              make_socket_address_v4({255u, 255u, 255u, 255u},
+                                                     config_.server_port)) ==
                static_cast<std::ptrdiff_t>(length);
     }
 
@@ -369,8 +369,8 @@ private:
         const std::size_t length = build_request(packet, xid, offer);
         return socket.send_to(packet.data(),
                               length,
-                              {.address = {255u, 255u, 255u, 255u},
-                               .port = config_.server_port}) ==
+                              make_socket_address_v4({255u, 255u, 255u, 255u},
+                                                     config_.server_port)) ==
                static_cast<std::ptrdiff_t>(length);
     }
 
@@ -384,7 +384,7 @@ private:
                 return false;
             }
 
-            SocketAddressV4 remote{};
+            SocketAddress remote{};
             const std::ptrdiff_t received =
                 socket.recv_from(packet.data(), packet.size(), &remote);
             if (received < 0) {
@@ -436,7 +436,7 @@ private:
                 return false;
             }
 
-            SocketAddressV4 remote{};
+            SocketAddress remote{};
             const std::ptrdiff_t received =
                 socket.recv_from(packet.data(), packet.size(), &remote);
             if (received < 0) {

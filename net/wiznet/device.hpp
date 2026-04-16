@@ -356,7 +356,7 @@ public:
        
         uint16_t pointer = socket_tx_write_pointer(socket);
         pointer = ring_write(socket,
-                             Chip::socket_tx_buffer_base(socket),
+                             socket_tx_buffer_base(socket),
                              pointer,
                              frame,
                              required);

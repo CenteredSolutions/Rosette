@@ -81,8 +81,8 @@ bool StatefulReader::matched_writer_add(const Guid&    writer_guid,
     RTPS_LOG_I("reader", "writer matched %02x%02x%02x%02x entity=%02x%02x%02x%02x",
                writer_guid.prefix.value[0], writer_guid.prefix.value[1],
                writer_guid.prefix.value[2], writer_guid.prefix.value[3],
-               writer_guid.entityId.value[0], writer_guid.entityId.value[1],
-               writer_guid.entityId.value[2], writer_guid.entityId.value[3]);
+               writer_guid.entityId.entityKey[0], writer_guid.entityId.entityKey[1],
+               writer_guid.entityId.entityKey[2], writer_guid.entityId.entityKind);
     return true;
 }
 
@@ -163,6 +163,7 @@ void StatefulReader::on_data(const ParseContext& ctx,
     change.writerGuid      = Guid{ ctx.senderGuidPrefix, msg.writerId };
     change.sequenceNumber  = msg.writerSN;
     change.sourceTimestamp = ctx.sourceTimestamp;
+    change.inlineQos       = msg.inlineQos;
     change.payload         = static_cast<BufRef&&>(payload);
 
     RTPS_LOG_D("reader", "DATA accepted SN=%d:%lu from %02x%02x%02x%02x size=%lu",

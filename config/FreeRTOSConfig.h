@@ -69,7 +69,7 @@
 
 // ── Assert ────────────────────────────────────────────────────────────────────
 // Halt on assertion failure — safer than silently continuing on embedded.
-#define configASSERT(x)  do { if (!(x)) { taskDISABLE_INTERRUPTS(); for(;;); } } while(0)
+#define configASSERT(x)  do { if (!(x)) { portDISABLE_INTERRUPTS(); for(;;); } } while(0)
 
 // ── Cortex-M interrupt priority ───────────────────────────────────────────────
 // FreeRTOS requires NVIC priorities >= configMAX_SYSCALL_INTERRUPT_PRIORITY
@@ -91,6 +91,13 @@
 #define configUSE_IDLE_HOOK                     0
 #define configUSE_TICK_HOOK                     0
 #define configUSE_DAEMON_TASK_STARTUP_HOOK      0
+
+// ── API inclusion ────────────────────────────────────────────────────────────
+#define INCLUDE_vTaskDelay                      1
+#define INCLUDE_xTaskGetSchedulerState          1
+#define INCLUDE_xTaskGetCurrentTaskHandle       1
+#define INCLUDE_uxTaskPriorityGet               1
+#define INCLUDE_vTaskSuspend                    1
 
 // ── Map FreeRTOS port interrupt vectors ───────────────────────────────────────
 #define vPortSVCHandler     isr_svcall

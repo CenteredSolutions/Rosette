@@ -106,6 +106,7 @@ struct ParsedData {
     bool            dataFlag;               ///< D-flag: payload is data.
     bool            keyFlag;                ///< K-flag: payload is key.
     bool            inlineQosPresent;       ///< Q-flag: inlineQos follows.
+    InlineQos       inlineQos;              ///< Decoded minimal inline QoS.
     const Octet*    serializedPayload;      ///< Pointer into receive buffer.
     uint32_t        serializedPayloadSize;  ///< Bytes at serializedPayload.
 };

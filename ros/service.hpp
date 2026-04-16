@@ -14,18 +14,17 @@
  *   Request:  rq/<namespace>/<service_name>Request
  *   Response: rr/<namespace>/<service_name>Reply
  *
- * The request/response payload has the following layout (NOT standard
- * ROS 2 InlineQoS correlation — see limitation note below):
+ * The request/response payload carries only the service_traits-encoded
+ * message body.  Request/response correlation uses RTPS sample identity:
  *
- *   Bytes  0–15 : client GUID  (GuidPrefix 12 B + EntityId 4 B)
- *   Bytes 16–23 : sequence_number (int64_t, little-endian)
- *   Bytes 24+   : service_traits-encoded message
+ *   Request identity:
+ *     Derived from the incoming DATA sample's writer GUID + sequence number.
+ *   Response correlation:
+ *     Sent via RelatedSampleIdentity InlineQoS in the response DATA submessage.
  *
- * ⚠ Limitation: Standard ROS 2 middleware correlates service requests via
- * SampleIdentity InlineQoS parameters in the RTPS DATA submessage.  milkDDS
- * does not currently expose InlineQoS writing, so correlation is embedded in
- * the payload instead.  Topic and type names ARE ROS 2 compatible; wire-level
- * service interop with stock rclcpp nodes requires InlineQoS support.
+ * This matches the ROS 2 service wire expectation closely enough for
+ * DATA-only service interoperability.  DATA_FRAG InlineQoS is not yet
+ * implemented in milkDDS.
  *
  * Defining service_traits
  * -----------------------
@@ -82,12 +81,11 @@
 namespace milkros {
 
 // ============================================================
-// RequestId — 24-byte correlation header prepended to payloads
+// RequestId — 24-byte correlation identity used by services/actions
 // ============================================================
 
 /// Identifies a specific in-flight service request.
-/// Echoed verbatim by the server in the response payload so the client can
-/// match responses to pending calls.
+/// The wire-equivalent RTPS identity is { writer GUID, sequence number }.
 struct RequestId {
     uint8_t client_guid[16];  ///< Writer GUID: GuidPrefix(12B) + EntityId(4B).
     int64_t sequence_number;  ///< Monotonically increasing per client writer.
@@ -101,8 +99,33 @@ struct RequestId {
 
 static_assert(sizeof(RequestId) == 24u, "RequestId wire size must be exactly 24 bytes");
 
-/// Size of the RequestId prefix in every service payload.
-static constexpr size_t REQUEST_ID_WIRE_SIZE = 24u;
+inline RequestId request_id_from_sample_identity(
+        const rtps::SampleIdentity& sid) noexcept
+{
+    RequestId rid{};
+    memcpy(rid.client_guid, sid.writerGuid.prefix.value, 12u);
+    memcpy(rid.client_guid + 12u, sid.writerGuid.entityId.entityKey, 3u);
+    rid.client_guid[15] = sid.writerGuid.entityId.entityKind;
+    rid.sequence_number = sid.sequenceNumber.to_int64();
+    return rid;
+}
+
+inline RequestId request_id_from_guid_sn(const rtps::Guid&           writer_guid,
+                                         const rtps::SequenceNumber& sn) noexcept
+{
+    return request_id_from_sample_identity(rtps::SampleIdentity{writer_guid, sn});
+}
+
+inline rtps::SampleIdentity sample_identity_from_request_id(
+        const RequestId& rid) noexcept
+{
+    rtps::SampleIdentity sid{};
+    memcpy(sid.writerGuid.prefix.value, rid.client_guid, 12u);
+    memcpy(sid.writerGuid.entityId.entityKey, rid.client_guid + 12u, 3u);
+    sid.writerGuid.entityId.entityKind = rid.client_guid[15];
+    sid.sequenceNumber = rtps::SequenceNumber::from_int64(rid.sequence_number);
+    return sid;
+}
 
 // ============================================================
 // service_traits<ServiceT> — user specializes this
@@ -216,19 +239,11 @@ private:
 
         const uint8_t* src = change.payload.data;
         const size_t   len = change.payload.size;
+        const RequestId rid =
+            request_id_from_guid_sn(change.writerGuid, change.sequenceNumber);
 
-        if (len < REQUEST_ID_WIRE_SIZE) return;
-
-        // Decode the RequestId prefix.
-        RequestId rid{};
-        memcpy(rid.client_guid,     src,      16u);
-        memcpy(&rid.sequence_number, src + 16u, 8u);
-
-        // Decode the request body (starts after the RequestId).
         Request req = traits::make_request();
-        if (!traits::decode_request(src + REQUEST_ID_WIRE_SIZE,
-                                     len - REQUEST_ID_WIRE_SIZE,
-                                     req)) {
+        if (!traits::decode_request(src, len, req)) {
             return;
         }
 
@@ -236,23 +251,23 @@ private:
         Response resp = traits::make_response();
         self->handler_(req, resp);
 
-        // Build the response payload: RequestId prefix + encoded response.
-        constexpr size_t kMaxPayload =
-            REQUEST_ID_WIRE_SIZE + traits::max_response_serialized_size;
+        constexpr size_t kMaxPayload = traits::max_response_serialized_size;
         uint8_t buf[kMaxPayload];
 
-        memcpy(buf,      rid.client_guid,     16u);
-        memcpy(buf + 16u, &rid.sequence_number, 8u);
-
         const size_t encoded = traits::encode_response(
-            buf + REQUEST_ID_WIRE_SIZE,
-            sizeof(buf) - REQUEST_ID_WIRE_SIZE,
+            buf,
+            sizeof(buf),
             resp);
         if (encoded == 0u) return;
 
+        rtps::InlineQos inline_qos{};
+        inline_qos.hasRelatedSampleIdentity = true;
+        inline_qos.relatedSampleIdentity = sample_identity_from_request_id(rid);
+
         self->resp_writer_->write_reliable(rtps::ChangeKind::ALIVE,
                                             buf,
-                                            static_cast<uint32_t>(REQUEST_ID_WIRE_SIZE + encoded));
+                                            static_cast<uint32_t>(encoded),
+                                            inline_qos);
     }
 
     rtps::StatefulReader*  req_reader_  = nullptr;
@@ -322,7 +337,6 @@ public:
     Client(Client&& o) noexcept
         : req_writer_ (o.req_writer_)
         , resp_reader_(o.resp_reader_)
-        , next_seqno_ (o.next_seqno_)
     {
         memcpy(writer_guid_, o.writer_guid_, 16u);
         memcpy(pending_,     o.pending_,     sizeof(pending_));
@@ -337,7 +351,6 @@ public:
         if (this != &o) {
             req_writer_  = o.req_writer_;
             resp_reader_ = o.resp_reader_;
-            next_seqno_  = o.next_seqno_;
             memcpy(writer_guid_, o.writer_guid_, 16u);
             memcpy(pending_,     o.pending_,     sizeof(pending_));
             o.req_writer_  = nullptr;
@@ -383,30 +396,26 @@ public:
         }
         if (slot < 0) return false;
 
-        // Build RequestId.
-        RequestId rid{};
-        memcpy(rid.client_guid, writer_guid_, 16u);
-        rid.sequence_number = next_seqno_++;
-
-        // Encode payload: RequestId prefix + request body.
-        constexpr size_t kMaxPayload =
-            REQUEST_ID_WIRE_SIZE + traits::max_request_serialized_size;
+        constexpr size_t kMaxPayload = traits::max_request_serialized_size;
         uint8_t buf[kMaxPayload];
 
-        memcpy(buf,       rid.client_guid,      16u);
-        memcpy(buf + 16u, &rid.sequence_number,  8u);
-
         const size_t encoded = traits::encode_request(
-            buf + REQUEST_ID_WIRE_SIZE,
-            sizeof(buf) - REQUEST_ID_WIRE_SIZE,
+            buf,
+            sizeof(buf),
             req);
         if (encoded == 0u) return false;
 
+        rtps::SequenceNumber req_sn{};
         if (!req_writer_->write_reliable(
                 rtps::ChangeKind::ALIVE, buf,
-                static_cast<uint32_t>(REQUEST_ID_WIRE_SIZE + encoded))) {
+                static_cast<uint32_t>(encoded),
+                rtps::InlineQos{}, &req_sn)) {
             return false;
         }
+
+        RequestId rid{};
+        memcpy(rid.client_guid, writer_guid_, 16u);
+        rid.sequence_number = req_sn.to_int64();
 
         // Record pending entry.
         pending_[slot].id      = rid;
@@ -431,13 +440,9 @@ private:
 
         const uint8_t* src = change.payload.data;
         const size_t   len = change.payload.size;
-
-        if (len < REQUEST_ID_WIRE_SIZE) return;
-
-        // Decode the RequestId from the response prefix.
-        RequestId rid{};
-        memcpy(rid.client_guid,      src,       16u);
-        memcpy(&rid.sequence_number, src + 16u, 8u);
+        if (!change.inlineQos.hasRelatedSampleIdentity) return;
+        const RequestId rid =
+            request_id_from_sample_identity(change.inlineQos.relatedSampleIdentity);
 
         // Find the matching pending slot.
         for (uint8_t i = 0u; i < MaxPending; ++i) {
@@ -446,9 +451,7 @@ private:
 
             // Decode the response body.
             Response resp = traits::make_response();
-            if (traits::decode_response(src + REQUEST_ID_WIRE_SIZE,
-                                         len - REQUEST_ID_WIRE_SIZE,
-                                         resp)) {
+            if (traits::decode_response(src, len, resp)) {
                 if (e.cb) e.cb(resp, e.ud);
             }
 
@@ -461,7 +464,6 @@ private:
     rtps::StatefulWriter<1>* req_writer_  = nullptr;
     rtps::StatefulReader*    resp_reader_ = nullptr;
     uint8_t                  writer_guid_[16] = {};
-    int64_t                  next_seqno_ = 0;
     PendingEntry             pending_[MaxPending] = {};
 };
 

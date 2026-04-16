@@ -18,16 +18,17 @@
  * The IP address is supplied to FreeRTOS_IPInit() at startup.
  */
 
-#pragma once
+#ifndef FREERTOS_IP_CONFIG_H
+#define FREERTOS_IP_CONFIG_H
 
 // ── Basic network configuration ───────────────────────────────────────────────
 #define ipconfigUSE_IPv4                        1
-#define ipconfigUSE_IPv6                        0
+#define ipconfigUSE_IPv6                        1
 #define ipconfigBYTE_ORDER                      pdFREERTOS_LITTLE_ENDIAN
 
 // ── Ethernet / MAC ────────────────────────────────────────────────────────────
-#define ipconfigNETWORK_MTU                     1500u
-#define ipconfigETHERNET_MINIMUM_PACKET_BYTES   60u  /* Pad short frames. */
+#define ipconfigNETWORK_MTU                     1514u
+#define ipconfigETHERNET_MINIMUM_PACKET_BYTES   0u
 
 // ── Network buffer pool ───────────────────────────────────────────────────────
 // Buffers are allocated from the FreeRTOS heap by FreeRTOS+TCP at init.
@@ -54,6 +55,7 @@
 #define ipconfigUSE_TCP                         0
 
 // ── DHCP ─────────────────────────────────────────────────────────────────────
+#define ipconfigUSE_RA                          1
 #define ipconfigUSE_DHCP                        1
 #define ipconfigDHCP_REGISTER_HOSTNAME          1
 #define ipconfigMAXIMUM_DISCOVER_TX_PERIOD      pdMS_TO_TICKS(5000u)
@@ -88,3 +90,5 @@
 // ── Packet logger (optional; set to 1 for Wireshark capture support) ─────────
 #define ipconfigFILTER_OUT_NON_ETHERNET_II_FRAMES  1
 #define ipconfigETHERNET_DRIVER_FILTERS_PACKETS     0
+
+#endif /* FREERTOS_IP_CONFIG_H */

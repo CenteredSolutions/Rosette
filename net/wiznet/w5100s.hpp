@@ -9,6 +9,7 @@ namespace milkdds::net::wiznet {
 
 struct W5100S final : ChipBase {
     using address_type = uint16_t;
+    using socket_type = uint8_t;
     using Header = ChipBase::Header;
 
     static constexpr socket_type socket_count() { return 4u; }

@@ -1,13 +1,18 @@
-#include "socket_freertos.hpp"
+#include "net/freertos/socket.hpp"
 
+#include <array>
+#include <cstring>
 #include <new>
+
+#include "net/freertos/igmp.hpp"
 
 extern "C" {
 #include "FreeRTOS.h"
+#include "FreeRTOS_IPv6.h"
 #include "FreeRTOS_Sockets.h"
 }
 
-namespace milkdds::net {
+namespace milkdds::net::freertos {
 
 namespace {
 
@@ -15,34 +20,56 @@ bool is_supported_request(SocketDomain domain,
                           SocketType type,
                           SocketProtocol protocol) noexcept
 {
-    return (domain == SocketDomain::ipv4) &&
+    return ((domain == SocketDomain::ipv4) ||
+            (domain == SocketDomain::ipv6)) &&
            (type == SocketType::datagram) &&
            (protocol == SocketProtocol::udp);
 }
 
-freertos_sockaddr to_freertos_address(const SocketAddressV4& address) noexcept
+freertos_sockaddr to_freertos_address(const SocketAddress& address) noexcept
 {
     freertos_sockaddr out{};
-    out.sin_addr = FreeRTOS_inet_addr_quick(address.address[0],
-                                            address.address[1],
-                                            address.address[2],
-                                            address.address[3]);
+    out.sin_len = static_cast<uint8_t>(sizeof(out));
+    out.sin_family = static_cast<uint8_t>(
+        address.domain == SocketDomain::ipv6 ? FREERTOS_AF_INET6 : FREERTOS_AF_INET);
     out.sin_port = FreeRTOS_htons(address.port);
+    out.sin_flowinfo = address.scope_id;
+
+    if (address.domain == SocketDomain::ipv6) {
+        std::memcpy(out.sin_address.xIP_IPv6.ucBytes,
+                    address.address.data(),
+                    sizeof(out.sin_address.xIP_IPv6.ucBytes));
+    } else {
+        out.sin_address.ulIP_IPv4 =
+            FreeRTOS_inet_addr_quick(address.address[0],
+                                     address.address[1],
+                                     address.address[2],
+                                     address.address[3]);
+    }
     return out;
 }
 
-SocketAddressV4 from_freertos_address(const freertos_sockaddr& address) noexcept
+SocketAddress from_freertos_address(const freertos_sockaddr& address) noexcept
 {
-    const uint32_t host_order = FreeRTOS_ntohl(address.sin_addr);
-    return SocketAddressV4{
-        .address = {
+    if (address.sin_family == FREERTOS_AF_INET6) {
+        std::array<uint8_t, 16> bytes{};
+        std::memcpy(bytes.data(),
+                    address.sin_address.xIP_IPv6.ucBytes,
+                    bytes.size());
+        return make_socket_address_v6(bytes,
+                                      FreeRTOS_ntohs(address.sin_port),
+                                      address.sin_flowinfo);
+    }
+
+    const uint32_t host_order = FreeRTOS_ntohl(address.sin_address.ulIP_IPv4);
+    return make_socket_address_v4(
+        {
             static_cast<uint8_t>((host_order >> 24) & 0xFFu),
             static_cast<uint8_t>((host_order >> 16) & 0xFFu),
             static_cast<uint8_t>((host_order >> 8) & 0xFFu),
             static_cast<uint8_t>(host_order & 0xFFu),
         },
-        .port = FreeRTOS_ntohs(address.sin_port),
-    };
+        FreeRTOS_ntohs(address.sin_port));
 }
 
 SocketError map_freertos_error(BaseType_t result) noexcept
@@ -76,7 +103,8 @@ SocketError map_freertos_error(BaseType_t result) noexcept
         return SocketError::io;
     }
 }
-}
+
+}  // namespace
 
 class FreeRtosDatagramSocket final : public Socket {
 public:
@@ -85,6 +113,7 @@ public:
 
     ~FreeRtosDatagramSocket() override
     {
+        leave_all_multicast_groups();
         close();
     }
 
@@ -93,54 +122,59 @@ public:
         return handle_ != FREERTOS_INVALID_SOCKET;
     }
 
-    int join_multicast(const SocketMulticastMembershipV4& membership) noexcept override
+    int joinMulticastGroup(const SocketMulticastMembership& membership) noexcept override
     {
         if (!is_open()) {
             last_error_ = SocketError::closed;
             return -1;
         }
 
-#ifdef FREERTOS_SO_IP_ADD_MEMBERSHIP
-        struct FreeRtosIpV4Addr {
-            uint32_t s_addr;
-        };
-        struct FreeRtosIpMreq {
-            FreeRtosIpV4Addr imr_multiaddr;
-            FreeRtosIpV4Addr imr_interface;
-        };
+        if ((membership.domain != SocketDomain::ipv4) &&
+            (membership.domain != SocketDomain::ipv6)) {
+            last_error_ = SocketError::not_supported;
+            return -1;
+        }
 
-        const uint32_t group =
-            FreeRTOS_inet_addr_quick(membership.group[0],
-                                     membership.group[1],
-                                     membership.group[2],
-                                     membership.group[3]);
-        const uint32_t interface =
-            FreeRTOS_inet_addr_quick(membership.interface[0],
-                                     membership.interface[1],
-                                     membership.interface[2],
-                                     membership.interface[3]);
+        if (multicast_joined_ && multicast_membership_ == membership) {
+            last_error_ = SocketError::none;
+            return 0;
+        }
 
-        const FreeRtosIpMreq mreq{
-            .imr_multiaddr = {.s_addr = group},
-            .imr_interface = {.s_addr = interface},
-        };
+        if (multicast_joined_) {
+            last_error_ = SocketError::no_buffer_space;
+            return -1;
+        }
 
-        const BaseType_t rc =
-            FreeRTOS_setsockopt(handle_,
-                                0,
-                                FREERTOS_SO_IP_ADD_MEMBERSHIP,
-                                &mreq,
-                                sizeof(mreq));
-        last_error_ = map_freertos_error(rc);
-        return rc == 0 ? 0 : -1;
-#else
-        (void)membership;
-        last_error_ = SocketError::not_supported;
-        return -1;
-#endif
+        if (freertos_multicast_service().join_group(membership) != 0) {
+            last_error_ = SocketError::io;
+            return -1;
+        }
+
+        multicast_membership_ = membership;
+        multicast_joined_ = true;
+        last_error_ = SocketError::none;
+        return 0;
     }
 
-    int bind(const SocketAddressV4& local) noexcept override
+    int leaveMulticastGroup(const SocketMulticastMembership& membership) noexcept override
+    {
+        if (!multicast_joined_ || !(multicast_membership_ == membership)) {
+            last_error_ = SocketError::invalid_argument;
+            return -1;
+        }
+
+        if (freertos_multicast_service().leave_group(membership) != 0) {
+            last_error_ = SocketError::io;
+            return -1;
+        }
+
+        multicast_membership_ = {};
+        multicast_joined_ = false;
+        last_error_ = SocketError::none;
+        return 0;
+    }
+
+    int bind(const SocketAddress& local) noexcept override
     {
         if (!is_open()) {
             last_error_ = SocketError::closed;
@@ -173,7 +207,7 @@ public:
 
     std::ptrdiff_t send_to(const void* data,
                            std::size_t length,
-                           const SocketAddressV4& remote) noexcept override
+                           const SocketAddress& remote) noexcept override
     {
         if (!is_open()) {
             last_error_ = SocketError::closed;
@@ -189,7 +223,7 @@ public:
 
     std::ptrdiff_t recv_from(void* data,
                              std::size_t capacity,
-                             SocketAddressV4* remote) noexcept override
+                             SocketAddress* remote) noexcept override
     {
         if (!is_open()) {
             last_error_ = SocketError::closed;
@@ -215,6 +249,8 @@ public:
 
     void close() noexcept override
     {
+        leave_all_multicast_groups();
+
         if (handle_ != FREERTOS_INVALID_SOCKET) {
             FreeRTOS_closesocket(handle_);
             handle_ = FREERTOS_INVALID_SOCKET;
@@ -228,11 +264,20 @@ public:
     }
 
 private:
+    void leave_all_multicast_groups() noexcept
+    {
+        if (multicast_joined_) {
+            (void)freertos_multicast_service().leave_group(multicast_membership_);
+            multicast_membership_ = {};
+            multicast_joined_ = false;
+        }
+    }
+
     Socket_t handle_ = FREERTOS_INVALID_SOCKET;
+    SocketMulticastMembership multicast_membership_{};
+    bool multicast_joined_ = false;
     SocketError last_error_ = SocketError::none;
 };
-
-}  // namespace
 
 std::unique_ptr<Socket> FreeRtosSocketProvider::open(SocketDomain domain,
                                                      SocketType type,
@@ -242,7 +287,9 @@ std::unique_ptr<Socket> FreeRtosSocketProvider::open(SocketDomain domain,
         return {};
     }
 
-    const Socket_t handle = FreeRTOS_socket(FREERTOS_AF_INET,
+    const BaseType_t freertos_domain =
+        (domain == SocketDomain::ipv6) ? FREERTOS_AF_INET6 : FREERTOS_AF_INET;
+    const Socket_t handle = FreeRTOS_socket(freertos_domain,
                                             FREERTOS_SOCK_DGRAM,
                                             FREERTOS_IPPROTO_UDP);
     if (handle == FREERTOS_INVALID_SOCKET) {
@@ -256,4 +303,4 @@ std::unique_ptr<Socket> FreeRtosSocketProvider::open(SocketDomain domain,
     return socket;
 }
 
-}  // namespace milkdds::wiznet
+}  // namespace milkdds::net

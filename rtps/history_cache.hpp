@@ -57,13 +57,14 @@ namespace rtps {
  * | instanceHandle     | (omitted)           | No-key topics only on this HW  |
  * | sequenceNumber     | sequenceNumber      | §8.2.9                         |
  * | serializedPayload  | payload (BufRef)    | Pool-allocated, ref-counted    |
- * | inlineQos          | (omitted)           | Not required for target        |
+ * | inlineQos          | inlineQos           | Minimal DATA InlineQoS support |
  */
 struct CacheChange {
     ChangeKind     kind           = ChangeKind::ALIVE;
     Guid           writerGuid     = GUID_UNKNOWN;
     SequenceNumber sequenceNumber = SEQUENCENUMBER_UNKNOWN;
     Timestamp      sourceTimestamp = TIME_ZERO;
+    InlineQos      inlineQos      = {};
     BufRef         payload        = {};     ///< Pool-backed serialized data.
 
     /// @returns true when this slot contains a valid, live change.

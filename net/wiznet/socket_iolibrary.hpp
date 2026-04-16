@@ -38,15 +38,25 @@ public:
         return open_;
     }
 
-    int join_multicast(const SocketMulticastMembershipV4& membership) noexcept override
+    int joinMulticastGroup(const SocketMulticastMembership& membership) noexcept override
     {
         if (open_) {
             last_error_ = SocketError::invalid_argument;
             return -1;
         }
 
+        if (membership.domain != SocketDomain::ipv4) {
+            last_error_ = SocketError::not_supported;
+            return -1;
+        }
+
         if ((membership.group[0] < 224u) || (membership.group[0] > 239u)) {
             last_error_ = SocketError::invalid_argument;
+            return -1;
+        }
+
+        if (multicast_joined_ && !same_membership(membership, multicast_membership_)) {
+            last_error_ = SocketError::not_supported;
             return -1;
         }
 
@@ -56,12 +66,43 @@ public:
         return 0;
     }
 
-    int bind(const SocketAddressV4& local) noexcept override
+    int leaveMulticastGroup(const SocketMulticastMembership& membership) noexcept override
     {
+        if (!multicast_joined_) {
+            last_error_ = SocketError::none;
+            return 0;
+        }
+
+        if (!same_membership(membership, multicast_membership_)) {
+            last_error_ = SocketError::invalid_argument;
+            return -1;
+        }
+
+        if (open_) {
+            last_error_ = SocketError::not_supported;
+            return -1;
+        }
+
+        multicast_membership_ = {};
+        multicast_joined_ = false;
+        last_error_ = SocketError::none;
+        return 0;
+    }
+
+    int bind(const SocketAddress& local) noexcept override
+    {
+        if (local.domain != SocketDomain::ipv4) {
+            last_error_ = SocketError::not_supported;
+            return -1;
+        }
+
         if (multicast_joined_) {
             if (!device_.open_udp_multicast_socket(socket_,
                                                    local.port,
-                                                   multicast_membership_.group,
+                                                   {multicast_membership_.group[0],
+                                                    multicast_membership_.group[1],
+                                                    multicast_membership_.group[2],
+                                                    multicast_membership_.group[3]},
                                                    multicast_membership_.port != 0u
                                                        ? multicast_membership_.port
                                                        : local.port)) {
@@ -87,10 +128,15 @@ public:
 
     std::ptrdiff_t send_to(const void* data,
                            std::size_t length,
-                           const SocketAddressV4& remote) noexcept override
+                           const SocketAddress& remote) noexcept override
     {
         if (!open_) {
             last_error_ = SocketError::closed;
+            return -1;
+        }
+
+        if (remote.domain != SocketDomain::ipv4) {
+            last_error_ = SocketError::not_supported;
             return -1;
         }
 
@@ -103,19 +149,25 @@ public:
 
         const auto* bytes = static_cast<const uint8_t*>(data);
         const std::ptrdiff_t rc =
-            device_.udp_send_to(socket_, bytes, length, remote.address, remote.port);
+            device_.udp_send_to(socket_,
+                                bytes,
+                                length,
+                                {remote.address[0], remote.address[1],
+                                 remote.address[2], remote.address[3]},
+                                remote.port);
         last_error_ = rc < 0 ? SocketError::io : SocketError::none;
         return rc;
     }
 
     std::ptrdiff_t recv_from(void* data,
                              std::size_t capacity,
-                             SocketAddressV4* remote) noexcept override
+                             SocketAddress* remote) noexcept override
     {
         if (!open_) {
             last_error_ = SocketError::closed;
             return -1;
         }
+
 
         if (device_.socket_rx_capacity(socket_) == 0u) {
             std::printf("Socket %d RX capacity is 0\n", socket_);
@@ -137,8 +189,7 @@ public:
 
             if (rc != 0) {
                 if ((rc >= 0) && (remote != nullptr)) {
-                    remote->address = address;
-                    remote->port = port;
+                    *remote = make_socket_address_v4(address, port);
                 }
 
                 last_error_ = rc < 0 ? SocketError::io : SocketError::none;
@@ -183,6 +234,8 @@ public:
 
         open_ = false;
         claimed_ = false;
+        multicast_joined_ = false;
+        multicast_membership_ = {};
         last_error_ = SocketError::none;
     }
 
@@ -192,11 +245,21 @@ public:
     }
 
 private:
+    static bool same_membership(const SocketMulticastMembership& lhs,
+                                const SocketMulticastMembership& rhs) noexcept
+    {
+        return (lhs.domain == rhs.domain) &&
+               (lhs.group == rhs.group) &&
+               (lhs.interface == rhs.interface) &&
+               (lhs.port == rhs.port) &&
+               (lhs.interface_index == rhs.interface_index);
+    }
+
     device_type& device_;
     IolibrarySocketProvider<Chip, Bus>* provider_ = nullptr;
     socket_type socket_ = 0u;
     uint32_t receive_timeout_ms_ = 0u;
-    SocketMulticastMembershipV4 multicast_membership_{};
+    SocketMulticastMembership multicast_membership_{};
     SocketError last_error_ = SocketError::none;
     bool open_ = false;
     bool claimed_ = true;

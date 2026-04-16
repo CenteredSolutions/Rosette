@@ -146,13 +146,11 @@ uint32_t SpdpWriter::serialise(Octet* buf, uint32_t cap) const noexcept {
 // ----------------------------------------------------------
 
 void SpdpWriter::announce() noexcept {
-    if (!builder_.begin(local_data_.guidPrefix, 512)) return;
-
-    // Allocate a temporary buffer for the PL_CDR payload.
-    BufRef payload_buf = buf_alloc(256);
+    // Allocate a headroom-backed buffer so we can prepend RTPS+DATA framing
+    // without an extra copy. SPDP payload itself starts with PL_CDR header.
+    BufRef payload_buf = buf_alloc_with_headroom(256u, kRtpsDataHeadroom);
     if (!payload_buf.valid()) {
         RTPS_LOG_E("spdp", "buf_alloc failed for participant announce");
-        builder_.abort();
         return;
     }
 
@@ -163,26 +161,21 @@ void SpdpWriter::announce() noexcept {
         RTPS_LOG_E("spdp", "participant data serialisation failed (capacity=%lu)",
                    (unsigned long)payload_buf.capacity());
         payload_buf.reset();
-        builder_.abort();
         return;
     }
     payload_buf.size = serialised_len;
 
-    // The DATA submessage for SPDP does NOT prepend a separate
-    // CDR encapsulation header — the PL_CDR RepresentationHeader
-    // is already the first 4 bytes of the serialised payload.
-    // The D-flag is set; Q and K flags are clear.
+    // The DATA submessage for SPDP does NOT prepend an extra CDR payload
+    // encapsulation header. The PL_CDR RepresentationHeader written by
+    // serialise() is already at payload[0..3] per §9.6.2.
     //
-    // §9.4.5.3, p. 204: the serializedPayload begins immediately
-    // after the DATA fixed fields when D-flag is set.
-    bool ok = builder_.append_data(
+    // Build DATA framing in-place over the headroom-backed payload.
+    bool ok = builder_.begin_with_payload(static_cast<BufRef&&>(payload_buf)) &&
+              builder_.prepend_data_message(
+        local_data_.guidPrefix,
         entity_id::SPDP_BUILTIN_PARTICIPANT_READER,
         entity_id::SPDP_BUILTIN_PARTICIPANT_WRITER,
-        SequenceNumber::from_int64(1),   // SPDP is best-effort; SN not tracked.
-        payload_buf,
-        /*key_flag=*/false);
-
-    payload_buf.reset();
+        SequenceNumber::from_int64(1));   // SPDP is best-effort; SN not tracked.
 
     if (ok) {
         RTPS_LOG_D("spdp", "announcing participant (%lu bytes)",

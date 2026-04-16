@@ -28,4 +28,4 @@ const char* socket_error_string(SocketError error) noexcept
     }
 }
 
-}  // namespace milkdds::wiznet
+}  // namespace milkdds::net

@@ -1,8 +1,8 @@
 #pragma once
 
-#include "socket.hpp"
+#include "../socket.hpp"
 
-namespace milkdds::net {
+namespace milkdds::net::freertos {
 
 class FreeRtosSocketProvider final : public SocketProvider {
 public:
@@ -12,4 +12,4 @@ public:
         SocketProtocol protocol = SocketProtocol::udp) noexcept override;
 };
 
-}  // namespace milkdds::wiznet
+}  // namespace milkdds::net

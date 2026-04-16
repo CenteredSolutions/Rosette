@@ -217,24 +217,64 @@ static bool read_frag_number_set(Reader& r, FragmentNumberSet& out,
 }
 
 // ============================================================
-// Internal: skip_inline_qos()
+// Internal: parse_inline_qos()
 //
 // inlineQos is a ParameterList ending with PID_SENTINEL (0x0001).
-// We do not consume inline QoS on this embedded target; skip it.
+// For the service MVP we decode RelatedSampleIdentity and skip the rest.
 //
 // §9.6.2, p. 285: each parameter is { uint16 pid, uint16 length,
 //   octet[length] value }.  PID_SENTINEL has length 0.
 // ============================================================
 
-static bool skip_inline_qos(Reader& r, bool need_swap) noexcept {
-    static constexpr uint16_t PID_SENTINEL = 0x0001u;
+static bool read_sample_identity(const Octet* src,
+                                 uint16_t     len,
+                                 bool         need_swap,
+                                 SampleIdentity& out) noexcept
+{
+    if (len < sample_identity_wire_size()) return false;
+
+    memcpy(out.writerGuid.prefix.value, src, 12u);
+    memcpy(out.writerGuid.entityId.entityKey, src + 12u, 3u);
+    out.writerGuid.entityId.entityKind = src[15];
+
+    int32_t high = 0;
+    uint32_t low = 0;
+    memcpy(&high, src + 16u, 4u);
+    memcpy(&low,  src + 20u, 4u);
+    fixup_i32(high, need_swap);
+    fixup_u32(low,  need_swap);
+    out.sequenceNumber.high = high;
+    out.sequenceNumber.low  = low;
+    return true;
+}
+
+static bool parse_inline_qos(Reader& r,
+                             bool    need_swap,
+                             InlineQos& out) noexcept
+{
     while (true) {
         uint16_t pid, length;
         if (!r.read(pid) || !r.read(length)) return false;
         fixup_u16(pid,    need_swap);
         fixup_u16(length, need_swap);
-        if (pid == PID_SENTINEL) return true;
-        if (!r.skip(length))    return false;
+        if (pid == inline_qos_pid::SENTINEL) return true;
+
+        const Octet* value = r.peek();
+        if (value == nullptr || r.remaining() < static_cast<uint32_t>(length)) {
+            return false;
+        }
+
+        if (pid == inline_qos_pid::RELATED_SAMPLE_IDENTITY ||
+            pid == inline_qos_pid::RELATED_SAMPLE_IDENTITY_CUSTOM) {
+            SampleIdentity related{};
+            if (!read_sample_identity(value, length, need_swap, related)) {
+                return false;
+            }
+            out.relatedSampleIdentity    = related;
+            out.hasRelatedSampleIdentity = true;
+        }
+
+        if (!r.skip(length)) return false;
     }
 }
 
@@ -339,7 +379,7 @@ static bool parse_data(Reader& r, Octet flags, bool need_swap,
     }
 
     if (out.inlineQosPresent) {
-        if (!skip_inline_qos(r, need_swap)) return false;
+        if (!parse_inline_qos(r, need_swap, out.inlineQos)) return false;
     }
 
     out.serializedPayload     = r.peek();
@@ -393,7 +433,8 @@ static bool parse_data_frag(Reader& r, Octet flags, bool need_swap,
     }
 
     if (flags & data_frag_flags::Q) {
-        if (!skip_inline_qos(r, need_swap)) return false;
+        InlineQos ignored{};
+        if (!parse_inline_qos(r, need_swap, ignored)) return false;
     }
 
     out.fragmentPayload     = r.peek();

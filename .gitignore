@@ -1,0 +1,9 @@
+*.swp
+
+# Build system staging
+**/build
+**/build*
+
+# Python
+*.pyc
+**/__pycache__

@@ -194,11 +194,32 @@ inline constexpr uint32_t spdp_unicast_port(uint8_t domain_id,
     return 7400u + 250u * domain_id + 10u + 2u * participant_id;
 }
 
-/// SPDP well-known multicast address — §9.6.1, p. 254: 239.255.0.1
-inline Locator spdp_multicast_locator(uint8_t domain_id) noexcept {
-    // 239.255.0.1 in big-endian bytes.
+/// SPDP well-known IPv4 multicast address — §9.6.1, p. 254: 239.255.0.1
+inline Locator spdp_multicast_locator_v4(uint8_t domain_id) noexcept {
     return make_udpv4_locator(0xEFFF0001u, static_cast<uint16_t>(
                               spdp_multicast_port(domain_id)));
+}
+
+/// SPDP well-known IPv6 multicast address — FF02::FFFF:239.255.0.1
+inline Locator spdp_multicast_locator_v6(uint8_t domain_id) noexcept {
+    const uint8_t ipv6[16] = {
+        0xFFu, 0x02u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+        0x00u, 0x00u, 0xFFu, 0xFFu, 0xEFu, 0xFFu, 0x00u, 0x01u,
+    };
+    return make_udpv6_locator(ipv6, static_cast<uint16_t>(
+                                        spdp_multicast_port(domain_id)));
+}
+
+inline bool spdp_ipv6_discovery_available() noexcept
+{
+    uint8_t ipv6[16] = {};
+    return rtps_platform_get_ipv6_addr(ipv6);
+}
+
+inline Locator spdp_multicast_locator(uint8_t domain_id) noexcept {
+    return spdp_ipv6_discovery_available()
+        ? spdp_multicast_locator_v6(domain_id)
+        : spdp_multicast_locator_v4(domain_id);
 }
 
 // ============================================================

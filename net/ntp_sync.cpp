@@ -204,11 +204,10 @@ bool NtpSyncService::start() noexcept
     return rc == pdPASS;
 }
 
-void NtpSyncService::set_server(const SocketAddressV4& server) noexcept
+void NtpSyncService::set_server(const SocketAddress& server) noexcept
 {
     taskENTER_CRITICAL();
-    config_.server_ip = server.address;
-    config_.server_port = server.port;
+    config_.server = server;
     taskEXIT_CRITICAL();
 }
 
@@ -381,17 +380,22 @@ void NtpSyncService::task_main() noexcept
  */
 bool NtpSyncService::exchange(int64_t& theta_us, int64_t& delay_us) noexcept
 {
-    auto socket = socket_provider_.open(SocketDomain::ipv4,
+    SocketAddress server{};
+    taskENTER_CRITICAL();
+    server = config_.server;
+    taskEXIT_CRITICAL();
+
+    auto socket = socket_provider_.open(server.domain,
                                         SocketType::datagram,
                                         SocketProtocol::udp);
     if (!socket) {
         return false;
     }
 
-    const SocketAddressV4 bind_addr{
-        .address = {0u, 0u, 0u, 0u},
-        .port = config_.local_port,
-    };
+    const SocketAddress bind_addr =
+        (server.domain == SocketDomain::ipv6)
+            ? make_socket_address_v6({}, config_.local_port)
+            : make_socket_address_v4({0u, 0u, 0u, 0u}, config_.local_port);
     if (socket->bind(bind_addr) != 0) {
         return false;
     }
@@ -411,19 +415,13 @@ bool NtpSyncService::exchange(int64_t& theta_us, int64_t& delay_us) noexcept
     request.tx_ts_sec = tx_ts_sec;
     request.tx_ts_frac = tx_ts_frac;
 
-    SocketAddressV4 server{};
-    taskENTER_CRITICAL();
-    server.address = config_.server_ip;
-    server.port = config_.server_port;
-    taskEXIT_CRITICAL();
-
     const std::ptrdiff_t sent = socket->send_to(&request, sizeof(request), server);
     if (sent != static_cast<std::ptrdiff_t>(sizeof(request))) {
         return false;
     }
 
     NtpPacket response{};
-    SocketAddressV4 from{};
+    SocketAddress from{};
     const std::ptrdiff_t received = socket->recv_from(&response,
                                                       sizeof(response),
                                                       &from);

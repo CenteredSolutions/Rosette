@@ -172,6 +172,62 @@ struct Guid {
 inline constexpr Guid GUID_UNKNOWN{};
 
 // ============================================================
+// SampleIdentity_t
+//
+// Identifies one RTPS sample by writer GUID + sequence number.
+// Used by ROS 2 service reply correlation via InlineQoS.
+// ============================================================
+
+struct SampleIdentity {
+    Guid           writerGuid      = GUID_UNKNOWN;
+    SequenceNumber sequenceNumber  = SEQUENCENUMBER_UNKNOWN;
+
+    bool operator==(const SampleIdentity& o) const noexcept {
+        return writerGuid == o.writerGuid &&
+               sequenceNumber == o.sequenceNumber;
+    }
+    bool operator!=(const SampleIdentity& o) const noexcept {
+        return !(*this == o);
+    }
+    bool is_unknown() const noexcept {
+        return writerGuid == GUID_UNKNOWN &&
+               sequenceNumber == SEQUENCENUMBER_UNKNOWN;
+    }
+};
+
+// ============================================================
+// InlineQoS — minimal DATA-submessage inline QoS for service MVP
+// ============================================================
+
+namespace inline_qos_pid {
+    inline constexpr uint16_t SENTINEL                        = 0x0001u;
+    inline constexpr uint16_t RELATED_SAMPLE_IDENTITY         = 0x0083u;
+    inline constexpr uint16_t RELATED_SAMPLE_IDENTITY_CUSTOM  = 0x800Fu;
+}
+
+struct InlineQos {
+    bool           hasRelatedSampleIdentity = false;
+    SampleIdentity relatedSampleIdentity    = {};
+
+    void clear() noexcept {
+        *this = InlineQos{};
+    }
+
+    bool empty() const noexcept {
+        return !hasRelatedSampleIdentity;
+    }
+};
+
+inline constexpr uint16_t sample_identity_wire_size() noexcept {
+    return 24u;
+}
+
+inline constexpr uint16_t inline_qos_serialized_size(const InlineQos& qos) noexcept {
+    if (!qos.hasRelatedSampleIdentity) return 0u;
+    return static_cast<uint16_t>((4u + sample_identity_wire_size()) + 4u);
+}
+
+// ============================================================
 // §8.2.5  Locator_t
 //
 // "Locator_t is used to specify a communication end-point."
@@ -213,6 +269,15 @@ inline Locator make_udpv4_locator(uint32_t ipv4_be, uint16_t port) noexcept {
     l.address[13] = static_cast<Octet>((ipv4_be >> 16) & 0xFF);
     l.address[14] = static_cast<Octet>((ipv4_be >>  8) & 0xFF);
     l.address[15] = static_cast<Octet>( ipv4_be        & 0xFF);
+    return l;
+}
+
+/// Helper: fill an IPv6 Locator from a 16-byte address and port.
+inline Locator make_udpv6_locator(const uint8_t (&ipv6)[16], uint16_t port) noexcept {
+    Locator l{};
+    l.kind = locator_kind::UDPv6;
+    l.port = port;
+    memcpy(l.address, ipv6, sizeof(l.address));
     return l;
 }
 

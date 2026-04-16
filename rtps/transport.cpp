@@ -25,16 +25,43 @@ static uint32_t locator_to_ipv4_be(const Locator& locator) noexcept
            static_cast<uint32_t>(locator.address[15]);
 }
 
+static bool locator_is_ipv4(const Locator& locator) noexcept
+{
+    return locator.kind == locator_kind::UDPv4;
+}
+
+static bool locator_is_ipv6(const Locator& locator) noexcept
+{
+    return locator.kind == locator_kind::UDPv6;
+}
+
+static bool locator_is_udp(const Locator& locator) noexcept
+{
+    return locator_is_ipv4(locator) || locator_is_ipv6(locator);
+}
+
 }  // namespace
 
 SocketUdpTransport::SocketUdpTransport(milkdds::net::SocketProvider& provider,
                                        uint16_t meta_port,
                                        uint16_t user_port,
                                        uint32_t multicast_addr) noexcept
+    : SocketUdpTransport(
+          provider,
+          meta_port,
+          user_port,
+          make_udpv4_locator(multicast_addr, meta_port))
+{
+}
+
+SocketUdpTransport::SocketUdpTransport(milkdds::net::SocketProvider& provider,
+                                       uint16_t meta_port,
+                                       uint16_t user_port,
+                                       const Locator& multicast_locator) noexcept
     : provider_(provider)
     , meta_port_(meta_port)
     , user_port_(user_port)
-    , multicast_addr_(multicast_addr)
+    , multicast_locator_(multicast_locator)
 {
 }
 
@@ -47,28 +74,25 @@ bool SocketUdpTransport::open() noexcept
 {
     close();
 
-    const milkdds::net::SocketMulticastMembershipV4 meta_membership{
-        .group = {
-            static_cast<uint8_t>(multicast_addr_ >> 24u),
-            static_cast<uint8_t>(multicast_addr_ >> 16u),
-            static_cast<uint8_t>(multicast_addr_ >> 8u),
-            static_cast<uint8_t>(multicast_addr_),
-        },
-        .interface = {0u, 0u, 0u, 0u},
-        .port = meta_port_,
-    };
+    if (!locator_is_udp(multicast_locator_)) {
+        return false;
+    }
 
-    meta_socket_ = provider_.open();
+    const milkdds::net::SocketDomain domain =
+        locator_is_ipv6(multicast_locator_) ? milkdds::net::SocketDomain::ipv6
+                                            : milkdds::net::SocketDomain::ipv4;
+
+    meta_socket_ = provider_.open(domain);
     if (!meta_socket_) {
         return false;
     }
 
-    if (meta_socket_->join_multicast(meta_membership) != 0) {
+    if (meta_socket_->join_multicast(locator_to_multicast_membership(multicast_locator_)) != 0) {
         close();
         return false;
     }
 
-    if (meta_socket_->bind({.address = {0u, 0u, 0u, 0u}, .port = meta_port_}) != 0) {
+    if (meta_socket_->bind(any_bind_address(meta_port_)) != 0) {
         close();
         return false;
     }
@@ -80,13 +104,13 @@ bool SocketUdpTransport::open() noexcept
 
     meta_open_ = true;
 
-    user_socket_ = provider_.open();
+    user_socket_ = provider_.open(domain);
     if (!user_socket_) {
         close();
         return false;
     }
 
-    if (user_socket_->bind({.address = {0u, 0u, 0u, 0u}, .port = user_port_}) != 0) {
+    if (user_socket_->bind(any_bind_address(user_port_)) != 0) {
         close();
         return false;
     }
@@ -125,16 +149,20 @@ uint32_t SocketUdpTransport::poll_meta(Octet*    buf,
         return 0u;
     }
 
-    milkdds::net::SocketAddressV4 remote{};
+    milkdds::net::SocketAddress remote{};
     const std::ptrdiff_t received = meta_socket_->recv_from(buf, buf_size, &remote);
     if (received <= 0) {
         return 0u;
     }
 
-    src_addr = (static_cast<uint32_t>(remote.address[0]) << 24u) |
-               (static_cast<uint32_t>(remote.address[1]) << 16u) |
-               (static_cast<uint32_t>(remote.address[2]) << 8u) |
-               static_cast<uint32_t>(remote.address[3]);
+    if (remote.is_ipv4()) {
+        src_addr = (static_cast<uint32_t>(remote.address[0]) << 24u) |
+                   (static_cast<uint32_t>(remote.address[1]) << 16u) |
+                   (static_cast<uint32_t>(remote.address[2]) << 8u) |
+                   static_cast<uint32_t>(remote.address[3]);
+    } else {
+        src_addr = 0u;
+    }
     src_port = remote.port;
     return static_cast<uint32_t>(received);
 }
@@ -148,16 +176,20 @@ uint32_t SocketUdpTransport::poll_user(Octet*    buf,
         return 0u;
     }
 
-    milkdds::net::SocketAddressV4 remote{};
+    milkdds::net::SocketAddress remote{};
     const std::ptrdiff_t received = user_socket_->recv_from(buf, buf_size, &remote);
     if (received <= 0) {
         return 0u;
     }
 
-    src_addr = (static_cast<uint32_t>(remote.address[0]) << 24u) |
-               (static_cast<uint32_t>(remote.address[1]) << 16u) |
-               (static_cast<uint32_t>(remote.address[2]) << 8u) |
-               static_cast<uint32_t>(remote.address[3]);
+    if (remote.is_ipv4()) {
+        src_addr = (static_cast<uint32_t>(remote.address[0]) << 24u) |
+                   (static_cast<uint32_t>(remote.address[1]) << 16u) |
+                   (static_cast<uint32_t>(remote.address[2]) << 8u) |
+                   static_cast<uint32_t>(remote.address[3]);
+    } else {
+        src_addr = 0u;
+    }
     src_port = remote.port;
     return static_cast<uint32_t>(received);
 }
@@ -165,7 +197,7 @@ uint32_t SocketUdpTransport::poll_user(Octet*    buf,
 bool SocketUdpTransport::send_unicast(const BufRef& buf,
                                       const Locator& dest) noexcept
 {
-    if (!buf.valid() || (buf.size == 0u) || (dest.kind != locator_kind::UDPv4)) {
+    if (!buf.valid() || (buf.size == 0u) || !locator_is_udp(dest)) {
         return false;
     }
 
@@ -199,19 +231,60 @@ milkdds::net::Socket* SocketUdpTransport::socket_for(const Locator& dest) const 
     return nullptr;
 }
 
-milkdds::net::SocketAddressV4
+milkdds::net::SocketAddress
 SocketUdpTransport::locator_to_socket_address(const Locator& dest) noexcept
 {
+    if (locator_is_ipv6(dest)) {
+        std::array<uint8_t, 16> ipv6{};
+        std::memcpy(ipv6.data(), dest.address, ipv6.size());
+        return milkdds::net::make_socket_address_v6(
+            ipv6,
+            static_cast<uint16_t>(dest.port));
+    }
+
     const uint32_t ip = locator_to_ipv4_be(dest);
-    return {
-        .address = {
+    return milkdds::net::make_socket_address_v4(
+        {
             static_cast<uint8_t>(ip >> 24u),
             static_cast<uint8_t>(ip >> 16u),
             static_cast<uint8_t>(ip >> 8u),
             static_cast<uint8_t>(ip),
         },
-        .port = static_cast<uint16_t>(dest.port),
-    };
+        static_cast<uint16_t>(dest.port));
+}
+
+milkdds::net::SocketMulticastMembership
+SocketUdpTransport::locator_to_multicast_membership(const Locator& dest) noexcept
+{
+    if (locator_is_ipv6(dest)) {
+        std::array<uint8_t, 16> ipv6{};
+        std::memcpy(ipv6.data(), dest.address, ipv6.size());
+        return milkdds::net::make_multicast_membership_v6(
+            ipv6,
+            {},
+            static_cast<uint16_t>(dest.port));
+    }
+
+    const uint32_t ip = locator_to_ipv4_be(dest);
+    return milkdds::net::make_multicast_membership_v4(
+        {
+            static_cast<uint8_t>(ip >> 24u),
+            static_cast<uint8_t>(ip >> 16u),
+            static_cast<uint8_t>(ip >> 8u),
+            static_cast<uint8_t>(ip),
+        },
+        {0u, 0u, 0u, 0u},
+        static_cast<uint16_t>(dest.port));
+}
+
+milkdds::net::SocketAddress
+SocketUdpTransport::any_bind_address(uint16_t port) const noexcept
+{
+    if (locator_is_ipv6(multicast_locator_)) {
+        return milkdds::net::make_socket_address_v6({}, port);
+    }
+
+    return milkdds::net::make_socket_address_v4({0u, 0u, 0u, 0u}, port);
 }
 
 bool SocketTransportRuntime::start() noexcept

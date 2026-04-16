@@ -42,7 +42,10 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
-#include "wiznet.h"
+#if defined(MILKDDS_FREERTOS_TCP)
+#include "FreeRTOS_Routing.h"
+#include "FreeRTOS_IP_Common.h"
+#endif
 
 #include <string.h>
 #include <stdint.h>
@@ -105,12 +108,53 @@ rtps_GuidPrefix rtps_platform_make_guid_prefix(uint8_t participant_id) {
 }
 
 uint32_t rtps_platform_get_ipv4_addr(void) {
-    uint8_t ip[4] = {0, 0, 0, 0};
-    wiznet_get_local_ipv4(ip);
-    return ((uint32_t)ip[0] << 24u) |
-           ((uint32_t)ip[1] << 16u) |
-           ((uint32_t)ip[2] <<  8u) |
-           ((uint32_t)ip[3]);
+#if defined(MILKDDS_FREERTOS_TCP)
+    for (NetworkEndPoint_t *ep = FreeRTOS_FirstEndPoint(NULL);
+         ep != NULL;
+         ep = FreeRTOS_NextEndPoint(NULL, ep)) {
+        if ((ENDPOINT_IS_IPv4(ep) != 0) && (FreeRTOS_IsEndPointUp(ep) != 0)) {
+            return ep->ipv4_settings.ulIPAddress;
+        }
+    }
+    return 0u;
+#else
+    return 0u;
+#endif
+}
+
+bool rtps_platform_get_ipv6_addr(uint8_t out[16]) {
+    if (out == NULL) {
+        return false;
+    }
+
+    memset(out, 0, 16u);
+
+#if defined(MILKDDS_FREERTOS_TCP)
+    NetworkEndPoint_t *preferred = NULL;
+
+    for (NetworkEndPoint_t *ep = FreeRTOS_FirstEndPoint(NULL);
+         ep != NULL;
+         ep = FreeRTOS_NextEndPoint(NULL, ep)) {
+        if ((ENDPOINT_IS_IPv6(ep) == 0) || (FreeRTOS_IsEndPointUp(ep) == 0)) {
+            continue;
+        }
+
+        preferred = ep;
+        if ((ep->ipv6_settings.xIPAddress.ucBytes[0] != 0xFEu) ||
+            ((ep->ipv6_settings.xIPAddress.ucBytes[1] & 0xC0u) != 0x80u)) {
+            break;
+        }
+    }
+
+    if (preferred == NULL) {
+        return false;
+    }
+
+    memcpy(out, preferred->ipv6_settings.xIPAddress.ucBytes, 16u);
+    return true;
+#endif
+
+    return false;
 }
 
 // ============================================================

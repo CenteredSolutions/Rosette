@@ -126,9 +126,11 @@ public:
                               const EntityId&      reader_id,
                               const EntityId&      writer_id,
                               const SequenceNumber& writer_sn,
-                              bool                 key_flag = false) noexcept
+                              bool                 key_flag = false,
+                              const InlineQos&     inline_qos = {}) noexcept
     {
         if (!buf_.valid()) return false;
+        if (!inline_qos.empty()) return false;
         if (buf_.headroom_available() < kRtpsDataHeadroom) return false;
 
         auto* sm = reinterpret_cast<DataSubmessageFixed*>(
@@ -291,15 +293,18 @@ public:
                      const EntityId&       writer_id,
                      const SequenceNumber& writer_sn,
                      const BufRef&         payload,
-                     bool                  key_flag = false) noexcept
+                     bool                  key_flag = false,
+                     const InlineQos&      inline_qos = {}) noexcept
     {
         const uint16_t payload_bytes = payload.valid() ? payload.size : 0u;
         const uint16_t encap_size    = 4u;
+        const uint16_t inline_qos_bytes = inline_qos_serialized_size(inline_qos);
         const uint16_t body_len = static_cast<uint16_t>(
-            sizeof(DataSubmessageFixed) + encap_size + payload_bytes);
+            sizeof(DataSubmessageFixed) + inline_qos_bytes + encap_size + payload_bytes);
 
         Octet flags = FLAG_E;
         flags |= (key_flag ? data_flags::K : data_flags::D);
+        if (!inline_qos.empty()) flags |= data_flags::Q;
 
         SubmessageHeader smhdr{};
         smhdr.submessageId     = SubmessageKind::DATA;
@@ -309,10 +314,14 @@ public:
         if (!write_submessage_header(&smhdr)) return false;
 
         DataSubmessageFixed fixed{};
-        fixed.readerId = reader_id;
-        fixed.writerId = writer_id;
-        fixed.writerSN = writer_sn;
+        fixed.octetsToInlineQos = 16u;
+        fixed.readerId          = reader_id;
+        fixed.writerId          = writer_id;
+        fixed.writerSN          = writer_sn;
         if (!write_bytes(&fixed, sizeof(fixed))) return false;
+        if (!inline_qos.empty()) {
+            if (!write_inline_qos(inline_qos)) return false;
+        }
 
         // EncapsulationHeader — §10.2, p. 244
         if (!write_uint16(0x0001u)) return false;   // CDR_LE
@@ -478,6 +487,23 @@ private:
     bool write_uint16(uint16_t v) noexcept { return write_bytes(&v, 2u); }
     bool write_uint32(uint32_t v) noexcept { return write_bytes(&v, 4u); }
     bool write_long(Long v)       noexcept { return write_bytes(&v, 4u); }
+    bool write_byte(Octet v)      noexcept { return write_bytes(&v, 1u); }
+    bool write_sample_identity(const SampleIdentity& sample_id) noexcept {
+        if (!write_bytes(sample_id.writerGuid.prefix.value, 12u)) return false;
+        if (!write_bytes(sample_id.writerGuid.entityId.entityKey, 3u)) return false;
+        if (!write_byte(sample_id.writerGuid.entityId.entityKind)) return false;
+        if (!write_long(sample_id.sequenceNumber.high)) return false;
+        return write_uint32(sample_id.sequenceNumber.low);
+    }
+    bool write_inline_qos(const InlineQos& inline_qos) noexcept {
+        if (inline_qos.hasRelatedSampleIdentity) {
+            if (!write_uint16(inline_qos_pid::RELATED_SAMPLE_IDENTITY)) return false;
+            if (!write_uint16(sample_identity_wire_size())) return false;
+            if (!write_sample_identity(inline_qos.relatedSampleIdentity)) return false;
+        }
+        if (!write_uint16(inline_qos_pid::SENTINEL)) return false;
+        return write_uint16(0u);
+    }
 
     bool write_submessage_header(const SubmessageHeader* h) noexcept {
         return write_bytes(h, sizeof(SubmessageHeader));

@@ -22,6 +22,7 @@ void wiznet_macraw_interrupt_from_isr(void);
 
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 
@@ -29,15 +30,16 @@ void wiznet_macraw_interrupt_from_isr(void);
 #include "FreeRTOS_IP_Private.h"
 #include "NetworkBufferManagement.h"
 
+#include "net/freertos/igmp.hpp"
 #include "device.hpp"
 
-namespace milkdds::wiznet {
+namespace milkdds::net::wiznet {
 
 template<typename Chip, typename Bus>
 class MacrawNetworkInterface {
 public:
-    using device_type = WiznetDevice<Chip, Bus>;
-    using InvalidChipVersion = device_type::InvalidChipVersion;
+    using device_type = milkdds::net::wiznet::WiznetDevice<Chip, Bus>;
+    using InvalidChipVersion = typename device_type::InvalidChipVersion;
 
     explicit MacrawNetworkInterface(
         Bus bus,
@@ -57,6 +59,9 @@ public:
         interface.pfInitialise = &pf_initialise;
         interface.pfOutput = &pf_output;
         interface.pfGetPhyLinkStatus = &pf_get_phy_link_status;
+        interface.pfAddAllowedMAC = &pf_add_allowed_mac;
+        interface.pfRemoveAllowedMAC = &pf_remove_allowed_mac;
+        milkdds::net::freertos_multicast_service().configure_output(&igmp_output, this);
         return &interface;
     }
 
@@ -65,6 +70,12 @@ public:
         NetworkInterface_t* filled = fill_interface_descriptor(interface, name);
         FreeRTOS_AddNetworkInterface(filled);
         return filled;
+    }
+
+    void set_fallback_mac_address(const std::array<uint8_t, 6>& mac) noexcept
+    {
+        mac_address_ = mac;
+        device_.set_mac_address(mac_address_);
     }
 
     BaseType_t initialise() {
@@ -90,7 +101,7 @@ public:
 
         if (rx_task_handle_ == nullptr) {
             char task_name[16] = {};
-            std::snprintf(task_name, sizeof(task_name), "%s_rx", name_.data());
+            std::snprintf(task_name, sizeof(task_name), "%.12s_rx", name_.data());
 
             const BaseType_t ret = xTaskCreate(
                 &rx_task_entry,
@@ -166,6 +177,34 @@ private:
         return self == nullptr ? pdFALSE : self->link_status();
     }
 
+    static void pf_add_allowed_mac(NetworkInterface_t* interface,
+                                   const uint8_t* mac_address) {
+        MacrawNetworkInterface* self = from_interface(interface);
+        if (self != nullptr) {
+            self->add_allowed_mac(mac_address);
+        }
+    }
+
+    static void pf_remove_allowed_mac(NetworkInterface_t* interface,
+                                      const uint8_t* mac_address) {
+        MacrawNetworkInterface* self = from_interface(interface);
+        if (self != nullptr) {
+            self->remove_allowed_mac(mac_address);
+        }
+    }
+
+    static bool igmp_output(NetworkInterface_t* interface,
+                            const uint8_t* frame,
+                            std::size_t length,
+                            void* context) noexcept {
+        auto* self = static_cast<MacrawNetworkInterface*>(context);
+        if ((self == nullptr) || (interface != self->interface_)) {
+            return false;
+        }
+
+        return self->send_raw_frame(frame, length);
+    }
+
     static void rx_task_entry(void* arg) {
         static_cast<MacrawNetworkInterface*>(arg)->rx_task();
     }
@@ -178,20 +217,39 @@ private:
     }
 
     void set_runtime_mac_address() {
-        const uint8_t* mac = FreeRTOS_GetMACAddress();
-        if (mac != nullptr) {
-            std::memcpy(mac_address_.data(), mac, mac_address_.size());
-            device_.set_mac_address(mac_address_);
+        device_.set_mac_address(mac_address_);
+    }
+
+    void add_allowed_mac(const uint8_t* mac_address) noexcept
+    {
+        if ((mac_address != nullptr) && ((mac_address[0] & 0x01u) != 0u)) {
+            ++multicast_accept_refcount_;
         }
     }
 
-    void rx_task() {
-        std::array<uint8_t, Chip::max_frame_bytes()> frame_buf{};
+    void remove_allowed_mac(const uint8_t* mac_address) noexcept
+    {
+        if ((mac_address != nullptr) &&
+            ((mac_address[0] & 0x01u) != 0u) &&
+            (multicast_accept_refcount_ > 0u)) {
+            --multicast_accept_refcount_;
+        }
+    }
 
+    bool send_raw_frame(const uint8_t* frame, std::size_t length) noexcept
+    {
+        if ((frame == nullptr) || (length == 0u) || (length > Chip::max_frame_bytes())) {
+            return false;
+        }
+
+        return device_.write_frame(frame, static_cast<uint16_t>(length));
+    }
+
+    void rx_task() {
         for (;;) {
             const uint16_t xBytesReceived = device_.socket_rx_available(Chip::macraw_socket());
             if (xBytesReceived == 0) {
-                (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+                (void)ulTaskNotifyTake(pdTRUE, 64);
                 continue;
             }
 
@@ -205,6 +263,10 @@ private:
             uint16_t xBytesRead = device_.read_frame(pxDescriptor->pucEthernetBuffer, xBytesReceived);
             pxDescriptor->xDataLength = static_cast<size_t>(xBytesRead);
             pxDescriptor->pxInterface = interface_;
+            milkdds::net::freertos_multicast_service().process_frame(
+                pxDescriptor->pucEthernetBuffer,
+                pxDescriptor->xDataLength,
+                interface_);
             pxDescriptor->pxEndPoint =
                 FreeRTOS_MatchingEndpoint(interface_, pxDescriptor->pucEthernetBuffer);
 
@@ -232,9 +294,10 @@ private:
     TaskHandle_t rx_task_handle_ = nullptr;
     std::array<char, 16> name_{};
     std::array<uint8_t, 6> mac_address_{};
+    UBaseType_t multicast_accept_refcount_ = 0u;
     bool started_ = false;
 };
 
-}  // namespace milkdds::wiznet
+}  // namespace milkdds::net::wiznet
 
 #endif

@@ -81,16 +81,21 @@ target_link_libraries(rtps_stack PUBLIC
 
 # ── Board-specific BSP ────────────────────────────────────────────────────────
 add_library(rtps_bsp STATIC
+    net/wiznet/dhcp_iolibrary.cpp
     boards/${RTPS_BOARD}/board_init.c
-    net/wiznet_macraw.c
+    net/ntp_sync.cpp
+    net/wiznet/macraw.cpp
+    net/wiznet/socket.cpp
+    net/wiznet/socket_freertos.cpp
     platform/rtps_platform.c
+    platform/pico_log.c
 )
 
 target_include_directories(rtps_bsp PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/boards/${RTPS_BOARD}
     ${CMAKE_CURRENT_SOURCE_DIR}/net
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform
     ${CMAKE_CURRENT_SOURCE_DIR}/rtps
-    ${CMAKE_CURRENT_SOURCE_DIR}/config
 )
 
 target_link_libraries(rtps_bsp PUBLIC

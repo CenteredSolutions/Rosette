@@ -57,7 +57,6 @@ namespace rtps {
 // Platform hook
 // ============================================================
 extern "C" GuidPrefix rtps_platform_make_guid_prefix(uint8_t participant_id) noexcept;
-extern "C" uint32_t rtps_platform_get_ipv4_addr(void) noexcept;
 
 // ============================================================
 // Configuration
@@ -199,6 +198,19 @@ public:
     void announce() noexcept;
 
     // ----------------------------------------------------------
+    // Address configuration (application-managed)
+    //
+    // The application is responsible for adding/removing local
+    // interface addresses as they become available/unavailable.
+    // ----------------------------------------------------------
+    bool add_ipv4_address(uint32_t ipv4_be) noexcept;
+    bool add_ipv6_address(const uint8_t ipv6[16]) noexcept;
+    bool remove_ipv4_address(uint32_t ipv4_be) noexcept;
+    bool remove_ipv6_address(const uint8_t ipv6[16]) noexcept;
+    void clear_addresses() noexcept;
+    bool has_addresses() const noexcept;
+
+    // ----------------------------------------------------------
     // Accessors
     // ----------------------------------------------------------
     const Guid&       participant_guid() const noexcept { return participant_guid_; }
@@ -231,14 +243,19 @@ private:
     IStatefulWriter* find_writer_iface(const EntityId& eid) noexcept;
     StatefulReader*  find_reader(const EntityId& eid) noexcept;
     void register_writer_endpoint(const Guid& guid, const WriterConfig& cfg) noexcept;
-    Locator metatraffic_unicast_locator() const noexcept;
-    Locator default_unicast_locator()     const noexcept;
+    bool add_address_locator_pair(const Locator& meta, const Locator& user) noexcept;
+    bool remove_address_locator_pair(const Locator& meta, const Locator& user) noexcept;
+    void refresh_spdp_multicast_locator() noexcept;
+    uint8_t append_metatraffic_multicast_locators(Locator* out, uint8_t cap) const noexcept;
+    uint8_t append_metatraffic_unicast_locators(Locator* out, uint8_t cap) const noexcept;
+    uint8_t append_default_unicast_locators(Locator* out, uint8_t cap) const noexcept;
 
     // ── Data members ─────────────────────────────────────────
     uint8_t     domain_id_;
     uint8_t     participant_id_;
     ITransport& transport_;
     Guid        participant_guid_;
+    Locator     spdp_multicast_locator_;
 
     SPDPdiscoveredParticipantData local_participant_data_;
 

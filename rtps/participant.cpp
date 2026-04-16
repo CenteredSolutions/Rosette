@@ -10,6 +10,115 @@
 
 namespace rtps {
 
+namespace {
+
+bool locator_address_is_unspecified(const Locator& locator) noexcept
+{
+    if (locator.kind == locator_kind::UDPv4) {
+        return locator.address[12] == 0u &&
+               locator.address[13] == 0u &&
+               locator.address[14] == 0u &&
+               locator.address[15] == 0u;
+    }
+    if (locator.kind == locator_kind::UDPv6) {
+        for (uint8_t i = 0; i < 16u; ++i) {
+            if (locator.address[i] != 0u) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return true;
+}
+
+bool append_unique_locator(Locator* out,
+                           uint8_t& count,
+                           uint8_t cap,
+                           const Locator& locator) noexcept
+{
+    if ((out == nullptr) || (count >= cap)) {
+        return false;
+    }
+
+    if (locator_address_is_unspecified(locator)) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < count; ++i) {
+        if (out[i] == locator) {
+            return true;
+        }
+    }
+
+    out[count++] = locator;
+    return true;
+}
+
+bool remove_locator(Locator* list,
+                    uint8_t& count,
+                    const Locator& locator) noexcept
+{
+    if ((list == nullptr) || (count == 0u)) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < count; ++i) {
+        if (list[i] != locator) {
+            continue;
+        }
+
+        for (uint8_t j = static_cast<uint8_t>(i + 1u); j < count; ++j) {
+            list[j - 1u] = list[j];
+        }
+        --count;
+        list[count] = Locator{};
+        return true;
+    }
+
+    return false;
+}
+
+uint16_t metatraffic_unicast_port(uint8_t domain_id,
+                                  uint8_t participant_id) noexcept
+{
+    return static_cast<uint16_t>(7400u + 250u * domain_id + 10u + 2u * participant_id);
+}
+
+uint16_t default_unicast_port(uint8_t domain_id,
+                              uint8_t participant_id) noexcept
+{
+    return static_cast<uint16_t>(7400u + 250u * domain_id + 11u + 2u * participant_id);
+}
+
+Locator make_udpv6_locator_from_ptr(const uint8_t ipv6[16], uint16_t port) noexcept
+{
+    Locator l{};
+    l.kind = locator_kind::UDPv6;
+    l.port = port;
+    if (ipv6 != nullptr) {
+        memcpy(l.address, ipv6, 16u);
+    }
+    return l;
+}
+
+uint8_t copy_locators(Locator* out,
+                      uint8_t cap,
+                      const Locator* src,
+                      uint8_t src_count) noexcept
+{
+    if ((out == nullptr) || (src == nullptr) || (cap == 0u)) {
+        return 0u;
+    }
+
+    const uint8_t n = (src_count < cap) ? src_count : cap;
+    for (uint8_t i = 0; i < n; ++i) {
+        out[i] = src[i];
+    }
+    return n;
+}
+
+} // namespace
+
 // ============================================================
 // Constructor
 // ============================================================
@@ -21,10 +130,11 @@ RTPSParticipant::RTPSParticipant(uint8_t     domain_id,
     : domain_id_(domain_id)
     , participant_id_(participant_id)
     , transport_(transport)
+    , spdp_multicast_locator_(LOCATOR_INVALID)
     , match_table_(on_endpoint_match, on_endpoint_unmatch, this)
     , spdp_writer_(local_participant_data_,
                    transport,
-                   spdp_multicast_locator(domain_id))
+                   LOCATOR_INVALID)
     , spdp_reader_(on_spdp_new_peer, on_spdp_peer_removed, this)
     , sedp_writer_(transport)
     , sedp_reader_(match_table_)
@@ -44,13 +154,10 @@ RTPSParticipant::RTPSParticipant(uint8_t     domain_id,
     local_participant_data_.leaseDuration   =
         Duration::from_ms(RTPS_SPDP_LEASE_DURATION_MS);
 
-    Locator mt_uc = metatraffic_unicast_locator();
-    local_participant_data_.metatrafficUnicastLocatorList[0] = mt_uc;
-    local_participant_data_.metatrafficUnicastLocatorCount   = 1;
-
-    Locator def_uc = default_unicast_locator();
-    local_participant_data_.defaultUnicastLocatorList[0] = def_uc;
-    local_participant_data_.defaultUnicastLocatorCount   = 1;
+    local_participant_data_.metatrafficUnicastLocatorCount = 0u;
+    local_participant_data_.metatrafficMulticastLocatorCount = 0u;
+    local_participant_data_.defaultUnicastLocatorCount = 0u;
+    local_participant_data_.defaultMulticastLocatorCount = 0u;
 
     local_participant_data_.availableBuiltinEndpoints =
         builtin_endpoint::DISC_BUILTIN_ENDPOINT_PARTICIPANT_ANNOUNCER  |
@@ -69,6 +176,8 @@ RTPSParticipant::RTPSParticipant(uint8_t     domain_id,
     parse_ops_.on_acknack         = dispatch_acknack;
     parse_ops_.on_nack_frag       = dispatch_nack_frag;
     parse_ops_.on_gap             = dispatch_gap;
+
+    refresh_spdp_multicast_locator();
 }
 
 // ============================================================
@@ -103,8 +212,9 @@ StatefulReader* RTPSParticipant::create_reader(
     rd.reliabilityKind = cfg.reliability;
     rd.durabilityKind  = cfg.durability;
     rd.topicKind       = cfg.topicKind;
-    rd.unicastLocatorList[0] = default_unicast_locator();
-    rd.unicastLocatorCount   = 1;
+    rd.unicastLocatorCount =
+        append_default_unicast_locators(rd.unicastLocatorList,
+                                        RTPS_MAX_LOCATORS_PER_PARTICIPANT);
     sedp_writer_.register_reader(rd);
     match_table_.add_reader(rd);
 
@@ -127,8 +237,9 @@ void RTPSParticipant::register_writer_endpoint(const Guid&         writer_guid,
     wd.reliabilityKind = cfg.reliability;
     wd.durabilityKind  = cfg.durability;
     wd.topicKind       = cfg.topicKind;
-    wd.unicastLocatorList[0] = default_unicast_locator();
-    wd.unicastLocatorCount   = 1;
+    wd.unicastLocatorCount =
+        append_default_unicast_locators(wd.unicastLocatorList,
+                                        RTPS_MAX_LOCATORS_PER_PARTICIPANT);
     sedp_writer_.register_writer(wd);
     match_table_.add_writer(wd);
 }
@@ -150,6 +261,10 @@ ParseResult RTPSParticipant::parse_received(const Octet* buf,
 }
 
 void RTPSParticipant::tick(uint32_t now_ms) noexcept {
+    if (!has_addresses()) {
+        return;
+    }
+
     spdp_writer_.tick(now_ms);
     spdp_reader_.tick(now_ms);
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
@@ -161,7 +276,60 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
 }
 
 void RTPSParticipant::announce() noexcept {
+    if (!has_addresses()) {
+        return;
+    }
+
     spdp_writer_.announce();
+}
+
+bool RTPSParticipant::add_ipv4_address(uint32_t ipv4_be) noexcept
+{
+    const Locator meta = make_udpv4_locator(
+        ipv4_be, metatraffic_unicast_port(domain_id_, participant_id_));
+    const Locator user = make_udpv4_locator(
+        ipv4_be, default_unicast_port(domain_id_, participant_id_));
+    return add_address_locator_pair(meta, user);
+}
+
+bool RTPSParticipant::add_ipv6_address(const uint8_t ipv6[16]) noexcept
+{
+    const Locator meta = make_udpv6_locator_from_ptr(
+        ipv6, metatraffic_unicast_port(domain_id_, participant_id_));
+    const Locator user = make_udpv6_locator_from_ptr(
+        ipv6, default_unicast_port(domain_id_, participant_id_));
+    return add_address_locator_pair(meta, user);
+}
+
+bool RTPSParticipant::remove_ipv4_address(uint32_t ipv4_be) noexcept
+{
+    const Locator meta = make_udpv4_locator(
+        ipv4_be, metatraffic_unicast_port(domain_id_, participant_id_));
+    const Locator user = make_udpv4_locator(
+        ipv4_be, default_unicast_port(domain_id_, participant_id_));
+    return remove_address_locator_pair(meta, user);
+}
+
+bool RTPSParticipant::remove_ipv6_address(const uint8_t ipv6[16]) noexcept
+{
+    const Locator meta = make_udpv6_locator_from_ptr(
+        ipv6, metatraffic_unicast_port(domain_id_, participant_id_));
+    const Locator user = make_udpv6_locator_from_ptr(
+        ipv6, default_unicast_port(domain_id_, participant_id_));
+    return remove_address_locator_pair(meta, user);
+}
+
+void RTPSParticipant::clear_addresses() noexcept
+{
+    local_participant_data_.metatrafficUnicastLocatorCount = 0u;
+    local_participant_data_.defaultUnicastLocatorCount = 0u;
+    refresh_spdp_multicast_locator();
+}
+
+bool RTPSParticipant::has_addresses() const noexcept
+{
+    return local_participant_data_.metatrafficUnicastLocatorCount > 0u &&
+           local_participant_data_.defaultUnicastLocatorCount > 0u;
 }
 
 // ============================================================
@@ -400,16 +568,100 @@ StatefulReader* RTPSParticipant::find_reader(const EntityId& eid) noexcept {
     return nullptr;
 }
 
-Locator RTPSParticipant::metatraffic_unicast_locator() const noexcept {
-    const uint32_t port = 7400u + 250u * domain_id_ + 10u + 2u * participant_id_;
-    return make_udpv4_locator(rtps_platform_get_ipv4_addr(),
-                              static_cast<uint16_t>(port));
+uint8_t RTPSParticipant::append_metatraffic_unicast_locators(Locator* out,
+                                                             uint8_t cap) const noexcept
+{
+    return copy_locators(out, cap,
+                         local_participant_data_.metatrafficUnicastLocatorList,
+                         local_participant_data_.metatrafficUnicastLocatorCount);
 }
 
-Locator RTPSParticipant::default_unicast_locator() const noexcept {
-    const uint32_t port = 7400u + 250u * domain_id_ + 1u + 2u * participant_id_;
-    return make_udpv4_locator(rtps_platform_get_ipv4_addr(),
-                              static_cast<uint16_t>(port));
+uint8_t RTPSParticipant::append_metatraffic_multicast_locators(Locator* out,
+                                                               uint8_t cap) const noexcept
+{
+    return copy_locators(out, cap,
+                         local_participant_data_.metatrafficMulticastLocatorList,
+                         local_participant_data_.metatrafficMulticastLocatorCount);
+}
+
+uint8_t RTPSParticipant::append_default_unicast_locators(Locator* out,
+                                                         uint8_t cap) const noexcept
+{
+    return copy_locators(out, cap,
+                         local_participant_data_.defaultUnicastLocatorList,
+                         local_participant_data_.defaultUnicastLocatorCount);
+}
+
+bool RTPSParticipant::add_address_locator_pair(const Locator& meta,
+                                               const Locator& user) noexcept
+{
+    const uint8_t meta_count_before = local_participant_data_.metatrafficUnicastLocatorCount;
+    const uint8_t user_count_before = local_participant_data_.defaultUnicastLocatorCount;
+
+    const bool meta_ok = append_unique_locator(
+        local_participant_data_.metatrafficUnicastLocatorList,
+        local_participant_data_.metatrafficUnicastLocatorCount,
+        RTPS_MAX_LOCATORS_PER_PARTICIPANT,
+        meta);
+    if (!meta_ok) {
+        return false;
+    }
+
+    const bool user_ok = append_unique_locator(
+        local_participant_data_.defaultUnicastLocatorList,
+        local_participant_data_.defaultUnicastLocatorCount,
+        RTPS_MAX_LOCATORS_PER_PARTICIPANT,
+        user);
+    if (!user_ok) {
+        local_participant_data_.metatrafficUnicastLocatorCount = meta_count_before;
+        local_participant_data_.defaultUnicastLocatorCount = user_count_before;
+        return false;
+    }
+
+    refresh_spdp_multicast_locator();
+    return true;
+}
+
+bool RTPSParticipant::remove_address_locator_pair(const Locator& meta,
+                                                  const Locator& user) noexcept
+{
+    bool changed = false;
+    changed |= remove_locator(local_participant_data_.metatrafficUnicastLocatorList,
+                              local_participant_data_.metatrafficUnicastLocatorCount,
+                              meta);
+    changed |= remove_locator(local_participant_data_.defaultUnicastLocatorList,
+                              local_participant_data_.defaultUnicastLocatorCount,
+                              user);
+    if (changed) {
+        refresh_spdp_multicast_locator();
+    }
+    return changed;
+}
+
+void RTPSParticipant::refresh_spdp_multicast_locator() noexcept
+{
+    bool have_ipv4 = false;
+    bool have_ipv6 = false;
+    for (uint8_t i = 0; i < local_participant_data_.metatrafficUnicastLocatorCount; ++i) {
+        const Long kind = local_participant_data_.metatrafficUnicastLocatorList[i].kind;
+        have_ipv4 = have_ipv4 || (kind == locator_kind::UDPv4);
+        have_ipv6 = have_ipv6 || (kind == locator_kind::UDPv6);
+    }
+
+    if (have_ipv4) {
+        spdp_multicast_locator_ = spdp_multicast_locator_v4(domain_id_);
+        local_participant_data_.metatrafficMulticastLocatorList[0] = spdp_multicast_locator_;
+        local_participant_data_.metatrafficMulticastLocatorCount = 1u;
+    } else if (have_ipv6) {
+        spdp_multicast_locator_ = spdp_multicast_locator_v6(domain_id_);
+        local_participant_data_.metatrafficMulticastLocatorList[0] = spdp_multicast_locator_;
+        local_participant_data_.metatrafficMulticastLocatorCount = 1u;
+    } else {
+        spdp_multicast_locator_ = LOCATOR_INVALID;
+        local_participant_data_.metatrafficMulticastLocatorCount = 0u;
+    }
+
+    spdp_writer_.set_dest(spdp_multicast_locator_);
 }
 
 } // namespace rtps

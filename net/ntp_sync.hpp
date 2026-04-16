@@ -26,8 +26,7 @@ namespace milkdds::net {
  * - RFC 5905 section 10: clock filter and clock discipline concepts.
  */
 struct NtpSyncConfig {
-    std::array<uint8_t, 4> server_ip{ {216, 239, 35, 0} };
-    uint16_t server_port = 123u;
+    SocketAddress server = make_socket_address_v4({216, 239, 35, 0}, 123u);
     uint16_t local_port = 12300u;
     uint32_t receive_timeout_ms = 5000u;
     uint32_t min_poll_ms = 64000u;
@@ -83,7 +82,7 @@ public:
      *
      * @param server IPv4 address and UDP port of the remote NTP server.
      */
-    void set_server(const SocketAddressV4& server) noexcept;
+    void set_server(const SocketAddress& server) noexcept;
 
     /**
      * @brief Read the current software UTC correction in microseconds.
