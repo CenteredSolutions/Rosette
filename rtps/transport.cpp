@@ -6,6 +6,7 @@
 #include "transport.hpp"
 
 #include "participant.hpp"
+#include "log.hpp"
 
 #include <cstring>
 
@@ -19,10 +20,7 @@ namespace {
 
 static uint32_t locator_to_ipv4_be(const Locator& locator) noexcept
 {
-    return (static_cast<uint32_t>(locator.address[12]) << 24u) |
-           (static_cast<uint32_t>(locator.address[13]) << 16u) |
-           (static_cast<uint32_t>(locator.address[14]) << 8u) |
-           static_cast<uint32_t>(locator.address[15]);
+    return locator.ipv4_address_be();
 }
 
 static bool locator_is_ipv4(const Locator& locator) noexcept
@@ -198,17 +196,45 @@ bool SocketUdpTransport::send_unicast(const BufRef& buf,
                                       const Locator& dest) noexcept
 {
     if (!buf.valid() || (buf.size == 0u) || !locator_is_udp(dest)) {
+        RTPS_LOG_W("transport", "drop send_unicast: valid=%d size=%lu kind=%ld",
+                   (int)buf.valid(),
+                   (unsigned long)buf.size,
+                   (long)dest.kind);
         return false;
     }
 
     milkdds::net::Socket* socket = socket_for(dest);
     if (socket == nullptr) {
+        RTPS_LOG_W("transport", "drop send_unicast: no socket for port=%lu",
+                   (unsigned long)dest.port);
         return false;
     }
 
     const auto address = locator_to_socket_address(dest);
-    return socket->send_to(buf.data, buf.size, address) ==
-           static_cast<std::ptrdiff_t>(buf.size);
+    const std::ptrdiff_t sent = socket->send_to(buf.data, buf.size, address);
+    if (sent != static_cast<std::ptrdiff_t>(buf.size)) {
+        RTPS_LOG_W("transport", "send_to failed: kind=%ld dst=%u.%u.%u.%u:%u len=%lu sent=%ld err=%d",
+                   (long)dest.kind,
+                   (unsigned)address.address[0],
+                   (unsigned)address.address[1],
+                   (unsigned)address.address[2],
+                   (unsigned)address.address[3],
+                   (unsigned)address.port,
+                   (unsigned long)buf.size,
+                   (long)sent,
+                   (int)socket->last_error());
+        return false;
+    }
+
+    RTPS_LOG_D("transport", "tx kind=%ld dst=%u.%u.%u.%u:%u len=%lu",
+               (long)dest.kind,
+               (unsigned)address.address[0],
+               (unsigned)address.address[1],
+               (unsigned)address.address[2],
+               (unsigned)address.address[3],
+               (unsigned)address.port,
+               (unsigned long)buf.size);
+    return true;
 }
 
 bool SocketUdpTransport::send_multicast(const BufRef& buf,

@@ -1,302 +1,408 @@
-/**
- * @file example/main_rp2350.cpp
- * @brief Minimal RTPS integration example — RP2350 + WizNET W5500 + FreeRTOS.
- *
- * This file demonstrates how to bring up the full RTPS stack on the
- * target platform.  It is intended as a starting point, not a production
- * application.
- *
- * Topology
- * --------
- *   Participant A (this device) publishes a SensorReading on topic
- *   "rt/sensor" every 100 ms using a KEEP_LAST(1) reliable writer.
- *
- *   Participant B (a remote device or a DDS desktop tool such as
- *   rtiddsspy or FastDDS monitor) subscribes to the same topic.
- *
- * Tasks
- * -----
- *   rx_task   — polls the W5500 sockets, feeds raw datagrams to
- *               participant.parse_received().  Single-threaded RX dispatch.
- *
- *   tick_task — calls participant.tick(now_ms) every RTPS_TICK_PERIOD_MS.
- *               Drives SPDP resend, lease expiry, writer HB / retransmit,
- *               and reader deferred ACKNACK.
- *
- *   app_task  — application logic: serialise SensorReading, call
- *               writer->write_reliable().  Blocks inside write_reliable()
- *               until all matched readers acknowledge or the timeout fires.
- *
- * Zero-copy TX path
- * -----------------
- * The example uses buf_alloc_with_headroom() so that RTPS headers are
- * prepended in-place rather than copying the CDR payload into a scratch
- * buffer.  See the write_sensor_reading() function for the full pattern.
- *
- * Platform hooks (must be provided by the BSP — not shown here)
- * -------------------------------------------------------------
- *   uint32_t rtps_platform_get_ms()               — wraps xTaskGetTickCount()
- *   GuidPrefix rtps_platform_make_guid_prefix(id) — MAC-derived prefix
- *   void rtps_platform_flash_erase(addr, size)    — RP2350 flash SDK
- *   void rtps_platform_flash_write(addr, data, sz)
- *   void rtps_platform_flash_read (addr, data, sz)
- */
+#include "board_config.h"
 
-#include "rtps/rtps.hpp"
-
-// RP2350 / FreeRTOS headers (provided by the SDK and BSP).
+extern "C" {
 #include "FreeRTOS.h"
 #include "task.h"
-#include "pico/stdlib.h"       // tight_loop_contents(), etc.
+#include "timers.h"
+#include "FreeRTOS_IP.h"
+#include "FreeRTOS_IPv6.h"
+#include "FreeRTOS_ND.h"
+#include "FreeRTOS_Routing.h"
+}
 
-// WizNET ioLibrary (provided by the BSP).
-#include "wizchip_conf.h"
-#include "socket.h"
+#include "hardware/gpio.h"
+#include "pico/stdlib.h"
 
-using namespace rtps;
+#include "ros/ros.hpp"
+#include "ros/cdr.h"
+#include "net/freertos/socket.hpp"
+#include "wiznet/macraw.h"
 
-// ============================================================
-// Application data type
-// ============================================================
+#include <array>
+#include <cstdio>
+#include <cstring>
 
-struct SensorReading {
-    float    temperature;   // °C
-    float    humidity;      // %RH
-    uint32_t sequence;
+extern "C" void board_init(void);
+extern "C" void board_get_mac_address(uint8_t mac[6]);
+
+namespace {
+
+constexpr uint8_t kDomainId = 0u;
+constexpr uint8_t kParticipantId = 0u;
+constexpr uint32_t kTickPeriodMs = 10u;
+constexpr uint32_t kPublishPeriodMs = 1000u;
+constexpr uint32_t kNetworkPollDelayMs = 250u;
+constexpr uint32_t kBlinkPeriodMs = 500u;
+
+#ifndef RTPS_NET_MODE_STATIC
+#define RTPS_NET_MODE_STATIC 0
+#endif
+#ifndef RTPS_NET_MODE_DHCP
+#define RTPS_NET_MODE_DHCP 1
+#endif
+#ifndef RTPS_NET_MODE_SLAAC
+#define RTPS_NET_MODE_SLAAC 2
+#endif
+#ifndef RTPS_NET_MODE_ZEROCONF
+#define RTPS_NET_MODE_ZEROCONF 3
+#endif
+#ifndef RTPS_NET_MODE
+#define RTPS_NET_MODE RTPS_NET_MODE_DHCP
+#endif
+#ifndef RTPS_NET_HOSTNAME
+#define RTPS_NET_HOSTNAME "milkdds"
+#endif
+#ifndef RTPS_NET_STATIC_IP
+#define RTPS_NET_STATIC_IP {192u, 168u, 1u, 200u}
+#endif
+#ifndef RTPS_NET_STATIC_MASK
+#define RTPS_NET_STATIC_MASK {255u, 255u, 255u, 0u}
+#endif
+#ifndef RTPS_NET_STATIC_GW
+#define RTPS_NET_STATIC_GW {192u, 168u, 1u, 1u}
+#endif
+#ifndef RTPS_NET_STATIC_DNS
+#define RTPS_NET_STATIC_DNS {8u, 8u, 8u, 8u}
+#endif
+#ifndef RTPS_NET_ZEROCONF_IP
+#define RTPS_NET_ZEROCONF_IP {169u, 254u, 1u, 10u}
+#endif
+
+struct DemoStringMsg {
+    char data[96];
 };
 
-// ============================================================
-// RTPS entity configuration
-// ============================================================
+class DemoContext : public milkros::Context {
+public:
+    DemoContext(rtps::ITransport& transport,
+                rtps::ITransportRuntime& runtime) noexcept
+        : milkros::Context(transport,
+                           milkros::ContextOptions{
+                               kDomainId,
+                               kParticipantId,
+                               1536u,
+                           })
+        , runtime_(runtime) {}
 
-static constexpr uint8_t  kDomainId      = 0;
-static constexpr uint8_t  kParticipantId = 0;
+    bool start_runtime() noexcept
+    {
+        return runtime_.start();
+    }
 
-// User-defined entity IDs — must not conflict with builtin IDs.
-// entityKind 0x02 = user-defined writer (no key), §8.2.4 Table 8.3.
-static constexpr EntityId kSensorWriterEid = { {0x00, 0x00, 0x10}, 0x02 };
-// entityKind 0x07 = user-defined reader (no key).
-static constexpr EntityId kSensorReaderEid = { {0x00, 0x00, 0x10}, 0x07 };
+    void tick(uint32_t now_ms) noexcept override
+    {
+        spin_transport(runtime_);
+        tick_participant(now_ms);
+        tick_timers(now_ms);
+    }
 
-// ============================================================
-// Global RTPS objects
-// ============================================================
+private:
+    rtps::ITransportRuntime& runtime_;
+};
 
-// Transport: metatraffic on port 7410, user data on port 7411.
-// SPDP multicast group: 239.255.0.1 (domain 0).
-static WiznetUdpTransport g_transport(
-    static_cast<uint16_t>(spdp_unicast_port(kDomainId, kParticipantId)),
-    static_cast<uint16_t>(7400u + 250u * kDomainId + 1u + 2u * kParticipantId),
-    0xEFFF0001u   // 239.255.0.1 in network byte order.
-);
+NetworkInterface_t g_network_interface{};
+NetworkEndPoint_t g_ipv4_endpoint{};
+NetworkEndPoint_t g_ipv6_endpoint{};
+bool g_network_started = false;
+uint32_t g_random_state = 0x5A17BEEFu;
 
-static RTPSParticipant* g_participant = nullptr;
+constexpr std::array<uint8_t, 4> kStaticIp = RTPS_NET_STATIC_IP;
+constexpr std::array<uint8_t, 4> kStaticMask = RTPS_NET_STATIC_MASK;
+constexpr std::array<uint8_t, 4> kStaticGateway = RTPS_NET_STATIC_GW;
+constexpr std::array<uint8_t, 4> kStaticDns = RTPS_NET_STATIC_DNS;
+constexpr std::array<uint8_t, 4> kZeroconfIp = RTPS_NET_ZEROCONF_IP;
+constexpr std::array<uint8_t, 16> kLinkLocalPrefix{
+    0xFEu, 0x80u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+    0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+};
 
-// Concrete writer type: KEEP_LAST(1), up to 8 matched readers.
-static StatefulWriter<1>* g_sensor_writer = nullptr;
-
-// Application sequence counter.
-static uint32_t g_seq = 0;
-
-// ============================================================
-// Sensor reading callback — called by StatefulReader when data arrives.
-// Runs on the RX dispatch task (rx_task).
-// ============================================================
-
-static void on_sensor_reading(const CacheChange& change,
-                               void* /*user_data*/) noexcept
+uint32_t mix_random(uint32_t value) noexcept
 {
-    if (change.payload.size < sizeof(SensorReading)) return;
-
-    SensorReading reading{};
-    memcpy(&reading, change.payload.data, sizeof(reading));
-
-    // In a real application: post to a queue, update a display, etc.
-    // Here we just note that the data arrived.
-    (void)reading;
+    value ^= value << 13;
+    value ^= value >> 17;
+    value ^= value << 5;
+    return value;
 }
 
-// ============================================================
-// write_sensor_reading() — zero-copy DATA TX path.
-//
-// Allocates a pool block with headroom for the RTPS + DATA headers,
-// serialises the SensorReading CDR directly into the payload region,
-// then calls write_reliable() which prepends the headers in-place
-// (via BufRef::prepend()) and sends — no scratch buffer, no copy.
-// ============================================================
-
-static void write_sensor_reading(float temp, float humidity) noexcept
+bool have_ipv4() noexcept
 {
-    if (!g_sensor_writer) return;
-
-    // Allocate with kRtpsDataHeadroom reserved before the CDR region.
-    // The pool selects the smallest class >= sizeof(SensorReading) + 44.
-    BufRef buf = buf_alloc_with_headroom(sizeof(SensorReading),
-                                         kRtpsDataHeadroom);
-    if (!buf.valid()) return;   // Pool exhausted — drop this sample.
-
-    // Serialise CDR payload directly into the headroom-aware buffer.
-    // buf.data points past the reserved header region.
-    SensorReading reading{ temp, humidity, ++g_seq };
-    memcpy(buf.data, &reading, sizeof(reading));
-    buf.size = sizeof(reading);
-
-    // new_change() takes the payload buffer and produces a staging
-    // CacheChange.  add_change() stamps the SN and marks it UNSENT.
-    BufRef dummy;   // new_change() wants to return the payload ref;
-                    // we already have it in buf, so swap it in below.
-    CacheChange* ch = g_sensor_writer->new_change(ChangeKind::ALIVE, dummy);
-    if (!ch) { buf.reset(); return; }
-
-    // Override the payload with our headroom-allocated block.
-    dummy.reset();
-    ch->payload = static_cast<BufRef&&>(buf);
-
-    // write_reliable() calls add_change() then blocks until acked or timeout.
-    // Because ch->payload.headroom_available() >= kRtpsDataHeadroom,
-    // send_data_to() will use the zero-copy prepend path automatically.
-    g_sensor_writer->add_change(static_cast<CacheChange&&>(*ch));
-
-    // (In production: call write_reliable() for blocking semantics;
-    //  add_change() alone is non-blocking and triggers async TX.)
+    return rtps::rtps_platform_get_ipv4_addr() != 0u;
 }
 
-// ============================================================
-// RX dispatch task
-//
-// Polls both W5500 sockets and passes each received datagram to
-// the participant's parser.  Single-threaded — no locking needed
-// for the on_data / on_heartbeat / on_gap code paths.
-// ============================================================
-
-static uint8_t rx_buf[RTPS_POOL_CLASS2_SIZE];   // Stack buffer; not pool-backed.
-
-static void rx_task(void* /*arg*/)
+bool have_ipv6(std::array<uint8_t, 16>& out) noexcept
 {
-    uint32_t src_addr;
-    uint16_t src_port;
+    return rtps::rtps_platform_get_ipv6_addr(out.data());
+}
 
-    for (;;) {
-        // Poll metatraffic socket (SPDP, SEDP, HEARTBEAT, ACKNACK).
-        uint32_t n = g_transport.poll_meta(rx_buf, sizeof(rx_buf),
-                                           src_addr, src_port);
-        if (n > 0 && g_participant) {
-            g_participant->parse_received(rx_buf, n);
-        }
+bool network_ready() noexcept
+{
+    std::array<uint8_t, 16> ipv6{};
+    return have_ipv4() || have_ipv6(ipv6);
+}
 
-        // Poll user-data socket (DATA, DATA_FRAG, GAP).
-        n = g_transport.poll_user(rx_buf, sizeof(rx_buf),
-                                  src_addr, src_port);
-        if (n > 0 && g_participant) {
-            g_participant->parse_received(rx_buf, n);
-        }
+bool start_board_network() noexcept
+{
+    if (g_network_started) {
+        return true;
+    }
 
-        // Yield; on a real system with an interrupt-driven receive you
-        // would block on a binary semaphore given from the W5500 ISR.
-        taskYIELD();
+    uint8_t mac[6]{};
+    board_get_mac_address(mac);
+    wiznet_macraw_set_mac_address(mac);
+
+    const std::array<uint8_t, 4> ipv4 =
+        (RTPS_NET_MODE == RTPS_NET_MODE_ZEROCONF) ? kZeroconfIp : kStaticIp;
+
+    FreeRTOS_FillEndPoint(
+        &g_network_interface,
+        &g_ipv4_endpoint,
+        ipv4.data(),
+        kStaticMask.data(),
+        kStaticGateway.data(),
+        kStaticDns.data(),
+        mac);
+
+#if ( ipconfigUSE_DHCP != 0 )
+    g_ipv4_endpoint.bits.bWantDHCP =
+        (RTPS_NET_MODE == RTPS_NET_MODE_DHCP) ? pdTRUE_UNSIGNED : pdFALSE_UNSIGNED;
+#endif
+
+    IPv6_Address_t ipv6_addr{};
+    IPv6_Address_t ipv6_prefix{};
+    IPv6_Address_t ipv6_gateway{};
+    std::memcpy(ipv6_prefix.ucBytes, kLinkLocalPrefix.data(), kLinkLocalPrefix.size());
+    if (FreeRTOS_CreateIPv6Address(&ipv6_addr, &ipv6_prefix, 64u, pdTRUE) != pdPASS) {
+        std::printf("FATAL: failed to create IPv6 link-local address\n");
+        return false;
+    }
+
+    FreeRTOS_FillEndPoint_IPv6(
+        &g_network_interface,
+        &g_ipv6_endpoint,
+        &ipv6_addr,
+        &ipv6_prefix,
+        64u,
+        &ipv6_gateway,
+        nullptr,
+        mac);
+
+#if ( ipconfigUSE_RA != 0 )
+    g_ipv6_endpoint.bits.bWantRA =
+        (RTPS_NET_MODE == RTPS_NET_MODE_SLAAC) ? pdTRUE_UNSIGNED : pdFALSE_UNSIGNED;
+#endif
+
+    if (FreeRTOS_IPInit_Multi() != pdPASS) {
+        std::printf("FATAL: FreeRTOS_IPInit_Multi failed\n");
+        return false;
+    }
+
+    g_network_started = true;
+    return true;
+}
+
+void update_participant_addresses(rtps::RTPSParticipant& participant) noexcept
+{
+    const uint32_t ipv4 = rtps::rtps_platform_get_ipv4_addr();
+    if (ipv4 != 0u) {
+        (void)participant.add_ipv4_address(ipv4);
+    }
+
+    std::array<uint8_t, 16> ipv6{};
+    if (rtps::rtps_platform_get_ipv6_addr(ipv6.data())) {
+        (void)participant.add_ipv6_address(ipv6.data());
     }
 }
 
-// ============================================================
-// Tick task
-//
-// Drives all periodic stack maintenance at RTPS_TICK_PERIOD_MS intervals.
-// ============================================================
-
-static void tick_task(void* /*arg*/)
+void service_task(void*)
 {
-    TickType_t last_wake = xTaskGetTickCount();
+    if (!start_board_network()) {
+        vTaskDelete(nullptr);
+        return;
+    }
 
+    while (!network_ready()) {
+        vTaskDelay(pdMS_TO_TICKS(kNetworkPollDelayMs));
+    }
+
+    static milkdds::net::freertos::FreeRtosSocketProvider socket_provider;
+    const uint16_t meta_port = static_cast<uint16_t>(rtps::spdp_multicast_port(kDomainId));
+    const uint16_t user_port = static_cast<uint16_t>(rtps::spdp_unicast_port(kDomainId, kParticipantId));
+    static rtps::SocketUdpTransport transport(
+        socket_provider,
+        meta_port,
+        user_port,
+        rtps::spdp_multicast_locator(kDomainId));
+    static rtps::SocketTransportRuntime runtime(transport);
+    static DemoContext context(transport, runtime);
+
+    if (!context.start_runtime()) {
+        std::printf("FATAL: transport start failed\n");
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    update_participant_addresses(context.participant());
+
+    if (!context.start()) {
+        std::printf("FATAL: participant start failed\n");
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    auto node = context.create_node("milkdds_device", "");
+    auto chatter = node.create_publisher<DemoStringMsg>("chatter");
+    if (!chatter.valid()) {
+        std::printf("FATAL: publisher creation failed\n");
+        vTaskDelete(nullptr);
+        return;
+    }
+
+    std::printf("[milkDDS] device online, publishing std_msgs/msg/String on rt/chatter\n");
+
+    uint32_t sequence = 0u;
+    uint32_t last_publish_ms = 0u;
     for (;;) {
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(RTPS_TICK_PERIOD_MS));
+        const uint32_t now_ms = rtps_platform_get_ms();
+        context.tick(now_ms);
 
-        if (g_participant) {
-            const uint32_t now_ms =
-                static_cast<uint32_t>(xTaskGetTickCount() *
-                                      portTICK_PERIOD_MS);
-            g_participant->tick(now_ms);
+        if ((now_ms - last_publish_ms) >= kPublishPeriodMs) {
+            DemoStringMsg msg{};
+            std::snprintf(msg.data,
+                          sizeof(msg.data),
+                          "milkDDS hello seq=%lu uptime_ms=%lu",
+                          static_cast<unsigned long>(sequence++),
+                          static_cast<unsigned long>(now_ms));
+            (void)chatter.publish(msg);
+            last_publish_ms = now_ms;
         }
+
+        vTaskDelay(pdMS_TO_TICKS(kTickPeriodMs));
     }
 }
 
-// ============================================================
-// Application task
-//
-// Publishes a SensorReading every 100 ms.
-// ============================================================
-
-static void app_task(void* /*arg*/)
+void blink_timer_cb(TimerHandle_t)
 {
-    TickType_t last_wake = xTaskGetTickCount();
-
-    for (;;) {
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(100u));
-
-        // Read sensors (stubbed here).
-        const float temp     = 23.5f;
-        const float humidity = 55.2f;
-
-        write_sensor_reading(temp, humidity);
-    }
+    static bool on = false;
+    gpio_put(RTPS_PIN_LED, on ? 1u : 0u);
+    on = !on;
 }
 
-// ============================================================
-// main()
-// ============================================================
+}  // namespace
+
+namespace milkros {
+
+template<>
+struct message_traits<DemoStringMsg> {
+    static constexpr size_t max_serialized_size = 128u;
+
+    static const char* dds_type_name() noexcept
+    {
+        return "std_msgs::msg::dds_::String_";
+    }
+
+    static size_t encode(uint8_t* out,
+                         size_t out_cap,
+                         const DemoStringMsg& message) noexcept
+    {
+        cdr_writer_t writer{};
+        cdr_writer_init(&writer, out, out_cap);
+        cdr_write_string(&writer, message.data);
+        if (writer.overflow) {
+            return 0u;
+        }
+        return cdr_writer_size(&writer);
+    }
+
+    static bool decode(const uint8_t* in,
+                       size_t in_len,
+                       DemoStringMsg& message) noexcept
+    {
+        cdr_reader_t reader{};
+        if (!cdr_reader_init(&reader, in, in_len)) {
+            return false;
+        }
+        (void)cdr_read_string(&reader, message.data, sizeof(message.data));
+        return !reader.error;
+    }
+
+    static DemoStringMsg make_message() noexcept
+    {
+        return DemoStringMsg{};
+    }
+};
+
+template<>
+inline constexpr bool has_message_traits_v<DemoStringMsg> = true;
+
+}  // namespace milkros
+
+extern "C" const char* pcApplicationHostnameHook(void)
+{
+    return RTPS_NET_HOSTNAME;
+}
+
+extern "C" BaseType_t xApplicationGetRandomNumber(uint32_t* pulNumber)
+{
+    if (pulNumber == nullptr) {
+        return pdFAIL;
+    }
+
+    g_random_state = mix_random(
+        g_random_state ^
+        static_cast<uint32_t>(time_us_64()) ^
+        static_cast<uint32_t>(xTaskGetTickCount()));
+    *pulNumber = g_random_state;
+    return pdPASS;
+}
+
+extern "C" uint32_t ulApplicationGetNextSequenceNumber(uint32_t,
+                                                        uint16_t,
+                                                        uint32_t,
+                                                        uint16_t)
+{
+    uint32_t value = 0u;
+    if (xApplicationGetRandomNumber(&value) != pdPASS) {
+        value = mix_random(static_cast<uint32_t>(time_us_64()));
+    }
+    return value;
+}
+
+extern "C" eDHCPCallbackAnswer_t xApplicationDHCPHook_Multi(
+    eDHCPCallbackPhase_t,
+    struct xNetworkEndPoint*,
+    IP_Address_t*)
+{
+    return eDHCPContinue;
+}
 
 int main()
 {
-    // 1. Board / BSP initialisation.
-    stdio_init_all();
+    board_init();
 
-    // 2. Initialise WizNET W5500 (SPI, reset, etc.) — BSP-specific.
-    //    Not shown; the BSP provides wizchip_init() or equivalent.
-
-    // 3. Open transport sockets and join SPDP multicast.
-    if (!g_transport.open()) {
-        // Fatal — cannot proceed without network.
-        for (;;) tight_loop_contents();
+    gpio_put(RTPS_PIN_LED, 0u);
+    TimerHandle_t blink = xTimerCreate("blink",
+                                       pdMS_TO_TICKS(kBlinkPeriodMs),
+                                       pdTRUE,
+                                       nullptr,
+                                       &blink_timer_cb);
+    if (blink != nullptr) {
+        (void)xTimerStart(blink, 0);
     }
 
-    // 4. Construct the participant.
-    //    Placement-new into a static buffer avoids heap allocation.
-    static alignas(RTPSParticipant)
-           uint8_t participant_storage[sizeof(RTPSParticipant)];
-    g_participant = new (participant_storage) RTPSParticipant(
-        kDomainId, kParticipantId, g_transport);
+    if (xTaskCreate(service_task,
+                    "milkdds",
+                    3072,
+                    nullptr,
+                    3,
+                    nullptr) != pdPASS) {
+        for (;;) {
+            tight_loop_contents();
+        }
+    }
 
-    // 5. Create a KEEP_LAST(1) reliable writer.
-    WriterConfig wcfg{};
-    wcfg.entityId   = kSensorWriterEid;
-    wcfg.topicName.assign("rt/sensor");
-    wcfg.typeName.assign("SensorReading");
-    wcfg.reliability= ReliabilityKind::RELIABLE;
-    wcfg.durability = DurabilityKind::VOLATILE;
-
-    // Returns StatefulWriter<1>* — depth inferred from template argument.
-    g_sensor_writer = g_participant->create_writer<1>(wcfg);
-
-    // 6. Create a matching reader on the same topic (optional on this device;
-    //    the remote participant will create its own via SEDP discovery).
-    ReaderConfig rcfg{};
-    rcfg.entityId   = kSensorReaderEid;
-    rcfg.topicName.assign("rt/sensor");
-    rcfg.typeName.assign("SensorReading");
-    rcfg.reliability= ReliabilityKind::RELIABLE;
-
-    g_participant->create_reader(rcfg, on_sensor_reading, nullptr);
-
-    // 7. Force an immediate SPDP announcement so remote participants
-    //    discover us without waiting for the first resend period.
-    g_participant->announce();
-
-    // 8. Start FreeRTOS tasks.
-    xTaskCreate(rx_task,   "rtps_rx",   512, nullptr, 3, nullptr);
-    xTaskCreate(tick_task, "rtps_tick", 256, nullptr, 2, nullptr);
-    xTaskCreate(app_task,  "app",       512, nullptr, 1, nullptr);
-
-    // 9. Start the scheduler — does not return.
     vTaskStartScheduler();
 
-    for (;;) tight_loop_contents();
+    for (;;) {
+        tight_loop_contents();
+    }
 }

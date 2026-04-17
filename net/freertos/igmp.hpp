@@ -13,6 +13,17 @@ extern "C" {
 
 namespace milkdds::net::freertos {
 
+/**
+ * FreeRTOS + TCP does not include support for UDP multicasting out of the box.
+ * This class implements IGMPv2 and MLDv1 to provide that support.
+ * 
+ * It is designed to be used in conjunction with the FreeRtosSocketProvider and
+ * should work with any Socket implementation that uses that provider. It is not
+ * designed to be used directly by application code, but rather as a helper for
+ * the Socket implementation to manage multicast group memberships and send the
+ * appropriate IGMP/MLD messages when joining/leaving groups and when processing
+ * incoming multicast packets.
+ */
 class MulticastService {
 public:
     using OutputFunction = bool (*)(NetworkInterface_t* interface,

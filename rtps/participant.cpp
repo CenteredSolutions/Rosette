@@ -78,14 +78,14 @@ bool remove_locator(Locator* list,
     return false;
 }
 
-uint16_t metatraffic_unicast_port(uint8_t domain_id,
-                                  uint8_t participant_id) noexcept
+uint16_t calc_metatraffic_unicast_port(uint8_t domain_id,
+                                       uint8_t participant_id) noexcept
 {
     return static_cast<uint16_t>(7400u + 250u * domain_id + 10u + 2u * participant_id);
 }
 
-uint16_t default_unicast_port(uint8_t domain_id,
-                              uint8_t participant_id) noexcept
+uint16_t calc_default_unicast_port(uint8_t domain_id,
+                                   uint8_t participant_id) noexcept
 {
     return static_cast<uint16_t>(7400u + 250u * domain_id + 11u + 2u * participant_id);
 }
@@ -285,37 +285,61 @@ void RTPSParticipant::announce() noexcept {
 
 bool RTPSParticipant::add_ipv4_address(uint32_t ipv4_be) noexcept
 {
+    const uint16_t meta_port = transport_.local_metatraffic_unicast_port() != 0u
+        ? transport_.local_metatraffic_unicast_port()
+        : calc_metatraffic_unicast_port(domain_id_, participant_id_);
+    const uint16_t user_port = transport_.local_default_unicast_port() != 0u
+        ? transport_.local_default_unicast_port()
+        : calc_default_unicast_port(domain_id_, participant_id_);
     const Locator meta = make_udpv4_locator(
-        ipv4_be, metatraffic_unicast_port(domain_id_, participant_id_));
+        ipv4_be, meta_port);
     const Locator user = make_udpv4_locator(
-        ipv4_be, default_unicast_port(domain_id_, participant_id_));
+        ipv4_be, user_port);
     return add_address_locator_pair(meta, user);
 }
 
 bool RTPSParticipant::add_ipv6_address(const uint8_t ipv6[16]) noexcept
 {
+    const uint16_t meta_port = transport_.local_metatraffic_unicast_port() != 0u
+        ? transport_.local_metatraffic_unicast_port()
+        : calc_metatraffic_unicast_port(domain_id_, participant_id_);
+    const uint16_t user_port = transport_.local_default_unicast_port() != 0u
+        ? transport_.local_default_unicast_port()
+        : calc_default_unicast_port(domain_id_, participant_id_);
     const Locator meta = make_udpv6_locator_from_ptr(
-        ipv6, metatraffic_unicast_port(domain_id_, participant_id_));
+        ipv6, meta_port);
     const Locator user = make_udpv6_locator_from_ptr(
-        ipv6, default_unicast_port(domain_id_, participant_id_));
+        ipv6, user_port);
     return add_address_locator_pair(meta, user);
 }
 
 bool RTPSParticipant::remove_ipv4_address(uint32_t ipv4_be) noexcept
 {
+    const uint16_t meta_port = transport_.local_metatraffic_unicast_port() != 0u
+        ? transport_.local_metatraffic_unicast_port()
+        : calc_metatraffic_unicast_port(domain_id_, participant_id_);
+    const uint16_t user_port = transport_.local_default_unicast_port() != 0u
+        ? transport_.local_default_unicast_port()
+        : calc_default_unicast_port(domain_id_, participant_id_);
     const Locator meta = make_udpv4_locator(
-        ipv4_be, metatraffic_unicast_port(domain_id_, participant_id_));
+        ipv4_be, meta_port);
     const Locator user = make_udpv4_locator(
-        ipv4_be, default_unicast_port(domain_id_, participant_id_));
+        ipv4_be, user_port);
     return remove_address_locator_pair(meta, user);
 }
 
 bool RTPSParticipant::remove_ipv6_address(const uint8_t ipv6[16]) noexcept
 {
+    const uint16_t meta_port = transport_.local_metatraffic_unicast_port() != 0u
+        ? transport_.local_metatraffic_unicast_port()
+        : calc_metatraffic_unicast_port(domain_id_, participant_id_);
+    const uint16_t user_port = transport_.local_default_unicast_port() != 0u
+        ? transport_.local_default_unicast_port()
+        : calc_default_unicast_port(domain_id_, participant_id_);
     const Locator meta = make_udpv6_locator_from_ptr(
-        ipv6, metatraffic_unicast_port(domain_id_, participant_id_));
+        ipv6, meta_port);
     const Locator user = make_udpv6_locator_from_ptr(
-        ipv6, default_unicast_port(domain_id_, participant_id_));
+        ipv6, user_port);
     return remove_address_locator_pair(meta, user);
 }
 
@@ -435,6 +459,10 @@ void RTPSParticipant::dispatch_data(const ParseContext& ctx,
     const uint32_t now_ms = RTPS_GET_MS();
 
     if (msg.writerId == entity_id::SPDP_BUILTIN_PARTICIPANT_WRITER) {
+        // Ignore our own SPDP announcements (multicast loopback on host sockets).
+        if (ctx.senderGuidPrefix == p->participant_guid_.prefix) {
+            return;
+        }
         p->spdp_reader_.on_data(ctx.senderGuidPrefix,
                                 msg.serializedPayload,
                                 msg.serializedPayloadSize, now_ms);

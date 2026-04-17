@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <stdint.h>
 #include <string.h>   // memcmp, memcpy, memset
 #include <stdbool.h>
@@ -37,6 +39,58 @@ namespace rtps {
 using Octet  = uint8_t;
 using Long   = int32_t;
 using ULong  = uint32_t;
+
+#ifndef NO_INSTRINSICS
+static inline uint16_t bswap16(uint16_t v) noexcept {
+    // Generally theres a built-in bswap16 intrinsic that compiles to a single
+    // instruction on Cortex-M33 and Cortex-M0+.
+    return __builtin_bswap16(v);
+}
+#else
+static inline uint16_t bswap16(uint16_t v) noexcept {
+    return static_cast<uint16_t>((v >> 8u) | (v << 8u));
+}
+#endif
+
+#ifndef NO_INSTRINSICS
+static inline uint32_t bswap32(uint32_t v) noexcept {
+    // Generally theres a built-in bswap32 intrinsic that compiles to a single
+    // instruction on Cortex-M33 and Cortex-M0+.
+    return __builtin_bswap32(v);
+}
+#else
+static inline uint32_t bswap32(uint32_t v) noexcept {
+    return ((v & 0x000000FFu) << 24u) |
+           ((v & 0x0000FF00u) <<  8u) |
+           ((v & 0x00FF0000u) >>  8u) |
+           ((v & 0xFF000000u) >> 24u);
+}
+#endif
+
+static inline int32_t bswap32s(int32_t v) noexcept {
+    return static_cast<int32_t>(bswap32(static_cast<uint32_t>(v)));
+}
+
+static void fixup_u16(uint16_t& v, bool need_swap) noexcept {
+    if (need_swap) v = bswap16(v);
+}
+
+static void fixup_u32(uint32_t& v, bool need_swap) noexcept {
+    if (need_swap) v = bswap32(v);
+}
+
+static void fixup_i32(int32_t& v, bool need_swap) noexcept {
+    if (need_swap) v = bswap32s(v);
+}
+
+static inline bool host_is_little_endian() noexcept {
+    const uint16_t probe = 0x0001u;
+    return *reinterpret_cast<const uint8_t*>(&probe) == 0x01u;
+}
+
+static inline bool wire_needs_swap(bool wire_little_endian) noexcept {
+    return wire_little_endian != host_is_little_endian();
+}
 
 // ============================================================
 // §8.2.2  SequenceNumber_t
@@ -96,6 +150,24 @@ struct SequenceNumber {
     }
     SequenceNumber& operator++() noexcept {
         *this += 1; return *this;
+    }
+
+    static bool read_from(SequenceNumber& self,
+                          const uint8_t* data,
+                          size_t len,
+                          bool wire_little_endian) noexcept
+    {
+        if ((data == nullptr) || (len < 8u)) {
+            return false;
+        }
+
+        memcpy(&self.high, data, sizeof(self.high));
+        memcpy(&self.low, data + sizeof(self.high), sizeof(self.low));
+
+        const bool need_swap = wire_needs_swap(wire_little_endian);
+        fixup_i32(self.high, need_swap);
+        fixup_u32(self.low, need_swap);
+        return true;
     }
 };
 
@@ -247,6 +319,71 @@ struct Locator {
     bool operator!=(const Locator& o) const noexcept {
         return !(*this == o);
     }
+
+    static bool read_from(Locator& self,
+                          const uint8_t* data,
+                          size_t len,
+                          bool wire_little_endian) noexcept
+    {
+        if ((data == nullptr) || (len < sizeof(Locator))) {
+            return false;
+        }
+
+        memcpy(&self.kind, data, sizeof(self.kind));
+        memcpy(&self.port, data + sizeof(self.kind), sizeof(self.port));
+        memcpy(self.address,
+               data + sizeof(self.kind) + sizeof(self.port),
+               sizeof(self.address));
+
+        const bool need_swap = wire_needs_swap(wire_little_endian);
+        fixup_i32(self.kind, need_swap);
+        fixup_u32(self.port, need_swap);
+        return true;
+    }
+
+    bool is_udpv4() const noexcept { return kind == 1; }
+    bool is_udpv6() const noexcept { return kind == 2; }
+
+    const Octet* ipv4_address() const noexcept { return address + 12; }
+    Octet* ipv4_address() noexcept { return address + 12; }
+
+    const Octet* ipv6_address() const noexcept { return address; }
+    Octet* ipv6_address() noexcept { return address; }
+
+    uint32_t ipv4_address_be() const noexcept
+    {
+        const Octet* p = ipv4_address();
+        return (static_cast<uint32_t>(p[0]) << 24u) |
+               (static_cast<uint32_t>(p[1]) << 16u) |
+               (static_cast<uint32_t>(p[2]) << 8u) |
+               static_cast<uint32_t>(p[3]);
+    }
+
+    std::array<Octet, 4> ipv4_address_bytes() const noexcept
+    {
+        const Octet* p = ipv4_address();
+        return {p[0], p[1], p[2], p[3]};
+    }
+
+    std::array<Octet, 16> ipv6_address_bytes() const noexcept
+    {
+        std::array<Octet, 16> out{};
+        memcpy(out.data(), address, out.size());
+        return out;
+    }
+
+    void set_ipv4_address_be(uint32_t ipv4_be) noexcept
+    {
+        address[12] = static_cast<Octet>((ipv4_be >> 24u) & 0xFFu);
+        address[13] = static_cast<Octet>((ipv4_be >> 16u) & 0xFFu);
+        address[14] = static_cast<Octet>((ipv4_be >> 8u) & 0xFFu);
+        address[15] = static_cast<Octet>(ipv4_be & 0xFFu);
+    }
+
+    void set_ipv6_address(const uint8_t (&ipv6)[16]) noexcept
+    {
+        memcpy(address, ipv6, sizeof(address));
+    }
 };
 
 /// §8.2.5, Table 8.8 — Locator kind constants.
@@ -265,10 +402,7 @@ inline Locator make_udpv4_locator(uint32_t ipv4_be, uint16_t port) noexcept {
     l.kind = locator_kind::UDPv4;
     l.port = port;
     // §9.4.1.11 — IPv4 occupies the last 4 bytes of the 16-byte address.
-    l.address[12] = static_cast<Octet>((ipv4_be >> 24) & 0xFF);
-    l.address[13] = static_cast<Octet>((ipv4_be >> 16) & 0xFF);
-    l.address[14] = static_cast<Octet>((ipv4_be >>  8) & 0xFF);
-    l.address[15] = static_cast<Octet>( ipv4_be        & 0xFF);
+    l.set_ipv4_address_be(ipv4_be);
     return l;
 }
 
@@ -277,7 +411,7 @@ inline Locator make_udpv6_locator(const uint8_t (&ipv6)[16], uint16_t port) noex
     Locator l{};
     l.kind = locator_kind::UDPv6;
     l.port = port;
-    memcpy(l.address, ipv6, sizeof(l.address));
+    l.set_ipv6_address(ipv6);
     return l;
 }
 
@@ -303,6 +437,24 @@ struct Duration {
     bool operator==(const Duration& o) const noexcept {
         return seconds == o.seconds && nanoseconds == o.nanoseconds;
     }
+
+    static bool read_from(Duration& self,
+                          const uint8_t* data,
+                          size_t len,
+                          bool wire_little_endian) noexcept
+    {
+        if ((data == nullptr) || (len < 8u)) {
+            return false;
+        }
+
+        memcpy(&self.seconds, data, sizeof(self.seconds));
+        memcpy(&self.nanoseconds, data + sizeof(self.seconds), sizeof(self.nanoseconds));
+
+        const bool need_swap = wire_needs_swap(wire_little_endian);
+        fixup_i32(self.seconds, need_swap);
+        fixup_u32(self.nanoseconds, need_swap);
+        return true;
+    }
 };
 
 inline constexpr Duration DURATION_ZERO{};
@@ -327,6 +479,24 @@ struct Timestamp {
         uint32_t ms = RTPS_GET_MS();
         return { static_cast<Long>(ms / 1000u),
                  static_cast<ULong>((ms % 1000u) * (0xFFFFFFFFu / 1000u)) };
+    }
+
+    static bool read_from(Timestamp& self,
+                          const uint8_t* data,
+                          size_t len,
+                          bool wire_little_endian) noexcept
+    {
+        if ((data == nullptr) || (len < 8u)) {
+            return false;
+        }
+
+        memcpy(&self.seconds, data, sizeof(self.seconds));
+        memcpy(&self.fraction, data + sizeof(self.seconds), sizeof(self.fraction));
+
+        const bool need_swap = wire_needs_swap(wire_little_endian);
+        fixup_i32(self.seconds, need_swap);
+        fixup_u32(self.fraction, need_swap);
+        return true;
     }
 };
 

@@ -10,6 +10,39 @@
 
 namespace rtps {
 
+namespace {
+
+inline bool decode_plcdr_rep_id(const uint8_t* payload,
+                                uint32_t       len,
+                                bool&          little_endian) noexcept
+{
+    if ((payload == nullptr) || (len < 2u)) {
+        return false;
+    }
+
+    const uint16_t rep_id_be = (static_cast<uint16_t>(payload[0]) << 8u) |
+                               static_cast<uint16_t>(payload[1]);
+    switch (rep_id_be) {
+    case 0x0003u: little_endian = true;  return true;   // PL_CDR_LE (canonical)
+    case 0x0002u: little_endian = false; return true;   // PL_CDR_BE (canonical)
+    case 0x0300u: little_endian = true;  return true;   // legacy host-order tolerant
+    case 0x0200u: little_endian = false; return true;   // legacy host-order tolerant
+    default: return false;
+    }
+}
+
+inline uint16_t read_u16_wire(const uint8_t* p, bool little_endian) noexcept
+{
+    if (little_endian) {
+        return static_cast<uint16_t>(p[0]) |
+               static_cast<uint16_t>(p[1] << 8u);
+    }
+    return static_cast<uint16_t>(p[0] << 8u) |
+           static_cast<uint16_t>(p[1]);
+}
+
+} // namespace
+
 // ============================================================
 // SpdpWriter — serialisation and transmission
 // ============================================================
@@ -46,11 +79,13 @@ uint32_t SpdpWriter::serialise(Octet* buf, uint32_t cap) const noexcept {
 
     // RepresentationHeader — PL_CDR_LE = 0x0003, options = 0x0000.
     // §9.6.2, p. 256 and §10.2, p. 288.
-    const uint16_t rep_id  = 0x0003u;   // PL_CDR_LE
-    const uint16_t rep_opt = 0x0000u;
     if (off + 4u > cap) return 0;
-    memcpy(buf + off, &rep_id,  2u); off += 2u;
-    memcpy(buf + off, &rep_opt, 2u); off += 2u;
+    // CDR encapsulation identifier/options are fixed-octet order.
+    // PL_CDR_LE = 0x0003 => bytes {0x00, 0x03}.
+    buf[off++] = 0x00u;
+    buf[off++] = 0x03u;
+    buf[off++] = 0x00u;
+    buf[off++] = 0x00u;
 
     const auto& d = local_data_;
 
@@ -170,18 +205,22 @@ void SpdpWriter::announce() noexcept {
     // serialise() is already at payload[0..3] per §9.6.2.
     //
     // Build DATA framing in-place over the headroom-backed payload.
-    bool ok = builder_.begin_with_payload(static_cast<BufRef&&>(payload_buf)) &&
-              builder_.prepend_data_message(
-        local_data_.guidPrefix,
-        entity_id::SPDP_BUILTIN_PARTICIPANT_READER,
-        entity_id::SPDP_BUILTIN_PARTICIPANT_WRITER,
-        SequenceNumber::from_int64(1));   // SPDP is best-effort; SN not tracked.
+    bool ok = builder_.begin_with_payload(static_cast<BufRef&&>(payload_buf))
+              && builder_.prepend_data_message(
+                  local_data_.guidPrefix,
+                  entity_id::SPDP_BUILTIN_PARTICIPANT_READER,
+                  entity_id::SPDP_BUILTIN_PARTICIPANT_WRITER,
+                  SequenceNumber::from_int64(1));   // SPDP is best-effort; SN not tracked.
 
     if (ok) {
         RTPS_LOG_D("spdp", "announcing participant (%lu bytes)",
                    (unsigned long)serialised_len);
         BufRef msg = builder_.finish();
-        transport_.send_multicast(msg, dest_);
+        if (!transport_.send_multicast(msg, dest_)) {
+            RTPS_LOG_W("spdp", "announce send failed: kind=%ld port=%lu",
+                       (long)dest_.kind,
+                       (unsigned long)dest_.port);
+        }
         msg.reset();
     } else {
         builder_.abort();
@@ -214,20 +253,17 @@ bool SpdpReader::deserialise(const Octet*               payload,
     if (len < 4u) return false;
 
     // RepresentationHeader — §9.6.2, p. 256.
-    uint16_t rep_id;
-    memcpy(&rep_id, payload, 2u);
-    // Accept PL_CDR_LE (0x0003) or PL_CDR_BE (0x0002); we treat both
-    // as little-endian on this LE-only target for now.
-    if (rep_id != 0x0003u && rep_id != 0x0002u) return false;
-    // const bool big_endian = (rep_id == 0x0002u);  // Reserved for future swap.
+    bool little_endian = true;
+    if (!decode_plcdr_rep_id(payload, len, little_endian)) {
+        return false;
+    }
 
     uint32_t off     = 4u;    // Past the 4-byte RepresentationHeader.
     bool     got_guid = false;
 
     while (off + 4u <= len) {
-        uint16_t pid_val, param_len;
-        memcpy(&pid_val,   payload + off,     2u);
-        memcpy(&param_len, payload + off + 2u, 2u);
+        const uint16_t pid_val = read_u16_wire(payload + off, little_endian);
+        const uint16_t param_len = read_u16_wire(payload + off + 2u, little_endian);
         off += 4u;
 
         // Pad length to 4-byte boundary for next-PID alignment.
@@ -267,9 +303,11 @@ bool SpdpReader::deserialise(const Octet*               payload,
                 if (param_len >= 24u &&
                     out.metatrafficUnicastLocatorCount <
                         RTPS_MAX_LOCATORS_PER_PARTICIPANT) {
-                    memcpy(&out.metatrafficUnicastLocatorList[
-                               out.metatrafficUnicastLocatorCount++],
-                           val, 24u);
+                    if (Locator::read_from(out.metatrafficUnicastLocatorList[
+                                       out.metatrafficUnicastLocatorCount],
+                                       val, 24u, little_endian)) {
+                        out.metatrafficUnicastLocatorCount++;
+                    }
                 }
                 break;
 
@@ -278,9 +316,11 @@ bool SpdpReader::deserialise(const Octet*               payload,
                 if (param_len >= 24u &&
                     out.metatrafficMulticastLocatorCount <
                         RTPS_MAX_LOCATORS_PER_PARTICIPANT) {
-                    memcpy(&out.metatrafficMulticastLocatorList[
-                               out.metatrafficMulticastLocatorCount++],
-                           val, 24u);
+                    if (Locator::read_from(out.metatrafficMulticastLocatorList[
+                                       out.metatrafficMulticastLocatorCount],
+                                       val, 24u, little_endian)) {
+                        out.metatrafficMulticastLocatorCount++;
+                    }
                 }
                 break;
 
@@ -288,10 +328,13 @@ bool SpdpReader::deserialise(const Octet*               payload,
             case pid::DEFAULT_UNICAST_LOCATOR:
                 if (param_len >= 24u &&
                     out.defaultUnicastLocatorCount <
-                        RTPS_MAX_LOCATORS_PER_PARTICIPANT) {
-                    memcpy(&out.defaultUnicastLocatorList[
-                               out.defaultUnicastLocatorCount++],
-                           val, 24u);
+                        RTPS_MAX_LOCATORS_PER_PARTICIPANT
+                ) {
+                    if (Locator::read_from(out.defaultUnicastLocatorList[
+                                       out.defaultUnicastLocatorCount],
+                                       val, 24u, little_endian)) {
+                        out.defaultUnicastLocatorCount++;
+                    }
                 }
                 break;
 
@@ -299,28 +342,26 @@ bool SpdpReader::deserialise(const Octet*               payload,
             case pid::DEFAULT_MULTICAST_LOCATOR:
                 if (param_len >= 24u &&
                     out.defaultMulticastLocatorCount <
-                        RTPS_MAX_LOCATORS_PER_PARTICIPANT) {
-                    memcpy(&out.defaultMulticastLocatorList[
-                               out.defaultMulticastLocatorCount++],
-                           val, 24u);
+                        RTPS_MAX_LOCATORS_PER_PARTICIPANT
+                ) {
+                    if (Locator::read_from(out.defaultMulticastLocatorList[
+                                       out.defaultMulticastLocatorCount],
+                                       val, 24u, little_endian)) {
+                        out.defaultMulticastLocatorCount++;
+                    }
                 }
                 break;
 
             // PID_PARTICIPANT_LEASE_DURATION — 8 bytes: seconds(4) + nanoseconds(4).
             case pid::PARTICIPANT_LEASE_DURATION:
-                if (param_len >= 8u) {
-                    uint32_t secs, nsec;
-                    memcpy(&secs, val,     4u);
-                    memcpy(&nsec, val + 4, 4u);
-                    out.leaseDuration.seconds     = static_cast<Long>(secs);
-                    out.leaseDuration.nanoseconds = nsec;
-                }
+                Duration::read_from(out.leaseDuration, val, param_len, little_endian);
                 break;
 
             // PID_BUILTIN_ENDPOINT_SET — 4 bytes.
             case pid::BUILTIN_ENDPOINT_SET:
                 if (param_len >= 4u) {
                     memcpy(&out.availableBuiltinEndpoints, val, 4u);
+                    fixup_u32(out.availableBuiltinEndpoints, !little_endian);
                 }
                 break;
 
@@ -371,12 +412,19 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
         parsed.leaseDuration.nanoseconds / 1'000'000u;
 
     PeerEntry* existing = find_peer(parsed.guidPrefix);
-
     if (existing) {
-        // Refresh the lease.  Do NOT re-announce SEDP (sedp_announced
-        // stays true).
+        // Refresh existing participant data and lease.
+        // If SEDP was previously deferred due to missing locator, trigger it
+        // once locator information arrives.
         existing->data          = parsed;
         existing->leaseExpiryMs = now_ms + lease_ms;
+
+        if (!existing->sedp_announced &&
+            existing->data.metatrafficUnicastLocatorCount > 0u &&
+            on_new_peer_) {
+            on_new_peer_(*existing, user_data_);
+        }
+
         RTPS_LOG_D("spdp", "lease refreshed for %02x%02x%02x%02x (expires in %lums)",
                    parsed.guidPrefix.value[0], parsed.guidPrefix.value[1],
                    parsed.guidPrefix.value[2], parsed.guidPrefix.value[3],

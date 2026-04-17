@@ -13,47 +13,6 @@
 namespace rtps {
 
 // ============================================================
-// Internal: byte-swap helpers
-//
-// On the LE Cortex-M33 host, received submessages that have the E-flag
-// clear are big-endian and require swapping.  The swap calls compile
-// away entirely when (host_le == wire_le) — i.e. on every message from
-// another LE sender, which is the overwhelming common case.
-// ============================================================
-
-#ifndef NO_INSTRINSICS
-static inline uint16_t bswap16(uint16_t v) noexcept {
-    // Generally theres a built-in bswap16 intrinsic that compiles to a single
-    // instruction on Cortex-M33 and Cortex-M0+.
-    return __builtin_bswap16(v);
-}
-#else
-static inline uint16_t bswap16(uint16_t v) noexcept {
-    return static_cast<uint16_t>((v >> 8u) | (v << 8u));
-}
-#endif
-
-
-#ifndef NO_INSTRINSICS
-static inline uint32_t bswap32(uint32_t v) noexcept {
-    // Generally theres a built-in bswap32 intrinsic that compiles to a single
-    // instruction on Cortex-M33 and Cortex-M0+.
-    return __builtin_bswap32(v);
-}
-#else
-static inline uint32_t bswap32(uint32_t v) noexcept {
-    return ((v & 0x000000FFu) << 24u) |
-           ((v & 0x0000FF00u) <<  8u) |
-           ((v & 0x00FF0000u) >>  8u) |
-           ((v & 0xFF000000u) >> 24u);
-}
-#endif
-
-static inline int32_t bswap32s(int32_t v) noexcept {
-    return static_cast<int32_t>(bswap32(static_cast<uint32_t>(v)));
-}
-
-// ============================================================
 // Internal: Reader — bounds-checked cursor over a byte buffer
 //
 // All read operations return false on underflow; the parser propagates
@@ -106,30 +65,9 @@ struct Reader {
     }
 };
 
-// ============================================================
-// Internal: per-field endian fixup helpers
-//
-// Called after reading raw scalars when the submessage E-flag == 0
-// (big-endian sender).  On an LE host every multi-byte field needs
-// reversing; single-byte fields and byte arrays are already correct.
-// ============================================================
-
 static void fixup_sequence_number(SequenceNumber& sn, bool need_swap) noexcept {
-    if (!need_swap) return;
-    sn.high = static_cast<int32_t>(bswap32(static_cast<uint32_t>(sn.high)));
-    sn.low  = bswap32(sn.low);
-}
-
-static void fixup_u16(uint16_t& v, bool need_swap) noexcept {
-    if (need_swap) v = bswap16(v);
-}
-
-static void fixup_u32(uint32_t& v, bool need_swap) noexcept {
-    if (need_swap) v = bswap32(v);
-}
-
-static void fixup_i32(int32_t& v, bool need_swap) noexcept {
-    if (need_swap) v = bswap32s(v);
+    fixup_i32(sn.high, need_swap);
+    fixup_u32(sn.low, need_swap);
 }
 
 // ============================================================

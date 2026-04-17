@@ -164,6 +164,8 @@ private:
 
     ITransport& transport_;
     MessageBuilder builder_;
+    SequenceNumber next_publication_sn_  = SequenceNumber::from_int64(1);
+    SequenceNumber next_subscription_sn_ = SequenceNumber::from_int64(1);
 
     DiscoveredWriterData local_writers_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
     DiscoveredReaderData local_readers_[RTPS_MAX_LOCAL_ENDPOINTS] = {};

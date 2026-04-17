@@ -49,13 +49,13 @@ include(cmake/wiznet.cmake)
 add_library(rtps_stack STATIC
     rtps/message_parser.cpp
     rtps/stateful_reader.cpp
-    rtps/stateful_writer.cpp   # Remove if using header-only template version.
     rtps/spdp.cpp
     rtps/sedp.cpp
     rtps/participant.cpp
     rtps/buf_pool.cpp
     rtps/persistence.cpp
-    rtps/transport_freertos.cpp
+    rtps/transport.cpp
+    net/socket.cpp
     ../littlefs/lfs.c
     ../littlefs/lfs_util.c
 )
@@ -81,13 +81,11 @@ target_link_libraries(rtps_stack PUBLIC
 
 # ── Board-specific BSP ────────────────────────────────────────────────────────
 add_library(rtps_bsp STATIC
-    net/wiznet/dhcp_iolibrary.cpp
     boards/${RTPS_BOARD}/board_init.c
-    net/ntp_sync.cpp
+    net/freertos/igmp.cpp
+    net/freertos/socket.cpp
     net/wiznet/macraw.cpp
-    net/wiznet/socket.cpp
-    net/wiznet/socket_freertos.cpp
-    platform/rtps_platform.c
+    platform/pico_freertos.c
     platform/pico_log.c
 )
 

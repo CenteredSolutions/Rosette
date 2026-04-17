@@ -124,7 +124,7 @@ public:
     // Publisher / Subscription factories (unchanged from original)
     // ----------------------------------------------------------
 
-    template<typename MessageT>
+    template<typename MessageT, uint16_t CacheDepth = 1>
     Publisher<MessageT> create_publisher(const char* node_namespace,
                                          const char* topic,
                                          const PublisherOptions& options,
@@ -141,7 +141,7 @@ public:
         cfg.durability  = options.durability;
         cfg.topicKind   = options.topic_kind;
 
-        auto* writer = participant_.create_writer<1>(cfg);
+        auto* writer = participant_.create_writer<CacheDepth>(cfg);
         if (writer && node_index >= 0 && node_index < static_cast<int>(graph_.node_count)) {
             graph_.nodes[node_index].add_writer(writer->guid());
             publish_discovery_info();

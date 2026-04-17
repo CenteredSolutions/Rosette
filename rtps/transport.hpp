@@ -29,6 +29,10 @@ struct ITransport {
                               const Locator& dest) noexcept = 0;
     virtual bool send_multicast(const BufRef& buf,
                                 const Locator& dest) noexcept = 0;
+    // Local ports used for SPDP/SEDP/user-data locator advertisement.
+    // Return 0 to indicate "unknown" and let callers apply defaults.
+    virtual uint16_t local_metatraffic_unicast_port() const noexcept { return 0u; }
+    virtual uint16_t local_default_unicast_port() const noexcept { return 0u; }
 };
 
 struct ITransportRuntime {
@@ -76,6 +80,8 @@ public:
                       const Locator& dest) noexcept override;
     bool send_multicast(const BufRef& buf,
                         const Locator& dest) noexcept override;
+    uint16_t local_metatraffic_unicast_port() const noexcept override { return meta_port_; }
+    uint16_t local_default_unicast_port() const noexcept override { return user_port_; }
 
 private:
     milkdds::net::Socket* socket_for(const Locator& dest) const noexcept;

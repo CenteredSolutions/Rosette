@@ -58,8 +58,10 @@
 
 #pragma once
 
+#include "log.hpp"
 #include "types.hpp"
 #include <atomic>
+#include <cstdint>
 #include <string.h>
 
 #ifndef portENTER_CRITICAL
@@ -99,13 +101,13 @@ namespace rtps {
 #  define RTPS_POOL_CLASS3_SIZE  1024u
 #endif
 #ifndef RTPS_POOL_CLASS3_COUNT
-#  define RTPS_POOL_CLASS3_COUNT    2u
+#  define RTPS_POOL_CLASS3_COUNT    4u
 #endif
 #ifndef RTPS_POOL_CLASS4_SIZE
 #  define RTPS_POOL_CLASS4_SIZE  2048u
 #endif
 #ifndef RTPS_POOL_CLASS4_COUNT
-#  define RTPS_POOL_CLASS4_COUNT    2u
+#  define RTPS_POOL_CLASS4_COUNT    4u
 #endif
 
 /// Number of size classes.  Increase this if you add more classes above.
@@ -116,6 +118,52 @@ static constexpr uint32_t kPoolMaxBlockSize = RTPS_POOL_CLASS4_SIZE;
 
 #ifndef RTPS_BUF_BLOCK_SIZE
 #  define RTPS_BUF_BLOCK_SIZE RTPS_POOL_CLASS4_SIZE
+#endif
+
+#ifdef RTPS_BUFPOOL_DEBUG
+#  ifndef RTPS_BUFPOOL_DEBUG_EVENT_CAP
+#    define RTPS_BUFPOOL_DEBUG_EVENT_CAP 256u
+#  endif
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#  define RTPS_BUFPOOL_CALLER_PC() \
+    (static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(__builtin_return_address(0))))
+#else
+#  define RTPS_BUFPOOL_CALLER_PC() (0u)
+#endif
+
+#ifdef RTPS_BUFPOOL_DEBUG
+enum class BufPoolDebugOp : uint8_t {
+    Alloc = 1u,
+    AllocFail = 2u,
+    Retain = 3u,
+    Release = 4u,
+    Free = 5u
+};
+
+struct BufPoolDebugClassStats {
+    uint32_t alloc_ok = 0;
+    uint32_t alloc_fail = 0;
+    uint32_t retain_calls = 0;
+    uint32_t release_calls = 0;
+    uint32_t frees = 0;
+    uint32_t live = 0;
+    uint32_t high_water = 0;
+};
+
+struct BufPoolDebugEvent {
+    uint32_t tick_ms = 0;
+    uint32_t seq = 0;
+    uintptr_t block = 0;
+    uintptr_t caller_pc = 0;
+    uint32_t requested_size = 0;
+    uint16_t block_cap = 0;
+    uint8_t  size_class = 0xFFu;
+    uint8_t  op = 0;
+    int16_t  ref_before = 0;
+    int16_t  ref_after = 0;
+};
 #endif
 
 // ============================================================
@@ -132,6 +180,11 @@ struct BufBlock {
     uint16_t     block_cap;     ///< Usable bytes following this header.
     uint8_t      size_class;    ///< Index into MultiBufPool::classes_[].
     uint8_t      _pad = 0;
+#ifdef RTPS_BUFPOOL_DEBUG
+    uintptr_t    dbg_alloc_pc = 0;
+    uint32_t     dbg_alloc_seq = 0;
+    uintptr_t    dbg_last_touch_pc = 0;
+#endif
 
     /// Payload starts immediately after the header.
     Octet* payload() noexcept {
@@ -267,6 +320,7 @@ struct BufRef {
 
     // Move-only — no accidental copies.
     BufRef() noexcept = default;
+    ~BufRef() noexcept { reset(); }
 
     /**
      * @brief Move constructor for BufRef.
@@ -412,11 +466,15 @@ public:
     //                  the smallest class size so callers that don't
     //                  care about size get the most economical block.
     // ----------------------------------------------------------
-    BufRef alloc(uint32_t min_size = RTPS_POOL_CLASS0_SIZE) noexcept {
+    BufRef alloc(uint32_t min_size = RTPS_POOL_CLASS0_SIZE,
+                 uintptr_t caller_pc = 0u) noexcept {
         for (uint8_t c = 0; c < kPoolClassCount; ++c) {
             if (class_sizes_[c] < min_size) continue;  // Class too small.
             BufBlock* b = dispatch_alloc(c);
             if (!b) continue;  // Class exhausted — promote to next.
+#ifdef RTPS_BUFPOOL_DEBUG
+            debug_on_alloc(b, min_size, caller_pc);
+#endif
             BufRef r{};
             r.block = b;
             r.data  = b->payload();  // data starts at block start; no headroom.
@@ -425,6 +483,9 @@ public:
             // so no stored field to set here.
             return r;
         }
+#ifdef RTPS_BUFPOOL_DEBUG
+        debug_on_alloc_fail(min_size, caller_pc);
+#endif
         return {};  // All eligible classes exhausted.
     }
 
@@ -435,17 +496,24 @@ public:
     // release() routes the block back to its owning size class
     // via the size_class index stored in the block header.
     // ----------------------------------------------------------
-    static void retain(BufBlock* b) noexcept {
-        if (!b) return;
-        b->refcount++;
+    static int retain(BufBlock* b) noexcept {
+        if (!b) return 0;
+        return b->refcount.fetch_add(1, std::memory_order_relaxed);
     }
 
-    void release(BufBlock* b) noexcept {
-        if (!b) return;
-        int prev = b->refcount--;
+    int release(BufBlock* b) noexcept {
+        if (!b) return 0;
+        int prev = b->refcount.fetch_sub(1, std::memory_order_acq_rel);
+#ifdef RTPS_BUFPOOL_DEBUG
+        debug_on_release(b, prev);
+#endif
         if (prev == 1) {
             dispatch_free(b);
         }
+        if (prev == 0) {
+            RTPS_LOG_E("bufpool", "release called on block with refcount 0 (double free?)");
+        }
+        return prev;
     }
 
     // ----------------------------------------------------------
@@ -469,6 +537,40 @@ public:
 
     uint8_t class_count() const noexcept { return kPoolClassCount; }
 
+#ifdef RTPS_BUFPOOL_DEBUG
+    BufPoolDebugClassStats debug_class_stats(uint8_t c) const noexcept {
+        if (c >= kPoolClassCount) return {};
+        return dbg_stats_[c];
+    }
+
+    uint32_t debug_event_count() const noexcept { return dbg_event_seq_; }
+
+    bool debug_recent_event(uint32_t newest_index, BufPoolDebugEvent& out) const noexcept {
+        const uint32_t total = dbg_event_seq_;
+        if (newest_index >= total) return false;
+        const uint32_t ring_cap = static_cast<uint32_t>(RTPS_BUFPOOL_DEBUG_EVENT_CAP);
+        const uint32_t slot = (total - 1u - newest_index) % ring_cap;
+        out = dbg_events_[slot];
+        return true;
+    }
+
+    uint32_t debug_live_total() const noexcept {
+        uint32_t total = 0;
+        for (uint8_t c = 0; c < kPoolClassCount; ++c) total += dbg_stats_[c].live;
+        return total;
+    }
+
+    void debug_mark_retain(BufBlock* b, int prev, uintptr_t caller_pc) noexcept {
+        if (!b || b->size_class >= kPoolClassCount) return;
+        portENTER_CRITICAL();
+        BufPoolDebugClassStats& s = dbg_stats_[b->size_class];
+        ++s.retain_calls;
+        b->dbg_last_touch_pc = caller_pc;
+        debug_record_event(BufPoolDebugOp::Retain, b, b->block_cap, prev, prev + 1, caller_pc);
+        portEXIT_CRITICAL();
+    }
+#endif
+
 private:
 
     // ── Concrete slab instances ───────────────────────────────
@@ -490,6 +592,12 @@ private:
         RTPS_POOL_CLASS2_COUNT, RTPS_POOL_CLASS3_COUNT,
         RTPS_POOL_CLASS4_COUNT
     };
+
+#ifdef RTPS_BUFPOOL_DEBUG
+    BufPoolDebugClassStats dbg_stats_[kPoolClassCount] = {};
+    BufPoolDebugEvent dbg_events_[RTPS_BUFPOOL_DEBUG_EVENT_CAP] = {};
+    uint32_t dbg_event_seq_ = 0;
+#endif
 
     void init() noexcept {
         c0_.init(0); c1_.init(1); c2_.init(2);
@@ -525,9 +633,77 @@ private:
             case 2: return c2_.available();
             case 3: return c3_.available();
             case 4: return c4_.available();
-            default: return 0;
+#if defined(RTPS_BUFPOOL_DEBUG) && RTPS_BUFPOOL_DEBUG_EVENT_CAP > 0
+                //debug_recent_event(5, {});
+#endif
+                return 0;
         }
     }
+
+#ifdef RTPS_BUFPOOL_DEBUG
+    void debug_on_alloc(BufBlock* b, uint32_t min_size, uintptr_t caller_pc) noexcept {
+        if (!b || b->size_class >= kPoolClassCount) return;
+        portENTER_CRITICAL();
+        BufPoolDebugClassStats& s = dbg_stats_[b->size_class];
+        ++s.alloc_ok;
+        ++s.live;
+        if (s.live > s.high_water) s.high_water = s.live;
+        b->dbg_alloc_pc = caller_pc;
+        b->dbg_last_touch_pc = caller_pc;
+        b->dbg_alloc_seq = dbg_event_seq_ + 1u;
+        debug_record_event(BufPoolDebugOp::Alloc, b, min_size, 0, 1, caller_pc);
+        portEXIT_CRITICAL();
+    }
+
+    void debug_on_alloc_fail(uint32_t min_size, uintptr_t caller_pc) noexcept {
+        portENTER_CRITICAL();
+        for (uint8_t c = 0; c < kPoolClassCount; ++c) {
+            if (class_sizes_[c] >= min_size) ++dbg_stats_[c].alloc_fail;
+        }
+        debug_record_event(BufPoolDebugOp::AllocFail, nullptr, min_size, 0, 0, caller_pc);
+        portEXIT_CRITICAL();
+    }
+
+    void debug_on_release(BufBlock* b, int prev) noexcept {
+        if (!b || b->size_class >= kPoolClassCount) return;
+        portENTER_CRITICAL();
+        BufPoolDebugClassStats& s = dbg_stats_[b->size_class];
+        ++s.release_calls;
+        const int after = prev - 1;
+        b->dbg_last_touch_pc = RTPS_BUFPOOL_CALLER_PC();
+        debug_record_event(BufPoolDebugOp::Release, b, b->block_cap, prev, after, b->dbg_last_touch_pc);
+        if (prev == 1) {
+            if (s.live > 0) --s.live;
+            ++s.frees;
+            debug_record_event(BufPoolDebugOp::Free, b, b->block_cap, 1, 0, b->dbg_last_touch_pc);
+        }
+        portEXIT_CRITICAL();
+    }
+
+    void debug_record_event(BufPoolDebugOp op,
+                            const BufBlock* b,
+                            uint32_t requested_size,
+                            int ref_before,
+                            int ref_after,
+                            uintptr_t caller_pc) noexcept
+    {
+        const uint32_t ring_cap = static_cast<uint32_t>(RTPS_BUFPOOL_DEBUG_EVENT_CAP);
+        if (ring_cap == 0u) return;
+        const uint32_t seq = ++dbg_event_seq_;
+        const uint32_t slot = (seq - 1u) % ring_cap;
+        BufPoolDebugEvent& e = dbg_events_[slot];
+        e.tick_ms = RTPS_GET_MS();
+        e.seq = seq;
+        e.block = static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(b));
+        e.caller_pc = caller_pc;
+        e.requested_size = requested_size;
+        e.block_cap = b ? b->block_cap : 0u;
+        e.size_class = b ? b->size_class : 0xFFu;
+        e.op = static_cast<uint8_t>(op);
+        e.ref_before = static_cast<int16_t>(ref_before);
+        e.ref_after = static_cast<int16_t>(ref_after);
+    }
+#endif
 };
 
 // ============================================================
@@ -540,7 +716,10 @@ extern MultiBufPool g_buf_pool;
 // ============================================================
 
 inline void BufRef::retain() const noexcept {
-    MultiBufPool::retain(block);
+    const int prev = MultiBufPool::retain(block);
+#ifdef RTPS_BUFPOOL_DEBUG
+    g_buf_pool.debug_mark_retain(block, prev, RTPS_BUFPOOL_CALLER_PC());
+#endif
 }
 
 inline void BufRef::release() noexcept {
@@ -561,7 +740,7 @@ inline void BufRef::release() noexcept {
 // ============================================================
 
 inline BufRef buf_alloc(uint32_t min_size = RTPS_POOL_CLASS0_SIZE) noexcept {
-    return g_buf_pool.alloc(min_size);
+    return g_buf_pool.alloc(min_size, RTPS_BUFPOOL_CALLER_PC());
 }
 
 // ============================================================
@@ -603,13 +782,37 @@ inline BufRef buf_alloc(uint32_t min_size = RTPS_POOL_CLASS0_SIZE) noexcept {
 inline BufRef buf_alloc_with_headroom(uint32_t min_payload_size,
                                       uint32_t headroom) noexcept
 {
-    BufRef r = g_buf_pool.alloc(min_payload_size + headroom);
+    BufRef r = g_buf_pool.alloc(min_payload_size + headroom,
+                                RTPS_BUFPOOL_CALLER_PC());
     if (!r.valid()) return r;
     // Advance data pointer past the headroom reservation.
     // capacity() will now correctly return (block_cap - headroom).
     r.data += headroom;
     return r;
 }
+
+#ifdef RTPS_BUFPOOL_DEBUG
+inline BufRef buf_alloc_dbg(uint32_t min_size,
+                            uintptr_t caller_pc) noexcept {
+    return g_buf_pool.alloc(min_size, caller_pc);
+}
+
+inline BufRef buf_alloc_with_headroom_dbg(uint32_t min_payload_size,
+                                          uint32_t headroom,
+                                          uintptr_t caller_pc) noexcept {
+    BufRef r = g_buf_pool.alloc(min_payload_size + headroom, caller_pc);
+    if (!r.valid()) return r;
+    r.data += headroom;
+    return r;
+}
+
+#define RTPS_BUF_ALLOC_DBG(min_size) \
+    ::rtps::buf_alloc_dbg((min_size), RTPS_BUFPOOL_CALLER_PC())
+
+#define RTPS_BUF_ALLOC_WITH_HEADROOM_DBG(min_payload_size, headroom) \
+    ::rtps::buf_alloc_with_headroom_dbg((min_payload_size), (headroom), \
+                                        RTPS_BUFPOOL_CALLER_PC())
+#endif
 
 // ============================================================
 // Standard headroom constants

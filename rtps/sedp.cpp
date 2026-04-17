@@ -9,6 +9,53 @@
 
 namespace rtps {
 
+namespace {
+
+inline bool decode_plcdr_rep_id(const uint8_t* payload,
+                                uint32_t       len,
+                                bool&          little_endian) noexcept
+{
+    if ((payload == nullptr) || (len < 2u)) {
+        return false;
+    }
+
+    const uint16_t rep_id_be = (static_cast<uint16_t>(payload[0]) << 8u) |
+                               static_cast<uint16_t>(payload[1]);
+    switch (rep_id_be) {
+    case 0x0003u: little_endian = true;  return true;   // PL_CDR_LE (canonical)
+    case 0x0002u: little_endian = false; return true;   // PL_CDR_BE (canonical)
+    case 0x0300u: little_endian = true;  return true;   // legacy host-order tolerant
+    case 0x0200u: little_endian = false; return true;   // legacy host-order tolerant
+    default: return false;
+    }
+}
+
+inline uint16_t read_u16_wire(const uint8_t* p, bool little_endian) noexcept
+{
+    if (little_endian) {
+        return static_cast<uint16_t>(p[0]) |
+               static_cast<uint16_t>(p[1] << 8u);
+    }
+    return static_cast<uint16_t>(p[0] << 8u) |
+           static_cast<uint16_t>(p[1]);
+}
+
+inline uint32_t read_u32_wire(const uint8_t* p, bool little_endian) noexcept
+{
+    if (little_endian) {
+        return static_cast<uint32_t>(p[0]) |
+               (static_cast<uint32_t>(p[1]) << 8u) |
+               (static_cast<uint32_t>(p[2]) << 16u) |
+               (static_cast<uint32_t>(p[3]) << 24u);
+    }
+    return (static_cast<uint32_t>(p[0]) << 24u) |
+           (static_cast<uint32_t>(p[1]) << 16u) |
+           (static_cast<uint32_t>(p[2]) << 8u) |
+           static_cast<uint32_t>(p[3]);
+}
+
+} // namespace
+
 // ============================================================
 // Reliability / Durability wire values
 //
@@ -69,6 +116,7 @@ static void announce_endpoints(MessageBuilder& builder,
                                const EndpointData* endpoints,
                                const EntityId& reader_id,
                                const EntityId& writer_id,
+                               SequenceNumber& next_sn,
                                EstimateFn      estimate,
                                SerialiseFn     serialise) noexcept
 {
@@ -91,8 +139,11 @@ static void announce_endpoints(MessageBuilder& builder,
                             local_prefix,
                             reader_id,
                             writer_id,
-                            SequenceNumber::from_int64(1),
+                            next_sn,
                             /*key_flag=*/false);
+        if (ok) {
+            ++next_sn;
+        }
 
         if (ok) {
             BufRef out = builder.finish();
@@ -125,10 +176,11 @@ uint32_t SedpWriter::serialise_writer(const DiscoveredWriterData& wd,
     uint32_t off = 0;
 
     // RepresentationHeader — PL_CDR_LE.
-    const uint16_t rep_id = 0x0003u, rep_opt = 0x0000u;
     if (off + 4u > cap) return 0;
-    memcpy(buf + off, &rep_id,  2u); off += 2u;
-    memcpy(buf + off, &rep_opt, 2u); off += 2u;
+    buf[off++] = 0x00u;
+    buf[off++] = 0x03u;
+    buf[off++] = 0x00u;
+    buf[off++] = 0x00u;
 
     // PID_ENDPOINT_GUID — GuidPrefix(12) + EntityId(4).
     {
@@ -185,10 +237,11 @@ uint32_t SedpWriter::serialise_reader(const DiscoveredReaderData& rd,
 {
     uint32_t off = 0;
 
-    const uint16_t rep_id = 0x0003u, rep_opt = 0x0000u;
     if (off + 4u > cap) return 0;
-    memcpy(buf + off, &rep_id,  2u); off += 2u;
-    memcpy(buf + off, &rep_opt, 2u); off += 2u;
+    buf[off++] = 0x00u;
+    buf[off++] = 0x03u;
+    buf[off++] = 0x00u;
+    buf[off++] = 0x00u;
 
     {
         Octet g[16] = {};
@@ -240,6 +293,7 @@ void SedpWriter::announce_to_peer(const GuidPrefix& local_prefix,
         local_writers_,
         entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR,
         entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER,
+        next_publication_sn_,
         writer_payload_size_estimate,
         [this](const DiscoveredWriterData& wd,
                Octet* buf,
@@ -255,6 +309,7 @@ void SedpWriter::announce_to_peer(const GuidPrefix& local_prefix,
         local_readers_,
         entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR,
         entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER,
+        next_subscription_sn_,
         reader_payload_size_estimate,
         [this](const DiscoveredReaderData& rd,
                Octet* buf,
@@ -282,18 +337,18 @@ bool SedpReader::read_plcdr_fields(const Octet*  payload,
 {
     if (len < 4u) return false;
 
-    uint16_t rep_id;
-    memcpy(&rep_id, payload, 2u);
-    if (rep_id != 0x0003u && rep_id != 0x0002u) return false;
+    bool little_endian = true;
+    if (!decode_plcdr_rep_id(payload, len, little_endian)) {
+        return false;
+    }
 
     uint32_t off      = 4u;
     bool     got_guid = false;
     unicast_count     = 0;
 
     while (off + 4u <= len) {
-        uint16_t pid_val, param_len;
-        memcpy(&pid_val,   payload + off,     2u);
-        memcpy(&param_len, payload + off + 2u, 2u);
+        const uint16_t pid_val = read_u16_wire(payload + off, little_endian);
+        const uint16_t param_len = read_u16_wire(payload + off + 2u, little_endian);
         off += 4u;
 
         const uint16_t padded = static_cast<uint16_t>((param_len + 3u) & ~3u);
@@ -314,8 +369,7 @@ bool SedpReader::read_plcdr_fields(const Octet*  payload,
             case pid::TOPIC_NAME:
                 if (param_len >= 5u) {
                     // String: uint32 len prefix + chars.
-                    uint32_t slen;
-                    memcpy(&slen, val, 4u);
+                    const uint32_t slen = read_u32_wire(val, little_endian);
                     if (slen > 0 && slen <= param_len - 4u) {
                         uint32_t copy = slen < RTPS_MAX_TOPIC_NAME_LEN
                                         ? slen : RTPS_MAX_TOPIC_NAME_LEN - 1u;
@@ -327,8 +381,7 @@ bool SedpReader::read_plcdr_fields(const Octet*  payload,
 
             case pid::TYPE_NAME:
                 if (param_len >= 5u) {
-                    uint32_t slen;
-                    memcpy(&slen, val, 4u);
+                    const uint32_t slen = read_u32_wire(val, little_endian);
                     if (slen > 0 && slen <= param_len - 4u) {
                         uint32_t copy = slen < RTPS_MAX_TOPIC_NAME_LEN
                                         ? slen : RTPS_MAX_TOPIC_NAME_LEN - 1u;
@@ -340,14 +393,14 @@ bool SedpReader::read_plcdr_fields(const Octet*  payload,
 
             case pid::RELIABILITY:
                 if (param_len >= 4u) {
-                    uint32_t v; memcpy(&v, val, 4u);
+                    const uint32_t v = read_u32_wire(val, little_endian);
                     reliability_out = static_cast<ReliabilityKind>(v);
                 }
                 break;
 
             case pid::DURABILITY:
                 if (param_len >= 4u) {
-                    uint32_t v; memcpy(&v, val, 4u);
+                    const uint32_t v = read_u32_wire(val, little_endian);
                     durability_out = static_cast<DurabilityKind>(v);
                 }
                 break;
@@ -355,7 +408,12 @@ bool SedpReader::read_plcdr_fields(const Octet*  payload,
             case pid::UNICAST_LOCATOR:
                 if (param_len >= 24u &&
                     unicast_count < RTPS_MAX_LOCATORS_PER_PARTICIPANT) {
-                    memcpy(&unicast_locs[unicast_count++], val, 24u);
+                    if (Locator::read_from(unicast_locs[unicast_count],
+                                           val,
+                                           24u,
+                                           little_endian)) {
+                        ++unicast_count;
+                    }
                 }
                 break;
 

@@ -74,6 +74,9 @@
 
 namespace rtps {
 
+extern "C" uint32_t rtps_platform_get_ipv4_addr(void) noexcept;
+extern "C" bool rtps_platform_get_ipv6_addr(uint8_t out[16]) noexcept;
+
 struct ITransport;   // Forward — declared in stateful_writer.hpp.
 
 // ============================================================
@@ -192,6 +195,11 @@ inline constexpr uint32_t spdp_multicast_port(uint8_t domain_id) noexcept {
 inline constexpr uint32_t spdp_unicast_port(uint8_t domain_id,
                                             uint8_t participant_id) noexcept {
     return 7400u + 250u * domain_id + 10u + 2u * participant_id;
+}
+
+inline constexpr uint32_t user_unicast_port(uint8_t domain_id,
+                                            uint8_t participant_id) noexcept {
+    return spdp_unicast_port(domain_id, participant_id) + 1u;
 }
 
 /// SPDP well-known IPv4 multicast address — §9.6.1, p. 254: 239.255.0.1
@@ -368,8 +376,9 @@ public:
     //  — §8.5.3.3, p. 162.
     //
     // If the GuidPrefix is new: insert into peer table, fire on_new_peer.
-    // If already present: refresh leaseExpiryMs.
-    // In both cases sedp_announced remains false on first sight.
+    // If already present: refresh peer data + leaseExpiryMs.
+    // If already present and SEDP has not been announced yet, on_new_peer
+    // may be fired when metatraffic locator information appears later.
     //
     // @param sender_prefix  GUID prefix from the RTPS message header.
     // @param payload        Pointer to the PL_CDR serialized payload.
