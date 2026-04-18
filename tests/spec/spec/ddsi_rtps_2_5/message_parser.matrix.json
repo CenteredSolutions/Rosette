@@ -1,0 +1,247 @@
+{
+  "spec": {
+    "name": "OMG DDSI-RTPS",
+    "version": "2.5",
+    "document": "formal/2022-04-01"
+  },
+  "target": "lib/milkDDS/rtps/message_parser.cpp",
+  "scope": [
+    "9.4.1",
+    "9.4.2",
+    "9.4.5.1",
+    "9.4.5.3",
+    "9.4.5.4",
+    "9.4.5.7",
+    "9.4.5.9",
+    "9.4.5.11",
+    "9.4.5.13",
+    "9.6.2"
+  ],
+  "statements": [
+    {
+      "id": "REQ-9.4.2-HDR-MINLEN",
+      "section": "9.4.2",
+      "page": 222,
+      "normativity": "shall",
+      "statement": "Parser rejects messages shorter than the fixed RTPS header.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.2-001"]
+    },
+    {
+      "id": "REQ-9.4.2-HDR-MAGIC",
+      "section": "9.4.2.1",
+      "page": 222,
+      "normativity": "shall",
+      "statement": "Header protocol identifier must be RTPS magic bytes.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.2-002"]
+    },
+    {
+      "id": "REQ-9.4.2-HDR-VERSION-MAJOR",
+      "section": "9.4.2.2",
+      "page": 222,
+      "normativity": "shall",
+      "statement": "Unsupported major protocol versions are rejected.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.2-003"]
+    },
+    {
+      "id": "REQ-9.4.2-HDR-CONTEXT-SENDER",
+      "section": "9.4.2.4",
+      "page": 222,
+      "normativity": "shall",
+      "statement": "Header sender GUID prefix is propagated into parse context.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.2-004"]
+    },
+    {
+      "id": "REQ-9.4.5.1-SUBMSG-UNKNOWN-SKIP",
+      "section": "9.4.5.1",
+      "page": 227,
+      "normativity": "shall",
+      "statement": "Unknown SubmessageKind is skipped without aborting parsing.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.1-001"]
+    },
+    {
+      "id": "REQ-9.4.5.1-SUBMSG-LEN0-LAST",
+      "section": "9.4.5.1",
+      "page": 227,
+      "normativity": "shall",
+      "statement": "Submessage length 0 extends to end of message for last submessage.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.1-002"]
+    },
+    {
+      "id": "REQ-9.4.5.1-SUBMSG-EXTENT-BOUNDS",
+      "section": "9.4.5.1",
+      "page": 227,
+      "normativity": "shall",
+      "statement": "Submessage extent is bounds-checked and malformed overflows are rejected.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.1-003"]
+    },
+    {
+      "id": "REQ-9.4.5.1-SUBMSG-ALIGN32",
+      "section": "9.4.5.1",
+      "page": 227,
+      "normativity": "shall",
+      "statement": "Submessages are processed on 32-bit boundaries using padding alignment.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.1-004"]
+    },
+    {
+      "id": "REQ-9.4.5.1-SUBMSG-HEADER-TRUNCATED",
+      "section": "9.4.5.1",
+      "page": 227,
+      "normativity": "shall",
+      "statement": "Truncated submessage headers are malformed.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.1-005"]
+    },
+    {
+      "id": "REQ-9.4.5.9-INFO-TS-INVALIDATE",
+      "section": "9.4.5.9",
+      "page": 253,
+      "normativity": "shall",
+      "statement": "INFO_TS invalidate flag clears source timestamp for following submessages.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.9-001"]
+    },
+    {
+      "id": "REQ-9.4.5.9-INFO-TS-VALUE",
+      "section": "9.4.5.9",
+      "page": 253,
+      "normativity": "shall",
+      "statement": "INFO_TS timestamp value is propagated to following submessages.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.9-002"]
+    },
+    {
+      "id": "REQ-9.4.5.13-INFO-DST-PROPAGATION",
+      "section": "9.4.5.13",
+      "page": 261,
+      "normativity": "shall",
+      "statement": "INFO_DST updates destination GuidPrefix context for following submessages.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.13-001"]
+    },
+    {
+      "id": "REQ-9.4.5.3-DATA-FLAGS-PAYLOAD",
+      "section": "9.4.5.3",
+      "page": 230,
+      "normativity": "shall",
+      "statement": "DATA flags and serialized payload are decoded and exposed to callback.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.3-001"]
+    },
+    {
+      "id": "REQ-9.4.5.3-DATA-ENDIANNES",
+      "section": "9.4.5.3",
+      "page": 230,
+      "normativity": "shall",
+      "statement": "DATA scalar fields follow submessage E-flag endianness.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.3-002"]
+    },
+    {
+      "id": "REQ-9.4.5.3-DATA-OCTETS-TO-INLINEQOS",
+      "section": "9.4.5.3",
+      "page": 230,
+      "normativity": "shall",
+      "statement": "octetsToInlineQos offset is honored before inline QoS/payload parsing.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.3-003"]
+    },
+    {
+      "id": "REQ-9.4.5.3-DATA-INLINEQOS-CUSTOM-PID",
+      "section": "9.4.5.3",
+      "page": 230,
+      "normativity": "shall",
+      "statement": "DATA inline QoS decodes supported related sample identity custom PID variant.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.3-004"]
+    },
+    {
+      "id": "REQ-9.4.5.3-DATA-INLINEQOS-UNKNOWN-SKIP",
+      "section": "9.4.5.3",
+      "page": 230,
+      "normativity": "shall",
+      "statement": "Unknown DATA inline QoS parameters are skipped without aborting payload parse.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.3-005"]
+    },
+    {
+      "id": "REQ-9.4.5.4-DATAFRAG-DECODE",
+      "section": "9.4.5.4",
+      "page": 236,
+      "normativity": "shall",
+      "statement": "DATA_FRAG fixed fields and fragment payload are decoded.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.4-001"]
+    },
+    {
+      "id": "REQ-9.4.5.4-DATAFRAG-INLINEQOS-Q",
+      "section": "9.4.5.4",
+      "page": 236,
+      "normativity": "shall",
+      "statement": "DATA_FRAG with Q flag consumes inline QoS before fragment payload.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.4-002"]
+    },
+    {
+      "id": "REQ-9.4.5.7-ACKNACK-SNSET-BOUNDS",
+      "section": "9.4.5.7",
+      "page": 249,
+      "normativity": "shall",
+      "statement": "Invalid SequenceNumberSet bounds in ACKNACK are rejected.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.7-001"]
+    },
+    {
+      "id": "REQ-9.4.5.7-ACKNACK-FLAG-F",
+      "section": "9.4.5.7",
+      "page": 249,
+      "normativity": "shall",
+      "statement": "ACKNACK final flag is decoded from submessage flags.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.7-002"]
+    },
+    {
+      "id": "REQ-9.4.5.11-GAP-DECODE",
+      "section": "9.4.5.11",
+      "page": 258,
+      "normativity": "shall",
+      "statement": "GAP fields are decoded and dispatched.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.11-001"]
+    },
+    {
+      "id": "REQ-9.4.5.11-GAP-ENDIANNES",
+      "section": "9.4.5.11",
+      "page": 258,
+      "normativity": "shall",
+      "statement": "GAP scalar fields follow submessage endianness.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.11-002"]
+    },
+    {
+      "id": "REQ-9.6.2-INLINEQOS-RELATED-SAMPLE-ID",
+      "section": "9.6.2",
+      "page": 285,
+      "normativity": "shall",
+      "statement": "Inline QoS ParameterList decodes RelatedSampleIdentity and sentinel termination.",
+      "status": "implemented",
+      "test_ids": ["TC-9.6.2-001"]
+    },
+    {
+      "id": "REQ-9.6.2-INLINEQOS-MALFORMED",
+      "section": "9.6.2",
+      "page": 285,
+      "normativity": "shall",
+      "statement": "Malformed InlineQoS ParameterList causes parse failure.",
+      "status": "implemented",
+      "test_ids": ["TC-9.6.2-002"]
+    }
+  ]
+}

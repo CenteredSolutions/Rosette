@@ -1,0 +1,98 @@
+{
+  "spec": {
+    "name": "OMG DDSI-RTPS",
+    "version": "2.5",
+    "document": "formal/2022-04-01"
+  },
+  "target": "lib/milkDDS/rtps/sedp.cpp",
+  "scope": [
+    "8.5.4",
+    "8.5.4.2",
+    "8.5.4.3",
+    "8.5.5.1",
+    "9.6.3.2"
+  ],
+  "statements": [
+    {
+      "id": "REQ-SEDP-8.5.4.3-ANNOUNCE-ENDPOINTS",
+      "section": "8.5.4.3",
+      "page": 167,
+      "normativity": "shall",
+      "statement": "SEDP builtin writers announce local publications and subscriptions to newly discovered peers.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.4-001"]
+    },
+    {
+      "id": "REQ-SEDP-8.5.4-PUBLICATIONS-READER",
+      "section": "8.5.4",
+      "page": 163,
+      "normativity": "shall",
+      "statement": "SEDP publications reader processes DiscoveredWriterData and updates discovery state.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.4-002"]
+    },
+    {
+      "id": "REQ-SEDP-8.5.4-SUBSCRIPTIONS-READER",
+      "section": "8.5.4",
+      "page": 163,
+      "normativity": "shall",
+      "statement": "SEDP subscriptions reader processes DiscoveredReaderData and updates discovery state.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.4-003"]
+    },
+    {
+      "id": "REQ-SEDP-8.5.5.1-TOPIC-TYPE",
+      "section": "8.5.5.1",
+      "page": 169,
+      "normativity": "shall",
+      "statement": "Endpoint matching requires identical topicName and typeName.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.5.1-001"]
+    },
+    {
+      "id": "REQ-SEDP-8.5.5.1-RELIABILITY",
+      "section": "8.5.5.1",
+      "page": 169,
+      "normativity": "shall",
+      "statement": "RELIABLE readers are only compatible with RELIABLE writers.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.5.1-002"]
+    },
+    {
+      "id": "REQ-SEDP-8.5.5.1-DURABILITY",
+      "section": "8.5.5.1",
+      "page": 169,
+      "normativity": "shall",
+      "statement": "Writer durability must be greater than or equal to reader durability for compatibility.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.5.1-003"]
+    },
+    {
+      "id": "REQ-SEDP-8.5.5.1-REMOVE-REDISCOVER",
+      "section": "8.5.5.1",
+      "page": 169,
+      "normativity": "derived-behavior",
+      "statement": "Participant endpoint removal dissolves existing matches, and rediscovered endpoints can rematch cleanly.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.5.1-004"]
+    },
+    {
+      "id": "REQ-SEDP-9.6.3.2-PLCDR-UNKNOWN-SKIP",
+      "section": "9.6.3.2",
+      "page": 263,
+      "normativity": "shall",
+      "statement": "SEDP PL_CDR parameter list parsing skips unknown PIDs while continuing to parse known fields.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-9.6.3.2-001"]
+    },
+    {
+      "id": "REQ-SEDP-9.6.3.2-ENDPOINT-GUID-MANDATORY",
+      "section": "9.6.3.2",
+      "page": 263,
+      "normativity": "shall",
+      "statement": "Discovered endpoint data requires PID_ENDPOINT_GUID for valid endpoint identity.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-9.6.3.2-002"]
+    }
+  ]
+}
