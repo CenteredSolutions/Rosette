@@ -480,9 +480,17 @@ public:
 
     // ----------------------------------------------------------
     // Best locator for addressing this reader.
-    // Returns the first unicast locator, or LOCATOR_INVALID.
+    // Prefer a UDP locator; some peers advertise other transports
+    // (for example SHM) ahead of UDP in SEDP.
     // ----------------------------------------------------------
     const Locator& best_locator() const noexcept {
+        for (uint8_t i = 0; i < unicastLocatorCount; ++i) {
+            const Long kind = unicastLocatorList[i].kind;
+            if (kind == locator_kind::UDPv4 ||
+                kind == locator_kind::UDPv6) {
+                return unicastLocatorList[i];
+            }
+        }
         if (unicastLocatorCount > 0) return unicastLocatorList[0];
         return LOCATOR_INVALID;
     }

@@ -208,7 +208,7 @@ public:
         }
         out_payload = buf_alloc(payload_size);
         if (!out_payload.valid()) {
-            RTPS_LOG_E("writer", "buf_alloc failed (%d) for new_change (pool exhausted)", payload_size);
+            RTPS_LOG_E("writer", "buf_alloc failed (%zu) for new_change (pool exhausted)", payload_size);
             return nullptr;
         }
         staging_.kind           = kind;

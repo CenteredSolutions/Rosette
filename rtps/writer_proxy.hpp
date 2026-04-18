@@ -476,6 +476,13 @@ public:
     // Best locator for sending ACKNACK to the remote writer.
     // ----------------------------------------------------------
     const Locator& best_locator() const noexcept {
+        for (uint8_t i = 0; i < unicastLocatorCount; ++i) {
+            const Long kind = unicastLocatorList[i].kind;
+            if (kind == locator_kind::UDPv4 ||
+                kind == locator_kind::UDPv6) {
+                return unicastLocatorList[i];
+            }
+        }
         if (unicastLocatorCount > 0) return unicastLocatorList[0];
         return LOCATOR_INVALID;
     }

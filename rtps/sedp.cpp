@@ -446,10 +446,14 @@ bool SedpReader::read_plcdr_fields(const Octet*  payload,
             case pid::UNICAST_LOCATOR:
                 if (param_len >= 24u &&
                     unicast_count < RTPS_MAX_LOCATORS_PER_PARTICIPANT) {
-                    if (Locator::read_from(unicast_locs[unicast_count],
+                    Locator locator{};
+                    if (Locator::read_from(locator,
                                            val,
                                            24u,
-                                           little_endian)) {
+                                           little_endian) &&
+                        (locator.kind == locator_kind::UDPv4 ||
+                         locator.kind == locator_kind::UDPv6)) {
+                        unicast_locs[unicast_count] = locator;
                         ++unicast_count;
                     }
                 }
@@ -588,7 +592,7 @@ void SedpReader::on_heartbeat(const ParseContext&    ctx,
     builder_.append_info_dst(ctx.senderGuidPrefix);
     const bool ok = builder_.append_acknack(
         reader_id, msg.writerId, sn_state,
-        static_cast<Long>(count), /*final=*/true);
+        static_cast<Long>(count), /*final=*/(sn_state.numBits == 0));
     if (ok) {
         BufRef buf = builder_.finish();
         transport_.send_unicast(buf, writer_locator);

@@ -633,6 +633,7 @@ private:
             case 2: return c2_.available();
             case 3: return c3_.available();
             case 4: return c4_.available();
+            default:
 #if defined(RTPS_BUFPOOL_DEBUG) && RTPS_BUFPOOL_DEBUG_EVENT_CAP > 0
                 //debug_recent_event(5, {});
 #endif
