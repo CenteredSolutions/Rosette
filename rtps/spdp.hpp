@@ -296,6 +296,19 @@ public:
     void announce() noexcept;
 
     // ----------------------------------------------------------
+    // announce_unicast()
+    //
+    // Build and immediately send one SPDP announcement as a
+    // unicast datagram to the given destination.
+    //
+    // Called when a new peer is discovered (§8.5.3.2): the local
+    // participant sends its data directly to the peer's metatraffic
+    // unicast locator so the peer learns the local participant's
+    // locators without waiting for the next periodic multicast.
+    // ----------------------------------------------------------
+    void announce_unicast(const Locator& dest) noexcept;
+
+    // ----------------------------------------------------------
     // tick()
     //
     // Call periodically.  Sends the announcement if
@@ -317,6 +330,9 @@ private:
     /// Serialise local_data_ into a PL_CDR payload buffer.
     /// Returns the number of bytes written.
     uint32_t serialise(Octet* buf, uint32_t cap) const noexcept;
+
+    /// Common implementation for announce() and announce_unicast().
+    void do_announce(const Locator& dest, bool use_unicast) noexcept;
 
     const SPDPdiscoveredParticipantData& local_data_;
     ITransport&  transport_;

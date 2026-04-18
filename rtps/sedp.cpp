@@ -4,6 +4,7 @@
  */
 
 #include "sedp.hpp"
+#include "log.hpp"
 #include "stateful_writer.hpp"   // ITransport
 #include <string.h>
 
@@ -469,10 +470,15 @@ bool SedpReader::read_plcdr_fields(const Octet*  payload,
 //   "The SEDPbuiltinPublicationsReader processes DiscoveredWriterData."
 // ============================================================
 
-void SedpReader::on_publication_data(const GuidPrefix& /*sender_prefix*/,
+void SedpReader::on_publication_data(const GuidPrefix& sender_prefix,
                                      const Octet*      payload,
-                                     uint32_t          payload_len) noexcept
+                                     uint32_t          payload_len,
+                                     SequenceNumber    writer_sn) noexcept
 {
+    SedpBuiltinAckState* state = find_or_alloc_ack_state(sender_prefix);
+    if (state && writer_sn > state->pub_highest) {
+        state->pub_highest = writer_sn;
+    }
     DiscoveredWriterData wd{};
     if (!deserialise_writer(payload, payload_len, wd)) return;
     if (!wd.is_valid()) return;
@@ -504,14 +510,93 @@ bool SedpReader::deserialise_writer(const Octet*         payload,
 //   "The SEDPbuiltinSubscriptionsReader processes DiscoveredReaderData."
 // ============================================================
 
-void SedpReader::on_subscription_data(const GuidPrefix& /*sender_prefix*/,
+void SedpReader::on_subscription_data(const GuidPrefix& sender_prefix,
                                       const Octet*      payload,
-                                      uint32_t          payload_len) noexcept
+                                      uint32_t          payload_len,
+                                      SequenceNumber    writer_sn) noexcept
 {
+    SedpBuiltinAckState* state = find_or_alloc_ack_state(sender_prefix);
+    if (state && writer_sn > state->sub_highest) {
+        state->sub_highest = writer_sn;
+    }
     DiscoveredReaderData rd{};
     if (!deserialise_reader(payload, payload_len, rd)) return;
     if (!rd.is_valid()) return;
     match_table_.add_reader(rd);
+}
+
+// ============================================================
+// SedpReader::on_heartbeat()
+//
+// Respond to a HEARTBEAT from a remote SEDP writer.
+//
+// §8.3.7.5, p. 91: F=0 → MUST send ACKNACK.
+// §8.5.4.1, p. 165: SEDP uses RELIABLE / TRANSIENT_LOCAL.
+//
+// The ACKNACK bitmapBase is set to (highest_received + 1).
+// Any SNs in [highest+1 .. lastSN] are marked missing so the
+// remote writer retransmits them.  Once all have been received
+// the next HEARTBEAT will get a pure ACK (numBits = 0).
+// ============================================================
+
+void SedpReader::on_heartbeat(const ParseContext&    ctx,
+                               const ParsedHeartbeat& msg,
+                               const Locator&         writer_locator) noexcept
+{
+    if (writer_locator == LOCATOR_INVALID) return;
+
+    EntityId     reader_id;
+    bool         is_pub;
+    if (msg.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
+        reader_id = entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR;
+        is_pub    = true;
+    } else if (msg.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
+        reader_id = entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR;
+        is_pub    = false;
+    } else {
+        return;
+    }
+
+    SedpBuiltinAckState* state = find_or_alloc_ack_state(ctx.senderGuidPrefix);
+    if (!state) return;
+
+    SequenceNumber& highest = is_pub ? state->pub_highest : state->sub_highest;
+    uint32_t&       count   = is_pub ? state->pub_count   : state->sub_count;
+
+    SequenceNumberSet sn_state{};
+    const SequenceNumber next_want = highest + 1;
+
+    if (next_want <= msg.lastSN) {
+        // NACK all SNs from next_want through lastSN — §9.4.2.6, p. 193.
+        sn_state.bitmapBase = next_want;
+        const int64_t gap = msg.lastSN - next_want + 1;
+        const uint32_t bits = (gap > 256) ? 256u : static_cast<uint32_t>(gap);
+        for (uint32_t i = 0; i < bits; ++i) sn_state.set(i);
+    } else {
+        // Pure ACK: reader has everything the writer has advertised.
+        sn_state.bitmapBase = highest + 1;
+        sn_state.numBits    = 0;
+    }
+
+    ++count;
+
+    RTPS_LOG_D("sedp", "HEARTBEAT→ACKNACK base=%d:%lu bits=%lu final=%d",
+               sn_state.bitmapBase.high, (unsigned long)sn_state.bitmapBase.low,
+               (unsigned long)sn_state.numBits, (int)(sn_state.numBits == 0));
+
+    if (!builder_.begin(local_prefix_)) return;
+    builder_.append_info_dst(ctx.senderGuidPrefix);
+    const bool ok = builder_.append_acknack(
+        reader_id, msg.writerId, sn_state,
+        static_cast<Long>(count), /*final=*/true);
+    if (ok) {
+        BufRef buf = builder_.finish();
+        transport_.send_unicast(buf, writer_locator);
+        buf.reset();
+    } else {
+        RTPS_LOG_W("sedp", "SEDP ACKNACK builder failed (pool exhausted?)");
+        builder_.abort();
+    }
 }
 
 bool SedpReader::deserialise_reader(const Octet*         payload,

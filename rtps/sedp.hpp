@@ -51,6 +51,7 @@
 #include "types.hpp"
 #include "endpoint_match_table.hpp"
 #include "message_builder.hpp"
+#include "message_parser.hpp"   // ParseContext, ParsedHeartbeat
 #include "spdp.hpp"   // pid namespace, plcdr_write_param
 #include "stateful_writer.hpp"
 
@@ -220,13 +221,30 @@ private:
 // Receives SEDP DATA submessages from remote participants and feeds
 // the DiscoveredWriterData / DiscoveredReaderData into the
 // EndpointMatchTable.
+//
+// Also handles incoming HEARTBEATs from remote SEDP writers and
+// responds with ACKNACK so those writers deliver their endpoint data.
+// — §8.5.4.1, p. 165; §8.3.7.5, p. 91.
 // ============================================================
 
 class SedpReader {
 public:
 
-    explicit SedpReader(EndpointMatchTable& match_table) noexcept
-        : match_table_(match_table) {}
+    // ----------------------------------------------------------
+    // Constructor
+    //
+    // @param local_prefix  GUID prefix of the local participant
+    //                      (used as the sender prefix in ACKNACK messages).
+    // @param transport     Transport for sending ACKNACK replies.
+    // @param match_table   Endpoint match table to update on DATA.
+    // ----------------------------------------------------------
+    explicit SedpReader(const GuidPrefix&   local_prefix,
+                        ITransport&         transport,
+                        EndpointMatchTable& match_table) noexcept
+        : local_prefix_(local_prefix)
+        , transport_(transport)
+        , match_table_(match_table)
+    {}
 
     // ----------------------------------------------------------
     // on_publication_data()
@@ -240,10 +258,12 @@ public:
     // @param sender_prefix  GUID prefix of the announcing participant.
     // @param payload        PL_CDR_LE payload bytes.
     // @param payload_len    Byte count.
+    // @param writer_sn      Sequence number from the DATA submessage header.
     // ----------------------------------------------------------
     void on_publication_data(const GuidPrefix& sender_prefix,
                              const Octet*      payload,
-                             uint32_t          payload_len) noexcept;
+                             uint32_t          payload_len,
+                             SequenceNumber    writer_sn) noexcept;
 
     // ----------------------------------------------------------
     // on_subscription_data()
@@ -252,11 +272,61 @@ public:
     // ----------------------------------------------------------
     void on_subscription_data(const GuidPrefix& sender_prefix,
                               const Octet*      payload,
-                              uint32_t          payload_len) noexcept;
+                              uint32_t          payload_len,
+                              SequenceNumber    writer_sn) noexcept;
+
+    // ----------------------------------------------------------
+    // on_heartbeat()
+    //
+    // Handle an incoming HEARTBEAT from a remote SEDP writer.
+    // Sends an ACKNACK to writer_locator so the remote writer
+    // delivers any endpoint DATA the local reader is still missing.
+    //
+    // §8.3.7.5, p. 91: F=0 → MUST respond with ACKNACK.
+    // §8.5.4.1, p. 165: SEDP uses RELIABLE / TRANSIENT_LOCAL QoS.
+    //
+    // @param ctx             Parse context (senderGuidPrefix).
+    // @param msg             Decoded HEARTBEAT submessage.
+    // @param writer_locator  Unicast locator of the remote SEDP writer.
+    // ----------------------------------------------------------
+    void on_heartbeat(const ParseContext&    ctx,
+                      const ParsedHeartbeat& msg,
+                      const Locator&         writer_locator) noexcept;
 
 private:
 
+    // Per-peer ACKNACK state for the two SEDP builtin readers.
+    // — §8.5.4.3, Table 8.80: one pubs reader + one subs reader per peer.
+    struct SedpBuiltinAckState {
+        GuidPrefix     prefix;
+        SequenceNumber pub_highest;     // highest pub DATA SN received (0 = none)
+        SequenceNumber sub_highest;     // highest sub DATA SN received (0 = none)
+        uint32_t       pub_count  = 0;  // outgoing ACKNACK count for pub writer
+        uint32_t       sub_count  = 0;  // outgoing ACKNACK count for sub writer
+        bool           alive      = false;
+    };
+
+    GuidPrefix          local_prefix_;
+    ITransport&         transport_;
     EndpointMatchTable& match_table_;
+    MessageBuilder      builder_;
+    SedpBuiltinAckState ack_states_[RTPS_MAX_PEERS] = {};
+
+    SedpBuiltinAckState* find_or_alloc_ack_state(const GuidPrefix& prefix) noexcept {
+        SedpBuiltinAckState* free_slot = nullptr;
+        for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
+            if (ack_states_[i].alive && ack_states_[i].prefix == prefix)
+                return &ack_states_[i];
+            if (!ack_states_[i].alive && !free_slot)
+                free_slot = &ack_states_[i];
+        }
+        if (free_slot) {
+            *free_slot = SedpBuiltinAckState{};
+            free_slot->prefix = prefix;
+            free_slot->alive  = true;
+        }
+        return free_slot;
+    }
 
     /// Deserialise a PL_CDR_LE payload into a DiscoveredWriterData.
     static bool deserialise_writer(const Octet*         payload,

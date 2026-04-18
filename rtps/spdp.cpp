@@ -180,9 +180,7 @@ uint32_t SpdpWriter::serialise(Octet* buf, uint32_t cap) const noexcept {
 //     SerializedPayload: PL_CDR_LE parameter list
 // ----------------------------------------------------------
 
-void SpdpWriter::announce() noexcept {
-    // Allocate a headroom-backed buffer so we can prepend RTPS+DATA framing
-    // without an extra copy. SPDP payload itself starts with PL_CDR header.
+void SpdpWriter::do_announce(const Locator& dest, bool use_unicast) noexcept {
     BufRef payload_buf = buf_alloc_with_headroom(256u, kRtpsDataHeadroom);
     if (!payload_buf.valid()) {
         RTPS_LOG_E("spdp", "buf_alloc failed for participant announce");
@@ -213,18 +211,29 @@ void SpdpWriter::announce() noexcept {
                   SequenceNumber::from_int64(1));   // SPDP is best-effort; SN not tracked.
 
     if (ok) {
-        RTPS_LOG_D("spdp", "announcing participant (%lu bytes)",
+        RTPS_LOG_D("spdp", "%s participant (%lu bytes)",
+                   use_unicast ? "unicasting" : "announcing",
                    (unsigned long)serialised_len);
         BufRef msg = builder_.finish();
-        if (!transport_.send_multicast(msg, dest_)) {
+        const bool sent = use_unicast ? transport_.send_unicast(msg, dest)
+                                      : transport_.send_multicast(msg, dest);
+        if (!sent) {
             RTPS_LOG_W("spdp", "announce send failed: kind=%ld port=%lu",
-                       (long)dest_.kind,
-                       (unsigned long)dest_.port);
+                       (long)dest.kind,
+                       (unsigned long)dest.port);
         }
         msg.reset();
     } else {
         builder_.abort();
     }
+}
+
+void SpdpWriter::announce() noexcept {
+    do_announce(dest_, false);
+}
+
+void SpdpWriter::announce_unicast(const Locator& dest) noexcept {
+    do_announce(dest, true);
 }
 
 // ============================================================

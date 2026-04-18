@@ -139,7 +139,7 @@ RTPSParticipant::RTPSParticipant(uint8_t     domain_id,
                    LOCATOR_INVALID)
     , spdp_reader_(on_spdp_new_peer, on_spdp_peer_removed, this)
     , sedp_writer_(participant_guid_.prefix, transport)
-    , sedp_reader_(match_table_)
+    , sedp_reader_(participant_guid_.prefix, transport, match_table_)
 {
     memset(writer_iface_, 0, sizeof(writer_iface_));
     memset(writer_alive_, 0, sizeof(writer_alive_));
@@ -374,6 +374,9 @@ void RTPSParticipant::on_spdp_new_peer(const PeerEntry& peer,
     p->sedp_writer_.on_peer_discovered(peer.data);
     const Locator& dest = peer.data.metatrafficUnicastLocatorList[0];
     p->sedp_writer_.announce_to_peer(peer.data.guidPrefix, dest);
+    // §8.5.3.2: direct SPDP to new peer so it learns our locators immediately
+    // rather than waiting for the next periodic multicast interval.
+    p->spdp_writer_.announce_unicast(dest);
     p->spdp_reader_.mark_sedp_announced(peer.data.guidPrefix);
 }
 
@@ -472,13 +475,15 @@ void RTPSParticipant::dispatch_data(const ParseContext& ctx,
     if (msg.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
         p->sedp_reader_.on_publication_data(ctx.senderGuidPrefix,
                                             msg.serializedPayload,
-                                            msg.serializedPayloadSize);
+                                            msg.serializedPayloadSize,
+                                            msg.writerSN);
         return;
     }
     if (msg.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
         p->sedp_reader_.on_subscription_data(ctx.senderGuidPrefix,
                                              msg.serializedPayload,
-                                             msg.serializedPayloadSize);
+                                             msg.serializedPayloadSize,
+                                             msg.writerSN);
         return;
     }
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
@@ -512,6 +517,21 @@ void RTPSParticipant::dispatch_heartbeat(const ParseContext&    ctx,
                ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3],
                msg.firstSN.high, (unsigned long)msg.firstSN.low,
                msg.lastSN.high,  (unsigned long)msg.lastSN.low);
+
+    // Route HEARTBEATs from SEDP builtin writers to the SEDP reader.
+    // — §8.3.7.5, p. 91: F=0 HEARTBEAT requires ACKNACK response.
+    if (msg.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER ||
+        msg.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
+        Locator writer_locator = LOCATOR_INVALID;
+        p->spdp_reader_.for_each_peer([&](const PeerEntry& peer) {
+            if (peer.data.guidPrefix == ctx.senderGuidPrefix &&
+                peer.data.metatrafficUnicastLocatorCount > 0u) {
+                writer_locator = peer.data.metatrafficUnicastLocatorList[0];
+            }
+        });
+        p->sedp_reader_.on_heartbeat(ctx, msg, writer_locator);
+    }
+
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
         if (!p->reader_alive_[i]) continue;
         auto* r = reinterpret_cast<StatefulReader*>(p->reader_storage_[i]);

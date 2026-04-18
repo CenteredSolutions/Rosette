@@ -265,10 +265,11 @@ public:
             return false;
         }
 
-        RTPS_LOG_D("writer", "add_change SN=%ld:%lu size=%lu",
+        RTPS_LOG_D("writer", "add_change SN=%ld:%lu size=%lu depth=%d",
                    inserted->sequenceNumber.high,
                    (unsigned long)inserted->sequenceNumber.low,
-                   (unsigned long)inserted->payload.size);
+                   (unsigned long)inserted->payload.size,
+                   writer_cache_.size());
 
         // Mark the new change UNSENT on every active proxy.
         for (uint8_t i = 0; i < MaxReaders; ++i)
