@@ -64,7 +64,7 @@ inline uint16_t read_u16_wire(const uint8_t* p, bool little_endian) noexcept
 //   PID_VENDOR_ID                     = 0x0016
 //   PID_METATRAFFIC_UNICAST_LOCATOR   = 0x0032
 //   PID_METATRAFFIC_MULTICAST_LOCATOR = 0x0033
-//   PID_DEFAULT_UNICAST_LOCATOR       = 0x002F
+//   PID_DEFAULT_UNICAST_LOCATOR       = 0x0031
 //   PID_DEFAULT_MULTICAST_LOCATOR     = 0x0048
 //   PID_PARTICIPANT_LEASE_DURATION    = 0x0002
 //   PID_BUILTIN_ENDPOINT_SET          = 0x0058
@@ -128,7 +128,7 @@ uint32_t SpdpWriter::serialise(Octet* buf, uint32_t cap) const noexcept {
                                24u)) return 0;
     }
 
-    // PID_DEFAULT_UNICAST_LOCATOR (0x002F).
+    // PID_DEFAULT_UNICAST_LOCATOR (0x0031).
     for (uint8_t i = 0; i < d.defaultUnicastLocatorCount; ++i) {
         if (!plcdr_write_param(buf, cap, off,
                                pid::DEFAULT_UNICAST_LOCATOR,
@@ -325,7 +325,10 @@ bool SpdpReader::deserialise(const Octet*               payload,
                 break;
 
             // PID_DEFAULT_UNICAST_LOCATOR.
+            // Accept legacy PID_UNICAST_LOCATOR (0x002F) in SPDP payloads
+            // for interoperability with older stacks/captures.
             case pid::DEFAULT_UNICAST_LOCATOR:
+            case pid::UNICAST_LOCATOR:
                 if (param_len >= 24u &&
                     out.defaultUnicastLocatorCount <
                         RTPS_MAX_LOCATORS_PER_PARTICIPANT

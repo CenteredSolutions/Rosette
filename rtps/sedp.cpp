@@ -109,49 +109,25 @@ static uint32_t reader_payload_size_estimate(const DiscoveredReaderData& rd) noe
 }
 
 template<typename EndpointData, typename EstimateFn, typename SerialiseFn>
-static void announce_endpoints(MessageBuilder& builder,
-                               ITransport&     transport,
-                               const GuidPrefix& local_prefix,
-                               const Locator&  dest,
+static void announce_endpoints(StatefulWriter<RTPS_MAX_LOCAL_ENDPOINTS, RTPS_MAX_PEERS>& writer,
                                const EndpointData* endpoints,
-                               const EntityId& reader_id,
-                               const EntityId& writer_id,
-                               SequenceNumber& next_sn,
-                               EstimateFn      estimate,
-                               SerialiseFn     serialise) noexcept
+                               EstimateFn          estimate,
+                               SerialiseFn         serialise) noexcept
 {
     for (uint8_t i = 0; i < RTPS_MAX_LOCAL_ENDPOINTS; ++i) {
         if (!endpoints[i].is_valid()) continue;
 
-        BufRef msg = buf_alloc_with_headroom(
-            estimate(endpoints[i]), kRtpsDataHeadroom);
-        if (!msg.valid()) continue;
+        BufRef payload = buf_alloc(estimate(endpoints[i]));
+        if (!payload.valid()) continue;
 
-        const uint32_t plen = serialise(endpoints[i], msg.data, msg.capacity());
+        const uint32_t plen = serialise(endpoints[i], payload.data, payload.capacity());
         if (plen == 0) {
-            msg.reset();
+            payload.reset();
             continue;
         }
-        msg.size = plen;
-
-        const bool ok = builder.begin_with_payload(static_cast<BufRef&&>(msg)) &&
-                        builder.prepend_data_message(
-                            local_prefix,
-                            reader_id,
-                            writer_id,
-                            next_sn,
-                            /*key_flag=*/false);
-        if (ok) {
-            ++next_sn;
-        }
-
-        if (ok) {
-            BufRef out = builder.finish();
-            transport.send_unicast(out, dest);
-            out.reset();
-        } else {
-            builder.abort();
-        }
+        payload.size = plen;
+        writer.write_preframed_async(ChangeKind::ALIVE, payload.data, payload.size);
+        payload.reset();
     }
 }
 
@@ -282,18 +258,21 @@ uint32_t SedpWriter::serialise_reader(const DiscoveredReaderData& rd,
 // to the specified destination (remote participant metatraffic locator).
 // ============================================================
 
-void SedpWriter::announce_to_peer(const GuidPrefix& local_prefix,
+void SedpWriter::announce_to_peer(const GuidPrefix& peer_prefix,
                                   const Locator&    dest) noexcept
 {
+    const Guid pub_reader{peer_prefix, entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR};
+    const Guid sub_reader{peer_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR};
+    if (!publications_writer_.matched_reader_lookup(pub_reader)) {
+        publications_writer_.matched_reader_add(pub_reader, &dest, 1u, false);
+    }
+    if (!subscriptions_writer_.matched_reader_lookup(sub_reader)) {
+        subscriptions_writer_.matched_reader_add(sub_reader, &dest, 1u, false);
+    }
+
     announce_endpoints(
-        builder_,
-        transport_,
-        local_prefix,
-        dest,
+        publications_writer_,
         local_writers_,
-        entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR,
-        entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER,
-        next_publication_sn_,
         writer_payload_size_estimate,
         [this](const DiscoveredWriterData& wd,
                Octet* buf,
@@ -302,20 +281,78 @@ void SedpWriter::announce_to_peer(const GuidPrefix& local_prefix,
         });
 
     announce_endpoints(
-        builder_,
-        transport_,
-        local_prefix,
-        dest,
+        subscriptions_writer_,
         local_readers_,
-        entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR,
-        entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER,
-        next_subscription_sn_,
         reader_payload_size_estimate,
         [this](const DiscoveredReaderData& rd,
                Octet* buf,
                uint32_t cap) noexcept {
             return serialise_reader(rd, buf, cap);
         });
+}
+
+void SedpWriter::on_peer_discovered(const SPDPdiscoveredParticipantData& peer) noexcept
+{
+    const Locator* locs = peer.metatrafficUnicastLocatorList;
+    uint8_t count = peer.metatrafficUnicastLocatorCount;
+    if (count == 0u) {
+        locs = peer.metatrafficMulticastLocatorList;
+        count = peer.metatrafficMulticastLocatorCount;
+    }
+    if (count == 0u) {
+        return;
+    }
+
+    const Guid pub_reader{peer.guidPrefix, entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR};
+    const Guid sub_reader{peer.guidPrefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR};
+
+    const bool has_pub_detector =
+        (peer.availableBuiltinEndpoints &
+         builtin_endpoint::DISC_BUILTIN_ENDPOINT_PUBLICATIONS_DETECTOR) != 0u;
+    const bool has_sub_detector =
+        (peer.availableBuiltinEndpoints &
+         builtin_endpoint::DISC_BUILTIN_ENDPOINT_SUBSCRIPTIONS_DETECTOR) != 0u;
+
+    if (has_pub_detector) {
+        if (!publications_writer_.matched_reader_lookup(pub_reader)) {
+            publications_writer_.matched_reader_add(pub_reader, locs, count, false);
+        }
+    } else {
+        publications_writer_.matched_reader_remove(pub_reader);
+    }
+
+    if (has_sub_detector) {
+        if (!subscriptions_writer_.matched_reader_lookup(sub_reader)) {
+            subscriptions_writer_.matched_reader_add(sub_reader, locs, count, false);
+        }
+    } else {
+        subscriptions_writer_.matched_reader_remove(sub_reader);
+    }
+}
+
+void SedpWriter::on_peer_removed(const GuidPrefix& peer_prefix) noexcept
+{
+    publications_writer_.matched_reader_remove(
+        Guid{peer_prefix, entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR});
+    subscriptions_writer_.matched_reader_remove(
+        Guid{peer_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR});
+}
+
+IStatefulWriter* SedpWriter::find_writer_iface(const EntityId& writer_id) noexcept
+{
+    if (writer_id == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
+        return &publications_writer_;
+    }
+    if (writer_id == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
+        return &subscriptions_writer_;
+    }
+    return nullptr;
+}
+
+void SedpWriter::tick(uint32_t now_ms) noexcept
+{
+    publications_writer_.tick(now_ms);
+    subscriptions_writer_.tick(now_ms);
 }
 
 // ============================================================

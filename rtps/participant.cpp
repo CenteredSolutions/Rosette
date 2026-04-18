@@ -130,22 +130,20 @@ RTPSParticipant::RTPSParticipant(uint8_t     domain_id,
     : domain_id_(domain_id)
     , participant_id_(participant_id)
     , transport_(transport)
+    , participant_guid_{rtps_platform_make_guid_prefix(participant_id),
+                        entity_id::PARTICIPANT}
     , spdp_multicast_locator_(LOCATOR_INVALID)
     , match_table_(on_endpoint_match, on_endpoint_unmatch, this)
     , spdp_writer_(local_participant_data_,
                    transport,
                    LOCATOR_INVALID)
     , spdp_reader_(on_spdp_new_peer, on_spdp_peer_removed, this)
-    , sedp_writer_(transport)
+    , sedp_writer_(participant_guid_.prefix, transport)
     , sedp_reader_(match_table_)
 {
     memset(writer_iface_, 0, sizeof(writer_iface_));
     memset(writer_alive_, 0, sizeof(writer_alive_));
     memset(reader_alive_, 0, sizeof(reader_alive_));
-
-    // Participant GUID — §8.5.1.2, p. 151.
-    participant_guid_.prefix   = rtps_platform_make_guid_prefix(participant_id);
-    participant_guid_.entityId = entity_id::PARTICIPANT;
 
     // SPDPdiscoveredParticipantData — §8.5.3.2, Table 8.73, p. 160.
     local_participant_data_.guidPrefix      = participant_guid_.prefix;
@@ -267,6 +265,7 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
 
     spdp_writer_.tick(now_ms);
     spdp_reader_.tick(now_ms);
+    sedp_writer_.tick(now_ms);
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
         if (writer_alive_[i] && writer_iface_[i])
             writer_iface_[i]->tick(now_ms);
@@ -372,8 +371,9 @@ void RTPSParticipant::on_spdp_new_peer(const PeerEntry& peer,
         RTPS_LOG_W("participant", "new peer has no metatraffic locator, skipping SEDP");
         return;
     }
+    p->sedp_writer_.on_peer_discovered(peer.data);
     const Locator& dest = peer.data.metatrafficUnicastLocatorList[0];
-    p->sedp_writer_.announce_to_peer(p->participant_guid_.prefix, dest);
+    p->sedp_writer_.announce_to_peer(peer.data.guidPrefix, dest);
     p->spdp_reader_.mark_sedp_announced(peer.data.guidPrefix);
 }
 
@@ -400,6 +400,7 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
     // for every dissolved match — which in turn calls matched_reader_remove /
     // matched_writer_remove on the affected local endpoints.
     p->match_table_.remove_participant(peer.data.guidPrefix);
+    p->sedp_writer_.on_peer_removed(peer.data.guidPrefix);
 }
 
 void RTPSParticipant::on_endpoint_match(const DiscoveredWriterData& wd,
@@ -579,6 +580,9 @@ int RTPSParticipant::find_free_writer_slot() const noexcept {
 }
 
 IStatefulWriter* RTPSParticipant::find_writer_iface(const EntityId& eid) noexcept {
+    if (IStatefulWriter* builtin = sedp_writer_.find_writer_iface(eid)) {
+        return builtin;
+    }
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i) {
         if (!writer_alive_[i] || !writer_iface_[i]) continue;
         if (writer_iface_[i]->guid().entityId == eid)

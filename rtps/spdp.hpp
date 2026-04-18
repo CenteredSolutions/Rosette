@@ -43,7 +43,7 @@
  *   PID_PARTICIPANT_GUID      = 0x0050
  *   PID_METATRAFFIC_UNICAST_LOCATOR   = 0x0032
  *   PID_METATRAFFIC_MULTICAST_LOCATOR = 0x0033
- *   PID_DEFAULT_UNICAST_LOCATOR       = 0x002F
+ *   PID_DEFAULT_UNICAST_LOCATOR       = 0x0031
  *   PID_DEFAULT_MULTICAST_LOCATOR     = 0x0048
  *   PID_PARTICIPANT_LEASE_DURATION    = 0x0002
  *   PID_BUILTIN_ENDPOINT_SET          = 0x0058
@@ -87,7 +87,7 @@ struct ITransport;   // Forward — declared in stateful_writer.hpp.
 namespace pid {
     inline constexpr uint16_t SENTINEL                       = 0x0001u;
     inline constexpr uint16_t PARTICIPANT_LEASE_DURATION     = 0x0002u;
-    inline constexpr uint16_t DEFAULT_UNICAST_LOCATOR        = 0x002Fu;
+    inline constexpr uint16_t DEFAULT_UNICAST_LOCATOR        = 0x0031u;
     inline constexpr uint16_t METATRAFFIC_UNICAST_LOCATOR    = 0x0032u;
     inline constexpr uint16_t METATRAFFIC_MULTICAST_LOCATOR  = 0x0033u;
     inline constexpr uint16_t DEFAULT_MULTICAST_LOCATOR      = 0x0048u;
@@ -101,7 +101,7 @@ namespace pid {
     inline constexpr uint16_t RELIABILITY                    = 0x001Au;
     inline constexpr uint16_t DURABILITY                     = 0x001Du;
     inline constexpr uint16_t ENDPOINT_GUID                  = 0x005Au;
-    inline constexpr uint16_t UNICAST_LOCATOR                = 0x002Fu;   // Reused for endpoints.
+    inline constexpr uint16_t UNICAST_LOCATOR                = 0x002Fu;   // SEDP endpoint locator.
 }
 
 // ============================================================

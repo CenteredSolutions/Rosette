@@ -52,6 +52,7 @@
 #include "endpoint_match_table.hpp"
 #include "message_builder.hpp"
 #include "spdp.hpp"   // pid namespace, plcdr_write_param
+#include "stateful_writer.hpp"
 
 namespace rtps {
 
@@ -119,8 +120,19 @@ inline bool plcdr_write_string(Octet*      buf,
 class SedpWriter {
 public:
 
-    explicit SedpWriter(ITransport& transport) noexcept
-        : transport_(transport) {}
+    explicit SedpWriter(const GuidPrefix& local_prefix,
+                        ITransport&       transport) noexcept
+        : publications_writer_(
+              Guid{local_prefix, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER},
+              ReliabilityKind::RELIABLE,
+              DurabilityKind::TRANSIENT_LOCAL,
+              transport)
+        , subscriptions_writer_(
+              Guid{local_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER},
+              ReliabilityKind::RELIABLE,
+              DurabilityKind::TRANSIENT_LOCAL,
+              transport)
+    {}
 
     // ----------------------------------------------------------
     // register_writer() / register_reader()
@@ -154,18 +166,30 @@ public:
     //   "The SEDPbuiltinSubscriptionsWriter sends DiscoveredReaderData
     //    for all local DataReaders."
     //
-    // @param local_prefix   This participant's GUID prefix.
-    // @param dest           Remote metatraffic unicast locator.
+    // @param peer_prefix    Remote participant GUID prefix.
+    // @param dest           Remote metatraffic locator for builtin readers.
     // ----------------------------------------------------------
-    void announce_to_peer(const GuidPrefix& local_prefix,
+    void announce_to_peer(const GuidPrefix& peer_prefix,
                           const Locator&    dest) noexcept;
+
+    // Match or refresh remote builtin SEDP readers from SPDP data.
+    void on_peer_discovered(const SPDPdiscoveredParticipantData& peer) noexcept;
+
+    // Remove remote builtin SEDP readers when a peer expires.
+    void on_peer_removed(const GuidPrefix& peer_prefix) noexcept;
+
+    // Route ACKNACK/NACK_FRAG for builtin SEDP writers.
+    IStatefulWriter* find_writer_iface(const EntityId& writer_id) noexcept;
+
+    // Drive builtin writer periodic maintenance.
+    void tick(uint32_t now_ms) noexcept;
 
 private:
 
-    ITransport& transport_;
-    MessageBuilder builder_;
-    SequenceNumber next_publication_sn_  = SequenceNumber::from_int64(1);
-    SequenceNumber next_subscription_sn_ = SequenceNumber::from_int64(1);
+    static constexpr uint8_t kSedpHistoryDepth = RTPS_MAX_LOCAL_ENDPOINTS;
+
+    StatefulWriter<kSedpHistoryDepth, RTPS_MAX_PEERS> publications_writer_;
+    StatefulWriter<kSedpHistoryDepth, RTPS_MAX_PEERS> subscriptions_writer_;
 
     DiscoveredWriterData local_writers_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
     DiscoveredReaderData local_readers_[RTPS_MAX_LOCAL_ENDPOINTS] = {};

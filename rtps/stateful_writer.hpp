@@ -208,7 +208,7 @@ public:
         }
         out_payload = buf_alloc(payload_size);
         if (!out_payload.valid()) {
-            RTPS_LOG_E("writer", "buf_alloc failed for new_change (pool exhausted)");
+            RTPS_LOG_E("writer", "buf_alloc failed (%d) for new_change (pool exhausted)", payload_size);
             return nullptr;
         }
         staging_.kind           = kind;
@@ -390,6 +390,108 @@ public:
 #else
         (void)my_sn; (void)to;
 #endif
+        return true;
+    }
+
+    // ----------------------------------------------------------
+    // write_async()
+    //
+    // Non-blocking stateful write:
+    //   - creates a change
+    //   - adds it to history
+    //   - sends unsent DATA immediately
+    //   - returns without waiting for ACKs
+    //
+    // Useful for builtin reliable endpoints (e.g. SEDP), where
+    // retransmit/repair is still handled by ACKNACK + tick().
+    // ----------------------------------------------------------
+    bool write_async(ChangeKind         kind,
+                     const Octet*       payload_data,
+                     uint32_t           payload_size,
+                     const InlineQos&   inline_qos = InlineQos{},
+                     SequenceNumber*    out_sn = nullptr) noexcept
+    {
+        if (!payload_data || payload_size == 0) {
+            return false;
+        }
+
+        BufRef payload_buf;
+        CacheChange* ch = new_change(kind, payload_buf, payload_size);
+        if (!ch) {
+            RTPS_LOG_E("writer", "write_async: new_change failed");
+            return false;
+        }
+
+        const uint32_t sz = (payload_size < payload_buf.capacity())
+                            ? payload_size : payload_buf.capacity();
+        memcpy(payload_buf.data, payload_data, sz);
+        payload_buf.size = sz;
+        ch->payload.size = sz;
+        ch->inlineQos    = inline_qos;
+
+        if (!add_change(static_cast<CacheChange&&>(*ch))) {
+            payload_buf.reset();
+            return false;
+        }
+
+        if (out_sn) {
+            *out_sn = nextSN_ - 1;
+        }
+        send_unsent_changes();
+        return true;
+    }
+
+    // ----------------------------------------------------------
+    // write_preframed_async()
+    //
+    // Non-blocking write for payloads that are already encoded as
+    // RTPS serializedPayload bytes (including representation header).
+    //
+    // This path allocates TX headroom so send_data_to() can prepend
+    // DATA/RTPS headers in-place (zero-copy), avoiding append_data()
+    // encapsulation rewriting.
+    // ----------------------------------------------------------
+    bool write_preframed_async(ChangeKind      kind,
+                               const Octet*    serialized_payload,
+                               uint32_t        payload_size,
+                               SequenceNumber* out_sn = nullptr) noexcept
+    {
+        if (!serialized_payload || payload_size == 0) {
+            return false;
+        }
+
+        if (staging_.payload.valid()) {
+            staging_.payload.reset();
+        }
+        BufRef payload_buf = buf_alloc_with_headroom(payload_size, kRtpsDataHeadroom);
+        if (!payload_buf.valid()) {
+            RTPS_LOG_E("writer", "write_preframed_async: buf_alloc_with_headroom failed");
+            return false;
+        }
+
+        const uint32_t sz = (payload_size < payload_buf.capacity())
+                            ? payload_size : payload_buf.capacity();
+        memcpy(payload_buf.data, serialized_payload, sz);
+        payload_buf.size = sz;
+
+        staging_.kind           = kind;
+        staging_.writerGuid     = guid_;
+        staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
+        staging_.inlineQos      = {};
+        staging_.payload.block  = payload_buf.block;
+        staging_.payload.data   = payload_buf.data;
+        staging_.payload.size   = payload_buf.size;
+        payload_buf.retain();
+
+        if (!add_change(static_cast<CacheChange&&>(staging_))) {
+            payload_buf.reset();
+            return false;
+        }
+
+        if (out_sn) {
+            *out_sn = nextSN_ - 1;
+        }
+        send_unsent_changes();
         return true;
     }
 
