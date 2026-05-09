@@ -7,3 +7,6 @@
 # Python
 *.pyc
 **/__pycache__
+
+# macOS extras
+**/.DS_Store

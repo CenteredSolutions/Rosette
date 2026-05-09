@@ -56,6 +56,27 @@ namespace rtps {
 // ============================================================
 // Platform hook
 // ============================================================
+/**
+ * @brief Creates the RTPS GUID prefix for a participant instance.
+ *
+ * The participant constructor uses this hook to obtain the stable GUID prefix
+ * that identifies the local RTPS participant across all builtin and user
+ * endpoints. Platform code owns the policy for deriving this prefix from board
+ * identity, MAC address material, serial numbers, or other hardware-specific
+ * entropy while preserving RTPS GUID layout semantics.
+ *
+ * Implementations return a complete 12-octet GuidPrefix value. The participant
+ * combines that prefix with the standard participant entity id to form the
+ * local participant GUID defined by the RTPS specification.
+ *
+ * @param[in] participant_id Small application-level participant selector used
+ *     to distinguish multiple local participants when the platform supports it.
+ * @return The 12-octet RTPS GuidPrefix for the local participant.
+ *
+ * References:
+ * - OMG DDSI-RTPS Version 2.5, Section 8.3.4.5 "GUID_t"
+ * - OMG DDSI-RTPS Version 2.5, Section 8.5.1.2 "Participant GUID"
+ */
 extern "C" GuidPrefix rtps_platform_make_guid_prefix(uint8_t participant_id) noexcept;
 
 // ============================================================

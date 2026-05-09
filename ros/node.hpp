@@ -1,6 +1,7 @@
 #pragma once
 
 #include "publisher.hpp"
+#include "service.hpp"
 #include "subscription.hpp"
 
 namespace milkros {
@@ -70,7 +71,7 @@ class Context;
  */
 class Node {
 public:
-    Node(Context& context,
+    Node(Context&    context,
          const char* name,
          const char* node_namespace,
          int         node_index = -1) noexcept;

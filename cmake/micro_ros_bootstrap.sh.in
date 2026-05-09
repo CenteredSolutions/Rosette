@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROS_SETUP="@ROSETTE_MICRO_ROS_ROS_SETUP@"
+MICRO_ROS_SETUP_SRC="@ROSETTE_MICRO_ROS_SETUP_SOURCE_DIR@"
+WORKSPACE_DIR="@ROSETTE_MICRO_ROS_WORKSPACE_DIR_ESCAPED@"
+TOOLCHAIN_FILE="@_rosette_micro_ros_toolchain_file@"
+COLCON_META_FILE="@_rosette_micro_ros_colcon_meta_file@"
+RUN_ROSDEP="@ROSETTE_MICRO_ROS_RUN_ROSDEP_TEXT@"
+
+if [[ ! -f "${ROS_SETUP}" ]]; then
+  echo "micro-ROS bootstrap requires a host ROS 2 installation at: ${ROS_SETUP}" >&2
+  exit 1
+fi
+
+mkdir -p "${WORKSPACE_DIR}/src"
+
+if [[ -L "${WORKSPACE_DIR}/src/micro_ros_setup" ]]; then
+  EXISTING_TARGET="$(readlink "${WORKSPACE_DIR}/src/micro_ros_setup")"
+  if [[ "${EXISTING_TARGET}" != "${MICRO_ROS_SETUP_SRC}" ]]; then
+    rm -f "${WORKSPACE_DIR}/src/micro_ros_setup"
+  fi
+fi
+
+if [[ ! -e "${WORKSPACE_DIR}/src/micro_ros_setup" ]]; then
+  ln -s "${MICRO_ROS_SETUP_SRC}" "${WORKSPACE_DIR}/src/micro_ros_setup"
+fi
+
+source "${ROS_SETUP}"
+cd "${WORKSPACE_DIR}"
+
+if [[ "${RUN_ROSDEP}" == "ON" ]]; then
+  rosdep update
+  rosdep install --from-paths src --ignore-src -y
+fi
+
+colcon build --packages-select micro_ros_setup
+source "${WORKSPACE_DIR}/install/local_setup.bash"
+
+if [[ ! -d "${WORKSPACE_DIR}/firmware" ]]; then
+  ros2 run micro_ros_setup create_firmware_ws.sh generate_lib
+fi
+
+ros2 run micro_ros_setup build_firmware.sh "${TOOLCHAIN_FILE}" "${COLCON_META_FILE}"

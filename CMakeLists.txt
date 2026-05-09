@@ -40,6 +40,8 @@ project(rtps_stack C CXX ASM)
 set(CMAKE_C_STANDARD   11)
 set(CMAKE_CXX_STANDARD 17)
 
+include(cmake/micro_ros.cmake)
+
 if(RTPS_BOARD_ENABLE_PICO_SDK)
     pico_sdk_init()
 endif()
@@ -175,6 +177,48 @@ if(RTPS_BOARD_BUILD_EXAMPLE)
     pico_add_extra_outputs(rtps_example)
     pico_enable_stdio_usb(rtps_example 1)
     pico_enable_stdio_uart(rtps_example 0)
+endif()
+
+if(ROSETTE_ENABLE_MICRO_ROS AND ROSETTE_BUILD_MICRO_ROS_BOARD_SMOKE)
+    set(ROSETTE_MICRO_ROS_BOARD_SMOKE_SOURCES
+        example/main_micro_ros_board_smoke.cpp
+    )
+
+    if(RTPS_BOARD_ENABLE_FREERTOS)
+        list(APPEND ROSETTE_MICRO_ROS_BOARD_SMOKE_SOURCES
+            net/ntp_sync.cpp
+        )
+    else()
+        list(APPEND ROSETTE_MICRO_ROS_BOARD_SMOKE_SOURCES
+            platform/posix/rtps_posix_platform.cpp
+            platform/posix/rtps_posix_log.cpp
+            net/posix/socket.cpp
+        )
+    endif()
+
+    add_executable(rtps_micro_ros_board_smoke
+        ${ROSETTE_MICRO_ROS_BOARD_SMOKE_SOURCES}
+    )
+
+    target_link_libraries(rtps_micro_ros_board_smoke PRIVATE
+        rtps_stack
+        micro_ros_vendor
+    )
+
+    if(RTPS_BOARD_BUILD_BSP)
+        target_link_libraries(rtps_micro_ros_board_smoke PRIVATE
+            rtps_bsp
+        )
+    endif()
+
+    if(RTPS_BOARD_ENABLE_PICO_SDK)
+        target_link_libraries(rtps_micro_ros_board_smoke PRIVATE
+            hardware_adc
+        )
+        pico_add_extra_outputs(rtps_micro_ros_board_smoke)
+        pico_enable_stdio_usb(rtps_micro_ros_board_smoke 1)
+        pico_enable_stdio_uart(rtps_micro_ros_board_smoke 0)
+    endif()
 endif()
 
 message(STATUS "")
