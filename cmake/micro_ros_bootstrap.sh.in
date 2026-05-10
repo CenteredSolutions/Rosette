@@ -8,6 +8,49 @@ TOOLCHAIN_FILE="@_rosette_micro_ros_toolchain_file@"
 COLCON_META_FILE="@_rosette_micro_ros_colcon_meta_file@"
 RUN_ROSDEP="@ROSETTE_MICRO_ROS_RUN_ROSDEP_TEXT@"
 
+source_setup_file() {
+  local setup_file="$1"
+  local errexit_was_enabled=0
+  local nounset_was_enabled=0
+
+  case "$-" in
+    *e*) errexit_was_enabled=1 ;;
+  esac
+  case "$-" in
+    *u*) nounset_was_enabled=1 ;;
+  esac
+
+  set +e
+  set +u
+  source "${setup_file}"
+  local source_status=$?
+
+  if [[ "${nounset_was_enabled}" -eq 1 ]]; then
+    set -u
+  fi
+  if [[ "${errexit_was_enabled}" -eq 1 ]]; then
+    set -e
+  fi
+
+  return "${source_status}"
+}
+
+patch_libyaml_vendor_for_cmake4() {
+  local vendor_cmake="$1"
+  local policy_arg="-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+
+  if [[ ! -f "${vendor_cmake}" ]]; then
+    return 0
+  fi
+  if grep -Fq "${policy_arg}" "${vendor_cmake}"; then
+    return 0
+  fi
+
+  perl -0pi -e \
+    's/(list\(APPEND extra_cmake_args -DBUILD_TESTING=OFF\)\n)/$1  list(APPEND extra_cmake_args -DCMAKE_POLICY_VERSION_MINIMUM=3.5)\n/' \
+    "${vendor_cmake}"
+}
+
 if [[ ! -f "${ROS_SETUP}" ]]; then
   echo "micro-ROS bootstrap requires a host ROS 2 installation at: ${ROS_SETUP}" >&2
   exit 1
@@ -26,7 +69,7 @@ if [[ ! -e "${WORKSPACE_DIR}/src/micro_ros_setup" ]]; then
   ln -s "${MICRO_ROS_SETUP_SRC}" "${WORKSPACE_DIR}/src/micro_ros_setup"
 fi
 
-source "${ROS_SETUP}"
+source_setup_file "${ROS_SETUP}"
 cd "${WORKSPACE_DIR}"
 
 if [[ "${RUN_ROSDEP}" == "ON" ]]; then
@@ -35,10 +78,15 @@ if [[ "${RUN_ROSDEP}" == "ON" ]]; then
 fi
 
 colcon build --packages-select micro_ros_setup
-source "${WORKSPACE_DIR}/install/local_setup.bash"
+source_setup_file "${WORKSPACE_DIR}/install/local_setup.bash"
 
 if [[ ! -d "${WORKSPACE_DIR}/firmware" ]]; then
   ros2 run micro_ros_setup create_firmware_ws.sh generate_lib
 fi
+
+patch_libyaml_vendor_for_cmake4 \
+  "${WORKSPACE_DIR}/firmware/mcu_ws/ros2/libyaml_vendor/CMakeLists.txt"
+patch_libyaml_vendor_for_cmake4 \
+  "${WORKSPACE_DIR}/firmware/mcu_ws/uros/libyaml_vendor/CMakeLists.txt"
 
 ros2 run micro_ros_setup build_firmware.sh "${TOOLCHAIN_FILE}" "${COLCON_META_FILE}"

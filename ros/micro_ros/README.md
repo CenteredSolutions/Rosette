@@ -165,7 +165,8 @@ The smoke path is:
 6. Publish MCU temperature on `mcu_temperature_c`.
 
 On `RTPS_BOARD=posix`, the topic value comes from native host thermal sensors
-when available and falls back to `NaN` when the host OS does not expose one.
+when available and falls back to a slow synthetic room-temperature signal when
+the host OS does not expose one.
 
 For custom transports, the smoke target follows this policy:
 

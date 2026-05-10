@@ -55,12 +55,11 @@ public:
         }
 
         timer_ = rcl_get_zero_initialized_timer();
-        if (rclc_timer_init_default2(
+        if (rclc_timer_init_default(
                 &timer_,
                 &context_->support(),
                 static_cast<uint64_t>(period_ms) * 1000000ull,
-                &Timer::on_timer,
-                true) != RCL_RET_OK) {
+                &Timer::on_timer) != RCL_RET_OK) {
             timer_ = rcl_get_zero_initialized_timer();
             return;
         }
@@ -71,7 +70,12 @@ public:
             return;
         }
 
-        timer_.impl->callback_data = this;
+        if (!register_timer(&timer_, this)) {
+            (void)rclc_executor_remove_timer(&context_->executor(), &timer_);
+            (void)rcl_timer_fini(&timer_);
+            timer_ = rcl_get_zero_initialized_timer();
+            return;
+        }
         valid_ = true;
     }
 
@@ -91,9 +95,9 @@ private:
     /**
      * @brief Bridges the plain-C `rclc` timer callback to the stored C++ callable.
      *
-     * `rclc_timer_init_default2()` does not expose a user context parameter, so
-     * the wrapper stores `this` in `callback_data` after successful
-     * initialization and retrieves it here.
+     * Humble's `rclc_timer_init_default()` does not expose a user context
+     * parameter, and `rcl_timer_t` keeps its implementation opaque. The wrapper
+     * therefore resolves the timer handle through a small static registry.
      *
      * @param[in] timer Timer instance provided by `rclc`.
      * @param[in] last_call_time Unused elapsed-time parameter from `rclc`.
@@ -101,11 +105,91 @@ private:
     static void on_timer(rcl_timer_t* timer, int64_t last_call_time) noexcept
     {
         (void)last_call_time;
-        if (timer == nullptr || timer->impl == nullptr || timer->impl->callback_data == nullptr) {
+        Timer* self = find_registered_timer(timer);
+        if (self == nullptr) {
             return;
         }
-        auto* self = static_cast<Timer*>(timer->impl->callback_data);
         self->callback_();
+    }
+
+    /**
+     * @brief Records the wrapper that owns an initialized `rcl_timer_t`.
+     *
+     * The registry is a small fixed-capacity table because timer callbacks in
+     * Humble identify only the C timer handle. It is updated during timer
+     * construction and teardown on the same cooperative executor path used by
+     * the rest of this backend, so it assumes application code does not create
+     * or destroy timers concurrently with `Context::tick()`.
+     *
+     * @param[in] timer Timer handle owned by the wrapper.
+     * @param[in] owner C++ timer wrapper that should receive callbacks.
+     * @return True when the timer was recorded or was already present.
+     */
+    static bool register_timer(rcl_timer_t* timer, Timer* owner) noexcept
+    {
+        if (timer == nullptr || owner == nullptr) {
+            return false;
+        }
+
+        for (TimerRegistration& registration : registrations_) {
+            if (registration.timer == timer) {
+                registration.owner = owner;
+                return true;
+            }
+        }
+        for (TimerRegistration& registration : registrations_) {
+            if (registration.timer == nullptr) {
+                registration.timer = timer;
+                registration.owner = owner;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * @brief Finds the wrapper that owns an `rcl_timer_t` callback handle.
+     *
+     * The executor calls this from the plain-C timer callback. A missing entry
+     * means the timer is not owned by this wrapper type or teardown has already
+     * removed it from the registry.
+     *
+     * @param[in] timer Timer handle supplied by `rcl`.
+     * @return The owning timer wrapper, or `nullptr` when no registration exists.
+     */
+    static Timer* find_registered_timer(rcl_timer_t* timer) noexcept
+    {
+        if (timer == nullptr) {
+            return nullptr;
+        }
+        for (TimerRegistration& registration : registrations_) {
+            if (registration.timer == timer) {
+                return registration.owner;
+            }
+        }
+        return nullptr;
+    }
+
+    /**
+     * @brief Removes a timer handle from the callback registry.
+     *
+     * Teardown unregisters before finalizing the underlying `rcl_timer_t` so a
+     * later callback cannot dereference an owner that has released its handle.
+     *
+     * @param[in] timer Timer handle to remove from the registry.
+     */
+    static void unregister_timer(rcl_timer_t* timer) noexcept
+    {
+        if (timer == nullptr) {
+            return;
+        }
+        for (TimerRegistration& registration : registrations_) {
+            if (registration.timer == timer) {
+                registration.timer = nullptr;
+                registration.owner = nullptr;
+                return;
+            }
+        }
     }
 
     /**
@@ -117,6 +201,7 @@ private:
     void fini() noexcept
     {
         if (valid_) {
+            unregister_timer(&timer_);
             (void)rclc_executor_remove_timer(&context_->executor(), &timer_);
             (void)rcl_timer_fini(&timer_);
         }
@@ -128,6 +213,14 @@ private:
     rcl_timer_t timer_ = rcl_get_zero_initialized_timer();
     CallbackT callback_{};
     bool valid_ = false;
+
+    struct TimerRegistration {
+        rcl_timer_t* timer = nullptr;
+        Timer* owner = nullptr;
+    };
+
+    static constexpr size_t kMaxRegisteredTimers = 8u;
+    inline static TimerRegistration registrations_[kMaxRegisteredTimers] = {};
 };
 
 }  // namespace milkros::micro_ros

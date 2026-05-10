@@ -33,7 +33,7 @@ class Node;
  *   options.auto_discover_agent = true;
  *
  *   milkros::micro_ros::Context context(options);
- *   if (context.start()) {
+ *   if (context.start_result().ok()) {
  *       auto node = context.create_node("motor_controller", "/drive");
  *       (void)node;
  *   }
@@ -68,51 +68,66 @@ public:
         fini();
     }
 
-    bool start() noexcept
+    /**
+     * @brief Starts the micro-ROS context and returns a typed result.
+     *
+     * Startup configures RCL initialization options, applies the selected
+     * XRCE-DDS transport, resolves or discovers the Agent, and then creates
+     * `rclc` support and executor state. Failed attempts call `fini()` before
+     * returning, so callers may retry later when network or Agent availability
+     * changes.
+     *
+     * @return Empty successful result when the context is running, or a
+     * `ContextStartError` describing which startup phase failed.
+     */
+    ContextStartResult start_result() noexcept
     {
         if (started_) {
-            return true;
+            last_start_error_ = ContextStartError::kOk;
+            return {};
         }
 
         allocator_ = rcl_get_default_allocator();
         init_options_ = rcl_get_zero_initialized_init_options();
         if (rcl_init_options_init(&init_options_, allocator_) != RCL_RET_OK) {
-            return false;
+            return fail_start(ContextStartError::kInitOptionsInitFailed);
         }
         init_options_initialized_ = true;
 
         if (rcl_init_options_set_domain_id(&init_options_, options_.domain_id) != RCL_RET_OK) {
             fini();
-            return false;
+            return fail_start(ContextStartError::kDomainIdSetFailed);
         }
 
         rmw_init_options_t* rmw_options =
             rcl_init_options_get_rmw_init_options(&init_options_);
         if (rmw_options == nullptr) {
             fini();
-            return false;
+            return fail_start(ContextStartError::kRmwOptionsUnavailable);
         }
 
         if (rmw_uros_options_set_client_key(options_.client_key, rmw_options) != RMW_RET_OK) {
             fini();
-            return false;
+            return fail_start(ContextStartError::kClientKeySetFailed);
         }
 
-        if (!configure_transport(*rmw_options)) {
+        ContextStartError status = configure_transport(*rmw_options);
+        if (status != ContextStartError::kOk) {
             fini();
-            return false;
+            return fail_start(status);
         }
 
-        if (!discover_agent(*rmw_options)) {
+        status = discover_agent(*rmw_options);
+        if (status != ContextStartError::kOk) {
             fini();
-            return false;
+            return fail_start(status);
         }
 
-        support_ = rclc_support_get_zero_initialized_support();
+        support_ = {};
         if (rclc_support_init_with_options(
                 &support_, 0, nullptr, &init_options_, &allocator_) != RCL_RET_OK) {
             fini();
-            return false;
+            return fail_start(ContextStartError::kSupportInitFailed);
         }
         support_initialized_ = true;
 
@@ -123,7 +138,7 @@ public:
                 options_.executor_handles,
                 &allocator_) != RCL_RET_OK) {
             fini();
-            return false;
+            return fail_start(ContextStartError::kExecutorInitFailed);
         }
         executor_initialized_ = true;
 
@@ -133,7 +148,22 @@ public:
             (void)rmw_uros_sync_session(options_.epoch_sync_timeout_ms);
         }
 
-        return true;
+        last_start_error_ = ContextStartError::kOk;
+        return {};
+    }
+
+    /**
+     * @brief Starts the micro-ROS context and reports boolean success.
+     *
+     * This compatibility wrapper preserves the original API while
+     * `start_result()` provides detailed diagnostics for applications that need
+     * retry and failure reporting.
+     *
+     * @return True when the context is running after the call.
+     */
+    bool start() noexcept
+    {
+        return start_result().ok();
     }
 
     void fini() noexcept
@@ -188,6 +218,7 @@ public:
     rclc_support_t& support() noexcept { return support_; }
     rclc_executor_t& executor() noexcept { return executor_; }
     bool started() const noexcept { return started_; }
+    ContextStartError last_start_error() const noexcept { return last_start_error_; }
 
     bool register_action_tickable(IActionTickable* tickable) noexcept
     {
@@ -216,18 +247,54 @@ public:
     }
 
 private:
-    bool configure_transport(rmw_init_options_t& rmw_options) noexcept
+    /**
+     * @brief Stores and returns a context startup failure.
+     *
+     * Startup helpers use this path so `last_start_error()` reflects the most
+     * recent failed attempt while the returned result carries the same typed
+     * reason to the caller.
+     *
+     * @param[in] error Startup error detected by the current attempt.
+     * @return Failed context startup result carrying `error`.
+     */
+    ContextStartResult fail_start(ContextStartError error) noexcept
+    {
+        last_start_error_ = error;
+        return ContextStartResult(error);
+    }
+
+    /**
+     * @brief Applies the selected XRCE-DDS transport to RMW initialization.
+     *
+     * The context calls this before `rclc_support_init_with_options()` so the
+     * micro-ROS session is created with the board-selected transport profile.
+     * UDP builds may use a static Agent endpoint or defer endpoint selection
+     * to discovery, while custom-transport builds bind Rosette's transport
+     * adapter callbacks into the RMW options.
+     *
+     * The function first validates transport-specific prerequisites, then
+     * installs either the custom callback table or the fixed UDP address into
+     * the supplied RMW options. Custom transport code is compiled only when the
+     * generated micro-ROS library was built for custom transport support.
+     *
+     * @param[in,out] rmw_options RMW initialization options updated with the
+     * transport settings used by the XRCE-DDS client.
+     * @return `ContextStartError::kOk` when the selected transport was
+     * configured successfully, or a transport-specific failure status.
+     */
+    ContextStartError configure_transport(rmw_init_options_t& rmw_options) noexcept
     {
         if (options_.use_custom_transport) {
+#if ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM
             if (options_.custom_transport == nullptr) {
-                return false;
+                return ContextStartError::kCustomTransportMissing;
             }
 
             if (options_.udp_agent_address != nullptr &&
                 !options_.custom_transport->configure_agent_endpoint(
                     options_.udp_agent_address,
                     options_.udp_agent_port)) {
-                return false;
+                return ContextStartError::kCustomTransportEndpointRejected;
             }
 
             return rmw_uros_options_set_custom_transport(
@@ -237,26 +304,53 @@ private:
                        &Context::close_transport,
                        &Context::write_transport,
                        &Context::read_transport,
-                       &rmw_options) == RMW_RET_OK;
+                       &rmw_options) == RMW_RET_OK
+                       ? ContextStartError::kOk
+                       : ContextStartError::kCustomTransportUnavailable;
+#else
+            return ContextStartError::kCustomTransportUnavailable;
+#endif
         }
 
         if (options_.udp_agent_address != nullptr) {
             return rmw_uros_options_set_udp_address(
                        options_.udp_agent_address,
                        options_.udp_agent_port,
-                       &rmw_options) == RMW_RET_OK;
+                       &rmw_options) == RMW_RET_OK
+                       ? ContextStartError::kOk
+                       : ContextStartError::kUdpAddressSetFailed;
         }
 
-        return true;
+        return ContextStartError::kOk;
     }
 
-    bool discover_agent(rmw_init_options_t& rmw_options) noexcept
+    /**
+     * @brief Resolves and validates the micro-ROS Agent endpoint.
+     *
+     * This step runs after transport selection and before RCL support
+     * initialization. It keeps the Agent-location policy in one place: static
+     * endpoints are pinged directly, Rosette locators can feed a discovered
+     * endpoint into UDP or custom transports, and stock UDP builds can ask
+     * `rmw_microxrcedds` to perform Agent discovery.
+     *
+     * The function chooses the highest-priority endpoint source available,
+     * writes discovered endpoints back into the RMW options or custom adapter,
+     * and pings the Agent before allowing startup to continue.
+     *
+     * @param[in,out] rmw_options RMW initialization options that may receive a
+     * discovered UDP endpoint.
+     * @return `ContextStartError::kOk` when an Agent endpoint was selected and
+     * verified, or a discovery-specific failure status.
+     */
+    ContextStartError discover_agent(rmw_init_options_t& rmw_options) noexcept
     {
         if (options_.udp_agent_address != nullptr) {
             return rmw_uros_ping_agent_options(
                        options_.discovery_timeout_ms,
                        options_.discovery_attempts,
-                       &rmw_options) == RMW_RET_OK;
+                       &rmw_options) == RMW_RET_OK
+                       ? ContextStartError::kOk
+                       : ContextStartError::kStaticAgentPingFailed;
         }
 
         if (options_.agent_locator != nullptr) {
@@ -264,11 +358,11 @@ private:
             char port[16] = {};
             if (!options_.agent_locator->resolve(
                     address, sizeof(address), port, sizeof(port))) {
-                return false;
+                return ContextStartError::kAgentLocatorFailed;
             }
 
             if (address[0] == '\0') {
-                return false;
+                return ContextStartError::kAgentLocatorNoAddress;
             }
             if (port[0] == '\0') {
                 strncpy(port, options_.udp_agent_port, sizeof(port) - 1u);
@@ -278,31 +372,48 @@ private:
             if (options_.use_custom_transport) {
                 if ((options_.custom_transport == nullptr) ||
                     !options_.custom_transport->configure_agent_endpoint(address, port)) {
-                    return false;
+                    return ContextStartError::kAgentLocatorEndpointRejected;
                 }
             } else if (rmw_uros_options_set_udp_address(address, port, &rmw_options) !=
                        RMW_RET_OK) {
-                return false;
+                return ContextStartError::kDiscoveredUdpAddressSetFailed;
             }
 
             return rmw_uros_ping_agent_options(
                        options_.discovery_timeout_ms,
                        options_.discovery_attempts,
-                       &rmw_options) == RMW_RET_OK;
+                       &rmw_options) == RMW_RET_OK
+                       ? ContextStartError::kOk
+                       : ContextStartError::kStaticAgentPingFailed;
         }
 
         if (options_.use_custom_transport) {
-            return false;
+            return ContextStartError::kCustomTransportRequiresEndpoint;
         }
 
         if (!options_.auto_discover_agent) {
-            return false;
+            return ContextStartError::kAutoDiscoveryDisabled;
         }
 
-        return rmw_uros_discover_agent(&rmw_options) == RMW_RET_OK;
+        return rmw_uros_discover_agent(&rmw_options) == RMW_RET_OK
+               ? ContextStartError::kOk
+               : ContextStartError::kAutoDiscoveryFailed;
     }
 
-    static bool open_transport(struct uxrCustomTransport* transport) noexcept
+#if ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM
+    /**
+     * @brief Opens the Rosette custom transport adapter for micro-ROS.
+     *
+     * `rmw_microxrcedds` invokes this C callback when creating the XRCE
+     * transport. The callback recovers the `CustomTransport` object stored in
+     * the transport arguments and delegates board-specific driver startup to
+     * that adapter.
+     *
+     * @param[in,out] transport XRCE custom transport handle whose `args` field
+     * points at a `CustomTransport` instance.
+     * @return True when the board transport opened successfully.
+     */
+    static bool open_transport(::uxrCustomTransport* transport) noexcept
     {
         if (transport == nullptr || transport->args == nullptr) {
             return false;
@@ -311,7 +422,18 @@ private:
         return adapter->open();
     }
 
-    static bool close_transport(struct uxrCustomTransport* transport) noexcept
+    /**
+     * @brief Closes the Rosette custom transport adapter for micro-ROS.
+     *
+     * `rmw_microxrcedds` invokes this callback during XRCE transport teardown.
+     * The callback delegates shutdown to the board adapter associated with the
+     * transport handle.
+     *
+     * @param[in,out] transport XRCE custom transport handle whose `args` field
+     * points at a `CustomTransport` instance.
+     * @return True when the board transport closed successfully.
+     */
+    static bool close_transport(::uxrCustomTransport* transport) noexcept
     {
         if (transport == nullptr || transport->args == nullptr) {
             return false;
@@ -320,7 +442,22 @@ private:
         return adapter->close();
     }
 
-    static size_t write_transport(struct uxrCustomTransport* transport,
+    /**
+     * @brief Writes an XRCE frame through the Rosette custom transport adapter.
+     *
+     * This callback is part of the micro-ROS custom transport table. It passes
+     * the serialized XRCE bytes to the board adapter and returns the number of
+     * bytes accepted by the underlying driver.
+     *
+     * @param[in,out] transport XRCE custom transport handle whose `args` field
+     * points at a `CustomTransport` instance.
+     * @param[in] data Serialized XRCE bytes to transmit.
+     * @param[in] length Number of bytes available in `data`.
+     * @param[out] error Transport-specific error byte written by the adapter
+     * when a write fails.
+     * @return Number of bytes written to the transport.
+     */
+    static size_t write_transport(::uxrCustomTransport* transport,
                                   const uint8_t* data,
                                   size_t length,
                                   uint8_t* error) noexcept
@@ -332,7 +469,23 @@ private:
         return adapter->write(data, length, error);
     }
 
-    static size_t read_transport(struct uxrCustomTransport* transport,
+    /**
+     * @brief Reads an XRCE frame through the Rosette custom transport adapter.
+     *
+     * This callback is part of the micro-ROS custom transport table. It asks
+     * the board adapter to wait up to the requested timeout and copy received
+     * bytes into the caller-provided buffer.
+     *
+     * @param[in,out] transport XRCE custom transport handle whose `args` field
+     * points at a `CustomTransport` instance.
+     * @param[out] data Buffer that receives XRCE bytes from the transport.
+     * @param[in] length Maximum number of bytes that may be written to `data`.
+     * @param[in] timeout_ms Maximum time to wait for incoming data.
+     * @param[out] error Transport-specific error byte written by the adapter
+     * when a read fails.
+     * @return Number of bytes read from the transport.
+     */
+    static size_t read_transport(::uxrCustomTransport* transport,
                                  uint8_t* data,
                                  size_t length,
                                  int timeout_ms,
@@ -344,13 +497,14 @@ private:
         auto* adapter = static_cast<CustomTransport*>(transport->args);
         return adapter->read(data, length, timeout_ms, error);
     }
+#endif
 
     static constexpr size_t kMaxActionTickables = 8u;
 
     ContextOptions options_{};
     rcl_allocator_t allocator_{};
     rcl_init_options_t init_options_ = rcl_get_zero_initialized_init_options();
-    rclc_support_t support_ = rclc_support_get_zero_initialized_support();
+    rclc_support_t support_{};
     rclc_executor_t executor_ = rclc_executor_get_zero_initialized_executor();
 
     IActionTickable* action_tickables_[kMaxActionTickables] = {};
@@ -360,6 +514,7 @@ private:
     bool init_options_initialized_ = false;
     bool support_initialized_ = false;
     bool executor_initialized_ = false;
+    ContextStartError last_start_error_ = ContextStartError::kOk;
 };
 
 }  // namespace milkros::micro_ros

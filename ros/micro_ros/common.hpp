@@ -96,6 +96,17 @@
 #include <rmw/qos_profiles.h>
 #include <rmw_microros/rmw_microros.h>
 
+#ifndef ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM
+#define ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM 0
+#endif
+
+#if ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM
+#if !__has_include(<rmw_microros/custom_transport.h>)
+#error "Rosette micro-ROS custom transport requires rmw_microros/custom_transport.h."
+#endif
+#include <rmw_microros/custom_transport.h>
+#endif
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -142,6 +153,79 @@ struct ServiceOptions {
     Durability durability = Durability::VOLATILE;
     size_t depth = 1u;
     int session_timeout_ms = 0;
+};
+
+/**
+ * @brief Represents either a successful value or a typed error code.
+ *
+ * Rosette's MCU-facing APIs avoid exceptions and dynamic allocation. This
+ * result type gives callers a compact, explicit way to branch on success while
+ * preserving the reason for failure in a subsystem-specific enum.
+ *
+ * @param[in] T Type returned when the operation succeeds.
+ * @param[in] ErrorCode Enum type returned when the operation fails. The enum
+ * must provide `kOk` for successful construction from an error code.
+ */
+template<typename T, typename ErrorCode>
+class Result {
+public:
+    Result(const T& value) noexcept
+        : ok_(true)
+        , error_(ErrorCode::kOk)
+        , value_(value)
+    {}
+
+    Result(T&& value) noexcept
+        : ok_(true)
+        , error_(ErrorCode::kOk)
+        , value_(static_cast<T&&>(value))
+    {}
+
+    Result(ErrorCode error) noexcept
+        : ok_(error == ErrorCode::kOk)
+        , error_(error)
+        , value_()
+    {}
+
+    bool ok() const noexcept { return ok_; }
+    explicit operator bool() const noexcept { return ok_; }
+    const T& value() const noexcept { return value_; }
+    T& value() noexcept { return value_; }
+    ErrorCode error() const noexcept { return error_; }
+
+private:
+    bool ok_ = false;
+    ErrorCode error_ = ErrorCode::kOk;
+    T value_{};
+};
+
+/**
+ * @brief Represents success without a value or a typed error code.
+ *
+ * Use this specialization for operations whose successful result is simply
+ * completion, such as starting a context. The error enum still carries the
+ * subsystem-specific failure reason.
+ *
+ * @param[in] ErrorCode Enum type returned when the operation fails. The enum
+ * must provide `kOk` for successful construction.
+ */
+template<typename ErrorCode>
+class Result<void, ErrorCode> {
+public:
+    Result() noexcept = default;
+
+    Result(ErrorCode error) noexcept
+        : ok_(error == ErrorCode::kOk)
+        , error_(error)
+    {}
+
+    bool ok() const noexcept { return ok_; }
+    explicit operator bool() const noexcept { return ok_; }
+    ErrorCode error() const noexcept { return error_; }
+
+private:
+    bool ok_ = true;
+    ErrorCode error_ = ErrorCode::kOk;
 };
 
 /**
@@ -224,6 +308,86 @@ struct ContextOptions {
 
     AgentLocator* agent_locator = nullptr;
 };
+
+enum class ContextStartError : uint8_t {
+    kOk = 0u,
+    kInitOptionsInitFailed,
+    kDomainIdSetFailed,
+    kRmwOptionsUnavailable,
+    kClientKeySetFailed,
+    kCustomTransportUnavailable,
+    kCustomTransportMissing,
+    kCustomTransportEndpointRejected,
+    kUdpAddressSetFailed,
+    kStaticAgentPingFailed,
+    kAgentLocatorFailed,
+    kAgentLocatorNoAddress,
+    kAgentLocatorEndpointRejected,
+    kDiscoveredUdpAddressSetFailed,
+    kCustomTransportRequiresEndpoint,
+    kAutoDiscoveryDisabled,
+    kAutoDiscoveryFailed,
+    kSupportInitFailed,
+    kExecutorInitFailed,
+};
+
+/**
+ * @brief Converts a context startup error into stable diagnostic text.
+ *
+ * Startup is intentionally split into transport setup, Agent discovery, and
+ * RCL/RCLC initialization phases. This helper gives applications and examples
+ * a compact way to report which phase failed without exposing upstream return
+ * codes directly in user-facing logs.
+ *
+ * @param[in] error Context startup error to describe.
+ * @return Static text describing the startup result or failure.
+ */
+inline const char* context_start_error_string(ContextStartError error) noexcept
+{
+    switch (error) {
+    case ContextStartError::kOk:
+        return "ok";
+    case ContextStartError::kInitOptionsInitFailed:
+        return "failed to initialize rcl init options";
+    case ContextStartError::kDomainIdSetFailed:
+        return "failed to set ROS domain id";
+    case ContextStartError::kRmwOptionsUnavailable:
+        return "failed to access rmw init options";
+    case ContextStartError::kClientKeySetFailed:
+        return "failed to set micro-ROS client key";
+    case ContextStartError::kCustomTransportUnavailable:
+        return "custom transport selected but generated micro-ROS library does not support it";
+    case ContextStartError::kCustomTransportMissing:
+        return "custom transport selected without a transport adapter";
+    case ContextStartError::kCustomTransportEndpointRejected:
+        return "custom transport rejected the configured agent endpoint";
+    case ContextStartError::kUdpAddressSetFailed:
+        return "failed to configure static UDP agent endpoint";
+    case ContextStartError::kStaticAgentPingFailed:
+        return "static agent endpoint did not respond";
+    case ContextStartError::kAgentLocatorFailed:
+        return "agent locator did not resolve an endpoint";
+    case ContextStartError::kAgentLocatorNoAddress:
+        return "agent locator returned an empty endpoint address";
+    case ContextStartError::kAgentLocatorEndpointRejected:
+        return "transport rejected the discovered agent endpoint";
+    case ContextStartError::kDiscoveredUdpAddressSetFailed:
+        return "failed to configure discovered UDP agent endpoint";
+    case ContextStartError::kCustomTransportRequiresEndpoint:
+        return "custom transport requires a static or located agent endpoint";
+    case ContextStartError::kAutoDiscoveryDisabled:
+        return "agent auto-discovery is disabled and no endpoint was configured";
+    case ContextStartError::kAutoDiscoveryFailed:
+        return "agent auto-discovery failed";
+    case ContextStartError::kSupportInitFailed:
+        return "failed to initialize rclc support";
+    case ContextStartError::kExecutorInitFailed:
+        return "failed to initialize rclc executor";
+    }
+    return "unknown context startup error";
+}
+
+using ContextStartResult = Result<void, ContextStartError>;
 
 class IActionTickable {
 public:

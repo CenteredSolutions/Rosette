@@ -11,7 +11,6 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
-#include <limits>
 #include <array>
 
 #ifdef RTPS_NO_FREERTOS
@@ -50,6 +49,7 @@ constexpr char kNodeName[] = "rosette_micro_ros_smoke";
 constexpr char kNodeNamespace[] = "";
 constexpr char kTopicName[] = "mcu_temperature_c";
 constexpr uint32_t kPublishPeriodMs = 1000u;
+constexpr uint32_t kContextStartRetryDelayMs = 2000u;
 
 #ifndef ROSETTE_MICRO_ROS_AGENT_IP
 #define ROSETTE_MICRO_ROS_AGENT_IP ""
@@ -88,6 +88,44 @@ uint64_t monotonic_time_us() noexcept
     return static_cast<uint64_t>(elapsed.count());
 }
 
+/**
+ * @brief Generates a plausible host temperature when no sensor is exposed.
+ *
+ * POSIX smoke runs are often launched from VMs and containers where Linux does
+ * not expose `/sys` thermal zones. Publishing a slow synthetic temperature
+ * keeps the smoke topic useful for end-to-end Agent and graph testing without
+ * pretending that the value came from hardware.
+ *
+ * The waveform combines a long triangular drift with a small deterministic
+ * step term. It stays in a room-temperature range and changes slowly enough
+ * that `ros2 topic echo` shows a believable live signal.
+ *
+ * @param[in] now_us Monotonic process time in microseconds.
+ * @return Synthetic temperature in degrees Celsius.
+ */
+float synthetic_posix_temperature_c(uint64_t now_us) noexcept
+{
+    constexpr uint64_t kCycleMs = 120000u;
+    constexpr uint64_t kHalfCycleMs = kCycleMs / 2u;
+    const uint64_t now_ms = now_us / 1000u;
+    const uint64_t phase_ms = now_ms % kCycleMs;
+    const uint64_t triangle_ms =
+        (phase_ms <= kHalfCycleMs) ? phase_ms : (kCycleMs - phase_ms);
+    const float drift = static_cast<float>(triangle_ms) /
+                        static_cast<float>(kHalfCycleMs);
+    const float step = static_cast<float>((now_ms / 7000u) % 5u) * 0.08f;
+    return 22.0f + (7.5f * drift) + step;
+}
+
+/**
+ * @brief Reads host temperature or returns a synthetic smoke-test value.
+ *
+ * The POSIX smoke target prefers real Linux thermal sensors when they are
+ * available. If the host environment does not expose one, the function falls
+ * back to a slow synthetic value so topic echo remains visibly alive.
+ *
+ * @return Temperature in degrees Celsius.
+ */
 float read_posix_temperature_c() noexcept
 {
     const char* candidates[] = {
@@ -104,7 +142,35 @@ float read_posix_temperature_c() noexcept
         }
     }
 
-    return std::numeric_limits<float>::quiet_NaN();
+    return synthetic_posix_temperature_c(monotonic_time_us());
+}
+
+/**
+ * @brief Starts a POSIX micro-ROS context with retry-friendly diagnostics.
+ *
+ * The smoke application may boot before the host Agent or discovery responder
+ * is available. This helper keeps startup in a simple retry loop so the app can
+ * recover as soon as the Agent appears.
+ *
+ * @param[in,out] context Context to start.
+ * @return True when the context reaches the running state.
+ */
+bool start_context_with_retry(milkros::micro_ros::Context& context) noexcept
+{
+    for (;;) {
+        const milkros::micro_ros::ContextStartResult result = context.start_result();
+        if (result.ok()) {
+            std::printf("[micro_ros] context started: %s\n",
+                        milkros::micro_ros::context_start_error_string(result.error()));
+            return true;
+        }
+
+        std::fprintf(stderr,
+                     "[micro_ros] context start failed: %s; retrying in %u ms\n",
+                     milkros::micro_ros::context_start_error_string(result.error()),
+                     static_cast<unsigned>(kContextStartRetryDelayMs));
+        std::this_thread::sleep_for(std::chrono::milliseconds(kContextStartRetryDelayMs));
+    }
 }
 
 int run_posix_smoke()
@@ -161,8 +227,7 @@ int run_posix_smoke()
 #endif
 
     milkros::micro_ros::Context context(options);
-    if (!context.start()) {
-        std::fprintf(stderr, "[micro_ros] context start failed\n");
+    if (!start_context_with_retry(context)) {
         return 1;
     }
 
@@ -349,6 +414,34 @@ bool start_board_network() noexcept
     return true;
 }
 
+/**
+ * @brief Starts a board micro-ROS context with Agent discovery retries.
+ *
+ * MCU firmware often reaches the application task before the host Agent is
+ * ready. This helper keeps retrying context startup after recoverable failures,
+ * allowing production firmware and the smoke test to come online when the
+ * network and Agent settle.
+ *
+ * @param[in,out] context Context to start.
+ * @return True when the context reaches the running state.
+ */
+bool start_context_with_retry(milkros::micro_ros::Context& context) noexcept
+{
+    for (;;) {
+        const milkros::micro_ros::ContextStartResult result = context.start_result();
+        if (result.ok()) {
+            std::printf("[micro_ros] context started: %s\n",
+                        milkros::micro_ros::context_start_error_string(result.error()));
+            return true;
+        }
+
+        std::printf("[micro_ros] context start failed: %s; retrying in %lu ms\n",
+                    milkros::micro_ros::context_start_error_string(result.error()),
+                    static_cast<unsigned long>(kContextStartRetryDelayMs));
+        vTaskDelay(pdMS_TO_TICKS(kContextStartRetryDelayMs));
+    }
+}
+
 void blink_timer_cb(TimerHandle_t) noexcept
 {
     static bool on = false;
@@ -452,8 +545,7 @@ void service_task(void*) noexcept
 #endif
 
     static milkros::micro_ros::Context context(options);
-    if (!context.start()) {
-        std::printf("FATAL: micro-ROS context start failed\n");
+    if (!start_context_with_retry(context)) {
         vTaskDelete(nullptr);
         return;
     }
