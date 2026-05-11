@@ -3,10 +3,24 @@
 #include <array>
 #include <cstdint>
 
+#if defined(__has_include)
+#if __has_include("FreeRTOS.h")
+#define ROSETTE_HAVE_FREERTOS_HEADERS 1
+#endif
+#endif
+
+#if defined(ROSETTE_HAVE_FREERTOS_HEADERS)
 extern "C" {
 #include "FreeRTOS.h"
 #include "event_groups.h"
 }
+#else
+using UBaseType_t = unsigned int;
+using EventGroupHandle_t = void*;
+using EventBits_t = uint32_t;
+using TaskHandle_t = void*;
+constexpr UBaseType_t tskIDLE_PRIORITY = 0u;
+#endif
 
 #include "socket.hpp"
 
