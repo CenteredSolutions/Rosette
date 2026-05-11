@@ -30,7 +30,7 @@ def _camel_to_upper(name: str) -> str:
 
 def _guard(stem: str) -> str:
     package, name = stem.split("__", 1)
-    return f"MILKDDS_GENERATED_{package.upper()}_{_camel_to_upper(name)}_H"
+    return f"ROSETTE_GENERATED_{package.upper()}_{_camel_to_upper(name)}_H"
 
 
 def _macro_prefix(package: str, name: str) -> str:
@@ -320,7 +320,7 @@ def _emit_message_header(lines: list[str], message: MessageDef, options: Generat
         "#include <stdbool.h>",
         "#include <stddef.h>",
         "#include <stdint.h>",
-        '#include "ros/cdr.h"',
+        '#include "rosette/ros/cdr.h"',
         "",
     ])
     for include in includes:
@@ -454,7 +454,7 @@ def _emit_message_header(lines: list[str], message: MessageDef, options: Generat
         "}",
         "",
         "#ifdef __cplusplus",
-        '#include "ros/message_traits.hpp"',
+        '#include "rosette/ros/message_traits.hpp"',
         "namespace milkros {",
         f"template<> struct message_traits<{struct_name}> {{",
         f"    static constexpr size_t max_serialized_size = {macro}_MAX_SERIALIZED_SIZE;",
@@ -503,7 +503,7 @@ def generate_service_header(service: ServiceDef, options: GeneratorOptions | Non
         "",
         "#include <stddef.h>",
         "#include <stdint.h>",
-        '#include "ros/cdr.h"',
+        '#include "rosette/ros/cdr.h"',
         "",
         f'#define {macro}_SERVICE_REQUEST_TYPE_NAME "{_dds_service_type_name(service.package, service.name, "Request")}"',
         f'#define {macro}_SERVICE_RESPONSE_TYPE_NAME "{_dds_service_type_name(service.package, service.name, "Response")}"',
@@ -515,7 +515,7 @@ def generate_service_header(service: ServiceDef, options: GeneratorOptions | Non
     lines.extend([
         "",
         "#ifdef __cplusplus",
-        '#include "ros/service.hpp"',
+        '#include "rosette/ros/service.hpp"',
         f"struct {service.package}_{service.name} {{}};",
         "namespace milkros {",
         f"template<> struct service_traits<{service.package}_{service.name}> {{",

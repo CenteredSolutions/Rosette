@@ -4,7 +4,7 @@
     "version": "2.5",
     "document": "formal/2022-04-01"
   },
-  "target": "lib/milkDDS/rtps/fragment_assembler.hpp",
+  "target": "lib/Rosette/include/rosette/rtps/fragment_assembler.hpp",
   "scope": [
     "8.3.3.1",
     "8.4.12",

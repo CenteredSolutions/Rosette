@@ -1,6 +1,6 @@
 #include "spec_test_common.hpp"
 
-#include "rtps/stateful_writer.hpp"
+#include "rosette/rtps/stateful_writer.hpp"
 
 namespace spec_test {
 

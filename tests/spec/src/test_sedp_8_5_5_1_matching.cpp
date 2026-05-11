@@ -1,6 +1,6 @@
 #include "spec_test_common.hpp"
 
-#include "rtps/endpoint_match_table.hpp"
+#include "rosette/rtps/endpoint_match_table.hpp"
 
 namespace spec_test {
 

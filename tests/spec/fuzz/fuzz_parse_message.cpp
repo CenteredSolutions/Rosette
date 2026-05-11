@@ -1,4 +1,4 @@
-#include "rtps/message_parser.hpp"
+#include "rosette/rtps/message_parser.hpp"
 
 #include <stddef.h>
 #include <stdint.h>

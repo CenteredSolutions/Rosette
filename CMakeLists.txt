@@ -75,19 +75,19 @@ if(RTPS_BOARD_ENABLE_WIZNET)
 endif()
 
 set(RTPS_STACK_SOURCES
-    rtps/message_parser.cpp
-    rtps/stateful_reader.cpp
-    rtps/spdp.cpp
-    rtps/sedp.cpp
-    rtps/participant.cpp
-    rtps/buf_pool.cpp
-    rtps/transport.cpp
-    net/socket.cpp
+    src/rtps/message_parser.cpp
+    src/rtps/stateful_reader.cpp
+    src/rtps/spdp.cpp
+    src/rtps/sedp.cpp
+    src/rtps/participant.cpp
+    src/rtps/buf_pool.cpp
+    src/rtps/transport.cpp
+    src/net/socket.cpp
 )
 
 if(RTPS_HAVE_LITTLEFS)
     list(APPEND RTPS_STACK_SOURCES
-        rtps/persistence.cpp
+        src/rtps/persistence.cpp
         ${RTPS_LITTLEFS_DIR}/lfs.c
         ${RTPS_LITTLEFS_DIR}/lfs_util.c
     )
@@ -95,12 +95,18 @@ endif()
 
 add_library(rtps_stack STATIC ${RTPS_STACK_SOURCES})
 
+set(ROSETTE_INTERNAL_INCLUDE_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/net
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/platform
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/ros
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/rtps)
+
 target_include_directories(rtps_stack PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/rtps
-    ${CMAKE_CURRENT_SOURCE_DIR}/platform
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${RTPS_BOARD_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/config
+    ${ROSETTE_INTERNAL_INCLUDE_DIRS}
 )
 
 if(RTPS_HAVE_LITTLEFS)
@@ -140,18 +146,18 @@ endif()
 if(RTPS_BOARD_BUILD_BSP)
     add_library(rtps_bsp STATIC
         ${RTPS_BOARD_DIR}/board_init.c
-        net/freertos/igmp.cpp
-        net/freertos/socket.cpp
-        net/wiznet/macraw.cpp
-        platform/pico_freertos.c
-        platform/pico_log.c
+        src/net/freertos/igmp.cpp
+        src/net/freertos/socket.cpp
+        src/net/wiznet/macraw.cpp
+        src/platform/pico_freertos.c
+        src/platform/pico_log.c
     )
 
     target_include_directories(rtps_bsp PUBLIC
         ${RTPS_BOARD_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/net
-        ${CMAKE_CURRENT_SOURCE_DIR}/platform
-        ${CMAKE_CURRENT_SOURCE_DIR}/rtps
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${ROSETTE_INTERNAL_INCLUDE_DIRS}
     )
 
     target_link_libraries(rtps_bsp PUBLIC
@@ -181,18 +187,18 @@ endif()
 
 if(ROSETTE_ENABLE_MICRO_ROS AND ROSETTE_BUILD_MICRO_ROS_BOARD_SMOKE)
     set(ROSETTE_MICRO_ROS_BOARD_SMOKE_SOURCES
-        example/main_micro_ros_board_smoke.cpp
+        examples/main_micro_ros_board_smoke.cpp
     )
 
     if(RTPS_BOARD_ENABLE_FREERTOS)
         list(APPEND ROSETTE_MICRO_ROS_BOARD_SMOKE_SOURCES
-            net/ntp_sync.cpp
+            src/net/ntp_sync.cpp
         )
     else()
         list(APPEND ROSETTE_MICRO_ROS_BOARD_SMOKE_SOURCES
-            platform/posix/rtps_posix_platform.cpp
-            platform/posix/rtps_posix_log.cpp
-            net/posix/socket.cpp
+            src/platform/posix/rtps_posix_platform.cpp
+            src/platform/posix/rtps_posix_log.cpp
+            src/net/posix/socket.cpp
         )
     endif()
 

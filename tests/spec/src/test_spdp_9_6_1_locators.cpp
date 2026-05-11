@@ -1,6 +1,6 @@
 #include "spec_test_common.hpp"
 
-#include "rtps/spdp.hpp"
+#include "rosette/rtps/spdp.hpp"
 
 namespace spec_test {
 

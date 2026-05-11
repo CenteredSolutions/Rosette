@@ -1,7 +1,7 @@
-#include "net/posix/socket.hpp"
-#include "ros/context.hpp"
-#include "rtps/spdp.hpp"
-#include "rtps/transport.hpp"
+#include "rosette/net/posix/socket.hpp"
+#include "rosette/ros/context.hpp"
+#include "rosette/rtps/spdp.hpp"
+#include "rosette/rtps/transport.hpp"
 #include "std_msgs__String.h"
 
 #include <chrono>
@@ -63,7 +63,7 @@ void usage(const char* argv0)
     std::printf(
         "Usage: %s [--domain N] [--participant N] [--duration-ms N] [--publish-ms N] [--topic NAME]\n"
         "Environment:\n"
-        "  MILKDDS_LOCAL_IP=IPv4   Optional, e.g. 172.18.0.5\n",
+        "  ROSETTE_LOCAL_IP=IPv4   Optional, e.g. 172.18.0.5\n",
         argv0);
 }
 
@@ -129,7 +129,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    milkdds::net::posix::PosixSocketProvider socket_provider;
+    rosette::net::posix::PosixSocketProvider socket_provider;
     const uint16_t meta_port = static_cast<uint16_t>(rtps::spdp_multicast_port(domain_id));
     const uint16_t user_port = static_cast<uint16_t>(rtps::user_unicast_port(domain_id, participant_id));
 
@@ -168,7 +168,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    auto node = context.create_node("milkdds_host", "");
+    auto node = context.create_node("rosette_host", "");
     auto chatter = node.create_publisher<std_msgs_String_t>(topic.c_str());
     if (!chatter.valid()) {
         std::printf("[ros2-smoke] failed to create publisher for topic '%s'\n", topic.c_str());
@@ -194,7 +194,7 @@ int main(int argc, char** argv)
             std_msgs_String_t msg{};
             std::snprintf(msg.data,
                           sizeof(msg.data),
-                          "milkDDS POSIX hello seq=%lu uptime_ms=%lu",
+                          "Rosette POSIX hello seq=%lu uptime_ms=%lu",
                           static_cast<unsigned long>(sequence++),
                           static_cast<unsigned long>(now_ms));
             (void)chatter.publish(msg);

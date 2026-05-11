@@ -1,7 +1,7 @@
 #include "spec_test_common.hpp"
 
-#include "rtps/sedp.hpp"
-#include "rtps/transport.hpp"
+#include "rosette/rtps/sedp.hpp"
+#include "rosette/rtps/transport.hpp"
 
 namespace spec_test {
 

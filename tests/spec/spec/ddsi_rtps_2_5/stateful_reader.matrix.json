@@ -4,7 +4,7 @@
     "version": "2.5",
     "document": "formal/2022-04-01"
   },
-  "target": "lib/milkDDS/rtps/stateful_reader.hpp",
+  "target": "lib/Rosette/include/rosette/rtps/stateful_reader.hpp",
   "scope": [
     "8.3.7.4",
     "8.3.7.5",

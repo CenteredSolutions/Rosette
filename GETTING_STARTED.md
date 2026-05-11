@@ -67,7 +67,7 @@ cmake -S . -B build/w5100s-evb-pico2 -DRTPS_BOARD=w5100s-evb-pico2
 
 ## 3. Start A New Embedded Project
 
-The fastest starting point is `example/main_rp2350.cpp`. Despite the filename,
+The fastest starting point is `examples/main_rp2350.cpp`. Despite the filename,
 the board selection determines whether the build targets RP2040 or RP2350.
 
 ### Project Skeleton
@@ -76,7 +76,7 @@ A minimal native Rosette firmware follows this control flow:
 
 1. Initialize board hardware with `board_init()`.
 2. Start FreeRTOS+TCP and wait for an IPv4 or IPv6 address.
-3. Create `milkdds::net::freertos::FreeRtosSocketProvider`.
+3. Create `rosette::net::freertos::FreeRtosSocketProvider`.
 4. Create `rtps::SocketUdpTransport` with the RTPS metatraffic and user ports.
 5. Create `rtps::SocketTransportRuntime`.
 6. Create a `milkros::Context`, start the runtime, then start the participant.
@@ -89,7 +89,7 @@ The example does exactly that in `service_task()`.
 ### Bring Up Networking
 
 For WIZnet boards, copy the network setup pattern from
-`example/main_rp2350.cpp`:
+`examples/main_rp2350.cpp`:
 
 ```cpp
 uint8_t mac[6]{};
@@ -141,7 +141,7 @@ The network mode constants used by the example are:
 After the network is ready, create the transport and context:
 
 ```cpp
-static milkdds::net::freertos::FreeRtosSocketProvider socket_provider;
+static rosette::net::freertos::FreeRtosSocketProvider socket_provider;
 
 const uint16_t meta_port =
     static_cast<uint16_t>(rtps::spdp_multicast_port(kDomainId));
@@ -208,7 +208,7 @@ for (;;) {
 }
 ```
 
-Use `example/main_rp2350.cpp` as the reference for the required
+Use `examples/main_rp2350.cpp` as the reference for the required
 `message_traits<DeviceMetricMsg>` specialization. That specialization gives the
 DDS type name and CDR encode/decode procedures for your message.
 
@@ -332,11 +332,11 @@ Run the Docker-backed ROS 2 smoke script when Docker is available:
 tests/ros2/run_ros2_docker_smoke.sh build/tests-ros2/ros2_posix_chatter_smoke
 ```
 
-Set `MILKDDS_LOCAL_IP` if the host smoke chooses loopback and you need a
+Set `ROSETTE_LOCAL_IP` if the host smoke chooses loopback and you need a
 routable interface:
 
 ```bash
-MILKDDS_LOCAL_IP=192.168.1.25 \
+ROSETTE_LOCAL_IP=192.168.1.25 \
 tests/ros2/run_ros2_docker_smoke.sh build/tests-ros2/ros2_posix_chatter_smoke
 ```
 

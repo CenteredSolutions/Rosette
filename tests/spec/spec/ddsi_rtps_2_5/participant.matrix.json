@@ -4,7 +4,7 @@
     "version": "2.5",
     "document": "formal/2022-04-01"
   },
-  "target": "lib/milkDDS/rtps/participant.cpp",
+  "target": "lib/Rosette/src/rtps/participant.cpp",
   "scope": [
     "8.3.4",
     "8.5.1",

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rtps/message_parser.hpp"
+#include "rosette/rtps/message_parser.hpp"
 
 #include <string>
 #include <vector>

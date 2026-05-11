@@ -1,6 +1,6 @@
 #include "spec_test_common.hpp"
 
-#include "rtps/history_cache.hpp"
+#include "rosette/rtps/history_cache.hpp"
 
 namespace spec_test {
 

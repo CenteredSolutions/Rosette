@@ -10,7 +10,7 @@ test and interop tooling. The repository contains:
 - `ros/micro_ros/`: micro-ROS client integration and transport helpers.
 - `net/`: socket abstraction layers for POSIX, FreeRTOS+TCP, and WIZnet MACRAW.
 - `boards/`: board definitions selected with `-DRTPS_BOARD=<name>`.
-- `example/`: firmware and smoke examples.
+- `examples/`: firmware and smoke examples.
 - `tests/spec/`: host-side DDSI-RTPS conformance tests.
 - `tests/ros2/`: host-side ROS 2 interoperability smoke tests.
 
@@ -30,7 +30,7 @@ For repeatable builds, pass `-DRTPS_BOARD=...` explicitly.
 
 ## Minimal Example Build
 
-Embedded boards build the `rtps_example` firmware from `example/main_rp2350.cpp`.
+Embedded boards build the `rtps_example` firmware from `examples/main_rp2350.cpp`.
 The output includes the normal Pico SDK artifacts, including a `.uf2`.
 
 ```bash
@@ -62,7 +62,7 @@ local checkouts with:
 
 Use `GETTING_STARTED.md` for the full walkthrough. The shortest path is:
 
-1. Pick a board and copy or replace `example/main_rp2350.cpp`.
+1. Pick a board and copy or replace `examples/main_rp2350.cpp`.
 2. Bring up the board network with the board BSP, WIZnet MACRAW driver, and
    FreeRTOS+TCP endpoints.
 3. Create a `milkros::Context`, start the transport runtime, and start the RTPS

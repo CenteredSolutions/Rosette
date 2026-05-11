@@ -30,7 +30,7 @@ def _write_output(path: Path, content: str, verbose: bool) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Generate milkDDS headers from .msg and .srv files")
+    parser = argparse.ArgumentParser(description="Generate Rosette headers from .msg and .srv files")
     parser.add_argument("paths", nargs="+", help=".msg/.srv files or directories")
     parser.add_argument("-o", "--output-dir", type=Path, help="Directory for generated headers")
     parser.add_argument("-r", "--recursive", action="store_true", help="Search directories recursively")

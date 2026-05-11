@@ -1,6 +1,6 @@
 #include "spec_test_common.hpp"
 
-#include "rtps/fragment_assembler.hpp"
+#include "rosette/rtps/fragment_assembler.hpp"
 
 namespace spec_test {
 

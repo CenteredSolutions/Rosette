@@ -1,7 +1,7 @@
 #include "spec_test_common.hpp"
 
-#include "rtps/stateful_reader.hpp"
-#include "rtps/transport.hpp"
+#include "rosette/rtps/stateful_reader.hpp"
+#include "rosette/rtps/transport.hpp"
 
 namespace spec_test {
 

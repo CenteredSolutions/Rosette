@@ -4,7 +4,7 @@
     "version": "2.5",
     "document": "formal/2022-04-01"
   },
-  "target": "lib/milkDDS/rtps/spdp.cpp",
+  "target": "lib/Rosette/src/rtps/spdp.cpp",
   "scope": [
     "8.5.3",
     "8.5.3.2",

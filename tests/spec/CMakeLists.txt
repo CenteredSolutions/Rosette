@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(milkdds_spec_tests CXX)
+project(rosette_spec_tests CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -19,7 +19,7 @@ add_executable(message_parser_spec_tests
     src/test_9_4_5_11_gap.cpp
     src/test_9_4_5_13_info_dst.cpp
     src/test_9_6_2_inline_qos.cpp
-    ../../rtps/message_parser.cpp
+    ../../src/rtps/message_parser.cpp
 )
 
 target_include_directories(message_parser_spec_tests PRIVATE
@@ -48,8 +48,8 @@ add_executable(message_builder_spec_tests
     src/test_builder_9_4_5_data.cpp
     src/test_builder_9_4_5_ctrl.cpp
     src/test_builder_10_2_encapsulation.cpp
-    ../../rtps/buf_pool.cpp
-    ../../rtps/message_parser.cpp
+    ../../src/rtps/buf_pool.cpp
+    ../../src/rtps/message_parser.cpp
 )
 
 target_include_directories(message_builder_spec_tests PRIVATE
@@ -77,7 +77,7 @@ add_executable(fragment_assembler_spec_tests
     src/test_fragment_8_3_3_1.cpp
     src/test_fragment_8_4_12.cpp
     src/test_fragment_8_4_14.cpp
-    ../../rtps/buf_pool.cpp
+    ../../src/rtps/buf_pool.cpp
 )
 
 target_include_directories(fragment_assembler_spec_tests PRIVATE
@@ -105,9 +105,9 @@ add_executable(spdp_spec_tests
     src/test_spdp_8_5_3_behavior.cpp
     src/test_spdp_9_6_1_locators.cpp
     src/test_spdp_9_6_2_9_6_3_1_plcdr.cpp
-    ../../rtps/spdp.cpp
-    ../../rtps/message_parser.cpp
-    ../../rtps/buf_pool.cpp
+    ../../src/rtps/spdp.cpp
+    ../../src/rtps/message_parser.cpp
+    ../../src/rtps/buf_pool.cpp
 )
 
 target_include_directories(spdp_spec_tests PRIVATE
@@ -136,9 +136,9 @@ add_executable(sedp_spec_tests
     src/test_sedp_8_5_4_behavior.cpp
     src/test_sedp_8_5_5_1_matching.cpp
     src/test_sedp_9_6_3_2_plcdr.cpp
-    ../../rtps/sedp.cpp
-    ../../rtps/message_parser.cpp
-    ../../rtps/buf_pool.cpp
+    ../../src/rtps/sedp.cpp
+    ../../src/rtps/message_parser.cpp
+    ../../src/rtps/buf_pool.cpp
 )
 
 target_include_directories(sedp_spec_tests PRIVATE
@@ -164,7 +164,7 @@ add_executable(history_cache_spec_tests
     src/spec_test_common.cpp
     src/spec_history_cache_test_registry.cpp
     src/test_history_cache_8_2_2_8_3_1.cpp
-    ../../rtps/buf_pool.cpp
+    ../../src/rtps/buf_pool.cpp
 )
 
 target_include_directories(history_cache_spec_tests PRIVATE
@@ -194,8 +194,8 @@ add_executable(stateful_writer_spec_tests
     src/test_stateful_writer_8_4_1_4.cpp
     src/test_stateful_writer_8_4_2_2.cpp
     src/test_stateful_writer_8_4_3_8_4_4.cpp
-    ../../rtps/message_parser.cpp
-    ../../rtps/buf_pool.cpp
+    ../../src/rtps/message_parser.cpp
+    ../../src/rtps/buf_pool.cpp
 )
 
 target_include_directories(stateful_writer_spec_tests PRIVATE
@@ -223,9 +223,9 @@ add_executable(stateful_reader_spec_tests
     src/test_stateful_reader_clock_stub.cpp
     src/test_stateful_reader_8_4_7_4.cpp
     src/test_stateful_reader_8_4_8_8_4_9.cpp
-    ../../rtps/stateful_reader.cpp
-    ../../rtps/message_parser.cpp
-    ../../rtps/buf_pool.cpp
+    ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/message_parser.cpp
+    ../../src/rtps/buf_pool.cpp
 )
 
 target_include_directories(stateful_reader_spec_tests PRIVATE
@@ -252,12 +252,12 @@ add_executable(participant_spec_tests
     src/spec_participant_test_registry.cpp
     src/test_participant_platform_stub.cpp
     src/test_participant_8_5_1.cpp
-    ../../rtps/participant.cpp
-    ../../rtps/stateful_reader.cpp
-    ../../rtps/spdp.cpp
-    ../../rtps/sedp.cpp
-    ../../rtps/message_parser.cpp
-    ../../rtps/buf_pool.cpp
+    ../../src/rtps/participant.cpp
+    ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/spdp.cpp
+    ../../src/rtps/sedp.cpp
+    ../../src/rtps/message_parser.cpp
+    ../../src/rtps/buf_pool.cpp
 )
 
 target_include_directories(participant_spec_tests PRIVATE
@@ -371,12 +371,12 @@ if (Python3_Interpreter_FOUND)
     )
 endif()
 
-option(MILKDDS_SPEC_ENABLE_FUZZ "Build libFuzzer targets for parser, fragment assembler, SPDP, SEDP, and endpoint matching" OFF)
+option(ROSETTE_SPEC_ENABLE_FUZZ "Build libFuzzer targets for parser, fragment assembler, SPDP, SEDP, and endpoint matching" OFF)
 
-if (MILKDDS_SPEC_ENABLE_FUZZ)
+if (ROSETTE_SPEC_ENABLE_FUZZ)
     add_executable(message_parser_fuzz_replay
         fuzz/replay_corpus.cpp
-        ../../rtps/message_parser.cpp
+        ../../src/rtps/message_parser.cpp
     )
     target_include_directories(message_parser_fuzz_replay PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../..
@@ -388,7 +388,7 @@ if (MILKDDS_SPEC_ENABLE_FUZZ)
 
     add_executable(fragment_assembler_fuzz_replay
         fuzz/replay_fragment_corpus.cpp
-        ../../rtps/buf_pool.cpp
+        ../../src/rtps/buf_pool.cpp
     )
     target_include_directories(fragment_assembler_fuzz_replay PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../..
@@ -400,8 +400,8 @@ if (MILKDDS_SPEC_ENABLE_FUZZ)
 
     add_executable(spdp_fuzz_replay
         fuzz/replay_spdp_corpus.cpp
-        ../../rtps/spdp.cpp
-        ../../rtps/buf_pool.cpp
+        ../../src/rtps/spdp.cpp
+        ../../src/rtps/buf_pool.cpp
     )
     target_include_directories(spdp_fuzz_replay PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../..
@@ -413,8 +413,8 @@ if (MILKDDS_SPEC_ENABLE_FUZZ)
 
     add_executable(sedp_fuzz_replay
         fuzz/replay_sedp_corpus.cpp
-        ../../rtps/sedp.cpp
-        ../../rtps/buf_pool.cpp
+        ../../src/rtps/sedp.cpp
+        ../../src/rtps/buf_pool.cpp
     )
     target_include_directories(sedp_fuzz_replay PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../..
@@ -525,7 +525,7 @@ if (MILKDDS_SPEC_ENABLE_FUZZ)
     if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         add_executable(message_parser_fuzz
             fuzz/fuzz_parse_message.cpp
-            ../../rtps/message_parser.cpp
+            ../../src/rtps/message_parser.cpp
         )
         target_include_directories(message_parser_fuzz PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../..
@@ -545,7 +545,7 @@ if (MILKDDS_SPEC_ENABLE_FUZZ)
 
         add_executable(fragment_assembler_fuzz
             fuzz/fuzz_fragment_assembler.cpp
-            ../../rtps/buf_pool.cpp
+            ../../src/rtps/buf_pool.cpp
         )
         target_include_directories(fragment_assembler_fuzz PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../..
@@ -565,8 +565,8 @@ if (MILKDDS_SPEC_ENABLE_FUZZ)
 
         add_executable(spdp_fuzz
             fuzz/fuzz_spdp.cpp
-            ../../rtps/spdp.cpp
-            ../../rtps/buf_pool.cpp
+            ../../src/rtps/spdp.cpp
+            ../../src/rtps/buf_pool.cpp
         )
         target_include_directories(spdp_fuzz PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../..
@@ -586,8 +586,8 @@ if (MILKDDS_SPEC_ENABLE_FUZZ)
 
         add_executable(sedp_fuzz
             fuzz/fuzz_sedp.cpp
-            ../../rtps/sedp.cpp
-            ../../rtps/buf_pool.cpp
+            ../../src/rtps/sedp.cpp
+            ../../src/rtps/buf_pool.cpp
         )
         target_include_directories(sedp_fuzz PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../..
@@ -624,6 +624,6 @@ if (MILKDDS_SPEC_ENABLE_FUZZ)
             -fsanitize=fuzzer,address
         )
     else()
-        message(WARNING "MILKDDS_SPEC_ENABLE_FUZZ is ON, but compiler is not Clang; libFuzzer targets skipped. Use *_fuzz_replay/*_fuzz_smoke targets.")
+        message(WARNING "ROSETTE_SPEC_ENABLE_FUZZ is ON, but compiler is not Clang; libFuzzer targets skipped. Use *_fuzz_replay/*_fuzz_smoke targets.")
     endif()
 endif()

@@ -4,7 +4,7 @@ set(RTPS_BOARD_ENABLE_FREERTOS ON PARENT_SCOPE)
 set(RTPS_BOARD_ENABLE_WIZNET ON PARENT_SCOPE)
 set(RTPS_BOARD_BUILD_BSP ON PARENT_SCOPE)
 set(RTPS_BOARD_BUILD_EXAMPLE ON PARENT_SCOPE)
-set(RTPS_BOARD_EXAMPLE_SOURCE "example/main_rp2350.cpp" PARENT_SCOPE)
+set(RTPS_BOARD_EXAMPLE_SOURCE "examples/main_rp2350.cpp" PARENT_SCOPE)
 
 # Use pico as the base board definition; the BSP overrides anything
 # that differs (e.g. wiring or board-specific hardware setup).

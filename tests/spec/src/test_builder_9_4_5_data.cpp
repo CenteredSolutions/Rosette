@@ -1,6 +1,6 @@
 #include "spec_test_common.hpp"
 
-#include "rtps/message_builder.hpp"
+#include "rosette/rtps/message_builder.hpp"
 
 namespace spec_test {
 

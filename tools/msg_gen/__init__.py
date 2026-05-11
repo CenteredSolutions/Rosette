@@ -1,4 +1,4 @@
-"""milkDDS interface generator package."""
+"""Rosette interface generator package."""
 
 from .cli import main
 from .model import MessageDef, ServiceDef, FieldDef, ConstantDef

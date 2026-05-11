@@ -17,23 +17,23 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 0
 fi
 
-IMAGE="${MILKDDS_ROS2_IMAGE:-osrf/ros:humble-desktop}"
-TOPIC="${MILKDDS_ROS2_TOPIC:-/chatter}"
-DOMAIN="${MILKDDS_ROS2_DOMAIN:-0}"
+IMAGE="${ROSETTE_ROS2_IMAGE:-osrf/ros:humble-desktop}"
+TOPIC="${ROSETTE_ROS2_TOPIC:-/chatter}"
+DOMAIN="${ROSETTE_ROS2_DOMAIN:-0}"
 
 echo "[ros2-docker] using image: $IMAGE"
 
-docker rm -f milkdds_ros2_echo >/dev/null 2>&1 || true
+docker rm -f rosette_ros2_echo >/dev/null 2>&1 || true
 
-docker run --rm --name milkdds_ros2_echo --network host \
+docker run --rm --name rosette_ros2_echo --network host \
   -e ROS_DOMAIN_ID="$DOMAIN" \
   "$IMAGE" \
   bash -lc "source /opt/ros/humble/setup.bash && timeout 25s ros2 topic echo ${TOPIC} std_msgs/msg/String --once" \
-  > /tmp/milkdds_ros2_echo.log 2>&1 &
+  > /tmp/rosette_ros2_echo.log 2>&1 &
 ECHO_PID=$!
 
 cleanup() {
-  docker rm -f milkdds_ros2_echo >/dev/null 2>&1 || true
+  docker rm -f rosette_ros2_echo >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -43,13 +43,13 @@ ROS_DOMAIN_ID="$DOMAIN" "$BIN" --domain "$DOMAIN" --duration-ms 12000 --publish-
 
 wait "$ECHO_PID" || {
   echo "[ros2-docker] echo process failed"
-  cat /tmp/milkdds_ros2_echo.log
+  cat /tmp/rosette_ros2_echo.log
   exit 1
 }
 
-if ! grep -q "milkDDS POSIX hello" /tmp/milkdds_ros2_echo.log; then
+if ! grep -q "Rosette POSIX hello" /tmp/rosette_ros2_echo.log; then
   echo "[ros2-docker] expected payload not observed"
-  cat /tmp/milkdds_ros2_echo.log
+  cat /tmp/rosette_ros2_echo.log
   exit 1
 fi
 

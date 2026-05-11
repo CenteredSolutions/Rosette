@@ -1,4 +1,4 @@
-#include "rtps/endpoint_match_table.hpp"
+#include "rosette/rtps/endpoint_match_table.hpp"
 
 #include <stddef.h>
 #include <stdint.h>

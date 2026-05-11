@@ -1,6 +1,6 @@
 # ROS 2 POSIX Interop Smoke
 
-This directory provides a host-side smoke publisher for validating milkDDS
+This directory provides a host-side smoke publisher for validating Rosette
 interop against a stock ROS 2 Docker node.
 
 The smoke target generates `std_msgs__String.h` at build time via
@@ -9,14 +9,14 @@ The smoke target generates `std_msgs__String.h` at build time via
 ## Build
 
 ```bash
-cmake -S tests/ros2 -B /tmp/milkdds-ros2-build
-cmake --build /tmp/milkdds-ros2-build -j
+cmake -S tests/ros2 -B /tmp/rosette-ros2-build
+cmake --build /tmp/rosette-ros2-build -j
 ```
 
 ## Run publisher directly
 
 ```bash
-/tmp/milkdds-ros2-build/ros2_posix_chatter_smoke \
+/tmp/rosette-ros2-build/ros2_posix_chatter_smoke \
   --domain 0 \
   --participant 1 \
   --duration-ms 15000 \
@@ -27,7 +27,7 @@ cmake --build /tmp/milkdds-ros2-build -j
 If auto-detection picks loopback, set a routable IPv4 explicitly:
 
 ```bash
-MILKDDS_LOCAL_IP=172.18.0.10 /tmp/milkdds-ros2-build/ros2_posix_chatter_smoke
+ROSETTE_LOCAL_IP=172.18.0.10 /tmp/rosette-ros2-build/ros2_posix_chatter_smoke
 ```
 
 ## Packet-capture probe project
@@ -51,14 +51,14 @@ Why this exists:
 ### Build the probe
 
 ```bash
-cmake -S tests/ros2 -B /tmp/milkdds-ros2-build
-cmake --build /tmp/milkdds-ros2-build -j --target ros2_posix_packet_probe
+cmake -S tests/ros2 -B /tmp/rosette-ros2-build
+cmake --build /tmp/rosette-ros2-build -j --target ros2_posix_packet_probe
 ```
 
 ### Run the Rosette probe by hand
 
 ```bash
-/tmp/milkdds-ros2-build/ros2_posix_packet_probe \
+/tmp/rosette-ros2-build/ros2_posix_packet_probe \
   --domain 0 \
   --participant 31 \
   --duration-ms 20000 \
@@ -88,22 +88,22 @@ This is the easiest local workflow when `tcpdump` is available and your ROS 2
 Python environment is already sourced:
 
 ```bash
-MILKDDS_ROS2_CAPTURE_IFACE=en0 \
-tests/ros2/run_ros2_packet_capture.sh /tmp/milkdds-ros2-build/ros2_posix_packet_probe
+ROSETTE_ROS2_CAPTURE_IFACE=en0 \
+tests/ros2/run_ros2_packet_capture.sh /tmp/rosette-ros2-build/ros2_posix_packet_probe
 ```
 
 Useful environment overrides:
 
-- `MILKDDS_ROS2_DOMAIN` (default: `0`)
-- `MILKDDS_ROS2_PARTICIPANT` (default: `31`)
-- `MILKDDS_ROS2_TX_TOPIC` (default: `/rosette_probe_tx`)
-- `MILKDDS_ROS2_RX_TOPIC` (default: `/rosette_probe_rx`)
-- `MILKDDS_ROS2_DURATION_MS` (default: `20000`)
-- `MILKDDS_ROS2_PUBLISH_MS` (default: `1000`)
-- `MILKDDS_ROS2_EXPECT_RX` (default: `1`)
-- `MILKDDS_ROS2_CAPTURE_IFACE` (recommended on macOS)
-- `MILKDDS_ROS2_PCAP_FILE` (default: `/tmp/rosette-rtps-domain<id>-<timestamp>.pcap`)
-- `MILKDDS_LOCAL_IP` (optional Rosette-side IPv4 override)
+- `ROSETTE_ROS2_DOMAIN` (default: `0`)
+- `ROSETTE_ROS2_PARTICIPANT` (default: `31`)
+- `ROSETTE_ROS2_TX_TOPIC` (default: `/rosette_probe_tx`)
+- `ROSETTE_ROS2_RX_TOPIC` (default: `/rosette_probe_rx`)
+- `ROSETTE_ROS2_DURATION_MS` (default: `20000`)
+- `ROSETTE_ROS2_PUBLISH_MS` (default: `1000`)
+- `ROSETTE_ROS2_EXPECT_RX` (default: `1`)
+- `ROSETTE_ROS2_CAPTURE_IFACE` (recommended on macOS)
+- `ROSETTE_ROS2_PCAP_FILE` (default: `/tmp/rosette-rtps-domain<id>-<timestamp>.pcap`)
+- `ROSETTE_LOCAL_IP` (optional Rosette-side IPv4 override)
 
 ### Two-machine use
 
@@ -171,13 +171,13 @@ Runs `ros2 topic echo --once` on the host and publishes from
 `ros2_posix_chatter_smoke`.
 
 ```bash
-tests/ros2/run_ros2_native_smoke.sh /tmp/milkdds-ros2-build/ros2_posix_chatter_smoke
+tests/ros2/run_ros2_native_smoke.sh /tmp/rosette-ros2-build/ros2_posix_chatter_smoke
 ```
 
 ## Docker interop smoke script (recommended on Linux)
 
 ```bash
-tests/ros2/run_ros2_docker_smoke.sh /tmp/milkdds-ros2-build/ros2_posix_chatter_smoke
+tests/ros2/run_ros2_docker_smoke.sh /tmp/rosette-ros2-build/ros2_posix_chatter_smoke
 ```
 
 ## Auto smoke script (best default for CI and local)
@@ -185,16 +185,16 @@ tests/ros2/run_ros2_docker_smoke.sh /tmp/milkdds-ros2-build/ros2_posix_chatter_s
 Chooses native mode on macOS and Docker mode on Linux when available:
 
 ```bash
-tests/ros2/run_ros2_smoke_auto.sh /tmp/milkdds-ros2-build/ros2_posix_chatter_smoke
+tests/ros2/run_ros2_smoke_auto.sh /tmp/rosette-ros2-build/ros2_posix_chatter_smoke
 ```
 
 Optional environment:
 
-- `MILKDDS_ROS2_IMAGE` (default: `osrf/ros:humble-desktop`)
-- `MILKDDS_ROS2_TOPIC` (default: `/chatter`)
-- `MILKDDS_ROS2_DOMAIN` (default: `0`)
-- `MILKDDS_ROS2_SMOKE_MODE` (`auto|native|docker`, default: `auto`)
-- `MILKDDS_LOCAL_IP` (optional override used by the milkDDS publisher)
+- `ROSETTE_ROS2_IMAGE` (default: `osrf/ros:humble-desktop`)
+- `ROSETTE_ROS2_TOPIC` (default: `/chatter`)
+- `ROSETTE_ROS2_DOMAIN` (default: `0`)
+- `ROSETTE_ROS2_SMOKE_MODE` (`auto|native|docker`, default: `auto`)
+- `ROSETTE_LOCAL_IP` (optional override used by the Rosette publisher)
 
 ## Platform shims
 
@@ -206,13 +206,13 @@ POSIX platform hooks used by this smoke target live in:
 ## CTest integration (optional)
 
 ```bash
-cmake -S tests/ros2 -B /tmp/milkdds-ros2-build -DMILKDDS_ENABLE_ROS2_SMOKE_TESTS=ON
-cmake --build /tmp/milkdds-ros2-build -j
-ctest --test-dir /tmp/milkdds-ros2-build --output-on-failure
+cmake -S tests/ros2 -B /tmp/rosette-ros2-build -DROSETTE_ENABLE_ROS2_SMOKE_TESTS=ON
+cmake --build /tmp/rosette-ros2-build -j
+ctest --test-dir /tmp/rosette-ros2-build --output-on-failure
 ```
 
 ## Discovery/logging troubleshooting
 
 - Ensure `RTPS_LOG_LEVEL` is at least `3` (`INFO`) for discovery events.
 - In this test CMake, smoke builds use `RTPS_LOG_LEVEL=4` (`DEBUG`) by default.
-- If auto-detection picks loopback, set `MILKDDS_LOCAL_IP` to a routable interface.
+- If auto-detection picks loopback, set `ROSETTE_LOCAL_IP` to a routable interface.

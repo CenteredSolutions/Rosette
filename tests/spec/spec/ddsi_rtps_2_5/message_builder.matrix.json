@@ -4,7 +4,7 @@
     "version": "2.5",
     "document": "formal/2022-04-01"
   },
-  "target": "lib/milkDDS/rtps/message_builder.hpp",
+  "target": "lib/Rosette/include/rosette/rtps/message_builder.hpp",
   "scope": [
     "9.4.1",
     "9.4.5.1",

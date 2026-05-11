@@ -1,4 +1,4 @@
-#include "rtps/sedp.hpp"
+#include "rosette/rtps/sedp.hpp"
 
 #include <stddef.h>
 #include <stdint.h>
