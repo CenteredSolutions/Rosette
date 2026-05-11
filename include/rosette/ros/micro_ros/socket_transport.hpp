@@ -19,7 +19,8 @@
  * hiding board policy inside the backend core.
  */
 
-#include "common.hpp"
+#include "agent_locator.hpp"
+#include "custom_transport.hpp"
 
 #include "rosette/net/inet.h"
 #include "rosette/net/socket.hpp"
@@ -103,6 +104,11 @@ public:
     const rosette::net::SocketAddress& remote() const noexcept
     {
         return remote_;
+    }
+
+    bool is_open() const noexcept
+    {
+        return socket_ && socket_->is_open();
     }
 
     bool configure_agent_endpoint(const char* address,

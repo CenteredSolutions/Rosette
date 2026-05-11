@@ -26,8 +26,7 @@
  *   reply shape with agent configuration and transport locator sequence.
  */
 
-#include "common.hpp"
-#include "socket_transport.hpp"
+#include "agent_locator.hpp"
 
 #include "rosette/net/inet.h"
 #include "rosette/net/socket.hpp"
@@ -81,7 +80,7 @@ inline constexpr uint8_t kXrceVersion[2] = {0x01u, 0x00u};
 inline constexpr uint8_t kVendorIdInvalid[2] = {0x00u, 0x00u};
 
 inline constexpr size_t kGetInfoPayloadSize = 8u;
-inline constexpr size_t kGetInfoPacketSize = 12u;
+inline constexpr size_t kGetInfoPacketSize = 16u;
 inline constexpr size_t kMaxDiscoveryPacketSize = 128u;
 
 class LittleEndianCdrWriter {
@@ -526,7 +525,7 @@ public:
         }
 
         rosette::net::SocketAddress group{};
-        if (!make_ipv4_socket_address(
+        if (!rosette::net::inet::make_socket_address_v4(
                 config_.multicast_group, config_.multicast_port, group)) {
             return false;
         }
