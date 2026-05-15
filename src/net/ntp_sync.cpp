@@ -10,6 +10,7 @@ extern "C" {
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <time.h>
 
 namespace rosette::net {
 
@@ -662,4 +663,18 @@ extern "C" int64_t rosette_micro_ros_epoch_time_us(void) {
         return rosette::net::s_ntp_service->current_time_us();
     }
     return (int64_t)time_us_64();
+}
+
+// POSIX clock_gettime shim — satisfies XRCE-DDS uxr_nanos() and any other
+// embedded consumer that calls clock_gettime(CLOCK_REALTIME, ...).
+extern "C" int clock_gettime(clockid_t, struct timespec* tp) {
+    if (tp == nullptr) {
+        return -1;
+    }
+    const int64_t us = rosette::net::s_ntp_service
+        ? rosette::net::s_ntp_service->current_time_us()
+        : (int64_t)time_us_64();
+    tp->tv_sec  = (time_t)(us / 1000000ll);
+    tp->tv_nsec = (long)((us % 1000000ll) * 1000ll);
+    return 0;
 }

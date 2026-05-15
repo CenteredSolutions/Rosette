@@ -37,7 +37,7 @@ public:
         , read_fill_(config.read_fill)
     {
 #ifndef RTPS_NO_FREERTOS
-        mutex_ = xSemaphoreCreateRecursiveMutexStatic(&mutex_buffer_);
+        mutex_ = xSemaphoreCreateMutex();
 #endif
     }
 
@@ -47,7 +47,7 @@ public:
         , read_fill_(other.read_fill_)
     {
 #ifndef RTPS_NO_FREERTOS
-        mutex_ = xSemaphoreCreateRecursiveMutexStatic(&mutex_buffer_);
+        mutex_ = xSemaphoreCreateMutex();
 #endif
     }
 
@@ -57,7 +57,7 @@ public:
         , read_fill_(other.read_fill_)
     {
 #ifndef RTPS_NO_FREERTOS
-        mutex_ = xSemaphoreCreateRecursiveMutexStatic(&mutex_buffer_);
+        mutex_ = xSemaphoreCreateMutex();
 #endif
     }
 
@@ -168,7 +168,7 @@ private:
     {
 #ifndef RTPS_NO_FREERTOS
         return (mutex_ == nullptr) ||
-               (xSemaphoreTakeRecursive(mutex_, timeout) == pdTRUE);
+               (xSemaphoreTake(mutex_, timeout) == pdTRUE);
 #else
         (void)timeout;
         return true;
@@ -179,7 +179,7 @@ private:
     {
 #ifndef RTPS_NO_FREERTOS
         if (mutex_ != nullptr) {
-            (void)xSemaphoreGiveRecursive(mutex_);
+            (void)xSemaphoreGive(mutex_);
         }
 #endif
     }
@@ -202,7 +202,6 @@ private:
     uint cs_pin_;
     uint8_t read_fill_;
 #ifndef RTPS_NO_FREERTOS
-    StaticSemaphore_t mutex_buffer_{};
     SemaphoreHandle_t mutex_ = nullptr;
 #endif
 };

@@ -395,9 +395,13 @@ private:
             return ContextStartError::kAutoDiscoveryDisabled;
         }
 
+#if defined(RMW_UXRCE_TRANSPORT_UDP) || defined(RMW_UXRCE_TRANSPORT_TCP)
         return rmw_uros_discover_agent(&rmw_options) == RMW_RET_OK
                ? ContextStartError::kOk
                : ContextStartError::kAutoDiscoveryFailed;
+#else
+        return ContextStartError::kAutoDiscoveryDisabled;
+#endif
     }
 
 #if ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM

@@ -59,6 +59,9 @@ public:
     using device_type = WiznetDevice<Chip, Bus>;
     using socket_provider_type = IolibrarySocketProvider<Chip, Bus>;
 
+    using DhcpLease = rosette::net::wiznet::DhcpLease;
+    using DhcpState = rosette::net::wiznet::DhcpState;
+
     using assign_callback_type = void (*)(const DhcpLease& lease, void* user);
     using change_callback_type = void (*)(const DhcpLease& old_lease,
                                           const DhcpLease& new_lease,
@@ -80,7 +83,7 @@ public:
         callback_user_ = callback_user;
 
         if (lease_mutex_ == nullptr) {
-            lease_mutex_ = xSemaphoreCreateMutexStatic(&lease_mutex_buffer_);
+            lease_mutex_ = xSemaphoreCreateMutex();
             if (lease_mutex_ == nullptr) {
                 return false;
             }
@@ -846,7 +849,6 @@ private:
     socket_provider_type& provider_;
     DhcpConfig config_{};
     TaskHandle_t task_handle_ = nullptr;
-    StaticSemaphore_t lease_mutex_buffer_{};
     SemaphoreHandle_t lease_mutex_ = nullptr;
     DhcpLease lease_{};
     volatile bool force_renew_ = false;
