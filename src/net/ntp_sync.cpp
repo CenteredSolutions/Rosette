@@ -13,6 +13,8 @@ extern "C" {
 
 namespace rosette::net {
 
+static NtpSyncService* s_ntp_service = nullptr;
+
 namespace {
 
 /**
@@ -194,6 +196,8 @@ bool NtpSyncService::start() noexcept
     if (task_handle_ != nullptr) {
         return true;
     }
+
+    s_ntp_service = this;
 
     const BaseType_t rc = xTaskCreate(task_entry,
                                       config_.task_name,
@@ -652,13 +656,10 @@ int64_t NtpSyncService::read_offset() const noexcept
 
 }  // namespace rosette::net
 
-// Provide a C-callable function for micro-ROS to get the synchronized epoch time.
+// Strong override of the weak symbol in time_pico.c so micro-ROS gets NTP-synced epoch time.
 extern "C" int64_t rosette_micro_ros_epoch_time_us(void) {
-    // You must ensure this pointer is set to your running NtpSyncService instance.
-    extern rosette::net::NtpSyncService* g_ntp_sync_service;
-    if (g_ntp_sync_service) {
-        return g_ntp_sync_service->current_time_us();
+    if (rosette::net::s_ntp_service) {
+        return rosette::net::s_ntp_service->current_time_us();
     }
-    // Fallback: monotonic time if NTP not available
     return (int64_t)time_us_64();
 }
