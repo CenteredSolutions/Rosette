@@ -51,6 +51,73 @@ patch_libyaml_vendor_for_cmake4() {
     "${vendor_cmake}"
 }
 
+patch_rcutils_for_pico_time() {
+  local rcutils_dir="$1"
+  local rcutils_cmake="${rcutils_dir}/CMakeLists.txt"
+  local time_source="${rcutils_dir}/src/time_pico.c"
+
+  if [[ ! -f "${rcutils_cmake}" ]]; then
+    return 0
+  fi
+
+  if ! grep -Fq "ROSETTE_MICRO_ROS_USE_PICO_TIME" "${rcutils_cmake}"; then
+    perl -0pi -e \
+      's/if\(WIN32\)\n  set\(time_impl_c src\/time_win32\.c\)\nelse\(\)\n  set\(time_impl_c src\/time_unix\.c\)\nendif\(\)/if(WIN32)\n  set(time_impl_c src\/time_win32.c)\nelseif(ROSETTE_MICRO_ROS_USE_PICO_TIME)\n  set(time_impl_c src\/time_pico.c)\nelse()\n  set(time_impl_c src\/time_unix.c)\nendif()/g' \
+      "${rcutils_cmake}"
+  fi
+
+  cat > "${time_source}" <<'EOF'
+// Pico/newlib rcutils time source for micro-ROS static library builds.
+
+#include <stdint.h>
+
+#include "rcutils/time.h"
+#include "rcutils/types.h"
+
+extern uint64_t time_us_64(void);
+
+__attribute__((weak)) int64_t
+rosette_micro_ros_epoch_time_us(void)
+{
+  return (int64_t)time_us_64();
+}
+
+static rcutils_ret_t
+rosette_pico_steady_time_now(rcutils_time_point_value_t * now)
+{
+  if (now == 0) {
+    return RCUTILS_RET_INVALID_ARGUMENT;
+  }
+
+  *now = (rcutils_time_point_value_t)(time_us_64() * 1000ull);
+  return RCUTILS_RET_OK;
+}
+
+rcutils_ret_t
+rcutils_system_time_now(rcutils_time_point_value_t * now)
+{
+  if (now == 0) {
+    return RCUTILS_RET_INVALID_ARGUMENT;
+  }
+
+  *now = (rcutils_time_point_value_t)(rosette_micro_ros_epoch_time_us() * 1000ll);
+  return RCUTILS_RET_OK;
+}
+
+rcutils_ret_t
+rcutils_steady_time_now(rcutils_time_point_value_t * now)
+{
+  return rosette_pico_steady_time_now(now);
+}
+
+rcutils_ret_t
+rcutils_raw_steady_time_now(rcutils_time_point_value_t * now)
+{
+  return rosette_pico_steady_time_now(now);
+}
+EOF
+}
+
 if [[ ! -f "${ROS_SETUP}" ]]; then
   echo "micro-ROS bootstrap requires a host ROS 2 installation at: ${ROS_SETUP}" >&2
   exit 1
@@ -88,5 +155,12 @@ patch_libyaml_vendor_for_cmake4 \
   "${WORKSPACE_DIR}/firmware/mcu_ws/ros2/libyaml_vendor/CMakeLists.txt"
 patch_libyaml_vendor_for_cmake4 \
   "${WORKSPACE_DIR}/firmware/mcu_ws/uros/libyaml_vendor/CMakeLists.txt"
+
+if [[ "@ROSETTE_MICRO_ROS_USE_PICO_TIME_TEXT@" == "ON" ]]; then
+  patch_rcutils_for_pico_time \
+    "${WORKSPACE_DIR}/firmware/mcu_ws/uros/rcutils"
+  patch_rcutils_for_pico_time \
+    "${WORKSPACE_DIR}/firmware/mcu_ws/ros2/rcutils"
+fi
 
 ros2 run micro_ros_setup build_firmware.sh "${TOOLCHAIN_FILE}" "${COLCON_META_FILE}"

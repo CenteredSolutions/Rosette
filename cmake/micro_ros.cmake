@@ -118,10 +118,13 @@ if(_rosette_micro_ros_transport STREQUAL "auto")
 endif()
 
 set(_rosette_micro_ros_arch_flags "")
+set(ROSETTE_MICRO_ROS_USE_PICO_TIME OFF)
 if(RTPS_PROCESSOR STREQUAL "RP2040")
     set(_rosette_micro_ros_arch_flags "-mcpu=cortex-m0plus -mthumb")
+    set(ROSETTE_MICRO_ROS_USE_PICO_TIME ON)
 elseif(RTPS_PROCESSOR STREQUAL "RP2350")
     set(_rosette_micro_ros_arch_flags "-mcpu=cortex-m33 -mthumb")
+    set(ROSETTE_MICRO_ROS_USE_PICO_TIME ON)
 endif()
 
 set(_rosette_micro_ros_common_c_flags
@@ -163,6 +166,10 @@ set(ROSETTE_MICRO_ROS_WORKSPACE_DIR_ESCAPED "${ROSETTE_MICRO_ROS_WORKSPACE_DIR}"
 set(ROSETTE_MICRO_ROS_RUN_ROSDEP_TEXT "OFF")
 if(ROSETTE_MICRO_ROS_RUN_ROSDEP)
     set(ROSETTE_MICRO_ROS_RUN_ROSDEP_TEXT "ON")
+endif()
+set(ROSETTE_MICRO_ROS_USE_PICO_TIME_TEXT "OFF")
+if(ROSETTE_MICRO_ROS_USE_PICO_TIME)
+    set(ROSETTE_MICRO_ROS_USE_PICO_TIME_TEXT "ON")
 endif()
 
 configure_file(

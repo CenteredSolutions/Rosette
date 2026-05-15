@@ -651,3 +651,14 @@ int64_t NtpSyncService::read_offset() const noexcept
 }
 
 }  // namespace rosette::net
+
+// Provide a C-callable function for micro-ROS to get the synchronized epoch time.
+extern "C" int64_t rosette_micro_ros_epoch_time_us(void) {
+    // You must ensure this pointer is set to your running NtpSyncService instance.
+    extern rosette::net::NtpSyncService* g_ntp_sync_service;
+    if (g_ntp_sync_service) {
+        return g_ntp_sync_service->current_time_us();
+    }
+    // Fallback: monotonic time if NTP not available
+    return (int64_t)time_us_64();
+}

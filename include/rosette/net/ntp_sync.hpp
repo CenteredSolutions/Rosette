@@ -63,7 +63,17 @@ struct NtpSyncConfig {
     EventBits_t ready_mask = 0u;
     EventGroupHandle_t notify_events = nullptr;
     EventBits_t synced_bit = 0u;
+
 };
+
+// C-callable function for micro-ROS to get the synchronized epoch time (Unix microseconds)
+#ifdef __cplusplus
+extern "C" {
+#endif
+int64_t rosette_micro_ros_epoch_time_us(void);
+#ifdef __cplusplus
+}
+#endif
 
 class NtpSyncService {
 public:
