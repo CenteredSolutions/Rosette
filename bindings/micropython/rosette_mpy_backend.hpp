@@ -204,50 +204,26 @@ bool SubscriptionEnqueueFrame(mp_rosette_subscription_obj_t* self,
 bool SubscriptionReadable(const mp_rosette_subscription_obj_t* self) noexcept;
 
 /**
- * @brief Creates the MicroPython-socket-backed custom transport owned by a context.
+ * @brief Creates the C++ CustomTransport adapter for a Transport object.
  *
- * The context constructor creates the Python socket object first, then uses
- * this helper to allocate the C++ adapter that implements Rosette's
- * `CustomTransport` interface on top of that socket.
- *
- * @param[in,out] self Context that owns the socket and transport state.
- * @return `true` when the transport adapter was allocated successfully.
+ * @param[in,out] self Transport object that will own the adapter.
+ * @return `true` when the adapter was allocated successfully.
  */
-bool TransportInit(mp_rosette_context_obj_t* self) noexcept;
+bool TransportInit(mp_rosette_transport_obj_t* self) noexcept;
 
 /**
- * @brief Finalizes the transport adapter owned by a context.
+ * @brief Finalizes the C++ CustomTransport adapter owned by a Transport object.
  *
- * @param[in,out] self Context whose transport adapter should be destroyed.
+ * @param[in,out] self Transport object whose adapter should be destroyed.
  */
-void TransportFini(mp_rosette_context_obj_t* self) noexcept;
+void TransportFini(mp_rosette_transport_obj_t* self) noexcept;
 
 /**
- * @brief Returns whether the transport currently has a connected UDP socket.
+ * @brief Returns whether the transport currently treats its socket as connected.
  *
- * @param[in] self Context whose transport state should be inspected.
+ * @param[in] self Transport object to inspect.
  * @return `true` when the transport can use `send()` / `recv()` directly.
  */
-bool TransportConnected(const mp_rosette_context_obj_t* self) noexcept;
-
-/**
- * @brief Sends one UDP packet through the transport adapter.
- *
- * @param[in,out] self Context that owns the transport.
- * @param[in] payload Python bytes-like packet payload.
- * @return Python integer number of bytes reported as transmitted.
- */
-mp_obj_t TransportSendPacket(mp_rosette_context_obj_t* self,
-                             mp_obj_t payload);
-
-/**
- * @brief Receives one UDP packet through the transport adapter.
- *
- * @param[in,out] self Context that owns the transport.
- * @param[in] max_bytes_in Python integer maximum packet size.
- * @return Received packet bytes, or `None` when no packet is ready.
- */
-mp_obj_t TransportRecvPacket(mp_rosette_context_obj_t* self,
-                             mp_obj_t max_bytes_in);
+bool TransportConnected(const mp_rosette_transport_obj_t* self) noexcept;
 
 }  // namespace rosette::bindings::micropython

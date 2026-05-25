@@ -88,50 +88,36 @@ struct _mp_rosette_publisher_obj_t;
 struct _mp_rosette_subscription_obj_t;
 
 /**
- * @brief Transport state handed to the micro-ROS custom transport callbacks.
+ * @brief `_rosette.Transport` object layout.
  *
- * The transport callbacks need a stable pointer back to the owning
- * `Context` object so they can access the MicroPython socket object and the
- * cached socket methods used for packet I/O.
+ * The transport is a thin C base class subclassed in Python. The Python
+ * subclass owns the socket and implements send/recv/sendto/recvfrom/close.
+ * C code dispatches to those Python methods via mp_load_attr at call time.
+ * The C struct only tracks flags that the C++ CustomTransport adapter needs
+ * to check without calling back into Python on every hot-path query.
  */
-typedef struct _rosette_mpy_transport_t {
-    struct _mp_rosette_context_obj_t* owner;
+typedef struct _mp_rosette_transport_obj_t {
+    mp_obj_base_t base;
     bool socket_ready;
+    bool connected;
     uint32_t read_budget_us;
-    void* implementation;
-} rosette_mpy_transport_t;
+    void* implementation;  /* MicroPythonSocketTransport C++ adapter */
+} mp_rosette_transport_obj_t;
 
 /**
  * @brief `rosette.Context` object layout.
  *
- * The context is the binding's top-level owner. It retains the socket module
- * and socket instance as ordinary MicroPython objects so the dynamic native
- * module path can stay within the supported object runtime rather than relying
- * on internal NIC structs.
+ * The context owns backend lifecycle and holds a reference to its Transport.
+ * All socket I/O is delegated to the Python Transport object.
  */
 typedef struct _mp_rosette_context_obj_t {
     mp_obj_base_t base;
 
-    mp_obj_t socket_module_obj;
-    mp_obj_t socket_obj;
-    mp_obj_t agent_ip_obj;
-    mp_obj_t remote_addr_obj;
-    mp_obj_t local_addr_obj;
-
-    mp_obj_t meth_bind;
-    mp_obj_t meth_connect;
-    mp_obj_t meth_send;
-    mp_obj_t meth_sendto;
-    mp_obj_t meth_recv;
-    mp_obj_t meth_recvfrom;
-    mp_obj_t meth_setblocking;
-    mp_obj_t meth_close;
-
+    mp_obj_t transport_obj;   /* Python Transport object, mp_const_none until open() */
     mp_obj_t subscriptions;
 
     uint32_t client_key;
-    uint32_t spin_timeout_ns;
-    uint16_t agent_port;
+    uint32_t spin_timeout_us;
     uint16_t local_port;
     uint16_t executor_handles;
     uint8_t backend_start_error;
@@ -139,11 +125,7 @@ typedef struct _mp_rosette_context_obj_t {
 
     bool started;
     bool closed;
-    bool connected;
-    bool use_connected_udp;
-    bool connect_fallback_eperm;
 
-    rosette_mpy_transport_t transport;
     void* backend;
 } mp_rosette_context_obj_t;
 
@@ -253,6 +235,7 @@ typedef struct _mp_rosette_subscription_obj_t {
     void* backend;
 } mp_rosette_subscription_obj_t;
 
+extern const mp_obj_type_t rosette_transport_type;
 extern const mp_obj_full_type_t rosette_context_type;
 extern const mp_obj_full_type_t rosette_schema_type;
 extern const mp_obj_full_type_t rosette_message_type;

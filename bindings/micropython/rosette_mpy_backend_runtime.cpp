@@ -97,9 +97,13 @@ struct MicroPythonContextBackend {
         options.udp_agent_port = owner->agent_port;
 #if ROSETTE_MICROPY_BACKEND_TRANSPORT_CUSTOM
         options.use_custom_transport = true;
-        options.custom_transport =
-            static_cast<milkros::micro_ros::CustomTransport*>(
-                owner->transport.implementation);
+        {
+            auto* transport = static_cast<mp_rosette_transport_obj_t*>(
+                MP_OBJ_TO_PTR(owner->transport_obj));
+            options.custom_transport =
+                static_cast<milkros::micro_ros::CustomTransport*>(
+                    transport->implementation);
+        }
 #else
         options.use_custom_transport = false;
         options.custom_transport = nullptr;
@@ -448,9 +452,15 @@ mp_obj_t PayloadValues(mp_obj_t payload) noexcept
  */
 bool ContextStart(mp_rosette_context_obj_t* self) noexcept
 {
-    if (self == nullptr || self->closed || !self->transport.socket_ready ||
-        self->socket_obj == mp_const_none) {
+    if (self == nullptr || self->closed || self->transport_obj == mp_const_none) {
         return false;
+    }
+    {
+        auto* transport = static_cast<mp_rosette_transport_obj_t*>(
+            MP_OBJ_TO_PTR(self->transport_obj));
+        if (!transport->socket_ready) {
+            return false;
+        }
     }
 
 #if ROSETTE_MICROPY_HAS_MICRO_ROS

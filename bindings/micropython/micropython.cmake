@@ -51,6 +51,7 @@ endif()
 add_library(usermod_rosette INTERFACE)
 target_sources(usermod_rosette INTERFACE
     ${ROSETTE_BINDINGS_DIR}/modrosette.c
+    ${ROSETTE_BINDINGS_DIR}/rosette_mpy_obj_defs.c
     ${ROSETTE_BINDINGS_DIR}/rosette_mpy_backend_runtime.cpp
     ${ROSETTE_BINDINGS_DIR}/rosette_mpy_context.cpp
     ${ROSETTE_BINDINGS_DIR}/rosette_mpy_node.cpp
