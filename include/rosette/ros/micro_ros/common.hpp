@@ -243,7 +243,7 @@ struct ContextOptions {
     int epoch_sync_timeout_ms = 1000;
 
     const char* udp_agent_address = nullptr;
-    const char* udp_agent_port = "8888";
+    uint16_t udp_agent_port = 8888u;
 
     bool use_custom_transport = false;
     bool custom_transport_framing = true;

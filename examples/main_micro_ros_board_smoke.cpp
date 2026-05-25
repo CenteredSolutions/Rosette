@@ -56,7 +56,7 @@ constexpr uint32_t kContextStartRetryDelayMs = 2000u;
 #endif
 
 #ifndef ROSETTE_MICRO_ROS_AGENT_PORT
-#define ROSETTE_MICRO_ROS_AGENT_PORT "8888"
+#define ROSETTE_MICRO_ROS_AGENT_PORT 8888u
 #endif
 
 #ifndef ROSETTE_MICRO_ROS_DISCOVERY_GROUP
@@ -184,7 +184,7 @@ int run_posix_smoke()
 
 #if ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM
     const uint16_t agent_port =
-        static_cast<uint16_t>(std::atoi(ROSETTE_MICRO_ROS_AGENT_PORT));
+        static_cast<uint16_t>(ROSETTE_MICRO_ROS_AGENT_PORT);
     const auto local = rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u);
     rosette::net::SocketAddress remote =
         rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, agent_port);
@@ -499,7 +499,7 @@ void service_task(void*) noexcept
 
 #if ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM
     const uint16_t agent_port =
-        static_cast<uint16_t>(std::atoi(ROSETTE_MICRO_ROS_AGENT_PORT));
+        static_cast<uint16_t>(ROSETTE_MICRO_ROS_AGENT_PORT);
     rosette::net::SocketAddress remote =
         rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, agent_port);
     if (ROSETTE_MICRO_ROS_AGENT_IP[0] != '\0' &&

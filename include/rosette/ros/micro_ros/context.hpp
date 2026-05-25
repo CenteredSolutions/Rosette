@@ -285,6 +285,9 @@ private:
      */
     ContextStartError configure_transport(rmw_init_options_t& rmw_options) noexcept
     {
+        char port_str[6];
+        std::snprintf(port_str, sizeof(port_str), "%u", options_.udp_agent_port);
+
         if (options_.use_custom_transport) {
 #if ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM
             if (options_.custom_transport == nullptr) {
@@ -294,7 +297,7 @@ private:
             if (options_.udp_agent_address != nullptr &&
                 !options_.custom_transport->configure_agent_endpoint(
                     options_.udp_agent_address,
-                    options_.udp_agent_port)) {
+                    port_str)) {
                 return ContextStartError::kCustomTransportEndpointRejected;
             }
 
@@ -316,7 +319,7 @@ private:
         if (options_.udp_agent_address != nullptr) {
             return rmw_uros_options_set_udp_address(
                        options_.udp_agent_address,
-                       options_.udp_agent_port,
+                       port_str,
                        &rmw_options) == RMW_RET_OK
                        ? ContextStartError::kOk
                        : ContextStartError::kUdpAddressSetFailed;
@@ -366,8 +369,7 @@ private:
                 return ContextStartError::kAgentLocatorNoAddress;
             }
             if (port[0] == '\0') {
-                strncpy(port, options_.udp_agent_port, sizeof(port) - 1u);
-                port[sizeof(port) - 1u] = '\0';
+                std::snprintf(port, sizeof(port), "%u", options_.udp_agent_port);
             }
 
             if (options_.use_custom_transport) {

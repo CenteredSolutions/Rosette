@@ -35,7 +35,6 @@ extern "C" {
 #include <std_msgs/msg/float32.h>
 
 #include <new>
-#include <string>
 #endif
 
 namespace rosette::bindings::micropython {
@@ -53,17 +52,18 @@ namespace {
  * the `milkros::micro_ros::Context` itself.
  */
 struct MicroPythonContextBackend {
-    std::string agent_address;
-    std::string agent_port;
+    char agent_address[40];  // IPv4, IPv6, or short hostname
     milkros::micro_ros::ContextOptions options;
     milkros::micro_ros::Context context;
 
     explicit MicroPythonContextBackend(mp_rosette_context_obj_t* owner)
-        : agent_address(mp_obj_str_get_str(owner->agent_ip_obj))
-        , agent_port(std::to_string(owner->agent_port))
-        , options(BuildOptions(owner, agent_address.c_str(), agent_port.c_str()))
-        , context(options)
-    {}
+    {
+        const char* ip = mp_obj_str_get_str(owner->agent_ip_obj);
+        std::strncpy(agent_address, ip, sizeof(agent_address) - 1);
+        agent_address[sizeof(agent_address) - 1] = '\0';
+        options = BuildOptions(owner, agent_address);
+        new (&context) milkros::micro_ros::Context(options);
+    }
 
     /**
      * @brief Builds Rosette micro-ROS context options from one binding context.
@@ -85,8 +85,7 @@ struct MicroPythonContextBackend {
      */
     static milkros::micro_ros::ContextOptions BuildOptions(
         mp_rosette_context_obj_t* owner,
-        const char* agent_address,
-        const char* agent_port)
+        const char* agent_address)
     {
         milkros::micro_ros::ContextOptions options{};
         options.domain_id = owner->domain_id;
@@ -95,7 +94,7 @@ struct MicroPythonContextBackend {
         options.spin_timeout_ns = owner->spin_timeout_ns;
         options.auto_discover_agent = false;
         options.udp_agent_address = agent_address;
-        options.udp_agent_port = agent_port;
+        options.udp_agent_port = owner->agent_port;
 #if ROSETTE_MICROPY_BACKEND_TRANSPORT_CUSTOM
         options.use_custom_transport = true;
         options.custom_transport =
