@@ -109,6 +109,8 @@ public:
     }
 
     bool valid() const noexcept { return valid_; }
+    rcl_node_t* native_handle() noexcept { return valid_ ? &node_ : nullptr; }
+    Context* context() noexcept { return context_; }
 
     /**
      * @brief Creates a typed publisher attached to this node.
@@ -240,7 +242,7 @@ private:
     void fini() noexcept
     {
         if (valid_) {
-            (void)rcl_node_fini(&node_);
+            [[maybe_unused]] const rcl_ret_t fini_ret = rcl_node_fini(&node_);
         }
         node_ = rcl_get_zero_initialized_node();
         valid_ = false;

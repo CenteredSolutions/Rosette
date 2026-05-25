@@ -30,6 +30,39 @@ struct EndpointOptions {
     bool reliable = false;
 };
 
+// -----------------------------------------------------------------------
+// Schema CDR codec — defined in rosette_mpy_schema.cpp
+// -----------------------------------------------------------------------
+
+/**
+ * @brief Encodes a Python message value into CDR using runtime schema descriptors.
+ *
+ * Writes the 4-byte CDR encapsulation header followed by each field in schema
+ * declaration order.  Returns the number of bytes written, or 0 on overflow.
+ *
+ * @param[in]  schema   Parsed schema descriptor for the message.
+ * @param[in]  payload  Python dict, Message, or bare scalar.
+ * @param[out] buf      Destination buffer.
+ * @param[in]  buf_size Capacity of `buf`.
+ * @return Bytes written (>= 4), or 0 on overflow.
+ */
+size_t SchemaCdrEncode(const mp_rosette_schema_obj_t* schema,
+                       mp_obj_t payload,
+                       uint8_t* buf,
+                       size_t   buf_size);
+
+/**
+ * @brief Decodes a CDR payload into a Python Message using runtime schema descriptors.
+ *
+ * @param[in] schema  Parsed schema descriptor for the expected message type.
+ * @param[in] buf     Raw CDR bytes including the 4-byte encapsulation header.
+ * @param[in] length  Valid byte count in `buf`.
+ * @return New Message object, or None when the payload is malformed.
+ */
+mp_obj_t SchemaCdrDecode(const mp_rosette_schema_obj_t* schema,
+                         const uint8_t* buf,
+                         size_t         length);
+
 /**
  * @brief Starts the Rosette micro-ROS backend for one MicroPython context.
  *

@@ -184,7 +184,8 @@ public:
         }
 
         if (init_options_initialized_) {
-            (void)rcl_init_options_fini(&init_options_);
+            [[maybe_unused]] const rcl_ret_t fini_ret =
+                rcl_init_options_fini(&init_options_);
             init_options_initialized_ = false;
         }
 

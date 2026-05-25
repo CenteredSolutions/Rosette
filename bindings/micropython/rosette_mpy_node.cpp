@@ -19,19 +19,6 @@ namespace rosette::bindings::micropython {
 namespace {
 
 /**
- * @brief Raises a clear not-yet-implemented error for node child factories.
- *
- * The current short path focuses on getting `Context` compiling and smokeable
- * in a MicroPython build. Publishers and subscriptions will land next, so the
- * node surface keeps those entry points explicit and honest rather than
- * pretending they already work.
- */
-[[noreturn]] void RaiseFactoryNotImplemented()
-{
-    mp_raise_NotImplementedError(MP_ERROR_TEXT("Rosette subscription bindings are not implemented yet"));
-}
-
-/**
  * @brief Displays a compact representation of a node.
  *
  * @param[in] print MicroPython print destination.
@@ -134,9 +121,48 @@ mp_obj_t NodeCreatePublisher(size_t n_args, const mp_obj_t* args)
 
 mp_obj_t NodeCreateSubscription(size_t n_args, const mp_obj_t* args)
 {
-    (void)n_args;
-    (void)args;
-    RaiseFactoryNotImplemented();
+    auto* node = static_cast<mp_rosette_node_obj_t*>(MP_OBJ_TO_PTR(args[0]));
+    if (node->backend == nullptr) {
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Node backend is not initialized"));
+    }
+    if (!mp_obj_is_type(args[1], reinterpret_cast<const mp_obj_type_t*>(&rosette_schema_type))) {
+        mp_raise_TypeError(MP_ERROR_TEXT("create_subscription expects a Schema"));
+    }
+
+    EndpointOptions options{};
+    if (n_args >= 4) {
+        options.depth = static_cast<uint16_t>(mp_obj_get_int(args[3]));
+    }
+    if (n_args >= 5) {
+        options.reliable = mp_obj_is_true(args[4]);
+    }
+
+    auto* sub = mp_obj_malloc(
+        mp_rosette_subscription_obj_t,
+        reinterpret_cast<const mp_obj_type_t*>(&rosette_subscription_type));
+    sub->node_obj   = args[0];
+    sub->schema_obj = args[1];
+    sub->topic_obj  = args[2];
+    sub->depth      = options.depth;
+    sub->reliable   = options.reliable;
+    sub->ring       = nullptr;
+    sub->ring_capacity = 0u;
+    sub->ring_head     = 0u;
+    sub->ring_tail     = 0u;
+    sub->queued_count  = 0u;
+    sub->max_payload_size = 512u; // default; schema can refine this
+    sub->backend    = nullptr;
+
+    if (!SubscriptionInit(sub, options)) {
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Rosette subscription backend init failed"));
+    }
+
+    // Register with the context subscription list so tick() delivers frames.
+    auto* context_obj = static_cast<mp_rosette_context_obj_t*>(
+        MP_OBJ_TO_PTR(static_cast<mp_rosette_node_obj_t*>(MP_OBJ_TO_PTR(args[0]))->context_obj));
+    mp_obj_list_append(context_obj->subscriptions, MP_OBJ_FROM_PTR(sub));
+
+    return MP_OBJ_FROM_PTR(sub);
 }
 
 mp_obj_t NodeName(mp_obj_t self_in)

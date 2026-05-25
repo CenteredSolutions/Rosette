@@ -40,8 +40,9 @@ enum {
     ROSETTE_MPY_FIELD_FLOAT32,
     ROSETTE_MPY_FIELD_FLOAT64,
     ROSETTE_MPY_FIELD_STRING,
-    ROSETTE_MPY_FIELD_FIXED_ARRAY,
-    ROSETTE_MPY_FIELD_NESTED_MESSAGE,
+    ROSETTE_MPY_FIELD_FIXED_ARRAY,    /* kind=FIXED_ARRAY, element_kind=element type */
+    ROSETTE_MPY_FIELD_DYNAMIC_ARRAY,  /* kind=DYNAMIC_ARRAY, element_kind=element type */
+    ROSETTE_MPY_FIELD_NESTED_MESSAGE, /* kind=NESTED_MESSAGE, nested_schema points to schema */
 };
 
 enum {
@@ -58,12 +59,13 @@ enum {
  * to map between Python dictionaries and CDR payloads at runtime.
  */
 typedef struct _rosette_mpy_schema_field_t {
-    qstr name;
-    uint8_t kind;
-    uint8_t element_kind;
-    uint16_t element_count;
-    uint16_t string_capacity;
-    struct _mp_rosette_schema_obj_t* nested_schema;
+    qstr    name;
+    uint8_t kind;           /* outer kind: scalar, FIXED_ARRAY, DYNAMIC_ARRAY, NESTED_MESSAGE */
+    uint8_t element_kind;   /* element kind when kind is an array; same as kind for scalars */
+    uint16_t element_count; /* non-zero for FIXED_ARRAY */
+    uint16_t string_capacity; /* reserved for bounded strings */
+    qstr    nested_full_name; /* interned full_name qstr for the nested type (lazy resolve) */
+    struct _mp_rosette_schema_obj_t* nested_schema; /* resolved lazily on first codec use */
 } rosette_mpy_schema_field_t;
 
 /**
@@ -162,7 +164,14 @@ typedef struct _mp_rosette_schema_obj_t {
     rosette_mpy_schema_field_t* fields;
     size_t field_count;
     uint16_t max_serialized_size;
-    uint8_t message_kind;
+    uint8_t  message_kind;
+    /**
+     * True when this schema was constructed from user-supplied .msg text and
+     * has no statically-linked ROSIDL generated type.  Dynamic schemas use the
+     * generic CDR codec and rcl_publish_serialized_message rather than the
+     * generated C message path.
+     */
+    bool     is_dynamic;
 } mp_rosette_schema_obj_t;
 
 /**

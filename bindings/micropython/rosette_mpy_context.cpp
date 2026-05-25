@@ -13,6 +13,7 @@
  */
 
 #include "rosette_mpy_backend.hpp"
+#include "rosette/ros/micro_ros/multicast_agent_locator.hpp"
 
 extern "C" {
 #include "py/objlist.h"
@@ -23,6 +24,7 @@ extern "C" {
 }
 
 #include <cstring>
+#include <cstdio>
 
 namespace rosette::bindings::micropython {
 
@@ -424,22 +426,147 @@ mp_obj_t ContextStartedMethod(mp_obj_t self_in)
     return mp_obj_new_bool(self->started);
 }
 
+/**
+ * @brief Returns the MicroPython socket object owned by this context.
+ *
+ * Exposes the underlying UDP socket so Python-side async code can register it
+ * with the event loop's I/O queue (via ``queue_read``) for non-blocking
+ * receives — specifically during agent discovery, where the Python layer
+ * manages the send/recv cycle without holding any blocking syscall.
+ *
+ * @param[in] self_in MicroPython context object.
+ * @return The socket object, or ``None`` when the context is closed.
+ */
+mp_obj_t ContextSocketMethod(mp_obj_t self_in)
+{
+    const auto* self = static_cast<mp_rosette_context_obj_t*>(MP_OBJ_TO_PTR(self_in));
+    return self->socket_obj;
+}
+
+/**
+ * @brief Builds a Micro XRCE-DDS GET_INFO discovery probe packet.
+ *
+ * Returns the 16-byte probe as a `bytes` object ready to pass to
+ * `ctx.send_packet()` or directly to `socket.sendto()`.  The multicast
+ * destination address is also returned as a pre-resolved socket address so
+ * the Python layer can forward it straight to `sendto()`.
+ *
+ * Python signature: ``ctx._discovery_build_probe() -> (bytes, addr)``
+ *
+ * @param[in] self_in Context whose socket module is used to resolve the
+ * multicast address.
+ * @return 2-tuple ``(probe_bytes, multicast_addr)`` ready for ``sendto()``.
+ */
+mp_obj_t ContextDiscoveryBuildProbeMethod(mp_obj_t self_in)
+{
+    using namespace milkros::micro_ros::detail;
+
+    auto* self = static_cast<mp_rosette_context_obj_t*>(MP_OBJ_TO_PTR(self_in));
+    if (self->socket_obj == mp_const_none || self->closed) {
+        mp_raise_msg(&mp_type_RuntimeError,
+                     MP_ERROR_TEXT("Context socket is not available"));
+    }
+
+    uint8_t probe[kGetInfoPacketSize] = {};
+    if (!build_get_info_packet(probe)) {
+        mp_raise_msg(&mp_type_RuntimeError,
+                     MP_ERROR_TEXT("Failed to build XRCE GET_INFO packet"));
+    }
+
+    mp_obj_t probe_bytes = mp_obj_new_bytes(probe, sizeof(probe));
+    mp_obj_t multicast_addr = ResolveAddress(
+        self->socket_module_obj,
+        mp_obj_new_str("239.255.0.2", 10),
+        7400u);
+
+    mp_obj_t items[2] = { probe_bytes, multicast_addr };
+    return mp_obj_new_tuple(2, items);
+}
+
+/**
+ * @brief Attempts to parse one XRCE INFO reply and update the context endpoint.
+ *
+ * Called by the Python async loop after it receives a UDP packet from the
+ * non-blocking socket.  Parses the packet for an IPv4 transport locator.  On
+ * success, updates ``agent_ip_obj``, ``agent_port``, and ``remote_addr_obj``
+ * in place and re-connects the socket when ``use_connected_udp`` is set, then
+ * returns a ``(ip_str, port_int)`` tuple.  Returns ``None`` when the packet is
+ * not a valid INFO reply or carries no usable locator — the Python layer
+ * should discard and continue waiting.
+ *
+ * Python signature:
+ *   ``ctx._discovery_parse_reply(packet: bytes) -> (str, int) | None``
+ *
+ * @param[in] self_in Context to update on a successful parse.
+ * @param[in] packet_in Python ``bytes`` object containing the received packet.
+ * @return ``(ip_str, port_int)`` tuple, or ``None`` when not a valid reply.
+ */
+mp_obj_t ContextDiscoveryParseReplyMethod(mp_obj_t self_in, mp_obj_t packet_in)
+{
+    using namespace milkros::micro_ros::detail;
+
+    auto* self = static_cast<mp_rosette_context_obj_t*>(MP_OBJ_TO_PTR(self_in));
+
+    mp_buffer_info_t info;
+    mp_get_buffer_raise(packet_in, &info, MP_BUFFER_READ);
+
+    char ip_str[16] = {};
+    char port_str[8] = {};
+    if (!parse_info_packet(static_cast<const uint8_t*>(info.buf),
+                           info.len,
+                           ip_str, sizeof(ip_str),
+                           port_str, sizeof(port_str))) {
+        return mp_const_none;
+    }
+
+    char* endptr = nullptr;
+    const unsigned long port_val = std::strtoul(port_str, &endptr, 10);
+    if (endptr == port_str || port_val == 0u || port_val > 65535u) {
+        return mp_const_none;
+    }
+    const auto agent_port = static_cast<uint16_t>(port_val);
+
+    // Update the context endpoint so start() reaches the discovered agent.
+    self->agent_ip_obj = mp_obj_new_str(ip_str, std::strlen(ip_str));
+    self->agent_port = agent_port;
+    self->remote_addr_obj = ResolveAddress(
+        self->socket_module_obj, self->agent_ip_obj, agent_port);
+
+    if (self->use_connected_udp) {
+        (void)TryConnectSocket(self);
+    }
+
+    mp_obj_t tuple_items[2] = {
+        self->agent_ip_obj,
+        mp_obj_new_int_from_uint(agent_port),
+    };
+    return mp_obj_new_tuple(2, tuple_items);
+}
+
 }  // namespace
 
 MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_start_obj, ContextStartMethod);
 MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_tick_obj, ContextTickMethod);
 MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_close_obj, ContextCloseMethod);
 MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_started_obj, ContextStartedMethod);
+MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_socket_obj, ContextSocketMethod);
+MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_discovery_build_probe_obj,
+                           ContextDiscoveryBuildProbeMethod);
+MP_DEFINE_CONST_FUN_OBJ_2(rosette_context_discovery_parse_reply_obj,
+                           ContextDiscoveryParseReplyMethod);
 
 static const mp_rom_map_elem_t rosette_context_locals_dict_table[] = {
-    { MP_ROM_QSTR(MP_QSTR_start), MP_ROM_PTR(&rosette_context_start_obj) },
-    { MP_ROM_QSTR(MP_QSTR_tick), MP_ROM_PTR(&rosette_context_tick_obj) },
-    { MP_ROM_QSTR(MP_QSTR_close), MP_ROM_PTR(&rosette_context_close_obj) },
-    { MP_ROM_QSTR(MP_QSTR_started), MP_ROM_PTR(&rosette_context_started_obj) },
-    { MP_ROM_QSTR(MP_QSTR_connected), MP_ROM_PTR(&rosette_context_connected_obj) },
-    { MP_ROM_QSTR(MP_QSTR_create_node), MP_ROM_PTR(&rosette_context_create_node_obj) },
-    { MP_ROM_QSTR(MP_QSTR_send_packet), MP_ROM_PTR(&rosette_context_send_packet_obj) },
-    { MP_ROM_QSTR(MP_QSTR_recv_packet), MP_ROM_PTR(&rosette_context_recv_packet_obj) },
+    { MP_ROM_QSTR(MP_QSTR_start),                    MP_ROM_PTR(&rosette_context_start_obj) },
+    { MP_ROM_QSTR(MP_QSTR_tick),                     MP_ROM_PTR(&rosette_context_tick_obj) },
+    { MP_ROM_QSTR(MP_QSTR_close),                    MP_ROM_PTR(&rosette_context_close_obj) },
+    { MP_ROM_QSTR(MP_QSTR_started),                  MP_ROM_PTR(&rosette_context_started_obj) },
+    { MP_ROM_QSTR(MP_QSTR_connected),                MP_ROM_PTR(&rosette_context_connected_obj) },
+    { MP_ROM_QSTR(MP_QSTR_socket),                   MP_ROM_PTR(&rosette_context_socket_obj) },
+    { MP_ROM_QSTR(MP_QSTR_create_node),              MP_ROM_PTR(&rosette_context_create_node_obj) },
+    { MP_ROM_QSTR(MP_QSTR_send_packet),              MP_ROM_PTR(&rosette_context_send_packet_obj) },
+    { MP_ROM_QSTR(MP_QSTR_recv_packet),              MP_ROM_PTR(&rosette_context_recv_packet_obj) },
+    { MP_ROM_QSTR(MP_QSTR__discovery_build_probe),   MP_ROM_PTR(&rosette_context_discovery_build_probe_obj) },
+    { MP_ROM_QSTR(MP_QSTR__discovery_parse_reply),   MP_ROM_PTR(&rosette_context_discovery_parse_reply_obj) },
 };
 
 static MP_DEFINE_CONST_DICT(rosette_context_locals_dict, rosette_context_locals_dict_table);

@@ -457,7 +457,9 @@ private:
         const bool accepted = response == GoalResponse::ACCEPT;
         goal_handle->goal_accepted = accepted;
         goal_handle->goal_cancelled = false;
-        goal_handle->status = accepted ? GOAL_STATE_EXECUTING : GOAL_STATE_UNKNOWN;
+        goal_handle->status = accepted
+                              ? static_cast<decltype(goal_handle->status)>(GOAL_STATE_EXECUTING)
+                              : static_cast<decltype(goal_handle->status)>(GOAL_STATE_UNKNOWN);
 
         if (!accepted) {
             return RCL_RET_OK;

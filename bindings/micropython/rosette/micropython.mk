@@ -60,3 +60,8 @@ LDFLAGS_USERMOD += $(ROSETTE_MICRO_ROS_LIBRARY)
 endif
 
 LDFLAGS_USERMOD += -lstdc++
+
+# Freeze the pure-Python rosette sub-package so it is available as
+# `from rosette.async import ...` without needing files on the filesystem.
+FROZEN_MANIFEST ?=
+SRC_USERMOD_FROZEN += $(ROSETTE_BINDINGS_MOD_DIR)/async.py

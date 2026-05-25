@@ -27,9 +27,14 @@ extern "C" {
 #include "rosette/ros/micro_ros/node.hpp"
 
 #include <rcl/publisher.h>
+#include <rcl/types.h>
 #include <rclc/publisher.h>
+#include <rosidl_runtime_c/string_functions.h>
+#include <rosidl_typesupport_introspection_c/identifier.h>
+#include <rosidl_typesupport_introspection_c/message_introspection.h>
 #include <std_msgs/msg/float32.h>
 
+#include <new>
 #include <string>
 #endif
 
@@ -138,13 +143,6 @@ struct MicroPythonPublisherBackend {
         fini();
     }
 
-    /**
-     * @brief Releases the native publisher handle when initialized.
-     *
-     * The publisher must be finalized before its parent node and context are
-     * destroyed. Binding objects keep parent references, so normal MicroPython
-     * lifetime rules preserve that ordering for user-created objects.
-     */
     void fini() noexcept
     {
         if (valid) {
@@ -154,6 +152,138 @@ struct MicroPythonPublisherBackend {
         publisher = rcl_get_zero_initialized_publisher();
         node = nullptr;
         valid = false;
+    }
+};
+
+/**
+ * @brief Heap-owned publisher backend for schemas parsed from `.msg` text.
+ *
+ * Dynamic schemas have no statically-linked ROSIDL generated type. This backend
+ * constructs a minimal rosidl_typesupport_introspection type support at runtime
+ * so that `rclc_publisher_init` can register the topic with the correct type
+ * name string.  The actual serialization is handled by the generic CDR encoder
+ * in rosette_mpy_schema.cpp, and the payload is sent via
+ * `rcl_publish_serialized_message` so the RMW never tries to serialize a
+ * generated C struct.
+ *
+ * The type support objects (MessageMembers, MessageMember array, and the
+ * rosidl_message_type_support_t wrapper) are owned by this struct and must
+ * outlive the `rcl_publisher_t`.
+ */
+struct MicroPythonDynamicPublisherBackend {
+    rcl_publisher_t publisher = rcl_get_zero_initialized_publisher();
+    rcl_node_t* node = nullptr;
+    bool valid = false;
+
+    // Runtime-allocated type support structures.
+    rosidl_typesupport_introspection_c__MessageMembers members{};
+    rosidl_typesupport_introspection_c__MessageMember  member_placeholder{};
+    rosidl_message_type_support_t type_support{};
+
+    // Owned copies of the type name strings (members_ fields point here).
+    std::string namespace_str;
+    std::string name_str;
+
+    // Scratch encode buffer.  Resized on first use; stays allocated for the
+    // lifetime of the publisher to avoid per-publish heap churn.
+    static constexpr size_t kDefaultBufSize = 256u;
+    uint8_t* encode_buf = nullptr;
+    size_t   encode_buf_size = 0u;
+
+    ~MicroPythonDynamicPublisherBackend()
+    {
+        fini();
+        if (encode_buf != nullptr) {
+            m_del(uint8_t, encode_buf, encode_buf_size);
+        }
+        encode_buf = nullptr;
+        encode_buf_size = 0u;
+    }
+
+    void fini() noexcept
+    {
+        if (valid) {
+            [[maybe_unused]] const rcl_ret_t fini_ret =
+                rcl_publisher_fini(&publisher, node);
+        }
+        publisher = rcl_get_zero_initialized_publisher();
+        node = nullptr;
+        valid = false;
+    }
+
+    /**
+     * @brief Builds the runtime type support from a parsed schema's name parts.
+     *
+     * `rclc_publisher_init` uses the type support to register the DDS topic
+     * with the correct ROS type name (e.g. "my_pkg/msg/MyMsg").  The member
+     * array is never used for serialization because we call
+     * `rcl_publish_serialized_message` instead of `rcl_publish`.
+     *
+     * @param[in] schema Schema whose full_name drives the type name strings.
+     */
+    void build_type_support(const mp_rosette_schema_obj_t* schema)
+    {
+        // ROS 2 type support namespace convention: "pkg__msg" (double underscore).
+        // When no package component exists, use an empty namespace.
+        const char* full_name = qstr_str(schema->full_name);
+        const char* slash = std::strchr(full_name, '/');
+        if (slash != nullptr) {
+            namespace_str.assign(full_name, static_cast<size_t>(slash - full_name));
+            namespace_str += "__msg";
+            name_str.assign(slash + 1);
+        } else {
+            namespace_str = "unknown__msg";
+            name_str = (full_name[0] != '\0') ? full_name : "Unknown";
+        }
+
+        // A placeholder member is required by some RMW implementations that
+        // inspect member_count_ before accepting the type support. We provide
+        // one minimal entry so the publisher is accepted.
+        member_placeholder = {};
+        member_placeholder.name_    = name_str.c_str();
+        member_placeholder.type_id_ = 0u;  // FIELD_TYPE_NOT_SET / placeholder
+
+        members = {};
+        members.message_namespace_ = namespace_str.c_str();
+        members.message_name_      = name_str.c_str();
+        members.member_count_      = 1u;
+        members.size_of_           = 0u;
+        members.members_           = &member_placeholder;
+        members.init_function      = nullptr;
+        members.fini_function      = nullptr;
+
+        type_support = {};
+        type_support.typesupport_identifier = rosidl_typesupport_introspection_c__identifier;
+        type_support.data = &members;
+        // Identity handle function: return self when identifier matches.
+        type_support.func = [](const rosidl_message_type_support_t* handle,
+                               const char* id) -> const rosidl_message_type_support_t* {
+            if (std::strcmp(id, rosidl_typesupport_introspection_c__identifier) == 0) {
+                return handle;
+            }
+            return nullptr;
+        };
+    }
+
+    /**
+     * @brief Ensures the encode scratch buffer is at least `needed` bytes.
+     *
+     * @param[in] needed Required buffer size.
+     * @return true when the buffer is ready; false on allocation failure.
+     */
+    bool ensure_buf(size_t needed)
+    {
+        if (encode_buf != nullptr && encode_buf_size >= needed) return true;
+        if (encode_buf != nullptr) {
+            m_del(uint8_t, encode_buf, encode_buf_size);
+        }
+        encode_buf = nullptr;
+        encode_buf_size = 0u;
+        const size_t alloc = (needed < kDefaultBufSize) ? kDefaultBufSize : needed;
+        encode_buf = m_new_maybe(uint8_t, alloc);
+        if (encode_buf == nullptr) return false;
+        encode_buf_size = alloc;
+        return true;
     }
 };
 
@@ -182,16 +312,48 @@ MicroPythonNodeBackend* GetNodeBackend(mp_rosette_node_obj_t* self) noexcept
 }
 
 /**
- * @brief Returns the typed micro-ROS publisher backend for one binding publisher.
+ * @brief Tag stored in the low bit of the backend pointer to distinguish
+ *        static (generated type) from dynamic (runtime schema) publishers.
  *
- * @param[in] self MicroPython publisher object whose backend should be decoded.
- * @return Typed backend pointer, or `nullptr` when publisher initialization failed.
+ * Both backend structs are heap-allocated with `new`, so their natural
+ * alignment is at least 2 bytes.  We steal the low bit as a tag and mask it
+ * off before casting.
+ */
+static constexpr uintptr_t kDynamicPublisherTag = 1u;
+
+/**
+ * @brief Returns the static publisher backend pointer, or nullptr if the
+ *        backend is tagged as dynamic.
  */
 MicroPythonPublisherBackend* GetPublisherBackend(mp_rosette_publisher_obj_t* self) noexcept
 {
-    return self == nullptr
-           ? nullptr
-           : static_cast<MicroPythonPublisherBackend*>(self->backend);
+    if (self == nullptr || self->backend == nullptr) return nullptr;
+    const uintptr_t raw = reinterpret_cast<uintptr_t>(self->backend);
+    if (raw & kDynamicPublisherTag) return nullptr;
+    return reinterpret_cast<MicroPythonPublisherBackend*>(raw);
+}
+
+/**
+ * @brief Returns the dynamic publisher backend pointer, or nullptr if the
+ *        backend is tagged as static.
+ */
+MicroPythonDynamicPublisherBackend*
+GetDynamicPublisherBackend(mp_rosette_publisher_obj_t* self) noexcept
+{
+    if (self == nullptr || self->backend == nullptr) return nullptr;
+    const uintptr_t raw = reinterpret_cast<uintptr_t>(self->backend);
+    if (!(raw & kDynamicPublisherTag)) return nullptr;
+    return reinterpret_cast<MicroPythonDynamicPublisherBackend*>(raw & ~kDynamicPublisherTag);
+}
+
+/**
+ * @brief Stores a dynamic backend pointer with the tag bit set.
+ */
+void SetDynamicPublisherBackend(mp_rosette_publisher_obj_t* self,
+                                MicroPythonDynamicPublisherBackend* backend) noexcept
+{
+    const uintptr_t raw = reinterpret_cast<uintptr_t>(backend);
+    self->backend = reinterpret_cast<void*>(raw | kDynamicPublisherTag);
 }
 
 /**
@@ -227,6 +389,47 @@ float ExtractFloat32Payload(mp_obj_t payload)
     return static_cast<float>(mp_obj_get_float(payload));
 }
 
+/**
+ * @brief Returns the value for one dictionary key or a fallback object.
+ *
+ * Message conversion accepts both schema-created messages and plain
+ * dictionaries. This helper keeps optional-field extraction compact while
+ * using MicroPython's dictionary map directly instead of adding another
+ * parser-like lookup layer.
+ *
+ * @param[in] dict Python dictionary-like object to inspect.
+ * @param[in] key Field key qstr.
+ * @param[in] fallback Value returned when the key is absent.
+ * @return Field value or `fallback`.
+ */
+mp_obj_t DictGetOr(mp_obj_t dict, qstr key, mp_obj_t fallback)
+{
+    if (!mp_obj_is_dict_or_ordereddict(dict)) {
+        return fallback;
+    }
+    mp_map_t* map = mp_obj_dict_get_map(dict);
+    mp_map_elem_t* elem = mp_map_lookup(map, MP_OBJ_NEW_QSTR(key), MP_MAP_LOOKUP);
+    return elem == nullptr ? fallback : elem->value;
+}
+
+/**
+ * @brief Normalizes a Python payload into a field dictionary when possible.
+ *
+ * @param[in] payload Schema-created message or dictionary.
+ * @return Dictionary containing message fields, or `MP_OBJ_NULL`.
+ */
+mp_obj_t PayloadValues(mp_obj_t payload) noexcept
+{
+    if (mp_obj_is_type(
+            payload,
+            reinterpret_cast<const mp_obj_type_t*>(&rosette_message_type))) {
+        auto* message =
+            static_cast<mp_rosette_message_obj_t*>(MP_OBJ_TO_PTR(payload));
+        return message->values_obj;
+    }
+    return mp_obj_is_dict_or_ordereddict(payload) ? payload : MP_OBJ_NULL;
+}
+
 #endif  // ROSETTE_MICROPY_HAS_MICRO_ROS
 
 }  // namespace
@@ -256,18 +459,24 @@ bool ContextStart(mp_rosette_context_obj_t* self) noexcept
         return true;
     }
 
-    auto* backend = new MicroPythonContextBackend(self);
+    auto* allocd = m_new_maybe(uint8_t, sizeof(MicroPythonContextBackend));
+    if (allocd == nullptr) {
+        mp_raise_type(&mp_type_MemoryError);
+    }
+    auto* backend = new (allocd) MicroPythonContextBackend(self);
     if (backend->options.use_custom_transport && backend->options.custom_transport == nullptr) {
         self->backend_start_error = static_cast<uint8_t>(
             milkros::micro_ros::ContextStartError::kCustomTransportMissing);
-        delete backend;
+        backend->~MicroPythonContextBackend();
+        m_del(uint8_t, allocd, sizeof(MicroPythonContextBackend));
         return false;
     }
     const auto result = backend->context.start_result();
     self->backend_start_error =
         static_cast<uint8_t>(backend->context.last_start_error());
     if (!result.ok()) {
-        delete backend;
+        backend->~MicroPythonContextBackend();
+        m_del(uint8_t, allocd, sizeof(MicroPythonContextBackend));
         return false;
     }
     self->backend = backend;
@@ -319,7 +528,10 @@ void ContextFini(mp_rosette_context_obj_t* self) noexcept
 
 #if ROSETTE_MICROPY_HAS_MICRO_ROS
     auto* backend = GetContextBackend(self);
-    delete backend;
+    if (backend != nullptr) {
+        backend->~MicroPythonContextBackend();
+        m_del(uint8_t, backend, sizeof(MicroPythonContextBackend));
+    }
 #endif
     self->backend = nullptr;
 }
@@ -370,7 +582,11 @@ bool NodeInit(mp_rosette_node_obj_t* self) noexcept
         return false;
     }
 
-    self->backend = new MicroPythonNodeBackend(static_cast<milkros::micro_ros::Node&&>(node));
+    auto* allocd = m_new_maybe(uint8_t, sizeof(MicroPythonNodeBackend));
+    if (allocd == nullptr) {
+        mp_raise_type(&mp_type_MemoryError);
+    }
+    self->backend = new (allocd) MicroPythonNodeBackend(static_cast<milkros::micro_ros::Node&&>(node));
     return true;
 #else
     self->backend = self;
@@ -392,7 +608,10 @@ void NodeFini(mp_rosette_node_obj_t* self) noexcept
 
 #if ROSETTE_MICROPY_HAS_MICRO_ROS
     auto* backend = GetNodeBackend(self);
-    delete backend;
+    if (backend != nullptr) {
+        backend->~MicroPythonNodeBackend();
+        m_del(uint8_t, backend, sizeof(MicroPythonNodeBackend));
+    }
 #endif
     self->backend = nullptr;
 }
@@ -420,7 +639,7 @@ bool PublisherInit(mp_rosette_publisher_obj_t* self,
     if (self == nullptr) {
         return false;
     }
-    self->depth = options.depth;
+    self->depth    = options.depth;
     self->reliable = options.reliable;
 
 #if ROSETTE_MICROPY_HAS_MICRO_ROS
@@ -429,16 +648,7 @@ bool PublisherInit(mp_rosette_publisher_obj_t* self,
     auto* schema =
         static_cast<mp_rosette_schema_obj_t*>(MP_OBJ_TO_PTR(self->schema_obj));
     auto* node_backend = GetNodeBackend(node_obj);
-    if (node_backend == nullptr || schema == nullptr ||
-        schema->message_kind == ROSETTE_MPY_MESSAGE_UNSUPPORTED) {
-        return false;
-    }
-
-    auto* backend = new MicroPythonPublisherBackend();
-    backend->node = node_backend->node.native_handle();
-    backend->message_kind = schema->message_kind;
-    if (backend->node == nullptr) {
-        delete backend;
+    if (node_backend == nullptr || schema == nullptr) {
         return false;
     }
 
@@ -450,6 +660,54 @@ bool PublisherInit(mp_rosette_publisher_obj_t* self,
     const rmw_qos_profile_t qos =
         milkros::micro_ros::make_qos_profile(publisher_options);
     const char* topic_name = mp_obj_str_get_str(self->topic_obj);
+    rcl_node_t* node_handle = node_backend->node.native_handle();
+    if (node_handle == nullptr) {
+        return false;
+    }
+
+    // ----------------------------------------------------------------
+    // Dynamic path: schema was parsed from .msg text at runtime.
+    // ----------------------------------------------------------------
+    if (schema->is_dynamic) {
+        auto* allocd = m_new_maybe(uint8_t, sizeof(MicroPythonDynamicPublisherBackend));
+        if (allocd == nullptr) {
+            return false;
+        }
+        auto* backend = new (allocd) MicroPythonDynamicPublisherBackend();
+
+        backend->node = node_handle;
+        backend->build_type_support(schema);
+
+        if (rclc_publisher_init(
+                &backend->publisher,
+                backend->node,
+                &backend->type_support,
+                topic_name,
+                &qos) != RCL_RET_OK) {
+            backend->~MicroPythonDynamicPublisherBackend();
+            m_del(uint8_t, allocd, sizeof(MicroPythonDynamicPublisherBackend));
+            return false;
+        }
+        backend->valid = true;
+        SetDynamicPublisherBackend(self, backend);
+        return true;
+    }
+
+    // ----------------------------------------------------------------
+    // Static path: schema maps to a statically-linked ROSIDL type.
+    // ----------------------------------------------------------------
+    if (schema->message_kind == ROSETTE_MPY_MESSAGE_UNSUPPORTED) {
+        return false;
+    }
+
+    auto* allocd = m_new_maybe(uint8_t, sizeof(MicroPythonPublisherBackend));
+    if (allocd == nullptr) {
+        return false;
+    }
+    auto* backend = new (allocd) MicroPythonPublisherBackend();
+
+    backend->node         = node_handle;
+    backend->message_kind = schema->message_kind;
 
     const rosidl_message_type_support_t* type_support = nullptr;
     if (schema->message_kind == ROSETTE_MPY_MESSAGE_STD_MSGS_FLOAT32) {
@@ -462,12 +720,12 @@ bool PublisherInit(mp_rosette_publisher_obj_t* self,
             type_support,
             topic_name,
             &qos) != RCL_RET_OK) {
-        delete backend;
+        backend->~MicroPythonPublisherBackend();
+        m_del(uint8_t, allocd, sizeof(MicroPythonPublisherBackend));
         return false;
     }
-
     backend->valid = true;
-    self->backend = backend;
+    self->backend  = backend;
     return true;
 #else
     self->backend = self;
@@ -486,8 +744,13 @@ void PublisherFini(mp_rosette_publisher_obj_t* self) noexcept
         return;
     }
 #if ROSETTE_MICROPY_HAS_MICRO_ROS
-    auto* backend = GetPublisherBackend(self);
-    delete backend;
+    if (auto* dyn = GetDynamicPublisherBackend(self)) {
+        dyn->~MicroPythonDynamicPublisherBackend();
+        m_del(uint8_t, dyn, sizeof(MicroPythonDynamicPublisherBackend));
+    } else if (auto* pub = GetPublisherBackend(self)) {
+        pub->~MicroPythonPublisherBackend();
+        m_del(uint8_t, pub, sizeof(MicroPythonPublisherBackend));
+    }
 #endif
     self->backend = nullptr;
 }
@@ -512,6 +775,49 @@ bool PublisherPublish(mp_rosette_publisher_obj_t* self,
     }
 
 #if ROSETTE_MICROPY_HAS_MICRO_ROS
+
+    // ----------------------------------------------------------------
+    // Dynamic path: encode via generic CDR codec, send serialized.
+    // ----------------------------------------------------------------
+    if (auto* dyn = GetDynamicPublisherBackend(self)) {
+        if (!dyn->valid) return false;
+
+        auto* schema =
+            static_cast<const mp_rosette_schema_obj_t*>(
+                MP_OBJ_TO_PTR(self->schema_obj));
+
+        // Estimate size: use max_serialized_size when set, else a generous
+        // initial scratch buffer (the encoder will return 0 on overflow and
+        // we retry with a larger buffer).
+        size_t needed = schema->max_serialized_size > 0u
+                        ? static_cast<size_t>(schema->max_serialized_size)
+                        : MicroPythonDynamicPublisherBackend::kDefaultBufSize;
+
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            if (!dyn->ensure_buf(needed)) return false;
+            const size_t written =
+                SchemaCdrEncode(schema, payload, dyn->encode_buf, dyn->encode_buf_size);
+            if (written == 0u) {
+                // Overflow — double the buffer and retry once.
+                needed = dyn->encode_buf_size * 2u;
+                continue;
+            }
+
+            rcl_serialized_message_t serialized{};
+            serialized.buffer          = dyn->encode_buf;
+            serialized.buffer_length   = written;
+            serialized.buffer_capacity = dyn->encode_buf_size;
+            serialized.allocator       = rcl_get_default_allocator();
+
+            return rcl_publish_serialized_message(
+                       &dyn->publisher, &serialized, nullptr) == RCL_RET_OK;
+        }
+        return false;
+    }
+
+    // ----------------------------------------------------------------
+    // Static path: use generated C message structs.
+    // ----------------------------------------------------------------
     auto* backend = GetPublisherBackend(self);
     if (backend == nullptr || !backend->valid) {
         return false;
