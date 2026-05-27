@@ -98,6 +98,7 @@ struct _mp_rosette_subscription_obj_t;
  */
 typedef struct _mp_rosette_transport_obj_t {
     mp_obj_base_t base;
+    mp_obj_t python_obj;
     bool socket_ready;
     bool connected;
     uint32_t read_budget_us;
@@ -114,11 +115,13 @@ typedef struct _mp_rosette_context_obj_t {
     mp_obj_base_t base;
 
     mp_obj_t transport_obj;   /* Python Transport object, mp_const_none until open() */
+    mp_obj_t agent_ip_obj;    /* Agent endpoint selected by Context.open(). */
     mp_obj_t subscriptions;
 
     uint32_t client_key;
     uint32_t spin_timeout_us;
     uint16_t local_port;
+    uint16_t agent_port;
     uint16_t executor_handles;
     uint8_t backend_start_error;
     uint8_t domain_id;
@@ -221,6 +224,7 @@ typedef struct _mp_rosette_subscription_obj_t {
     mp_obj_t node_obj;
     mp_obj_t schema_obj;
     mp_obj_t topic_obj;
+    mp_obj_t callback_obj;
 
     rosette_mpy_frame_t* ring;
     size_t ring_capacity;

@@ -119,13 +119,23 @@ endif()
 
 set(_rosette_micro_ros_arch_flags "")
 set(ROSETTE_MICRO_ROS_USE_PICO_TIME OFF)
-if(RTPS_PROCESSOR STREQUAL "RP2040")
+# Detect RP2xxx targets via RTPS_PROCESSOR (Rosette native builds) or
+# PICO_PLATFORM (MicroPython / Pico SDK builds).
+if(RTPS_PROCESSOR STREQUAL "RP2040" OR PICO_PLATFORM STREQUAL "rp2040")
     set(_rosette_micro_ros_arch_flags "-mcpu=cortex-m0plus -mthumb")
     set(ROSETTE_MICRO_ROS_USE_PICO_TIME ON)
-elseif(RTPS_PROCESSOR STREQUAL "RP2350")
+elseif(RTPS_PROCESSOR STREQUAL "RP2350" OR PICO_PLATFORM STREQUAL "rp2350")
     set(_rosette_micro_ros_arch_flags "-mcpu=cortex-m33 -mthumb")
     set(ROSETTE_MICRO_ROS_USE_PICO_TIME ON)
 endif()
+
+# Allow callers (e.g. micropython.cmake) to tell us which time API is
+# available in the final link.  When building inside MicroPython the
+# mp_hal_time_ns / mp_hal_ticks_us symbols are available; for bare Pico SDK
+# builds we fall back to time_us_64 directly.
+option(ROSETTE_MICRO_ROS_USE_MPHAL_TIME
+    "Use MicroPython HAL time functions (mp_hal_time_ns / mp_hal_ticks_us) in the rcutils time patch"
+    OFF)
 
 set(_rosette_micro_ros_common_c_flags
     "${_rosette_micro_ros_arch_flags} -ffunction-sections -fdata-sections ${ROSETTE_MICRO_ROS_EXTRA_C_FLAGS}")
@@ -159,6 +169,31 @@ else()
         "Expected custom or udp.")
 endif()
 
+# Micro-XRCE-DDS-Client (uClient) transport profile flags
+# --------------------------------------------------------
+# UCLIENT_PROFILE_UDP requires a POSIX/FreeRTOS/RTEMS platform layer that
+# provides uxrUDPPlatform.  Embedded targets (CMAKE_SYSTEM_NAME=Generic) have
+# none of those, so building with UCLIENT_PROFILE_UDP=ON produces an
+# "incomplete type" error.
+#
+# The MicroPython binding always routes packets through its own socket
+# callbacks via the uClient custom-transport API regardless of whether the
+# higher-level RMW transport label is "udp" or "custom".  So on embedded
+# targets we always compile uClient with UCLIENT_PROFILE_CUSTOM_TRANSPORT=ON
+# and UCLIENT_PROFILE_UDP=OFF.
+#
+# ROSETTE_MICRO_ROS_UCLIENT_CUSTOM  → 1 when uClient should use custom transport
+# ROSETTE_MICRO_ROS_UCLIENT_UDP     → 1 when uClient may use its native UDP stack
+if(ROSETTE_MICRO_ROS_TOOLCHAIN_SYSTEM_NAME STREQUAL "Generic")
+    # Embedded / bare-metal: force custom transport at the uClient layer.
+    set(ROSETTE_MICRO_ROS_UCLIENT_CUSTOM ON)
+    set(ROSETTE_MICRO_ROS_UCLIENT_UDP    OFF)
+else()
+    # Host / POSIX build: use native UDP when the RMW transport is "udp".
+    set(ROSETTE_MICRO_ROS_UCLIENT_CUSTOM ${ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT})
+    set(ROSETTE_MICRO_ROS_UCLIENT_UDP    ${ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT})
+endif()
+
 set(ROSETTE_MICRO_ROS_SETUP_SOURCE_DIR "${_rosette_micro_ros_setup_source_dir}")
 set(ROSETTE_MICRO_ROS_COMMON_C_FLAGS "${_rosette_micro_ros_common_c_flags}")
 set(ROSETTE_MICRO_ROS_COMMON_CXX_FLAGS "${_rosette_micro_ros_common_cxx_flags}")
@@ -170,6 +205,10 @@ endif()
 set(ROSETTE_MICRO_ROS_USE_PICO_TIME_TEXT "OFF")
 if(ROSETTE_MICRO_ROS_USE_PICO_TIME)
     set(ROSETTE_MICRO_ROS_USE_PICO_TIME_TEXT "ON")
+endif()
+set(ROSETTE_MICRO_ROS_USE_MPHAL_TIME_TEXT "OFF")
+if(ROSETTE_MICRO_ROS_USE_MPHAL_TIME)
+    set(ROSETTE_MICRO_ROS_USE_MPHAL_TIME_TEXT "ON")
 endif()
 
 configure_file(

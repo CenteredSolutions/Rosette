@@ -173,11 +173,45 @@ bool SubscriptionInit(mp_rosette_subscription_obj_t* self,
                       const EndpointOptions& options) noexcept;
 
 /**
+ * @brief Creates the native backend subscription for one binding object.
+ *
+ * The Python-facing subscription object owns callback and queue state while
+ * this backend handle owns the `rcl_subscription_t` used by the shared context
+ * pump. Dynamic schemas are received as serialized CDR payloads and decoded by
+ * the runtime schema codec.
+ *
+ * @param[in,out] self Subscription object to attach to the backend.
+ * @param[in] options QoS settings translated from the Python constructor call.
+ * @return `true` when the subscription can receive data.
+ */
+bool SubscriptionBackendInit(mp_rosette_subscription_obj_t* self,
+                             const EndpointOptions& options) noexcept;
+
+/**
  * @brief Finalizes the backend subscription owned by one `Subscription` object.
  *
  * @param[in,out] self Subscription object whose backend should be released.
  */
 void SubscriptionFini(mp_rosette_subscription_obj_t* self) noexcept;
+
+/**
+ * @brief Releases the native backend subscription owned by one object.
+ *
+ * @param[in,out] self Subscription object whose native handle should be
+ * finalized.
+ */
+void SubscriptionBackendFini(mp_rosette_subscription_obj_t* self) noexcept;
+
+/**
+ * @brief Drains pending serialized samples for one subscription.
+ *
+ * The context pump calls this after each executor tick so callback-style
+ * Python subscriptions run from the same cooperative kernel task.
+ *
+ * @param[in,out] self Subscription whose pending samples should be processed.
+ * @return `true` when draining completed without a backend failure.
+ */
+bool SubscriptionDispatchPending(mp_rosette_subscription_obj_t* self) noexcept;
 
 /**
  * @brief Enqueues one received CDR payload into a subscription ring buffer.

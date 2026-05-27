@@ -40,6 +40,7 @@ extern mp_obj_t rosette_context_tick(mp_obj_t);
 extern mp_obj_t rosette_context_close(mp_obj_t);
 extern mp_obj_t rosette_context_started(mp_obj_t);
 extern mp_obj_t rosette_context_set_transport(mp_obj_t, mp_obj_t);
+extern mp_obj_t rosette_context_set_transport_var(size_t, const mp_obj_t*);
 extern mp_obj_t rosette_context_transport(mp_obj_t);
 extern mp_obj_t rosette_context_create_node(size_t, const mp_obj_t*);
 
@@ -47,7 +48,8 @@ static MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_start_obj,         rosette_cont
 static MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_tick_obj,          rosette_context_tick);
 static MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_close_obj,         rosette_context_close);
 static MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_started_obj,       rosette_context_started);
-static MP_DEFINE_CONST_FUN_OBJ_2(rosette_context_set_transport_obj, rosette_context_set_transport);
+MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(rosette_context_set_transport_obj, 2, 4,
+    rosette_context_set_transport_var);
 static MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_transport_obj,     rosette_context_transport);
 MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(rosette_context_create_node_obj, 2, 3,
     rosette_context_create_node);
@@ -75,7 +77,7 @@ extern mp_obj_t rosette_node_namespace(mp_obj_t);
 
 MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(rosette_node_create_publisher_obj,    3, 5,
     rosette_node_create_publisher);
-MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(rosette_node_create_subscription_obj, 3, 5,
+MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(rosette_node_create_subscription_obj, 3, 6,
     rosette_node_create_subscription);
 static MP_DEFINE_CONST_FUN_OBJ_1(rosette_node_name_obj,      rosette_node_name);
 static MP_DEFINE_CONST_FUN_OBJ_1(rosette_node_namespace_obj, rosette_node_namespace);

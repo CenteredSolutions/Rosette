@@ -3,6 +3,7 @@
 #include "common.hpp"
 
 #include <string.h>
+#include <stdio.h>
 
 namespace milkros::micro_ros {
 
@@ -286,7 +287,7 @@ private:
     ContextStartError configure_transport(rmw_init_options_t& rmw_options) noexcept
     {
         char port_str[6];
-        std::snprintf(port_str, sizeof(port_str), "%u", options_.udp_agent_port);
+        snprintf(port_str, sizeof(port_str), "%u", options_.udp_agent_port);
 
         if (options_.use_custom_transport) {
 #if ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM
@@ -369,7 +370,7 @@ private:
                 return ContextStartError::kAgentLocatorNoAddress;
             }
             if (port[0] == '\0') {
-                std::snprintf(port, sizeof(port), "%u", options_.udp_agent_port);
+                snprintf(port, sizeof(port), "%u", options_.udp_agent_port);
             }
 
             if (options_.use_custom_transport) {

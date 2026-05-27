@@ -90,9 +90,18 @@ mp_obj_t rosette_node_create_subscription(size_t n_args, const mp_obj_t* args)
         mp_raise_TypeError(MP_ERROR_TEXT("create_subscription expects a Schema"));
     }
 
+    mp_obj_t callback = mp_const_none;
     rosette::bindings::micropython::EndpointOptions options{};
-    if (n_args >= 4) options.depth    = (uint16_t)mp_obj_get_int(args[3]);
-    if (n_args >= 5) options.reliable = mp_obj_is_true(args[4]);
+    if (n_args >= 4) {
+        if (args[3] == mp_const_none || mp_obj_is_callable(args[3])) {
+            callback = args[3];
+            if (n_args >= 5) options.depth = (uint16_t)mp_obj_get_int(args[4]);
+            if (n_args >= 6) options.reliable = mp_obj_is_true(args[5]);
+        } else {
+            options.depth = (uint16_t)mp_obj_get_int(args[3]);
+            if (n_args >= 5) options.reliable = mp_obj_is_true(args[4]);
+        }
+    }
 
     mp_rosette_subscription_obj_t* sub = mp_obj_malloc(
         mp_rosette_subscription_obj_t,
@@ -100,6 +109,7 @@ mp_obj_t rosette_node_create_subscription(size_t n_args, const mp_obj_t* args)
     sub->node_obj         = args[0];
     sub->schema_obj       = args[1];
     sub->topic_obj        = args[2];
+    sub->callback_obj     = callback;
     sub->depth            = options.depth;
     sub->reliable         = options.reliable;
     sub->ring             = NULL;
@@ -111,6 +121,10 @@ mp_obj_t rosette_node_create_subscription(size_t n_args, const mp_obj_t* args)
     sub->backend          = NULL;
 
     if (!rosette::bindings::micropython::SubscriptionInit(sub, options)) {
+        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Rosette subscription backend init failed"));
+    }
+    if (!rosette::bindings::micropython::SubscriptionBackendInit(sub, options)) {
+        rosette::bindings::micropython::SubscriptionFini(sub);
         mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Rosette subscription backend init failed"));
     }
 

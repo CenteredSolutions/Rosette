@@ -17,6 +17,7 @@
 
 #include <cstring>
 #include <cstdlib>
+#include <new>
 
 extern "C" {
 #include "py/nlr.h"
@@ -99,7 +100,7 @@ public:
         if (nlr_push(&nlr) == 0) {
             mp_obj_t addr_obj = mp_obj_new_str(address, strlen(address));
             mp_obj_t port_obj = mp_obj_new_int_from_uint(static_cast<uint16_t>(port_val));
-            CallMethod2(MP_OBJ_FROM_PTR(owner_), MP_QSTR_connect, addr_obj, port_obj);
+            CallMethod2(owner_->python_obj, MP_QSTR_connect, addr_obj, port_obj);
             nlr_pop();
             // connect() succeeded without exception → connected UDP.
             owner_->connected = true;
@@ -122,7 +123,7 @@ public:
         }
         nlr_buf_t nlr;
         if (nlr_push(&nlr) == 0) {
-            CallMethod0(MP_OBJ_FROM_PTR(owner_), MP_QSTR_close);
+            CallMethod0(owner_->python_obj, MP_QSTR_close);
             nlr_pop();
         }
         owner_->socket_ready = false;
@@ -142,7 +143,7 @@ public:
         nlr_buf_t nlr;
         if (nlr_push(&nlr) == 0) {
             mp_obj_t payload = mp_obj_new_bytes(data, size);
-            mp_obj_t result = CallMethod1(MP_OBJ_FROM_PTR(owner_), MP_QSTR_send, payload);
+            mp_obj_t result = CallMethod1(owner_->python_obj, MP_QSTR_send, payload);
             nlr_pop();
             if (error) *error = 0u;
             return static_cast<size_t>(mp_obj_get_int(result));
@@ -164,7 +165,7 @@ public:
 
         nlr_buf_t nlr;
         if (nlr_push(&nlr) == 0) {
-            mp_obj_t result = CallMethod1(MP_OBJ_FROM_PTR(owner_), MP_QSTR_recv,
+            mp_obj_t result = CallMethod1(owner_->python_obj, MP_QSTR_recv,
                                           mp_obj_new_int_from_uint(size));
             nlr_pop();
             if (result == mp_const_none) {
@@ -204,6 +205,7 @@ mp_obj_t TransportMakeNew(const mp_obj_type_t* type,
 {
     (void)n_args; (void)n_kw; (void)args;
     auto* self = mp_obj_malloc(mp_rosette_transport_obj_t, type);
+    self->python_obj = MP_OBJ_FROM_PTR(self);
     self->socket_ready = false;
     self->connected    = false;
     self->read_budget_us = 0u;
@@ -275,14 +277,13 @@ bool TransportInit(mp_rosette_transport_obj_t* self) noexcept
         return true;
     }
 
-    auto* allocd = reinterpret_cast<MicroPythonSocketTransport*>(
-        m_new_maybe(uint8_t, sizeof(MicroPythonSocketTransport)));
+    auto* allocd = m_new_maybe(uint8_t, sizeof(MicroPythonSocketTransport));
     if (allocd == nullptr) {
         mp_raise_type(&mp_type_MemoryError);
         return false;
     }
-    allocd->owner_ = self;
-    self->implementation = allocd;
+    auto* transport = new (allocd) MicroPythonSocketTransport(self);
+    self->implementation = transport;
     self->socket_ready = true;   // transport is wired — Python open() already created the socket
     return true;
 }

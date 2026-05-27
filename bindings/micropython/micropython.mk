@@ -24,18 +24,11 @@ ROSETTE_MICRO_ROS_LIBRARY := $(strip $(shell sed -n 's/^ROSETTE_MICRO_ROS_LIBRAR
 endif
 endif
 
-ROSETTE_MICROPY_HAS_MICRO_ROS := 0
-ifneq ($(strip $(ROSETTE_MICRO_ROS_INCLUDE_DIR)),)
-ifneq ($(strip $(ROSETTE_MICRO_ROS_LIBRARY)),)
-ifneq ($(wildcard $(ROSETTE_MICRO_ROS_INCLUDE_DIR)/rcl/rcl.h),)
-ifneq ($(wildcard $(ROSETTE_MICRO_ROS_LIBRARY)),)
 ROSETTE_MICROPY_HAS_MICRO_ROS := 1
-endif
-endif
-endif
-endif
 
-SRC_USERMOD_C += $(ROSETTE_BINDINGS_DIR)/modrosette.c
+SRC_USERMOD_C += \
+	$(ROSETTE_BINDINGS_DIR)/modrosette.c \
+	$(ROSETTE_BINDINGS_DIR)/rosette_mpy_obj_defs.c
 SRC_USERMOD_CXX += \
 	$(ROSETTE_BINDINGS_DIR)/rosette_mpy_backend_runtime.cpp \
 	$(ROSETTE_BINDINGS_DIR)/rosette_mpy_context.cpp \

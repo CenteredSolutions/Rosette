@@ -8,6 +8,33 @@ TOOLCHAIN_FILE="@_rosette_micro_ros_toolchain_file@"
 COLCON_META_FILE="@_rosette_micro_ros_colcon_meta_file@"
 RUN_ROSDEP="@ROSETTE_MICRO_ROS_RUN_ROSDEP_TEXT@"
 
+# ── Python environment isolation ──────────────────────────────────────────────
+# ROS 2 / colcon tools (ament_cmake, catkin_pkg, …) are installed as system
+# Python packages under /usr/lib/python3/dist-packages or the ROS prefix's
+# site-packages.  When the build is invoked from inside a virtualenv that has
+# include-system-site-packages=false those packages are invisible, causing
+# "No module named 'catkin_pkg'" and similar errors.
+#
+# Strip any active virtualenv from PATH and PYTHONPATH here so all python3
+# calls in this script (colcon, ros2, ament tools) use the system interpreter
+# that can see the ROS dist-packages.
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  # Remove the venv bin directory from PATH
+  PATH="$(echo "${PATH}" | tr ':' '\n' | grep -v "^${VIRTUAL_ENV}/" | tr '\n' ':' | sed 's/:$//')"
+  export PATH
+  unset VIRTUAL_ENV
+  # Also clear PYTHONHOME if a venv set it
+  unset PYTHONHOME 2>/dev/null || true
+fi
+
+# Ensure ROS system dist-packages are on PYTHONPATH so the system python3
+# finds ament/catkin modules regardless of how the shell was set up.
+_ros_python_path="/usr/lib/python3/dist-packages"
+if [[ -d "${_ros_python_path}" ]]; then
+  export PYTHONPATH="${_ros_python_path}${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+unset _ros_python_path
+
 source_setup_file() {
   local setup_file="$1"
   local errexit_was_enabled=0
@@ -66,8 +93,75 @@ patch_rcutils_for_pico_time() {
       "${rcutils_cmake}"
   fi
 
-  cat > "${time_source}" <<'EOF'
-// Pico/newlib rcutils time source for micro-ROS static library builds.
+  if [[ "@ROSETTE_MICRO_ROS_USE_MPHAL_TIME_TEXT@" == "ON" ]]; then
+    # MicroPython build: use mp_hal_time_ns() for epoch-aware wall-clock time
+    # and mp_hal_ticks_us() for monotonic time.  Both symbols are provided by
+    # the MicroPython port and are already correctly calibrated:
+    #   mp_hal_time_ns()  → nanoseconds since Unix epoch (RTC-corrected)
+    #   mp_hal_ticks_us() → microseconds since boot (monotonic, no epoch)
+    cat > "${time_source}" <<'EOF'
+// rcutils time back-end for micro-ROS built inside a MicroPython firmware.
+//
+// Wall-clock time (rcutils_system_time_now) is provided by mp_hal_time_ns(),
+// which on RP2040/RP2350 adds the RTC-derived epoch offset to time_us_64().
+//
+// Monotonic time (rcutils_steady_time_now / rcutils_raw_steady_time_now) is
+// provided by mp_hal_ticks_us(), which is time_us_64() with no epoch offset –
+// suitable for durations and timeouts but not for absolute ROS timestamps.
+
+#include <stdint.h>
+
+#include "rcutils/time.h"
+#include "rcutils/types.h"
+
+// Provided by MicroPython's mphalport (ports/rp2/mphalport.c et al.)
+extern uint64_t mp_hal_time_ns(void);
+extern uint32_t mp_hal_ticks_us(void);
+
+rcutils_ret_t
+rcutils_system_time_now(rcutils_time_point_value_t * now)
+{
+  if (now == 0) {
+    return RCUTILS_RET_INVALID_ARGUMENT;
+  }
+  // mp_hal_time_ns() already returns nanoseconds since Unix epoch.
+  *now = (rcutils_time_point_value_t)mp_hal_time_ns();
+  return RCUTILS_RET_OK;
+}
+
+static rcutils_ret_t
+_steady_time_now(rcutils_time_point_value_t * now)
+{
+  if (now == 0) {
+    return RCUTILS_RET_INVALID_ARGUMENT;
+  }
+  // mp_hal_ticks_us() wraps at 2^32; cast to uint64 before scaling.
+  *now = (rcutils_time_point_value_t)((uint64_t)mp_hal_ticks_us() * 1000ull);
+  return RCUTILS_RET_OK;
+}
+
+rcutils_ret_t
+rcutils_steady_time_now(rcutils_time_point_value_t * now)
+{
+  return _steady_time_now(now);
+}
+
+rcutils_ret_t
+rcutils_raw_steady_time_now(rcutils_time_point_value_t * now)
+{
+  return _steady_time_now(now);
+}
+EOF
+  else
+    # Bare Pico SDK build: use time_us_64() directly.
+    # rcutils_system_time_now delegates to the weak rosette_micro_ros_epoch_time_us
+    # symbol so application code can supply an epoch offset at runtime.
+    cat > "${time_source}" <<'EOF'
+// rcutils time back-end for micro-ROS built against the bare Pico SDK.
+//
+// Applications may override rosette_micro_ros_epoch_time_us() to return
+// microseconds since the Unix epoch (e.g. from an NTP or RTC source).
+// The default weak implementation returns time_us_64() (boot-relative).
 
 #include <stdint.h>
 
@@ -83,12 +177,11 @@ rosette_micro_ros_epoch_time_us(void)
 }
 
 static rcutils_ret_t
-rosette_pico_steady_time_now(rcutils_time_point_value_t * now)
+_steady_time_now(rcutils_time_point_value_t * now)
 {
   if (now == 0) {
     return RCUTILS_RET_INVALID_ARGUMENT;
   }
-
   *now = (rcutils_time_point_value_t)(time_us_64() * 1000ull);
   return RCUTILS_RET_OK;
 }
@@ -99,7 +192,6 @@ rcutils_system_time_now(rcutils_time_point_value_t * now)
   if (now == 0) {
     return RCUTILS_RET_INVALID_ARGUMENT;
   }
-
   *now = (rcutils_time_point_value_t)(rosette_micro_ros_epoch_time_us() * 1000ll);
   return RCUTILS_RET_OK;
 }
@@ -107,15 +199,16 @@ rcutils_system_time_now(rcutils_time_point_value_t * now)
 rcutils_ret_t
 rcutils_steady_time_now(rcutils_time_point_value_t * now)
 {
-  return rosette_pico_steady_time_now(now);
+  return _steady_time_now(now);
 }
 
 rcutils_ret_t
 rcutils_raw_steady_time_now(rcutils_time_point_value_t * now)
 {
-  return rosette_pico_steady_time_now(now);
+  return _steady_time_now(now);
 }
 EOF
+  fi
 }
 
 if [[ ! -f "${ROS_SETUP}" ]]; then

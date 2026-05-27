@@ -4,8 +4,10 @@
  */
 
 #include "py/obj.h"
+#include "py/mphal.h"
 #include "py/runtime.h"
 #include "py/stream.h"
+#include <sys/time.h>
 
 #include "rosette_mpy_types.h"
 
@@ -48,3 +50,13 @@ const mp_obj_module_t rosette_user_cmodule = {
 };
 
 MP_REGISTER_MODULE(MP_QSTR__rosette, rosette_user_cmodule);
+
+__attribute__((weak))
+int clock_gettime(int clk_id, struct timespec* tp)
+{
+    (void)clk_id;
+    uint64_t now = mp_hal_time_ns();
+    tp->tv_sec = now / 1000000000ull;
+    tp->tv_nsec = now % 1000000000ull;
+    return 0;
+}

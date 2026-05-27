@@ -17,8 +17,11 @@
 #include "rosette_mpy_backend.hpp"
 
 extern "C" {
+#include "py/nlr.h"
+#include "py/objlist.h"
 #include "py/objstr.h"
 #include "py/runtime.h"
+#include "py/mphal.h"
 }
 
 #if ROSETTE_MICROPY_HAS_MICRO_ROS
@@ -30,11 +33,18 @@ extern "C" {
 #include <rcl/types.h>
 #include <rclc/publisher.h>
 #include <rosidl_runtime_c/string_functions.h>
+
+// newlib (arm-none-eabi) does not reliably inject C string/stdio symbols into
+// std:: via <cstring>/<cstdio>.  Include the plain C headers so that
+// unqualified and std::-qualified names both resolve.
+#include <string.h>
+#include <stdio.h>
 #include <rosidl_typesupport_introspection_c/identifier.h>
 #include <rosidl_typesupport_introspection_c/message_introspection.h>
 #include <std_msgs/msg/float32.h>
 
 #include <new>
+#include <string>
 #endif
 
 namespace rosette::bindings::micropython {
@@ -58,8 +68,10 @@ struct MicroPythonContextBackend {
 
     explicit MicroPythonContextBackend(mp_rosette_context_obj_t* owner)
     {
-        const char* ip = mp_obj_str_get_str(owner->agent_ip_obj);
-        std::strncpy(agent_address, ip, sizeof(agent_address) - 1);
+        const char* ip = owner->agent_ip_obj == mp_const_none
+            ? ""
+            : mp_obj_str_get_str(owner->agent_ip_obj);
+        strncpy(agent_address, ip, sizeof(agent_address) - 1);
         agent_address[sizeof(agent_address) - 1] = '\0';
         options = BuildOptions(owner, agent_address);
         new (&context) milkros::micro_ros::Context(options);
@@ -91,15 +103,20 @@ struct MicroPythonContextBackend {
         options.domain_id = owner->domain_id;
         options.client_key = owner->client_key;
         options.executor_handles = owner->executor_handles;
-        options.spin_timeout_ns = owner->spin_timeout_ns;
+        options.spin_timeout_ns = static_cast<uint64_t>(owner->spin_timeout_us) * 1000ull;
         options.auto_discover_agent = false;
         options.udp_agent_address = agent_address;
         options.udp_agent_port = owner->agent_port;
 #if ROSETTE_MICROPY_BACKEND_TRANSPORT_CUSTOM
         options.use_custom_transport = true;
         {
+            mp_obj_t transport_native = mp_obj_cast_to_native_base(
+                owner->transport_obj, MP_OBJ_FROM_PTR(&rosette_transport_type));
+            if (transport_native == MP_OBJ_NULL) {
+                return options;
+            }
             auto* transport = static_cast<mp_rosette_transport_obj_t*>(
-                MP_OBJ_TO_PTR(owner->transport_obj));
+                MP_OBJ_TO_PTR(transport_native));
             options.custom_transport =
                 static_cast<milkros::micro_ros::CustomTransport*>(
                     transport->implementation);
@@ -229,7 +246,7 @@ struct MicroPythonDynamicPublisherBackend {
         // ROS 2 type support namespace convention: "pkg__msg" (double underscore).
         // When no package component exists, use an empty namespace.
         const char* full_name = qstr_str(schema->full_name);
-        const char* slash = std::strchr(full_name, '/');
+        const char* slash = strchr(full_name, '/');
         if (slash != nullptr) {
             namespace_str.assign(full_name, static_cast<size_t>(slash - full_name));
             namespace_str += "__msg";
@@ -261,7 +278,7 @@ struct MicroPythonDynamicPublisherBackend {
         // Identity handle function: return self when identifier matches.
         type_support.func = [](const rosidl_message_type_support_t* handle,
                                const char* id) -> const rosidl_message_type_support_t* {
-            if (std::strcmp(id, rosidl_typesupport_introspection_c__identifier) == 0) {
+            if (strcmp(id, rosidl_typesupport_introspection_c__identifier) == 0) {
                 return handle;
             }
             return nullptr;
@@ -287,6 +304,127 @@ struct MicroPythonDynamicPublisherBackend {
         if (encode_buf == nullptr) return false;
         encode_buf_size = alloc;
         return true;
+    }
+};
+
+/**
+ * @brief Heap-owned subscription backend that receives serialized samples.
+ *
+ * MicroPython subscriptions use runtime schemas, so the receive path keeps the
+ * RCL entity native but takes messages as CDR bytes. The context pump drains
+ * this subscription after each executor spin and either calls the Python
+ * callback or stores the frame in the subscription ring.
+ *
+ * The serialized buffer is allocated with the RCL allocator so
+ * `rcl_take_serialized_message()` can grow it safely if the middleware needs
+ * more room than the subscription's initial payload budget.
+ */
+struct MicroPythonSubscriptionBackend {
+    rcl_subscription_t subscription = rcl_get_zero_initialized_subscription();
+    rcl_node_t* node = nullptr;
+    rcl_serialized_message_t serialized{};
+    bool valid = false;
+    bool dynamic_type_support = false;
+
+    rosidl_typesupport_introspection_c__MessageMembers members{};
+    rosidl_typesupport_introspection_c__MessageMember member_placeholder{};
+    rosidl_message_type_support_t type_support{};
+    std::string namespace_str;
+    std::string name_str;
+
+    ~MicroPythonSubscriptionBackend()
+    {
+        fini();
+        release_serialized_buffer();
+    }
+
+    /**
+     * @brief Builds minimal runtime type support for a dynamic schema.
+     *
+     * The type support names the DDS topic type while serialized take keeps the
+     * middleware from needing generated C message storage.
+     *
+     * @param[in] schema Runtime schema whose full name identifies the ROS type.
+     */
+    void build_type_support(const mp_rosette_schema_obj_t* schema)
+    {
+        const char* full_name = qstr_str(schema->full_name);
+        const char* slash = strchr(full_name, '/');
+        if (slash != nullptr) {
+            namespace_str.assign(full_name, static_cast<size_t>(slash - full_name));
+            namespace_str += "__msg";
+            name_str.assign(slash + 1);
+        } else {
+            namespace_str = "unknown__msg";
+            name_str = (full_name[0] != '\0') ? full_name : "Unknown";
+        }
+
+        member_placeholder = {};
+        member_placeholder.name_ = name_str.c_str();
+        member_placeholder.type_id_ = 0u;
+
+        members = {};
+        members.message_namespace_ = namespace_str.c_str();
+        members.message_name_ = name_str.c_str();
+        members.member_count_ = 1u;
+        members.size_of_ = 0u;
+        members.members_ = &member_placeholder;
+        members.init_function = nullptr;
+        members.fini_function = nullptr;
+
+        type_support = {};
+        type_support.typesupport_identifier = rosidl_typesupport_introspection_c__identifier;
+        type_support.data = &members;
+        type_support.func = [](const rosidl_message_type_support_t* handle,
+                               const char* id) -> const rosidl_message_type_support_t* {
+            return strcmp(id, rosidl_typesupport_introspection_c__identifier) == 0
+                ? handle
+                : nullptr;
+        };
+        dynamic_type_support = true;
+    }
+
+    /**
+     * @brief Allocates the reusable serialized receive buffer.
+     *
+     * @param[in] capacity Number of bytes to reserve for incoming CDR payloads.
+     * @return true when the buffer is ready for `rcl_take_serialized_message()`.
+     */
+    bool init_serialized_buffer(size_t capacity) noexcept
+    {
+        serialized = {};
+        serialized.allocator = rcl_get_default_allocator();
+        serialized.buffer = static_cast<uint8_t*>(
+            serialized.allocator.allocate(capacity, serialized.allocator.state));
+        if (serialized.buffer == nullptr) {
+            serialized.buffer_capacity = 0u;
+            return false;
+        }
+        serialized.buffer_length = 0u;
+        serialized.buffer_capacity = capacity;
+        return true;
+    }
+
+    void release_serialized_buffer() noexcept
+    {
+        if (serialized.buffer != nullptr) {
+            serialized.allocator.deallocate(
+                serialized.buffer, serialized.allocator.state);
+        }
+        serialized.buffer = nullptr;
+        serialized.buffer_length = 0u;
+        serialized.buffer_capacity = 0u;
+    }
+
+    void fini() noexcept
+    {
+        if (valid) {
+            rcl_ret_t _fini_rc = rcl_subscription_fini(&subscription, node);
+            (void)_fini_rc;
+        }
+        subscription = rcl_get_zero_initialized_subscription();
+        node = nullptr;
+        valid = false;
     }
 };
 
@@ -359,6 +497,32 @@ void SetDynamicPublisherBackend(mp_rosette_publisher_obj_t* self,
     self->backend = reinterpret_cast<void*>(raw | kDynamicPublisherTag);
 }
 
+MicroPythonSubscriptionBackend*
+GetSubscriptionBackend(mp_rosette_subscription_obj_t* self) noexcept
+{
+    return self == nullptr
+        ? nullptr
+        : static_cast<MicroPythonSubscriptionBackend*>(self->backend);
+}
+
+const rosidl_message_type_support_t*
+StaticMessageTypeSupport(const mp_rosette_schema_obj_t* schema) noexcept
+{
+    if (schema == nullptr) {
+        return nullptr;
+    }
+    if (schema->message_kind == ROSETTE_MPY_MESSAGE_STD_MSGS_FLOAT32) {
+        return ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32);
+    }
+    return nullptr;
+}
+
+void PrintCallbackException(mp_obj_t exception) noexcept
+{
+    mp_printf(&mp_plat_print, "rosette subscription callback error:\n");
+    mp_obj_print_exception(&mp_plat_print, exception);
+}
+
 /**
  * @brief Extracts the numeric `data` field for `std_msgs/Float32` publishing.
  *
@@ -405,7 +569,7 @@ float ExtractFloat32Payload(mp_obj_t payload)
  * @param[in] fallback Value returned when the key is absent.
  * @return Field value or `fallback`.
  */
-mp_obj_t DictGetOr(mp_obj_t dict, qstr key, mp_obj_t fallback)
+[[maybe_unused]] mp_obj_t DictGetOr(mp_obj_t dict, qstr key, mp_obj_t fallback)
 {
     if (!mp_obj_is_dict_or_ordereddict(dict)) {
         return fallback;
@@ -421,7 +585,7 @@ mp_obj_t DictGetOr(mp_obj_t dict, qstr key, mp_obj_t fallback)
  * @param[in] payload Schema-created message or dictionary.
  * @return Dictionary containing message fields, or `MP_OBJ_NULL`.
  */
-mp_obj_t PayloadValues(mp_obj_t payload) noexcept
+[[maybe_unused]] mp_obj_t PayloadValues(mp_obj_t payload) noexcept
 {
     if (mp_obj_is_type(
             payload,
@@ -456,8 +620,13 @@ bool ContextStart(mp_rosette_context_obj_t* self) noexcept
         return false;
     }
     {
+        mp_obj_t transport_native = mp_obj_cast_to_native_base(
+            self->transport_obj, MP_OBJ_FROM_PTR(&rosette_transport_type));
+        if (transport_native == MP_OBJ_NULL) {
+            return false;
+        }
         auto* transport = static_cast<mp_rosette_transport_obj_t*>(
-            MP_OBJ_TO_PTR(self->transport_obj));
+            MP_OBJ_TO_PTR(transport_native));
         if (!transport->socket_ready) {
             return false;
         }
@@ -557,8 +726,24 @@ void ContextFini(mp_rosette_context_obj_t* self) noexcept
 bool ContextTick(mp_rosette_context_obj_t* self) noexcept
 {
 #if ROSETTE_MICROPY_HAS_MICRO_ROS
+    if (self == nullptr) {
+        return false;
+    }
     auto* backend = GetContextBackend(self);
-    return backend != nullptr && backend->context.tick();
+    if (backend == nullptr || !backend->context.tick()) {
+        return false;
+    }
+    size_t count = 0u;
+    mp_obj_t* items = nullptr;
+    mp_obj_get_array(self->subscriptions, &count, &items);
+    for (size_t i = 0u; i < count; ++i) {
+        auto* sub = static_cast<mp_rosette_subscription_obj_t*>(
+            MP_OBJ_TO_PTR(items[i]));
+        if (!SubscriptionDispatchPending(sub)) {
+            return false;
+        }
+    }
+    return true;
 #else
     return self != nullptr && self->backend != nullptr && self->started && !self->closed;
 #endif
@@ -737,6 +922,13 @@ bool PublisherInit(mp_rosette_publisher_obj_t* self,
     self->backend  = backend;
     return true;
 #else
+    // Only emit the hard error during a real compilation pass, not during the
+    // MicroPython qstr-collection pass (which defines NO_QSTR and does not
+    // pass target compile-definitions, so ROSETTE_MICROPY_HAS_MICRO_ROS
+    // appears undefined/0 even when it will be 1 at compile time).
+    #ifndef NO_QSTR
+    #error "Micro-ROS backend is required to publish messages from MicroPython"
+    #endif
     self->backend = self;
     return true;
 #endif
@@ -839,6 +1031,213 @@ bool PublisherPublish(mp_rosette_publisher_obj_t* self,
     return false;
 #else
     (void)payload;
+    return true;
+#endif
+}
+
+/**
+ * @brief Creates the native subscription handle for a MicroPython subscription.
+ *
+ * The binding initializes an `rcl_subscription_t` directly instead of adding it
+ * to the rclc executor because runtime schemas are consumed as serialized CDR
+ * bytes. The context pump performs non-blocking serialized takes after each
+ * executor spin and routes decoded messages into either the Python callback or
+ * the manual receive queue.
+ *
+ * @param[in,out] self Subscription object that owns callback and queue state.
+ * @param[in] options QoS settings selected by the Python factory.
+ * @return true when the native subscription can receive messages.
+ *
+ * References:
+ * - ROS 2 RCL subscription API: `rcl_subscription_init()`.
+ * - ROS 2 RCL serialized take API: `rcl_take_serialized_message()`.
+ */
+bool SubscriptionBackendInit(mp_rosette_subscription_obj_t* self,
+                             const EndpointOptions& options) noexcept
+{
+    if (self == nullptr) {
+        return false;
+    }
+
+#if ROSETTE_MICROPY_HAS_MICRO_ROS
+    auto* node_obj =
+        static_cast<mp_rosette_node_obj_t*>(MP_OBJ_TO_PTR(self->node_obj));
+    auto* schema =
+        static_cast<mp_rosette_schema_obj_t*>(MP_OBJ_TO_PTR(self->schema_obj));
+    auto* node_backend = GetNodeBackend(node_obj);
+    if (node_backend == nullptr || schema == nullptr) {
+        return false;
+    }
+
+    auto* allocd = m_new_maybe(uint8_t, sizeof(MicroPythonSubscriptionBackend));
+    if (allocd == nullptr) {
+        return false;
+    }
+    auto* backend = new (allocd) MicroPythonSubscriptionBackend();
+    backend->node = node_backend->node.native_handle();
+    if (backend->node == nullptr) {
+        backend->~MicroPythonSubscriptionBackend();
+        m_del(uint8_t, allocd, sizeof(MicroPythonSubscriptionBackend));
+        return false;
+    }
+
+    const rosidl_message_type_support_t* type_support = nullptr;
+    if (schema->is_dynamic) {
+        backend->build_type_support(schema);
+        type_support = &backend->type_support;
+    } else {
+        type_support = StaticMessageTypeSupport(schema);
+    }
+    if (type_support == nullptr) {
+        backend->~MicroPythonSubscriptionBackend();
+        m_del(uint8_t, allocd, sizeof(MicroPythonSubscriptionBackend));
+        return false;
+    }
+
+    milkros::micro_ros::SubscriptionOptions subscription_options{};
+    subscription_options.depth = options.depth;
+    subscription_options.reliability = options.reliable
+        ? milkros::micro_ros::Reliability::RELIABLE
+        : milkros::micro_ros::Reliability::BEST_EFFORT;
+    rcl_subscription_options_t rcl_options = rcl_subscription_get_default_options();
+    rcl_options.qos = milkros::micro_ros::make_qos_profile(subscription_options);
+
+    const char* topic_name = mp_obj_str_get_str(self->topic_obj);
+    if (rcl_subscription_init(
+            &backend->subscription,
+            backend->node,
+            type_support,
+            topic_name,
+            &rcl_options) != RCL_RET_OK) {
+        backend->~MicroPythonSubscriptionBackend();
+        m_del(uint8_t, allocd, sizeof(MicroPythonSubscriptionBackend));
+        return false;
+    }
+
+    const size_t capacity = self->max_payload_size > 0u ? self->max_payload_size : 512u;
+    if (!backend->init_serialized_buffer(capacity)) {
+        rcl_ret_t _fini_rc2 = rcl_subscription_fini(&backend->subscription, backend->node);
+        (void)_fini_rc2;
+        backend->~MicroPythonSubscriptionBackend();
+        m_del(uint8_t, allocd, sizeof(MicroPythonSubscriptionBackend));
+        return false;
+    }
+
+    backend->valid = true;
+    self->backend = backend;
+    return true;
+#else
+    (void)options;
+    self->backend = self;
+    return true;
+#endif
+}
+
+/**
+ * @brief Releases the native subscription handle for a binding subscription.
+ *
+ * @param[in,out] self Subscription whose backend state should be released.
+ */
+void SubscriptionBackendFini(mp_rosette_subscription_obj_t* self) noexcept
+{
+    if (self == nullptr || self->backend == nullptr) {
+        return;
+    }
+#if ROSETTE_MICROPY_HAS_MICRO_ROS
+    auto* backend = GetSubscriptionBackend(self);
+    if (backend != nullptr) {
+        backend->~MicroPythonSubscriptionBackend();
+        m_del(uint8_t, backend, sizeof(MicroPythonSubscriptionBackend));
+    }
+#endif
+    self->backend = nullptr;
+}
+
+/**
+ * @brief Delivers one decoded message to Python or the manual receive queue.
+ *
+ * Callback exceptions are printed and swallowed so one handler failure does
+ * not permanently stop the cooperative ROS pump.
+ *
+ * @param[in,out] self Subscription receiving the decoded sample.
+ * @param[in] message Python Message object decoded from the CDR payload.
+ */
+#if ROSETTE_MICROPY_HAS_MICRO_ROS
+static void DeliverSubscriptionMessage(mp_rosette_subscription_obj_t* self,
+                                       mp_obj_t message) noexcept
+{
+    if (self->callback_obj == mp_const_none) {
+        return;
+    }
+    nlr_buf_t nlr;
+    if (nlr_push(&nlr) == 0) {
+        mp_call_function_1(self->callback_obj, message);
+        nlr_pop();
+    } else {
+        PrintCallbackException(MP_OBJ_FROM_PTR(nlr.ret_val));
+    }
+}
+#endif
+
+/**
+ * @brief Drains currently available serialized samples for one subscription.
+ *
+ * The function performs non-blocking serialized takes until the middleware
+ * reports that no more samples are ready. Each payload is decoded through the
+ * subscription schema. Callback subscriptions dispatch immediately; manual
+ * subscriptions retain the existing bounded ring-buffer `recv()` behavior.
+ *
+ * @param[in,out] self Subscription to drain.
+ * @return true when the drain completed without a hard backend error.
+ */
+bool SubscriptionDispatchPending(mp_rosette_subscription_obj_t* self) noexcept
+{
+    if (self == nullptr || self->backend == nullptr) {
+        return true;
+    }
+
+#if ROSETTE_MICROPY_HAS_MICRO_ROS
+    auto* backend = GetSubscriptionBackend(self);
+    if (backend == nullptr || !backend->valid) {
+        return false;
+    }
+
+    while (true) {
+        backend->serialized.buffer_length = 0u;
+        rmw_message_info_t info{};
+        const rcl_ret_t ret = rcl_take_serialized_message(
+            &backend->subscription,
+            &backend->serialized,
+            &info,
+            nullptr);
+        if (ret == RCL_RET_SUBSCRIPTION_TAKE_FAILED) {
+            return true;
+        }
+        if (ret != RCL_RET_OK) {
+            return false;
+        }
+
+        const uint8_t* payload = backend->serialized.buffer;
+        const size_t payload_size = backend->serialized.buffer_length;
+        if (self->callback_obj == mp_const_none) {
+            (void)SubscriptionEnqueueFrame(self, payload, payload_size);
+            continue;
+        }
+
+        nlr_buf_t nlr;
+        if (nlr_push(&nlr) == 0) {
+            const auto* schema = static_cast<const mp_rosette_schema_obj_t*>(
+                MP_OBJ_TO_PTR(self->schema_obj));
+            mp_obj_t message = SchemaCdrDecode(schema, payload, payload_size);
+            if (message != mp_const_none) {
+                DeliverSubscriptionMessage(self, message);
+            }
+            nlr_pop();
+        } else {
+            PrintCallbackException(MP_OBJ_FROM_PTR(nlr.ret_val));
+        }
+    }
+#else
     return true;
 #endif
 }

@@ -28,7 +28,9 @@ endif
 endif
 endif
 
-SRC_USERMOD += $(ROSETTE_BINDINGS_ROOT)/modrosette.c
+SRC_USERMOD += \
+	$(ROSETTE_BINDINGS_ROOT)/modrosette.c \
+	$(ROSETTE_BINDINGS_ROOT)/rosette_mpy_obj_defs.c
 SRC_USERMOD_CXX += \
 	$(ROSETTE_BINDINGS_ROOT)/rosette_mpy_backend_runtime.cpp \
 	$(ROSETTE_BINDINGS_ROOT)/rosette_mpy_context.cpp \

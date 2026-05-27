@@ -20,13 +20,14 @@ bool SubscriptionInit(mp_rosette_subscription_obj_t* self,
     if (self == nullptr) return false;
     self->depth    = options.depth;
     self->reliable = options.reliable;
-    self->backend  = self;
+    self->backend  = nullptr;
     return true;
 }
 
 void SubscriptionFini(mp_rosette_subscription_obj_t* self) noexcept
 {
     if (self == nullptr) return;
+    SubscriptionBackendFini(self);
     if (self->ring != nullptr) {
         for (size_t i = 0u; i < self->ring_capacity; ++i) {
             if (self->ring[i].data != nullptr) {
