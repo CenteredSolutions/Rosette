@@ -6,6 +6,12 @@
  * Transport object. All socket I/O is delegated to that Transport. The context
  * stores agent_ip_obj and agent_port only after _set_transport() is called,
  * so the backend can read them at start() time.
+ *
+ * All Python-facing methods are defined as extern "C" directly — there is no
+ * separate C-linkage shim layer.  The anonymous namespace below holds only
+ * non-exported helpers (RaiseRuntimeError, ContextPrint, ContextMakeNew) that
+ * are referenced by the type table and have their addresses taken through
+ * (const void*) casts, which is legal C++ regardless of linkage.
  */
 
 #include "rosette_mpy_backend.hpp"
@@ -14,19 +20,16 @@ extern "C" {
 #include "py/objlist.h"
 #include "py/nlr.h"
 #include "py/runtime.h"
+
+extern const mp_obj_dict_t rosette_context_locals_dict;
+extern mp_obj_t rosette_context_create_node(size_t n, const mp_obj_t* a);  /* rosette_mpy_node.cpp */
 }
-
-#include <cstring>
-#include <cstdio>
-#include <cstdlib>
-
-namespace rosette::bindings::micropython {
 
 namespace {
 
-constexpr uint32_t kDefaultClientKey      = 0x01020304u;
+constexpr uint32_t kDefaultClientKey       = 0x01020304u;
 constexpr uint16_t kDefaultExecutorHandles = 8u;
-constexpr uint32_t kDefaultSpinTimeoutMs  = 1u;
+constexpr uint32_t kDefaultSpinTimeoutMs   = 1u;
 
 [[noreturn]] void RaiseRuntimeError(const char* message)
 {
@@ -39,9 +42,7 @@ void ContextPrint(const mp_print_t* print,
 {
     (void)kind;
     const auto* self = static_cast<mp_rosette_context_obj_t*>(MP_OBJ_TO_PTR(self_in));
-    mp_printf(print,
-              "Context(started=%d)",
-              self->started ? 1 : 0);
+    mp_printf(print, "Context(started=%d)", self->started ? 1 : 0);
 }
 
 mp_obj_t ContextMakeNew(const mp_obj_type_t* type,
@@ -73,6 +74,7 @@ mp_obj_t ContextMakeNew(const mp_obj_type_t* type,
     self->local_port        = 0u;
     self->agent_port        = 8888u;
     self->backend_start_error = 0u;
+    self->backend_start_detail[0] = '\0';
 
     self->started = false;
     self->closed  = false;
@@ -81,6 +83,15 @@ mp_obj_t ContextMakeNew(const mp_obj_type_t* type,
     return MP_OBJ_FROM_PTR(self);
 }
 
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// Python-facing methods — extern "C" so obj_defs.c can reference them
+// directly without a separate shim layer.
+// ---------------------------------------------------------------------------
+
+extern "C" {
+
 /**
  * @brief Wires a Python Transport object into this context.
  *
@@ -88,10 +99,11 @@ mp_obj_t ContextMakeNew(const mp_obj_type_t* type,
  * transport so the backend can use them at start() time. Initialises the C++
  * CustomTransport adapter on the transport. Idempotent.
  *
- * Python signature: ``ctx._set_transport(transport) -> None``
+ * Python signature: ``ctx._set_transport(transport[, agent_ip[, agent_port]]) -> None``
  */
-mp_obj_t ContextSetTransportMethod(size_t n_args, const mp_obj_t* args)
+mp_obj_t rosette_context_set_transport(size_t n_args, const mp_obj_t* args)
 {
+    using namespace rosette::bindings::micropython;
     auto* self = static_cast<mp_rosette_context_obj_t*>(MP_OBJ_TO_PTR(args[0]));
     if (self->transport_obj != mp_const_none) {
         return mp_const_none;
@@ -105,42 +117,39 @@ mp_obj_t ContextSetTransportMethod(size_t n_args, const mp_obj_t* args)
     auto* transport = static_cast<mp_rosette_transport_obj_t*>(
         MP_OBJ_TO_PTR(transport_native));
 
-    // Set read_budget from spin_timeout.
     transport->read_budget_us = self->spin_timeout_us;
     transport->python_obj = args[1];
 
     self->transport_obj = args[1];
-    self->agent_ip_obj = n_args >= 3 ? args[2] : mp_const_none;
-    self->agent_port = n_args >= 4
+    self->agent_ip_obj  = n_args >= 3 ? args[2] : mp_const_none;
+    self->agent_port    = n_args >= 4
         ? static_cast<uint16_t>(mp_obj_get_int(args[3]))
         : self->agent_port;
 
     if (!TransportInit(transport)) {
         RaiseRuntimeError("rosette: failed to initialize transport adapter");
     }
-
     return mp_const_none;
 }
 
-/**
- * @brief Returns the Transport object attached to this context.
- *
- * Python signature: ``ctx.transport() -> Transport | None``
- */
-mp_obj_t ContextTransportMethod(mp_obj_t self_in)
+mp_obj_t rosette_context_transport(mp_obj_t self_in)
 {
     const auto* self = static_cast<mp_rosette_context_obj_t*>(MP_OBJ_TO_PTR(self_in));
     return self->transport_obj;
 }
 
-mp_obj_t ContextStartMethod(mp_obj_t self_in)
+mp_obj_t rosette_context_start(mp_obj_t self_in)
 {
+    using namespace rosette::bindings::micropython;
     auto* self = static_cast<mp_rosette_context_obj_t*>(MP_OBJ_TO_PTR(self_in));
     if (!self->started) {
         if (self->transport_obj == mp_const_none) {
             RaiseRuntimeError("rosette: call open() before start()");
         }
         if (!ContextStart(self)) {
+            mp_printf(&mp_plat_print,
+                      "rosette backend start failed: %s\n",
+                      ContextStartErrorMessage(self));
             mp_raise_msg_varg(&mp_type_RuntimeError,
                               MP_ERROR_TEXT("rosette backend start failed: %s"),
                               ContextStartErrorMessage(self));
@@ -151,8 +160,9 @@ mp_obj_t ContextStartMethod(mp_obj_t self_in)
     return mp_const_true;
 }
 
-mp_obj_t ContextTickMethod(mp_obj_t self_in)
+mp_obj_t rosette_context_tick(mp_obj_t self_in)
 {
+    using namespace rosette::bindings::micropython;
     auto* self = static_cast<mp_rosette_context_obj_t*>(MP_OBJ_TO_PTR(self_in));
     if (!self->started) {
         return mp_const_false;
@@ -160,8 +170,9 @@ mp_obj_t ContextTickMethod(mp_obj_t self_in)
     return mp_obj_new_bool(ContextTick(self));
 }
 
-mp_obj_t ContextCloseMethod(mp_obj_t self_in)
+mp_obj_t rosette_context_close(mp_obj_t self_in)
 {
+    using namespace rosette::bindings::micropython;
     auto* self = static_cast<mp_rosette_context_obj_t*>(MP_OBJ_TO_PTR(self_in));
     if (self->started) {
         ContextFini(self);
@@ -178,7 +189,6 @@ mp_obj_t ContextCloseMethod(mp_obj_t self_in)
         auto* transport = static_cast<mp_rosette_transport_obj_t*>(
             MP_OBJ_TO_PTR(transport_native));
         TransportFini(transport);
-        // Call Python close() on the transport.
         nlr_buf_t nlr;
         if (nlr_push(&nlr) == 0) {
             mp_call_function_0(mp_load_attr(self->transport_obj, MP_QSTR_close));
@@ -190,35 +200,11 @@ mp_obj_t ContextCloseMethod(mp_obj_t self_in)
     return mp_const_none;
 }
 
-mp_obj_t ContextStartedMethod(mp_obj_t self_in)
+mp_obj_t rosette_context_started(mp_obj_t self_in)
 {
     const auto* self = static_cast<mp_rosette_context_obj_t*>(MP_OBJ_TO_PTR(self_in));
     return mp_obj_new_bool(self->started);
 }
-
-}  // namespace
-
-}  // namespace rosette::bindings::micropython
-
-extern "C" {
-
-extern const mp_obj_dict_t rosette_context_locals_dict;
-
-mp_obj_t rosette_context_start(mp_obj_t s)
-    { return rosette::bindings::micropython::ContextStartMethod(s); }
-mp_obj_t rosette_context_tick(mp_obj_t s)
-    { return rosette::bindings::micropython::ContextTickMethod(s); }
-mp_obj_t rosette_context_close(mp_obj_t s)
-    { return rosette::bindings::micropython::ContextCloseMethod(s); }
-mp_obj_t rosette_context_started(mp_obj_t s)
-    { return rosette::bindings::micropython::ContextStartedMethod(s); }
-mp_obj_t rosette_context_set_transport(mp_obj_t s, mp_obj_t t)
-    { const mp_obj_t args[2] = {s, t}; return rosette::bindings::micropython::ContextSetTransportMethod(2, args); }
-mp_obj_t rosette_context_set_transport_var(size_t n, const mp_obj_t* a)
-    { return rosette::bindings::micropython::ContextSetTransportMethod(n, a); }
-mp_obj_t rosette_context_transport(mp_obj_t s)
-    { return rosette::bindings::micropython::ContextTransportMethod(s); }
-mp_obj_t rosette_context_create_node(size_t n, const mp_obj_t* a);  /* defined in rosette_mpy_node.cpp */
 
 const mp_obj_full_type_t rosette_context_type = {
     { &mp_type_type },
@@ -226,8 +212,8 @@ const mp_obj_full_type_t rosette_context_type = {
     MP_QSTR_Context,
     1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
     {
-        (const void*)rosette::bindings::micropython::ContextMakeNew,
-        (const void*)rosette::bindings::micropython::ContextPrint,
+        (const void*)ContextMakeNew,
+        (const void*)ContextPrint,
         &rosette_context_locals_dict,
         NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
     },

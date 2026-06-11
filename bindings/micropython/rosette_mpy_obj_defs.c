@@ -39,8 +39,7 @@ extern mp_obj_t rosette_context_start(mp_obj_t);
 extern mp_obj_t rosette_context_tick(mp_obj_t);
 extern mp_obj_t rosette_context_close(mp_obj_t);
 extern mp_obj_t rosette_context_started(mp_obj_t);
-extern mp_obj_t rosette_context_set_transport(mp_obj_t, mp_obj_t);
-extern mp_obj_t rosette_context_set_transport_var(size_t, const mp_obj_t*);
+extern mp_obj_t rosette_context_set_transport(size_t, const mp_obj_t*);
 extern mp_obj_t rosette_context_transport(mp_obj_t);
 extern mp_obj_t rosette_context_create_node(size_t, const mp_obj_t*);
 
@@ -49,7 +48,7 @@ static MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_tick_obj,          rosette_cont
 static MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_close_obj,         rosette_context_close);
 static MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_started_obj,       rosette_context_started);
 MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(rosette_context_set_transport_obj, 2, 4,
-    rosette_context_set_transport_var);
+    rosette_context_set_transport);
 static MP_DEFINE_CONST_FUN_OBJ_1(rosette_context_transport_obj,     rosette_context_transport);
 MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(rosette_context_create_node_obj, 2, 3,
     rosette_context_create_node);
@@ -107,19 +106,11 @@ MP_DEFINE_CONST_DICT(rosette_publisher_locals_dict, rosette_publisher_locals_dic
 
 /* -------------------------------------------------------------------------
  * Subscription method objects.
+ * Subscriptions use a pure callback model; there is no recv() or queued_count().
  * ---------------------------------------------------------------------- */
 
-extern mp_obj_t rosette_subscription_recv(mp_obj_t);
-extern mp_obj_t rosette_subscription_queued_count(mp_obj_t);
-
-static MP_DEFINE_CONST_FUN_OBJ_1(rosette_subscription_recv_obj,
-    rosette_subscription_recv);
-static MP_DEFINE_CONST_FUN_OBJ_1(rosette_subscription_queued_count_obj,
-    rosette_subscription_queued_count);
-
 static const mp_rom_map_elem_t rosette_subscription_locals_dict_table[] = {
-    { MP_ROM_QSTR(MP_QSTR_recv),         MP_ROM_PTR(&rosette_subscription_recv_obj) },
-    { MP_ROM_QSTR(MP_QSTR_queued_count), MP_ROM_PTR(&rosette_subscription_queued_count_obj) },
+    { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_Subscription) },
 };
 
 MP_DEFINE_CONST_DICT(rosette_subscription_locals_dict, rosette_subscription_locals_dict_table);

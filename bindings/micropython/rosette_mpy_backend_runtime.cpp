@@ -22,6 +22,8 @@ extern "C" {
 #include "py/objstr.h"
 #include "py/runtime.h"
 #include "py/mphal.h"
+#include "py/gc.h"
+#include "py/misc.h"
 }
 
 #if ROSETTE_MICROPY_HAS_MICRO_ROS
@@ -32,26 +34,113 @@ extern "C" {
 #include <rcl/publisher.h>
 #include <rcl/types.h>
 #include <rclc/publisher.h>
-#include <rosidl_runtime_c/string_functions.h>
-
 // newlib (arm-none-eabi) does not reliably inject C string/stdio symbols into
 // std:: via <cstring>/<cstdio>.  Include the plain C headers so that
 // unqualified and std::-qualified names both resolve.
+#include <new>
 #include <string.h>
 #include <stdio.h>
 #include <rosidl_typesupport_introspection_c/identifier.h>
 #include <rosidl_typesupport_introspection_c/message_introspection.h>
 #include <std_msgs/msg/float32.h>
 
-#include <new>
-#include <string>
 #endif
 
 namespace rosette::bindings::micropython {
 
 namespace {
 
+void CopyStartDetail(mp_rosette_context_obj_t* self, const char* detail) noexcept
+{
+    if (self == nullptr) {
+        return;
+    }
+    if (detail == nullptr) {
+        self->backend_start_detail[0] = '\0';
+        return;
+    }
+    snprintf(self->backend_start_detail,
+             sizeof(self->backend_start_detail),
+             "%s",
+             detail);
+}
+
+void AppendStartDetail(mp_rosette_context_obj_t* self, const char* suffix) noexcept
+{
+    if (self == nullptr || suffix == nullptr) {
+        return;
+    }
+
+    size_t used = strlen(self->backend_start_detail);
+    if (used >= sizeof(self->backend_start_detail) - 1u) {
+        return;
+    }
+
+    const size_t remaining = sizeof(self->backend_start_detail) - used;
+    size_t write = 0u;
+    while (suffix[write] != '\0' && write + 1u < remaining) {
+        self->backend_start_detail[used + write] = suffix[write];
+        ++write;
+    }
+    self->backend_start_detail[used + write] = '\0';
+}
+
 #if ROSETTE_MICROPY_HAS_MICRO_ROS
+
+// ---------------------------------------------------------------------------
+// MicroPython GC-backed rcl allocator
+//
+// rcl_get_default_allocator() returns malloc/free which is unavailable or
+// maps to a tiny heap on MicroPython's RP2040 build. Route all micro-ROS
+// internal allocations through the MicroPython GC instead.
+// ---------------------------------------------------------------------------
+
+static void* mpy_rcl_allocate(size_t size, void* /*state*/) {
+    return gc_alloc(size, 0);
+}
+static void mpy_rcl_deallocate(void* ptr, void* /*state*/) {
+    gc_free(ptr);
+}
+static void* mpy_rcl_reallocate(void* ptr, size_t size, void* /*state*/) {
+    return gc_realloc(ptr, size, true);
+}
+static void* mpy_rcl_zero_allocate(size_t count, size_t size, void* /*state*/) {
+    void* p = gc_alloc(count * size, 0);
+    if (p) memset(p, 0, count * size);
+    return p;
+}
+
+static rcl_allocator_t make_mpy_allocator() {
+    rcl_allocator_t a{};
+    a.allocate      = mpy_rcl_allocate;
+    a.deallocate    = mpy_rcl_deallocate;
+    a.reallocate    = mpy_rcl_reallocate;
+    a.zero_allocate = mpy_rcl_zero_allocate;
+    a.state         = nullptr;
+    return a;
+}
+
+void CaptureStartDetail(mp_rosette_context_obj_t* self,
+                        const milkros::micro_ros::Context& context) noexcept
+{
+    if (self == nullptr) {
+        return;
+    }
+
+    const char* summary =
+        milkros::micro_ros::context_start_error_string(context.last_start_error());
+    const char* detail = context.last_start_detail();
+
+    if (detail != nullptr && detail[0] != '\0') {
+        CopyStartDetail(self, summary);
+        AppendStartDetail(self, " (");
+        AppendStartDetail(self, detail);
+        AppendStartDetail(self, ")");
+        return;
+    }
+
+    CopyStartDetail(self, summary);
+}
 
 /**
  * @brief Heap-owned micro-ROS context runtime stored behind `Context.backend`.
@@ -100,6 +189,7 @@ struct MicroPythonContextBackend {
         const char* agent_address)
     {
         milkros::micro_ros::ContextOptions options{};
+        options.allocator = make_mpy_allocator();
         options.domain_id = owner->domain_id;
         options.client_key = owner->client_key;
         options.executor_handles = owner->executor_handles;
@@ -109,6 +199,7 @@ struct MicroPythonContextBackend {
         options.udp_agent_port = owner->agent_port;
 #if ROSETTE_MICROPY_BACKEND_TRANSPORT_CUSTOM
         options.use_custom_transport = true;
+        options.custom_transport_framing = false;  // UDP datagrams have natural boundaries
         {
             mp_obj_t transport_native = mp_obj_cast_to_native_base(
                 owner->transport_obj, MP_OBJ_FROM_PTR(&rosette_transport_type));
@@ -200,9 +291,11 @@ struct MicroPythonDynamicPublisherBackend {
     rosidl_typesupport_introspection_c__MessageMember  member_placeholder{};
     rosidl_message_type_support_t type_support{};
 
-    // Owned copies of the type name strings (members_ fields point here).
-    std::string namespace_str;
-    std::string name_str;
+    // Fixed-size buffers for the type name strings (members_ fields point here).
+    // Sized to hold the longest plausible ROS package/message name plus "__msg".
+    static constexpr size_t kNameBufSize = 64u;
+    char namespace_str[kNameBufSize];
+    char name_str[kNameBufSize];
 
     // Scratch encode buffer.  Resized on first use; stays allocated for the
     // lifetime of the publisher to avoid per-publish heap churn.
@@ -248,24 +341,31 @@ struct MicroPythonDynamicPublisherBackend {
         const char* full_name = qstr_str(schema->full_name);
         const char* slash = strchr(full_name, '/');
         if (slash != nullptr) {
-            namespace_str.assign(full_name, static_cast<size_t>(slash - full_name));
-            namespace_str += "__msg";
-            name_str.assign(slash + 1);
+            const size_t pkg_len = static_cast<size_t>(slash - full_name);
+            const size_t copy_len = pkg_len < (kNameBufSize - 6u)
+                                    ? pkg_len : (kNameBufSize - 6u);
+            memcpy(namespace_str, full_name, copy_len);
+            memcpy(namespace_str + copy_len, "__msg", 6u);  // includes NUL
+            strncpy(name_str, slash + 1, kNameBufSize - 1u);
+            name_str[kNameBufSize - 1u] = '\0';
         } else {
-            namespace_str = "unknown__msg";
-            name_str = (full_name[0] != '\0') ? full_name : "Unknown";
+            strncpy(namespace_str, "unknown__msg", kNameBufSize - 1u);
+            namespace_str[kNameBufSize - 1u] = '\0';
+            const char* src = (full_name[0] != '\0') ? full_name : "Unknown";
+            strncpy(name_str, src, kNameBufSize - 1u);
+            name_str[kNameBufSize - 1u] = '\0';
         }
 
         // A placeholder member is required by some RMW implementations that
         // inspect member_count_ before accepting the type support. We provide
         // one minimal entry so the publisher is accepted.
         member_placeholder = {};
-        member_placeholder.name_    = name_str.c_str();
+        member_placeholder.name_    = name_str;
         member_placeholder.type_id_ = 0u;  // FIELD_TYPE_NOT_SET / placeholder
 
         members = {};
-        members.message_namespace_ = namespace_str.c_str();
-        members.message_name_      = name_str.c_str();
+        members.message_namespace_ = namespace_str;
+        members.message_name_      = name_str;
         members.member_count_      = 1u;
         members.size_of_           = 0u;
         members.members_           = &member_placeholder;
@@ -329,8 +429,10 @@ struct MicroPythonSubscriptionBackend {
     rosidl_typesupport_introspection_c__MessageMembers members{};
     rosidl_typesupport_introspection_c__MessageMember member_placeholder{};
     rosidl_message_type_support_t type_support{};
-    std::string namespace_str;
-    std::string name_str;
+    // Fixed-size buffers for the type name strings (members_ fields point here).
+    static constexpr size_t kNameBufSize = 64u;
+    char namespace_str[kNameBufSize];
+    char name_str[kNameBufSize];
 
     ~MicroPythonSubscriptionBackend()
     {
@@ -351,21 +453,28 @@ struct MicroPythonSubscriptionBackend {
         const char* full_name = qstr_str(schema->full_name);
         const char* slash = strchr(full_name, '/');
         if (slash != nullptr) {
-            namespace_str.assign(full_name, static_cast<size_t>(slash - full_name));
-            namespace_str += "__msg";
-            name_str.assign(slash + 1);
+            const size_t pkg_len = static_cast<size_t>(slash - full_name);
+            const size_t copy_len = pkg_len < (kNameBufSize - 6u)
+                                    ? pkg_len : (kNameBufSize - 6u);
+            memcpy(namespace_str, full_name, copy_len);
+            memcpy(namespace_str + copy_len, "__msg", 6u);  // includes NUL
+            strncpy(name_str, slash + 1, kNameBufSize - 1u);
+            name_str[kNameBufSize - 1u] = '\0';
         } else {
-            namespace_str = "unknown__msg";
-            name_str = (full_name[0] != '\0') ? full_name : "Unknown";
+            strncpy(namespace_str, "unknown__msg", kNameBufSize - 1u);
+            namespace_str[kNameBufSize - 1u] = '\0';
+            const char* src = (full_name[0] != '\0') ? full_name : "Unknown";
+            strncpy(name_str, src, kNameBufSize - 1u);
+            name_str[kNameBufSize - 1u] = '\0';
         }
 
         member_placeholder = {};
-        member_placeholder.name_ = name_str.c_str();
+        member_placeholder.name_ = name_str;
         member_placeholder.type_id_ = 0u;
 
         members = {};
-        members.message_namespace_ = namespace_str.c_str();
-        members.message_name_ = name_str.c_str();
+        members.message_namespace_ = namespace_str;
+        members.message_name_ = name_str;
         members.member_count_ = 1u;
         members.size_of_ = 0u;
         members.members_ = &member_placeholder;
@@ -490,7 +599,7 @@ GetDynamicPublisherBackend(mp_rosette_publisher_obj_t* self) noexcept
 /**
  * @brief Stores a dynamic backend pointer with the tag bit set.
  */
-void SetDynamicPublisherBackend(mp_rosette_publisher_obj_t* self,
+[[maybe_unused]] void SetDynamicPublisherBackend(mp_rosette_publisher_obj_t* self,
                                 MicroPythonDynamicPublisherBackend* backend) noexcept
 {
     const uintptr_t raw = reinterpret_cast<uintptr_t>(backend);
@@ -535,13 +644,6 @@ void PrintCallbackException(mp_obj_t exception) noexcept
  */
 float ExtractFloat32Payload(mp_obj_t payload)
 {
-    if (mp_obj_is_type(
-            payload,
-            reinterpret_cast<const mp_obj_type_t*>(&rosette_message_type))) {
-        auto* message =
-            static_cast<mp_rosette_message_obj_t*>(MP_OBJ_TO_PTR(payload));
-        payload = message->values_obj;
-    }
     if (mp_obj_is_dict_or_ordereddict(payload)) {
         mp_map_t* map = mp_obj_dict_get_map(payload);
         mp_map_elem_t* elem = mp_map_lookup(
@@ -554,47 +656,6 @@ float ExtractFloat32Payload(mp_obj_t payload)
         payload = elem->value;
     }
     return static_cast<float>(mp_obj_get_float(payload));
-}
-
-/**
- * @brief Returns the value for one dictionary key or a fallback object.
- *
- * Message conversion accepts both schema-created messages and plain
- * dictionaries. This helper keeps optional-field extraction compact while
- * using MicroPython's dictionary map directly instead of adding another
- * parser-like lookup layer.
- *
- * @param[in] dict Python dictionary-like object to inspect.
- * @param[in] key Field key qstr.
- * @param[in] fallback Value returned when the key is absent.
- * @return Field value or `fallback`.
- */
-[[maybe_unused]] mp_obj_t DictGetOr(mp_obj_t dict, qstr key, mp_obj_t fallback)
-{
-    if (!mp_obj_is_dict_or_ordereddict(dict)) {
-        return fallback;
-    }
-    mp_map_t* map = mp_obj_dict_get_map(dict);
-    mp_map_elem_t* elem = mp_map_lookup(map, MP_OBJ_NEW_QSTR(key), MP_MAP_LOOKUP);
-    return elem == nullptr ? fallback : elem->value;
-}
-
-/**
- * @brief Normalizes a Python payload into a field dictionary when possible.
- *
- * @param[in] payload Schema-created message or dictionary.
- * @return Dictionary containing message fields, or `MP_OBJ_NULL`.
- */
-[[maybe_unused]] mp_obj_t PayloadValues(mp_obj_t payload) noexcept
-{
-    if (mp_obj_is_type(
-            payload,
-            reinterpret_cast<const mp_obj_type_t*>(&rosette_message_type))) {
-        auto* message =
-            static_cast<mp_rosette_message_obj_t*>(MP_OBJ_TO_PTR(payload));
-        return message->values_obj;
-    }
-    return mp_obj_is_dict_or_ordereddict(payload) ? payload : MP_OBJ_NULL;
 }
 
 #endif  // ROSETTE_MICROPY_HAS_MICRO_ROS
@@ -619,6 +680,7 @@ bool ContextStart(mp_rosette_context_obj_t* self) noexcept
     if (self == nullptr || self->closed || self->transport_obj == mp_const_none) {
         return false;
     }
+    CopyStartDetail(self, "");
     {
         mp_obj_t transport_native = mp_obj_cast_to_native_base(
             self->transport_obj, MP_OBJ_FROM_PTR(&rosette_transport_type));
@@ -645,6 +707,10 @@ bool ContextStart(mp_rosette_context_obj_t* self) noexcept
     if (backend->options.use_custom_transport && backend->options.custom_transport == nullptr) {
         self->backend_start_error = static_cast<uint8_t>(
             milkros::micro_ros::ContextStartError::kCustomTransportMissing);
+        CopyStartDetail(
+            self,
+            milkros::micro_ros::context_start_error_string(
+                milkros::micro_ros::ContextStartError::kCustomTransportMissing));
         backend->~MicroPythonContextBackend();
         m_del(uint8_t, allocd, sizeof(MicroPythonContextBackend));
         return false;
@@ -652,6 +718,7 @@ bool ContextStart(mp_rosette_context_obj_t* self) noexcept
     const auto result = backend->context.start_result();
     self->backend_start_error =
         static_cast<uint8_t>(backend->context.last_start_error());
+    CaptureStartDetail(self, backend->context);
     if (!result.ok()) {
         backend->~MicroPythonContextBackend();
         m_del(uint8_t, allocd, sizeof(MicroPythonContextBackend));
@@ -661,6 +728,7 @@ bool ContextStart(mp_rosette_context_obj_t* self) noexcept
     return true;
 #else
     self->backend_start_error = 0u;
+    CopyStartDetail(self, "ok");
     self->backend = self;
     return true;
 #endif
@@ -682,6 +750,9 @@ const char* ContextStartErrorMessage(const mp_rosette_context_obj_t* self) noexc
 #if ROSETTE_MICROPY_HAS_MICRO_ROS
     if (self == nullptr) {
         return "context object is null";
+    }
+    if (self->backend_start_detail[0] != '\0') {
+        return self->backend_start_detail;
     }
     return milkros::micro_ros::context_start_error_string(
         static_cast<milkros::micro_ros::ContextStartError>(
@@ -1114,8 +1185,7 @@ bool SubscriptionBackendInit(mp_rosette_subscription_obj_t* self,
         return false;
     }
 
-    const size_t capacity = self->max_payload_size > 0u ? self->max_payload_size : 512u;
-    if (!backend->init_serialized_buffer(capacity)) {
+    if (!backend->init_serialized_buffer(512u)) {
         rcl_ret_t _fini_rc2 = rcl_subscription_fini(&backend->subscription, backend->node);
         (void)_fini_rc2;
         backend->~MicroPythonSubscriptionBackend();
@@ -1154,38 +1224,14 @@ void SubscriptionBackendFini(mp_rosette_subscription_obj_t* self) noexcept
 }
 
 /**
- * @brief Delivers one decoded message to Python or the manual receive queue.
- *
- * Callback exceptions are printed and swallowed so one handler failure does
- * not permanently stop the cooperative ROS pump.
- *
- * @param[in,out] self Subscription receiving the decoded sample.
- * @param[in] message Python Message object decoded from the CDR payload.
- */
-#if ROSETTE_MICROPY_HAS_MICRO_ROS
-static void DeliverSubscriptionMessage(mp_rosette_subscription_obj_t* self,
-                                       mp_obj_t message) noexcept
-{
-    if (self->callback_obj == mp_const_none) {
-        return;
-    }
-    nlr_buf_t nlr;
-    if (nlr_push(&nlr) == 0) {
-        mp_call_function_1(self->callback_obj, message);
-        nlr_pop();
-    } else {
-        PrintCallbackException(MP_OBJ_FROM_PTR(nlr.ret_val));
-    }
-}
-#endif
-
-/**
  * @brief Drains currently available serialized samples for one subscription.
  *
  * The function performs non-blocking serialized takes until the middleware
  * reports that no more samples are ready. Each payload is decoded through the
- * subscription schema. Callback subscriptions dispatch immediately; manual
- * subscriptions retain the existing bounded ring-buffer `recv()` behavior.
+ * subscription schema and delivered to the Python callback immediately.
+ * Messages with no callback registered are silently dropped.
+ * Callback exceptions are printed and swallowed so one handler failure does
+ * not permanently stop the cooperative ROS pump.
  *
  * @param[in,out] self Subscription to drain.
  * @return true when the drain completed without a hard backend error.
@@ -1217,20 +1263,20 @@ bool SubscriptionDispatchPending(mp_rosette_subscription_obj_t* self) noexcept
             return false;
         }
 
-        const uint8_t* payload = backend->serialized.buffer;
-        const size_t payload_size = backend->serialized.buffer_length;
         if (self->callback_obj == mp_const_none) {
-            (void)SubscriptionEnqueueFrame(self, payload, payload_size);
-            continue;
+            continue;  /* no callback — drop message */
         }
 
         nlr_buf_t nlr;
         if (nlr_push(&nlr) == 0) {
             const auto* schema = static_cast<const mp_rosette_schema_obj_t*>(
                 MP_OBJ_TO_PTR(self->schema_obj));
-            mp_obj_t message = SchemaCdrDecode(schema, payload, payload_size);
+            mp_obj_t message = SchemaCdrDecode(
+                schema,
+                backend->serialized.buffer,
+                backend->serialized.buffer_length);
             if (message != mp_const_none) {
-                DeliverSubscriptionMessage(self, message);
+                mp_call_function_1(self->callback_obj, message);
             }
             nlr_pop();
         } else {

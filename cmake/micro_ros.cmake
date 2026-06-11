@@ -39,6 +39,9 @@ option(ROSETTE_MICRO_ROS_FETCH_SETUP
 option(ROSETTE_MICRO_ROS_RUN_ROSDEP
     "Run rosdep install while bootstrapping the micro-ROS workspace"
     OFF)
+option(ROSETTE_MICRO_ROS_RMW_ERROR_HANDLING
+    "Enable rmw_microxrcedds internal error reporting so rmw_get_error_string() is populated on init failures"
+    ON)
 
 set(ROSETTE_MICRO_ROS_DISTRO "humble" CACHE STRING
     "ROS 2 distro / micro_ros_setup branch to use")
@@ -182,16 +185,27 @@ endif()
 # targets we always compile uClient with UCLIENT_PROFILE_CUSTOM_TRANSPORT=ON
 # and UCLIENT_PROFILE_UDP=OFF.
 #
+# Critically, RMW_UXRCE_TRANSPORT (set in colcon.meta for rmw_microxrcedds)
+# must match the uclient transport profile actually compiled in.  When uclient
+# is forced to custom transport on embedded targets, we must also tell rmw to
+# use "custom" — otherwise rmw tries to reference uxrUDPTransport / the UDP
+# MTU symbol that the uclient build omitted, causing link/compile errors.
+#
+# _rosette_micro_ros_rmw_transport  → value passed to RMW_UXRCE_TRANSPORT
 # ROSETTE_MICRO_ROS_UCLIENT_CUSTOM  → 1 when uClient should use custom transport
 # ROSETTE_MICRO_ROS_UCLIENT_UDP     → 1 when uClient may use its native UDP stack
 if(ROSETTE_MICRO_ROS_TOOLCHAIN_SYSTEM_NAME STREQUAL "Generic")
-    # Embedded / bare-metal: force custom transport at the uClient layer.
+    # Embedded / bare-metal: force custom transport at both uClient and RMW
+    # layers.  The MicroPython binding provides its own UDP socket callbacks
+    # through the custom-transport API, so "custom" is correct end-to-end.
     set(ROSETTE_MICRO_ROS_UCLIENT_CUSTOM ON)
     set(ROSETTE_MICRO_ROS_UCLIENT_UDP    OFF)
+    set(_rosette_micro_ros_rmw_transport "custom")
 else()
     # Host / POSIX build: use native UDP when the RMW transport is "udp".
     set(ROSETTE_MICRO_ROS_UCLIENT_CUSTOM ${ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT})
     set(ROSETTE_MICRO_ROS_UCLIENT_UDP    ${ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT})
+    set(_rosette_micro_ros_rmw_transport "${_rosette_micro_ros_transport}")
 endif()
 
 set(ROSETTE_MICRO_ROS_SETUP_SOURCE_DIR "${_rosette_micro_ros_setup_source_dir}")
@@ -209,6 +223,10 @@ endif()
 set(ROSETTE_MICRO_ROS_USE_MPHAL_TIME_TEXT "OFF")
 if(ROSETTE_MICRO_ROS_USE_MPHAL_TIME)
     set(ROSETTE_MICRO_ROS_USE_MPHAL_TIME_TEXT "ON")
+endif()
+set(ROSETTE_MICRO_ROS_RMW_ERROR_HANDLING_TEXT "OFF")
+if(ROSETTE_MICRO_ROS_RMW_ERROR_HANDLING)
+    set(ROSETTE_MICRO_ROS_RMW_ERROR_HANDLING_TEXT "ON")
 endif()
 
 configure_file(
@@ -278,7 +296,7 @@ set(ROSETTE_MICRO_ROS_INCLUDE_DIR "${_rosette_micro_ros_include}" CACHE PATH
     "Path to the generated micro-ROS include tree" FORCE)
 
 message(STATUS "micro-ROS bootstrap enabled")
-message(STATUS "  Distro     : ${ROSETTE_MICRO_ROS_DISTRO}")
-message(STATUS "  Transport  : ${_rosette_micro_ros_transport}")
-message(STATUS "  Workspace  : ${ROSETTE_MICRO_ROS_WORKSPACE_DIR}")
-message(STATUS "  Toolchain  : ${_rosette_micro_ros_toolchain_file}")
+message(STATUS "  Distro        : ${ROSETTE_MICRO_ROS_DISTRO}")
+message(STATUS "  Transport     : ${_rosette_micro_ros_transport} (rmw: ${_rosette_micro_ros_rmw_transport}, uclient: custom=${ROSETTE_MICRO_ROS_UCLIENT_CUSTOM} udp=${ROSETTE_MICRO_ROS_UCLIENT_UDP})")
+message(STATUS "  Workspace     : ${ROSETTE_MICRO_ROS_WORKSPACE_DIR}")
+message(STATUS "  Toolchain     : ${_rosette_micro_ros_toolchain_file}")

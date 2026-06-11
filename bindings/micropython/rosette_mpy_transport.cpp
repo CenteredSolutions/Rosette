@@ -15,8 +15,8 @@
 #include "rosette/ros/micro_ros/custom_transport.hpp"
 #include "rosette/ros/micro_ros/multicast_agent_locator.hpp"
 
-#include <cstring>
-#include <cstdlib>
+#include <string.h>
+#include <stdlib.h>
 #include <new>
 
 extern "C" {
@@ -24,6 +24,7 @@ extern "C" {
 #include "py/runtime.h"
 #include "py/stream.h"
 #include "py/mperrno.h"
+#include "py/mphal.h"
 #include "stdio.h"
 }
 
@@ -47,6 +48,16 @@ static mp_obj_t CallMethod2(mp_obj_t obj, qstr name, mp_obj_t a, mp_obj_t b)
     return mp_call_function_2(mp_load_attr(obj, name), a, b);
 }
 
+static inline mp_obj_t CallMethod3(mp_obj_t obj, qstr name, mp_obj_t a, mp_obj_t b, mp_obj_t c)
+{
+    mp_obj_t args[3];
+    args[0] = a;
+    args[1] = b;
+    args[2] = c;
+    return mp_call_function_n_kw(mp_load_attr(obj, name), 3, 0, args);
+}
+
+
 static mp_obj_t CallMethod0(mp_obj_t obj, qstr name)
 {
     return mp_call_function_0(mp_load_attr(obj, name));
@@ -56,7 +67,7 @@ static mp_obj_t CallMethod0(mp_obj_t obj, qstr name)
 // Helper: extract OSError errno from an NLR-caught exception
 // ---------------------------------------------------------------------------
 
-static int GetOSErrorCode(mp_obj_t exception)
+[[maybe_unused]] static int GetOSErrorCode(mp_obj_t exception)
 {
     const auto* exc_base = static_cast<mp_obj_base_t*>(MP_OBJ_TO_PTR(exception));
     if (!mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(exc_base->type),
@@ -113,11 +124,13 @@ public:
 
     bool open() noexcept override
     {
+        mp_printf(&mp_plat_print, "Transport open\n");
         return owner_ != nullptr && owner_->socket_ready;
     }
 
     bool close() noexcept override
     {
+        mp_printf(&mp_plat_print, "Transport close\n");
         if (owner_ == nullptr) {
             return true;
         }
@@ -135,6 +148,7 @@ public:
                  size_t size,
                  uint8_t* error) noexcept override
     {
+        mp_printf(&mp_plat_print, "Transport write: size=%u\n", (unsigned)size);
         if (owner_ == nullptr || !owner_->socket_ready || (data == nullptr && size != 0u)) {
             if (error) *error = 1u;
             return 0u;
@@ -165,8 +179,9 @@ public:
 
         nlr_buf_t nlr;
         if (nlr_push(&nlr) == 0) {
-            mp_obj_t result = CallMethod1(owner_->python_obj, MP_QSTR_recv,
-                                          mp_obj_new_int_from_uint(size));
+            mp_obj_t result = CallMethod2(owner_->python_obj, MP_QSTR_recv,
+                                          mp_obj_new_int_from_uint(size),
+                                          mp_obj_new_int_from_uint(timeout_ms));
             nlr_pop();
             if (result == mp_const_none) {
                 if (error) *error = 1u;
@@ -176,17 +191,10 @@ public:
             mp_get_buffer_raise(result, &info, MP_BUFFER_READ);
             const size_t n = info.len < size ? info.len : size;
             memcpy(data, info.buf, n);
+            mp_printf(&mp_plat_print, "Transport read, received=%u\n", (unsigned)n);
             if (error) *error = 0u;
             return n;
         }
-
-        mp_obj_t exception = MP_OBJ_FROM_PTR(nlr.ret_val);
-        const int err = GetOSErrorCode(exception);
-        if (err == MP_EAGAIN || err == MP_EWOULDBLOCK || err == MP_ETIMEDOUT) {
-            if (error) *error = 1u;
-            return 0u;
-        }
-        // Re-raise unexpected errors by returning error — C++ noexcept prevents throw.
         if (error) *error = 1u;
         return 0u;
     }

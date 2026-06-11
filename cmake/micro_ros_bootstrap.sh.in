@@ -116,7 +116,6 @@ patch_rcutils_for_pico_time() {
 
 // Provided by MicroPython's mphalport (ports/rp2/mphalport.c et al.)
 extern uint64_t mp_hal_time_ns(void);
-extern uint32_t mp_hal_ticks_us(void);
 
 rcutils_ret_t
 rcutils_system_time_now(rcutils_time_point_value_t * now)
@@ -135,8 +134,7 @@ _steady_time_now(rcutils_time_point_value_t * now)
   if (now == 0) {
     return RCUTILS_RET_INVALID_ARGUMENT;
   }
-  // mp_hal_ticks_us() wraps at 2^32; cast to uint64 before scaling.
-  *now = (rcutils_time_point_value_t)((uint64_t)mp_hal_ticks_us() * 1000ull);
+  *now = (rcutils_time_point_value_t)((uint64_t)mp_hal_time_ns());
   return RCUTILS_RET_OK;
 }
 

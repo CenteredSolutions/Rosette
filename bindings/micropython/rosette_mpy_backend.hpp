@@ -160,14 +160,12 @@ bool PublisherPublish(mp_rosette_publisher_obj_t* self,
                       mp_obj_t payload);
 
 /**
- * @brief Creates the backend subscription owned by one `Subscription` object.
- *
- * The backend callback path writes raw CDR payloads into the subscription's
- * ring buffer.
+ * @brief Initialises per-object fields for one `Subscription` before the
+ *        native backend handle is created.
  *
  * @param[in,out] self Subscription object to initialize.
  * @param[in] options QoS settings translated from the Python constructor call.
- * @return `true` when the subscription backend was created successfully.
+ * @return `true` always (exists for symmetry with publisher init).
  */
 bool SubscriptionInit(mp_rosette_subscription_obj_t* self,
                       const EndpointOptions& options) noexcept;
@@ -203,39 +201,17 @@ void SubscriptionFini(mp_rosette_subscription_obj_t* self) noexcept;
 void SubscriptionBackendFini(mp_rosette_subscription_obj_t* self) noexcept;
 
 /**
- * @brief Drains pending serialized samples for one subscription.
+ * @brief Drains currently available serialized samples for one subscription.
  *
- * The context pump calls this after each executor tick so callback-style
- * Python subscriptions run from the same cooperative kernel task.
+ * The context pump calls this after each executor tick. Each received CDR
+ * payload is decoded through the subscription schema and delivered to the
+ * Python callback immediately. Messages with no callback registered are
+ * silently dropped.
  *
  * @param[in,out] self Subscription whose pending samples should be processed.
- * @return `true` when draining completed without a backend failure.
+ * @return `true` when draining completed without a hard backend failure.
  */
 bool SubscriptionDispatchPending(mp_rosette_subscription_obj_t* self) noexcept;
-
-/**
- * @brief Enqueues one received CDR payload into a subscription ring buffer.
- *
- * The transport and backend callback path uses this helper to push serialized
- * payload bytes into the oldest free ring slot. The queue is bounded so the
- * implementation can remain deterministic on small boards.
- *
- * @param[in,out] self Subscription whose ring buffer receives the payload.
- * @param[in] payload Serialized message payload bytes.
- * @param[in] payload_size Number of bytes available in `payload`.
- * @return `true` when the payload was stored successfully.
- */
-bool SubscriptionEnqueueFrame(mp_rosette_subscription_obj_t* self,
-                              const uint8_t* payload,
-                              size_t payload_size) noexcept;
-
-/**
- * @brief Returns whether the subscription currently has queued payloads.
- *
- * @param[in] self Subscription whose queue state should be inspected.
- * @return `true` when `recv()` can consume one payload immediately.
- */
-bool SubscriptionReadable(const mp_rosette_subscription_obj_t* self) noexcept;
 
 /**
  * @brief Creates the C++ CustomTransport adapter for a Transport object.

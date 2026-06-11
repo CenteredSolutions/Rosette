@@ -33,8 +33,8 @@ extern "C" {
 
 #include "rosette/ros/cdr.h"
 
-#include <climits>
-#include <cstring>
+#include <limits.h>
+#include <string.h>
 
 namespace rosette::bindings::micropython {
 
@@ -66,8 +66,8 @@ TextSpan Trim(TextSpan span) noexcept
 
 bool SpanEquals(TextSpan span, const char* token) noexcept
 {
-    return token != nullptr && std::strlen(token) == span.length &&
-           std::strncmp(span.data, token, span.length) == 0;
+    return token != nullptr && strlen(token) == span.length &&
+           strncmp(span.data, token, span.length) == 0;
 }
 
 // ============================================================
@@ -114,7 +114,7 @@ bool LooksLikeNestedMessage(TextSpan type_token) noexcept
 {
     if (type_token.length == 0u) return false;
     if (static_cast<const char*>(
-            std::memchr(type_token.data, '/', type_token.length)) != nullptr) {
+            memchr(type_token.data, '/', type_token.length)) != nullptr) {
         return true;
     }
     return (type_token.data[0] >= 'A' && type_token.data[0] <= 'Z');
@@ -153,18 +153,18 @@ size_t CountFieldLines(const char* text) noexcept
     size_t count = 0u;
     const char* line = text;
     while (line != nullptr && *line != '\0') {
-        const char* end = std::strchr(line, '\n');
-        const size_t length = end == nullptr ? std::strlen(line)
+        const char* end = strchr(line, '\n');
+        const size_t length = end == nullptr ? strlen(line)
                                              : static_cast<size_t>(end - line);
         TextSpan span = Trim({line, length});
         const char* comment = static_cast<const char*>(
-            std::memchr(span.data, '#', span.length));
+            memchr(span.data, '#', span.length));
         if (comment != nullptr) {
             span.length = static_cast<size_t>(comment - span.data);
             span = Trim(span);
         }
         if (span.length != 0u &&
-            std::memchr(span.data, '=', span.length) == nullptr) {
+            memchr(span.data, '=', span.length) == nullptr) {
             ++count;
         }
         line = end == nullptr ? nullptr : end + 1;
@@ -207,18 +207,18 @@ void ParseMessageText(mp_rosette_schema_obj_t* schema, const char* text)
     size_t index = 0u;
     const char* line = text;
     while (line != nullptr && *line != '\0' && index < field_count) {
-        const char* end = std::strchr(line, '\n');
-        const size_t length = end == nullptr ? std::strlen(line)
+        const char* end = strchr(line, '\n');
+        const size_t length = end == nullptr ? strlen(line)
                                              : static_cast<size_t>(end - line);
         TextSpan span = Trim({line, length});
         const char* comment = static_cast<const char*>(
-            std::memchr(span.data, '#', span.length));
+            memchr(span.data, '#', span.length));
         if (comment != nullptr) {
             span.length = static_cast<size_t>(comment - span.data);
             span = Trim(span);
         }
         if (span.length == 0u ||
-            std::memchr(span.data, '=', span.length) != nullptr) {
+            memchr(span.data, '=', span.length) != nullptr) {
             line = end == nullptr ? nullptr : end + 1;
             continue;
         }
@@ -241,11 +241,11 @@ void ParseMessageText(mp_rosette_schema_obj_t* schema, const char* text)
 
         // Find the first '[' in the type token.
         const char* bracket =
-            static_cast<const char*>(std::memchr(type_token.data, '[', type_token.length));
+            static_cast<const char*>(memchr(type_token.data, '[', type_token.length));
         if (bracket != nullptr) {
             size_t base_len = static_cast<size_t>(bracket - type_token.data);
             const char* close =
-                static_cast<const char*>(std::memchr(bracket, ']', type_token.length - base_len));
+                static_cast<const char*>(memchr(bracket, ']', type_token.length - base_len));
             if (close == nullptr) {
                 mp_raise_ValueError(MP_ERROR_TEXT(".msg array type missing closing ']'"));
             }
@@ -317,7 +317,7 @@ void ParseMessageText(mp_rosette_schema_obj_t* schema, const char* text)
 uint8_t ResolveMessageKind(const char* full_name) noexcept
 {
     if (full_name == nullptr) return ROSETTE_MPY_MESSAGE_UNSUPPORTED;
-    if (std::strcmp(full_name, "std_msgs/Float32") == 0)
+    if (strcmp(full_name, "std_msgs/Float32") == 0)
         return ROSETTE_MPY_MESSAGE_STD_MSGS_FLOAT32;
     return ROSETTE_MPY_MESSAGE_UNSUPPORTED;
 }
@@ -326,7 +326,7 @@ void SplitMessageName(const char* full_name,
                       qstr* package_name,
                       qstr* short_name)
 {
-    const char* slash = full_name == nullptr ? nullptr : std::strchr(full_name, '/');
+    const char* slash = full_name == nullptr ? nullptr : strchr(full_name, '/');
     if (slash == nullptr) {
         *package_name = qstr_from_str("");
         *short_name   = qstr_from_str(full_name == nullptr ? "" : full_name);
@@ -459,13 +459,6 @@ void EncodeCdrFromSchema(cdr_writer_t* w,
                          const mp_rosette_schema_obj_t* schema,
                          mp_obj_t values)
 {
-    // Unwrap Message objects to their backing dict.
-    if (mp_obj_is_type(values,
-            reinterpret_cast<const mp_obj_type_t*>(&rosette_message_type))) {
-        auto* msg = static_cast<mp_rosette_message_obj_t*>(MP_OBJ_TO_PTR(values));
-        values = msg->values_obj;
-    }
-
     for (size_t i = 0u; i < schema->field_count; ++i) {
         // Cast away const: ResolveNestedSchema may fill nested_schema pointer.
         rosette_mpy_schema_field_t* field =
@@ -645,7 +638,7 @@ mp_obj_t DecodeCdrToSchema(cdr_reader_t* r,
 }
 
 // ============================================================
-// Schema / Message Python object callbacks
+// Schema Python object callbacks
 // ============================================================
 
 void SchemaPrint(const mp_print_t* print, mp_obj_t self_in, mp_print_kind_t kind)
@@ -659,39 +652,12 @@ void SchemaPrint(const mp_print_t* print, mp_obj_t self_in, mp_print_kind_t kind
               self->is_dynamic ? "True" : "False");
 }
 
-void MessagePrint(const mp_print_t* print, mp_obj_t self_in, mp_print_kind_t kind)
-{
-    (void)kind;
-    const auto* self = static_cast<mp_rosette_message_obj_t*>(MP_OBJ_TO_PTR(self_in));
-    const auto* schema =
-        static_cast<mp_rosette_schema_obj_t*>(MP_OBJ_TO_PTR(self->schema_obj));
-    mp_printf(print, "Message(schema=%q, values=", schema->full_name);
-    mp_obj_print_helper(print, self->values_obj, PRINT_REPR);
-    mp_printf(print, ")");
-}
-
-void MessageAttr(mp_obj_t self_in, qstr attr, mp_obj_t* dest)
-{
-    auto* self   = static_cast<mp_rosette_message_obj_t*>(MP_OBJ_TO_PTR(self_in));
-    auto* schema = static_cast<mp_rosette_schema_obj_t*>(MP_OBJ_TO_PTR(self->schema_obj));
-    for (size_t i = 0; i < schema->field_count; ++i) {
-        if (schema->fields[i].name != attr) continue;
-        mp_obj_t key = MP_OBJ_NEW_QSTR(attr);
-        if (dest[0] == MP_OBJ_NULL) {
-            dest[0] = mp_obj_dict_get(self->values_obj, key);
-        } else {
-            mp_obj_dict_store(self->values_obj, key, dest[1]);
-            dest[0] = MP_OBJ_NULL;
-        }
-        return;
-    }
-}
-
 /**
- * @brief Builds one message object from a schema call.
+ * @brief Builds a plain dict from a schema call.
  *
  * Positional arguments map to fields in declaration order. Keyword arguments
  * map by name. Missing fields receive type-appropriate default values.
+ * Returns a plain Python dict — the encode path accepts dicts directly.
  */
 mp_obj_t SchemaCall(mp_obj_t self_in,
                     size_t n_args,
@@ -703,19 +669,15 @@ mp_obj_t SchemaCall(mp_obj_t self_in,
         mp_raise_TypeError(MP_ERROR_TEXT("too many positional fields"));
     }
 
-    auto* message = mp_obj_malloc(
-        mp_rosette_message_obj_t,
-        reinterpret_cast<const mp_obj_type_t*>(&rosette_message_type));
-    message->schema_obj = self_in;
-    message->values_obj = mp_obj_new_dict(schema->field_count);
+    mp_obj_t dict = mp_obj_new_dict(schema->field_count);
 
     for (size_t i = 0; i < schema->field_count; ++i) {
-        mp_obj_dict_store(message->values_obj,
+        mp_obj_dict_store(dict,
                           MP_OBJ_NEW_QSTR(schema->fields[i].name),
                           DefaultFieldValue(schema->fields[i].kind));
     }
     for (size_t i = 0; i < n_args; ++i) {
-        mp_obj_dict_store(message->values_obj,
+        mp_obj_dict_store(dict,
                           MP_OBJ_NEW_QSTR(schema->fields[i].name),
                           args[i]);
     }
@@ -730,9 +692,9 @@ mp_obj_t SchemaCall(mp_obj_t self_in,
         if (!known) {
             mp_raise_msg(&mp_type_TypeError, MP_ERROR_TEXT("unknown message field"));
         }
-        mp_obj_dict_store(message->values_obj, key, value);
+        mp_obj_dict_store(dict, key, value);
     }
-    return MP_OBJ_FROM_PTR(message);
+    return dict;
 }
 
 mp_obj_t SchemaMakeNew(const mp_obj_type_t* type,
@@ -793,19 +755,11 @@ mp_obj_t SchemaCdrDecode(const mp_rosette_schema_obj_t* schema,
     if (!cdr_reader_init(&r, buf, length)) {
         return mp_const_none;
     }
-
     mp_obj_t dict = DecodeCdrToSchema(&r, schema);
     if (r.error) {
         return mp_const_none;
     }
-
-    // Wrap the decoded dict in a proper Message object.
-    auto* message = mp_obj_malloc(
-        mp_rosette_message_obj_t,
-        reinterpret_cast<const mp_obj_type_t*>(&rosette_message_type));
-    message->schema_obj = MP_OBJ_FROM_PTR(schema);
-    message->values_obj = dict;
-    return MP_OBJ_FROM_PTR(message);
+    return dict;
 }
 
 }  // namespace rosette::bindings::micropython
@@ -835,8 +789,8 @@ mp_obj_t rosette_schema_make_from_text(size_t n_args,
 {
     const char* first = mp_obj_str_get_str(args[0]);
     const bool first_looks_like_msg =
-        std::strchr(first, '\n') != nullptr || std::strchr(first, ' ') != nullptr ||
-        std::strchr(first, '\t') != nullptr;
+        strchr(first, '\n') != nullptr || strchr(first, ' ') != nullptr ||
+        strchr(first, '\t') != nullptr;
     const char* full_name    = first_looks_like_msg ? "" : first;
     const char* message_text = nullptr;
     if (first_looks_like_msg) {
@@ -878,31 +832,6 @@ mp_obj_t rosette_schema_make_from_text(size_t n_args,
 
     return MP_OBJ_FROM_PTR(self);
 }
-
-const mp_obj_full_type_t rosette_message_type = {
-    { &mp_type_type },
-    MP_TYPE_FLAG_NONE,
-    MP_QSTR_Message,
-    0,  // make_new
-    1,  // print
-    0,  // call
-    0,  // unary_op
-    0,  // binary_op
-    2,  // attr
-    0,  // subscr
-    0,  // iter
-    0,  // buffer
-    0,  // protocol
-    0,  // parent
-    0,  // locals_dict
-    {
-        reinterpret_cast<const void*>(rosette::bindings::micropython::MessagePrint),
-        reinterpret_cast<const void*>(rosette::bindings::micropython::MessageAttr),
-        nullptr,
-        nullptr,
-        nullptr,
-    },
-};
 
 const mp_obj_full_type_t rosette_schema_type = {
     { &mp_type_type },

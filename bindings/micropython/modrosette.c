@@ -35,7 +35,6 @@ static const mp_rom_map_elem_t rosette_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_Transport),   MP_ROM_PTR((const mp_obj_type_t *)&rosette_transport_type) },
     { MP_ROM_QSTR(MP_QSTR_Context),     MP_ROM_PTR((const mp_obj_type_t *)&rosette_context_type) },
     { MP_ROM_QSTR(MP_QSTR_Schema),      MP_ROM_PTR((const mp_obj_type_t *)&rosette_schema_type) },
-    { MP_ROM_QSTR(MP_QSTR_Message),     MP_ROM_PTR((const mp_obj_type_t *)&rosette_message_type) },
     { MP_ROM_QSTR(MP_QSTR_Node),        MP_ROM_PTR((const mp_obj_type_t *)&rosette_node_type) },
     { MP_ROM_QSTR(MP_QSTR_Publisher),   MP_ROM_PTR((const mp_obj_type_t *)&rosette_publisher_type) },
     { MP_ROM_QSTR(MP_QSTR_Subscription),MP_ROM_PTR((const mp_obj_type_t *)&rosette_subscription_type) },

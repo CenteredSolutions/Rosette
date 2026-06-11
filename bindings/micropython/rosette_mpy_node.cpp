@@ -1,6 +1,10 @@
 /**
  * @file bindings/micropython/rosette_mpy_node.cpp
  * @brief `rosette.Node` implementation unit.
+ *
+ * All Python-facing functions are defined as extern "C" directly — there is no
+ * separate shim layer.  Backend calls use the rosette::bindings::micropython
+ * namespace via a using-directive scoped to each function body.
  */
 
 #include "rosette_mpy_backend.hpp"
@@ -31,9 +35,11 @@ mp_obj_t rosette_node_make_new(const mp_obj_type_t* type,
 
 mp_obj_t rosette_context_create_node(size_t n_args, const mp_obj_t* args)
 {
+    using namespace rosette::bindings::micropython;
     mp_rosette_context_obj_t* context = (mp_rosette_context_obj_t*)MP_OBJ_TO_PTR(args[0]);
     if (!context->started) {
-        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Context must be started before creating nodes"));
+        mp_raise_msg(&mp_type_RuntimeError,
+                     MP_ERROR_TEXT("Context must be started before creating nodes"));
     }
 
     mp_rosette_node_obj_t* node = mp_obj_malloc(
@@ -44,23 +50,26 @@ mp_obj_t rosette_context_create_node(size_t n_args, const mp_obj_t* args)
     node->namespace_obj = n_args >= 3 ? args[2] : mp_obj_new_str("", 0);
     node->backend       = NULL;
 
-    if (!rosette::bindings::micropython::NodeInit(node)) {
-        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Rosette node backend init failed"));
+    if (!NodeInit(node)) {
+        mp_raise_msg(&mp_type_RuntimeError,
+                     MP_ERROR_TEXT("Rosette node backend init failed"));
     }
     return MP_OBJ_FROM_PTR(node);
 }
 
 mp_obj_t rosette_node_create_publisher(size_t n_args, const mp_obj_t* args)
 {
+    using namespace rosette::bindings::micropython;
     mp_rosette_node_obj_t* node = (mp_rosette_node_obj_t*)MP_OBJ_TO_PTR(args[0]);
     if (node->backend == NULL) {
-        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Node backend is not initialized"));
+        mp_raise_msg(&mp_type_RuntimeError,
+                     MP_ERROR_TEXT("Node backend is not initialized"));
     }
     if (!mp_obj_is_type(args[1], (const mp_obj_type_t*)&rosette_schema_type)) {
         mp_raise_TypeError(MP_ERROR_TEXT("create_publisher expects a Schema"));
     }
 
-    rosette::bindings::micropython::EndpointOptions options{};
+    EndpointOptions options{};
     if (n_args >= 4) options.depth    = (uint16_t)mp_obj_get_int(args[3]);
     if (n_args >= 5) options.reliable = mp_obj_is_true(args[4]);
 
@@ -74,31 +83,34 @@ mp_obj_t rosette_node_create_publisher(size_t n_args, const mp_obj_t* args)
     publisher->reliable   = options.reliable;
     publisher->backend    = NULL;
 
-    if (!rosette::bindings::micropython::PublisherInit(publisher, options)) {
-        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Rosette publisher backend init failed"));
+    if (!PublisherInit(publisher, options)) {
+        mp_raise_msg(&mp_type_RuntimeError,
+                     MP_ERROR_TEXT("Rosette publisher backend init failed"));
     }
     return MP_OBJ_FROM_PTR(publisher);
 }
 
 mp_obj_t rosette_node_create_subscription(size_t n_args, const mp_obj_t* args)
 {
+    using namespace rosette::bindings::micropython;
     mp_rosette_node_obj_t* node = (mp_rosette_node_obj_t*)MP_OBJ_TO_PTR(args[0]);
     if (node->backend == NULL) {
-        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Node backend is not initialized"));
+        mp_raise_msg(&mp_type_RuntimeError,
+                     MP_ERROR_TEXT("Node backend is not initialized"));
     }
     if (!mp_obj_is_type(args[1], (const mp_obj_type_t*)&rosette_schema_type)) {
         mp_raise_TypeError(MP_ERROR_TEXT("create_subscription expects a Schema"));
     }
 
     mp_obj_t callback = mp_const_none;
-    rosette::bindings::micropython::EndpointOptions options{};
+    EndpointOptions options{};
     if (n_args >= 4) {
         if (args[3] == mp_const_none || mp_obj_is_callable(args[3])) {
             callback = args[3];
-            if (n_args >= 5) options.depth = (uint16_t)mp_obj_get_int(args[4]);
+            if (n_args >= 5) options.depth    = (uint16_t)mp_obj_get_int(args[4]);
             if (n_args >= 6) options.reliable = mp_obj_is_true(args[5]);
         } else {
-            options.depth = (uint16_t)mp_obj_get_int(args[3]);
+            options.depth    = (uint16_t)mp_obj_get_int(args[3]);
             if (n_args >= 5) options.reliable = mp_obj_is_true(args[4]);
         }
     }
@@ -106,26 +118,22 @@ mp_obj_t rosette_node_create_subscription(size_t n_args, const mp_obj_t* args)
     mp_rosette_subscription_obj_t* sub = mp_obj_malloc(
         mp_rosette_subscription_obj_t,
         (const mp_obj_type_t*)&rosette_subscription_type);
-    sub->node_obj         = args[0];
-    sub->schema_obj       = args[1];
-    sub->topic_obj        = args[2];
-    sub->callback_obj     = callback;
-    sub->depth            = options.depth;
-    sub->reliable         = options.reliable;
-    sub->ring             = NULL;
-    sub->ring_capacity    = 0u;
-    sub->ring_head        = 0u;
-    sub->ring_tail        = 0u;
-    sub->queued_count     = 0u;
-    sub->max_payload_size = 512u;
-    sub->backend          = NULL;
+    sub->node_obj     = args[0];
+    sub->schema_obj   = args[1];
+    sub->topic_obj    = args[2];
+    sub->callback_obj = callback;
+    sub->depth        = options.depth;
+    sub->reliable     = options.reliable;
+    sub->backend      = NULL;
 
-    if (!rosette::bindings::micropython::SubscriptionInit(sub, options)) {
-        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Rosette subscription backend init failed"));
+    if (!SubscriptionInit(sub, options)) {
+        mp_raise_msg(&mp_type_RuntimeError,
+                     MP_ERROR_TEXT("Rosette subscription init failed"));
     }
-    if (!rosette::bindings::micropython::SubscriptionBackendInit(sub, options)) {
-        rosette::bindings::micropython::SubscriptionFini(sub);
-        mp_raise_msg(&mp_type_RuntimeError, MP_ERROR_TEXT("Rosette subscription backend init failed"));
+    if (!SubscriptionBackendInit(sub, options)) {
+        SubscriptionFini(sub);
+        mp_raise_msg(&mp_type_RuntimeError,
+                     MP_ERROR_TEXT("Rosette subscription backend init failed"));
     }
 
     mp_rosette_context_obj_t* context_obj =

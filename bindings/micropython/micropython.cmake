@@ -64,7 +64,7 @@ endif()
 # parent project already included micro_ros.cmake) we skip the include to avoid
 # re-running the module.
 if(NOT TARGET micro_ros_prebuilt)
-    set(_rosette_need_bootstrap FALSE)
+    set(_rosette_need_bootstrap TRUE)
     if(ROSETTE_MICRO_ROS_INCLUDE_DIR STREQUAL "" OR
        ROSETTE_MICRO_ROS_LIBRARY STREQUAL "" OR
        NOT EXISTS "${ROSETTE_MICRO_ROS_INCLUDE_DIR}/rcl/rcl.h" OR
@@ -157,5 +157,6 @@ target_compile_options(usermod_rosette INTERFACE
     $<$<COMPILE_LANGUAGE:CXX>:-std=gnu++17>)
 target_compile_definitions(usermod_rosette INTERFACE
     ROSETTE_MICROPY_HAS_MICRO_ROS=${ROSETTE_MICROPY_HAS_MICRO_ROS}
-    ROSETTE_MICROPY_BACKEND_TRANSPORT_CUSTOM=${ROSETTE_MICROPY_BACKEND_TRANSPORT_CUSTOM})
+    ROSETTE_MICROPY_BACKEND_TRANSPORT_CUSTOM=${ROSETTE_MICROPY_BACKEND_TRANSPORT_CUSTOM}
+    ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM=${ROSETTE_MICROPY_BACKEND_TRANSPORT_CUSTOM})
 target_link_libraries(usermod INTERFACE usermod_rosette)

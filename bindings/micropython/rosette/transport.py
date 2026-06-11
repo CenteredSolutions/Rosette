@@ -66,19 +66,24 @@ class Transport(_rosette.Transport):
             return self.s.send(data)
         return self.s.sendto(data, self.remote)
 
-    def recv(self, size=2048):
-        try:
-            return self.s.recv(size)
-        except OSError as e:
-            if e.errno in (_EAGAIN, _ETIMEDOUT):
-                return None
-            raise
+    def recv(self, size=2048, timeout_ms=None):
+        return self.recvfrom(size, timeout_ms)[0]
+
+    def recv_into(self, buf, size, timeout_ms=None):
+        return self.s.recv_into(buf, size, timeout_ms)
 
     def sendto(self, data, addr):
         return self.s.sendto(data, addr)
 
-    def recvfrom(self, size=2048):
+    def recvfrom(self, size=2048, timeout_ms=None):
+        if timeout_ms:
+            self.s.settimeout(timeout_ms / 1000)
         return self.s.recvfrom(size)
+
+    def recvfrom_into(self, buf, size, timeout_ms=None):
+        if timeout_ms:
+            self.s.settimeout(timeout_ms / 1000)
+        return self.s.recvfrom_into(buf, size)
 
     async def arecvfrom(self, size=2048):
         yield _acore._io_queue.queue_read(self.s)

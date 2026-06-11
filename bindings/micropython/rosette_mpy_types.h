@@ -12,9 +12,8 @@
  * - `Context` owns the socket object and transport configuration.
  * - `Node` references one `Context`.
  * - `Publisher` and `Subscription` reference one `Node` and one `Schema`.
- * - `Subscription` stores raw payload frames in a bounded ring buffer so the
- *   receive path remains deterministic and Python object allocation happens in
- *   `recv()` rather than in the transport callback.
+ * - `Subscription` delivers received messages directly to a Python callback.
+ *   Python code may build a queue or async task on top of that callback.
  */
 
 #ifdef __cplusplus
@@ -68,21 +67,8 @@ typedef struct _rosette_mpy_schema_field_t {
     struct _mp_rosette_schema_obj_t* nested_schema; /* resolved lazily on first codec use */
 } rosette_mpy_schema_field_t;
 
-/**
- * @brief One received CDR payload stored in a subscription ring buffer.
- *
- * The ring buffer stores wire-format payload bytes plus the payload length. A
- * slot is considered readable when `occupied` is true.
- */
-typedef struct _rosette_mpy_frame_t {
-    uint8_t* data;
-    size_t length;
-    bool occupied;
-} rosette_mpy_frame_t;
-
 struct _mp_rosette_context_obj_t;
 struct _mp_rosette_schema_obj_t;
-struct _mp_rosette_message_obj_t;
 struct _mp_rosette_node_obj_t;
 struct _mp_rosette_publisher_obj_t;
 struct _mp_rosette_subscription_obj_t;
@@ -125,6 +111,7 @@ typedef struct _mp_rosette_context_obj_t {
     uint16_t executor_handles;
     uint8_t backend_start_error;
     uint8_t domain_id;
+    char backend_start_detail[192];
 
     bool started;
     bool closed;
@@ -158,21 +145,6 @@ typedef struct _mp_rosette_schema_obj_t {
      */
     bool     is_dynamic;
 } mp_rosette_schema_obj_t;
-
-/**
- * @brief Runtime message instance produced by a `Schema` object.
- *
- * Message instances carry their schema and a dictionary of field values. The
- * dictionary keeps MicroPython-side construction flexible while the schema
- * descriptor gives the backend enough structure to convert selected generated
- * ROSIDL message types into native C messages.
- */
-typedef struct _mp_rosette_message_obj_t {
-    mp_obj_base_t base;
-
-    mp_obj_t schema_obj;
-    mp_obj_t values_obj;
-} mp_rosette_message_obj_t;
 
 /**
  * @brief `rosette.Node` object layout.
@@ -214,9 +186,8 @@ typedef struct _mp_rosette_publisher_obj_t {
 /**
  * @brief `rosette.Subscription` object layout.
  *
- * The subscription keeps one bounded ring buffer of received payloads. The
- * stream and poll hooks consult the ring indices directly so `select.poll()`
- * can observe readiness without decoding messages during the readiness check.
+ * The subscription delivers received messages directly to `callback_obj`.
+ * Python code may wrap this with a queue, asyncio task, or any other pattern.
  */
 typedef struct _mp_rosette_subscription_obj_t {
     mp_obj_base_t base;
@@ -225,13 +196,6 @@ typedef struct _mp_rosette_subscription_obj_t {
     mp_obj_t schema_obj;
     mp_obj_t topic_obj;
     mp_obj_t callback_obj;
-
-    rosette_mpy_frame_t* ring;
-    size_t ring_capacity;
-    size_t ring_head;
-    size_t ring_tail;
-    size_t queued_count;
-    size_t max_payload_size;
 
     uint16_t depth;
     bool reliable;
@@ -242,7 +206,6 @@ typedef struct _mp_rosette_subscription_obj_t {
 extern const mp_obj_type_t rosette_transport_type;
 extern const mp_obj_full_type_t rosette_context_type;
 extern const mp_obj_full_type_t rosette_schema_type;
-extern const mp_obj_full_type_t rosette_message_type;
 extern const mp_obj_full_type_t rosette_node_type;
 extern const mp_obj_full_type_t rosette_publisher_type;
 extern const mp_obj_full_type_t rosette_subscription_type;
