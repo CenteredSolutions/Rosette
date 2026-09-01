@@ -1,42 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 
-# ============================================================
-# Board selection
-#
-# Pass -DROSETTE_BOARD=<name> to select a target board.
-# Valid values:
-#   posix               — Host/POSIX build (default on macOS)
-#   w5100s-evb-pico    — WIZnet W5100S-EVB-Pico  (RP2040)
-#   w5100s-evb-pico2   — WIZnet W5100S-EVB-Pico2 (RP2350, default elsewhere)
-#   bc-gen2            — Custom board based on RP2040 + W5100S
-#
-# This MUST be set before the project() call so that the Pico SDK
-# can pick up PICO_BOARD correctly when building for Pico boards.
-# ============================================================
+# Board selection + toolchain setup — must run before project(). See the file
+# for the ROSETTE_BOARD values. A standalone example includes this same prelude.
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/rosette_prelude.cmake)
 
-set(_rosette_default_board "w5100s-evb-pico2")
-if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
-    set(_rosette_default_board "posix")
-endif()
-
-set(ROSETTE_BOARD "${_rosette_default_board}" CACHE STRING
-    "Target board: posix | w5100s-evb-pico | w5100s-evb-pico2 | bc-gen2")
-
-set_property(CACHE ROSETTE_BOARD PROPERTY STRINGS
-    posix
-    w5100s-evb-pico
-    w5100s-evb-pico2
-    bc-gen2)
-
-# Map ROSETTE_BOARD → board-specific configuration.
-include(cmake/boards.cmake)
-rosette_select_board(${ROSETTE_BOARD})
-
-if(ROSETTE_BOARD_ENABLE_PICO_SDK)
-    include(cmake/pico_sdk.cmake)
-endif()
-
-project(rosette_net C CXX ASM)
+project(rosette C CXX ASM)
 set(CMAKE_C_STANDARD   11)
 set(CMAKE_CXX_STANDARD 17)
 
