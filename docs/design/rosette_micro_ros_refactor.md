@@ -234,25 +234,37 @@ auto-selects `custom` for FreeRTOS boards, `udp` for POSIX).
    `ROSETTE_BOARD=w5100s-evb-pico2 -DROSETTE_ENABLE_MICRO_ROS=ON` and for
    `posix`. Introduce a non-RTPS host platform shim (`rosette_platform_get_ms`,
    `_get_ipv4/6`) so the smoke path compiles again.
-5. **Persistent device configuration (LittleFS).**
-   - Implement `rosette::platform::littlefs_mount()` / `littlefs_unmount()` for
-     the RP2040/RP2350 flash in `src/platform/pico_littlefs.c`, backed by the
-     existing `rosette_platform_flash_*` primitives and a reserved flash region
-     declared per board (`ROSETTE_CONFIG_FLASH_OFFSET` / `_SIZE`).
-   - Add a `rosette::config` key/value store over the mounted volume: typed
-     get/set for the fields the `App` needs at boot (net mode, static IP/mask/
-     gw/dns, Agent host/port, XRCE client key, node namespace), with a
-     versioned on-flash record and safe defaults on first boot or CRC failure.
-   - Host builds get a file-backed block device so `rosette::config` is testable
-     under `ROSETTE_BOARD=posix`.
-   - `App` reads its `AppOptions` from `rosette::config` when present, so a
-     board can be re-addressed without recompiling.
+5. **Persistent storage — device config + motor config (LittleFS).** See §9.
+   - Block device: `rosette::platform::littlefs_mount()` / `littlefs_unmount()`
+     for RP2040/RP2350 flash in `src/platform/pico_littlefs.c`, over the existing
+     `rosette_platform_flash_*` primitives and a per-board reserved region
+     (`ROSETTE_STORAGE_FLASH_OFFSET` / `_SIZE`). Host build: file-backed block
+     device so everything below is testable under `ROSETTE_BOARD=posix`.
+   - `rosette::config` — versioned binary record for what `App` needs at boot
+     (net mode, static IP/mask/gw/dns, Agent host/port, XRCE client key, node
+     namespace). CRC-checked, safe defaults on first boot or corruption. `App`
+     reads its `AppOptions` from it when present, so a board is re-addressable
+     without recompiling.
+   - `rosette::motor_store` — per-motor config files keyed by motor serial
+     number at `/motors/<serial>.<ext>`. Firmware both **stores and parses**
+     them (drive params: current limits, pole pairs, encoder counts, loop
+     gains) and can return the raw file verbatim for round-tripping.
+   - Management: **ROS service** `rosette_msgs/srv` — `GetMotorConfig`,
+     `PutMotorConfig`, `ListMotorConfigs`, `EraseMotorConfig`. Bounded payload
+     string (target 8 KiB); `RMW_UXRCE_*` buffer sizes in `colcon.meta` sized to
+     match. No extra listener or daemon; `ros2 service call` is the client.
+   - Format: **JSON parsed with jsmn** (single-header, zero-alloc tokenizer,
+     proven on MCU) is the recommendation — ubiquitous tooling, ROS-friendly.
+     TOML (tomlc99) is the alternative if hand-editability outweighs the heavier
+     parser. Decision pending; does not block the block-device or `rosette::config`
+     work.
 6. **Build `rosette::App`** per §5.2 with the reconnect state machine.
    Host test against a real `micro_ros_agent` (start agent, run app, kill agent,
    restart agent, assert re-link).
 7. **`Node` executor auto-sizing** per §5.3.
 8. **Examples:** `temperature_publisher`, `fibonacci_action`, `reconnect_demo`,
-   `config_store` (write config over a service, reboot, confirm persistence).
+   `motor_config_store` (Put a motor config over the service, reboot, Get it
+   back, confirm the drive picked up the parsed params).
 9. **Docs:** rewrite `README.md` and `GETTING_STARTED.md` around micro-ROS only;
    fold `docs/micro_ros_backend.md` content into the main docs.
 10. **MicroPython:** re-point `bindings/micropython` at `rosette::` and confirm
@@ -275,3 +287,61 @@ auto-selects `custom` for FreeRTOS boards, `udp` for POSIX).
   versioned; a wrong guess here is a migration headache on deployed boards.
 - **POSIX discovery is Linux-only upstream.** Already handled by the multicast
   locator + host responder; keep the responder script.
+- **Motor-config payload size vs. XRCE limits.** An 8 KiB config string needs
+  `RMW_UXRCE_MAX_INPUT_BUFFER_SIZE` / `_TRANSPORT_MTU` and history depth raised
+  in `colcon.meta`, and the file must be rejected on the device above the cap
+  rather than truncated. If configs realistically exceed ~16 KiB, revisit the
+  transport choice (chunked service calls, or reinstate a file-transfer path).
+- **Motor-config format.** JSON+jsmn recommended; not yet ratified. Whatever is
+  chosen, the on-device parser must be bounded and non-allocating, and the
+  schema versioned in the file so old configs migrate cleanly.
+
+## 9. Persistent storage layout
+
+One LittleFS volume in a per-board reserved flash region.
+
+```
+/device.cfg              rosette::config — versioned binary record:
+                         net mode, static IP/mask/gw/dns, Agent host/port,
+                         XRCE client key, node namespace
+/motors/<serial>.json    rosette::motor_store — one file per motor, keyed by
+                         motor serial number; stored verbatim, also parsed
+                         on-device into drive parameters
+/motors/<serial>.json.bak  last-known-good, written before an overwrite
+```
+
+### rosette::config
+
+Typed accessor over a single fixed-layout record (`{magic, version, crc32,
+payload}`). Read once at boot into RAM; writes go through a read-modify-write
+with CRC and a `.bak` copy. Unreadable or version-mismatched records fall back
+to compiled defaults so a board always boots.
+
+### rosette::motor_store
+
+```cpp
+bool     put(const char* serial, const uint8_t* data, size_t len) noexcept;  // validates + parses before commit
+size_t   get(const char* serial, uint8_t* out, size_t cap) noexcept;         // raw bytes, verbatim
+bool     params(const char* serial, MotorParams& out) noexcept;              // parsed view
+uint8_t  list(char serials[][kSerialMax], uint8_t cap) noexcept;
+bool     erase(const char* serial) noexcept;
+```
+
+`put()` parses and validates against the `MotorParams` schema before it commits;
+a malformed file is rejected, not stored. The raw bytes are kept so `get()` can
+round-trip exactly what was uploaded.
+
+### Management service
+
+`rosette_msgs/srv`, served by the firmware through the normal micro-ROS
+executor (no extra socket):
+
+| Service | Request | Response |
+| --- | --- | --- |
+| `PutMotorConfig`  | `string serial, string body` | `bool ok, string error` |
+| `GetMotorConfig`  | `string serial` | `bool ok, string body` |
+| `ListMotorConfigs`| — | `string[] serials` |
+| `EraseMotorConfig`| `string serial` | `bool ok` |
+
+`body` is bounded (target 8 KiB). The same store backs a future TFTP/HTTP
+provisioning path if one is added; the service is the ratified interface.
