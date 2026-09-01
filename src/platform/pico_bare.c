@@ -18,6 +18,8 @@
 #include "hardware/sync.h"
 
 #include <string.h>
+#include <time.h>
+#include <sys/time.h>
 
 // Set by the network bring-up layer once an address is assigned.
 static volatile uint32_t s_local_ipv4_host_order = 0u;
@@ -76,4 +78,36 @@ void rosette_platform_flash_write(uint32_t addr, const void* data, uint32_t size
 void rosette_platform_flash_read(uint32_t addr, void* data, uint32_t size)
 {
     memcpy(data, (const void*)(XIP_BASE + addr), size);
+}
+
+// ------------------------------------------------------------
+// POSIX time shims for newlib.
+//
+// The Micro XRCE-DDS client's time source (uxr_millis / uxr_nanos) calls
+// clock_gettime(), which bare newlib does not implement. Back it with the
+// microsecond hardware timer; micro-ROS then synchronizes this monotonic
+// base to the Agent's wall clock via rmw_uros_sync_session().
+// ------------------------------------------------------------
+int clock_gettime(clockid_t clk_id, struct timespec* tp)
+{
+    (void)clk_id;
+    if (tp == NULL) {
+        return -1;
+    }
+    const uint64_t us = time_us_64();
+    tp->tv_sec = (time_t)(us / 1000000ull);
+    tp->tv_nsec = (long)((us % 1000000ull) * 1000ull);
+    return 0;
+}
+
+int _gettimeofday(struct timeval* tv, void* tz)
+{
+    (void)tz;
+    if (tv == NULL) {
+        return -1;
+    }
+    const uint64_t us = time_us_64();
+    tv->tv_sec = (time_t)(us / 1000000ull);
+    tv->tv_usec = (suseconds_t)(us % 1000000ull);
+    return 0;
 }
