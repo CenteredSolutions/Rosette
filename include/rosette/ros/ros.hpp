@@ -42,3 +42,4 @@
 
 #include "app.hpp"
 #include "module.hpp"
+#include "time_sync.hpp"

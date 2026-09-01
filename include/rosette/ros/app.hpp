@@ -27,6 +27,7 @@
 
 #include "rosette/ros/module.hpp"
 #include "rosette/ros/node.hpp"
+#include "rosette/ros/time_sync.hpp"
 
 #include "rosette/platform/host_runtime.hpp"
 
@@ -50,6 +51,10 @@ struct AppOptions {
     uint32_t agent_ping_period_ms = 2000u;    ///< Liveness ping interval once connected.
     int agent_ping_timeout_ms = 200;          ///< Per-ping reply timeout.
     uint8_t agent_ping_failures = 3u;         ///< Consecutive failures before declaring loss.
+
+    bool sync_time_on_connect = true;         ///< Sync the epoch clock with the Agent on each connect.
+    uint32_t time_resync_period_ms = 0u;      ///< Re-sync interval while connected; 0 = only on connect.
+    int time_sync_timeout_ms = 1000;          ///< Per-sync reply timeout.
 
     uint8_t extra_executor_handles = 2u;      ///< Headroom added to the module handle sum.
 };
@@ -112,7 +117,11 @@ public:
             if (build()) {
                 state_ = AppState::connected;
                 last_ping_ms_ = now_ms;
+                last_time_sync_ms_ = now_ms;
                 ping_failures_ = 0u;
+                if (options_.sync_time_on_connect) {
+                    (void)sync_time(options_.time_sync_timeout_ms);
+                }
                 for (uint8_t i = 0; i < module_count_; ++i) {
                     modules_[i]->on_connect();
                     last_publish_ms_[i] = now_ms;
@@ -131,6 +140,12 @@ public:
                 last_publish_ms_[i] = now_ms;
                 modules_[i]->publish();
             }
+        }
+
+        if (options_.time_resync_period_ms != 0u &&
+            static_cast<int32_t>(now_ms - (last_time_sync_ms_ + options_.time_resync_period_ms)) >= 0) {
+            last_time_sync_ms_ = now_ms;
+            (void)sync_time(options_.time_sync_timeout_ms);
         }
 
         if (static_cast<int32_t>(now_ms - (last_ping_ms_ + options_.agent_ping_period_ms)) >= 0) {
@@ -161,6 +176,9 @@ public:
     }
 
     AppState state() const noexcept { return state_; }
+
+    /// Whether the epoch clock is currently synchronized with the Agent.
+    bool time_synced() const noexcept { return rosette::time_synced(); }
     bool connected() const noexcept { return state_ == AppState::connected; }
     Context& context() noexcept { return context_; }
     Node& node() noexcept { return node_; }
@@ -222,6 +240,7 @@ private:
     AppState state_ = AppState::waiting_agent;
     uint32_t next_attempt_ms_ = 0u;
     uint32_t last_ping_ms_ = 0u;
+    uint32_t last_time_sync_ms_ = 0u;
     uint8_t ping_failures_ = 0u;
 };
 
