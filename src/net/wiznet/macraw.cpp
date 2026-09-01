@@ -14,8 +14,8 @@ using DefaultMacDevice = rosette::net::wiznet::WiznetMacrawDevice<DefaultChip, D
 using DefaultInterface = rosette::net::wiznet::MacrawNetworkInterface<DefaultChip, DefaultBus>;
 
 DefaultInterface g_default_interface{
-    DefaultMacDevice{DefaultBus{RTPS_SPI_INST, RTPS_PIN_SPI_CS}},
-    std::array<uint8_t, 6> RTPS_MAC_ADDR_DEFAULT
+    DefaultMacDevice{DefaultBus{ROSETTE_SPI_INST, ROSETTE_PIN_SPI_CS}},
+    std::array<uint8_t, 6> ROSETTE_MAC_ADDR_DEFAULT
 };
 
 NetworkInterface_t g_default_network_interface;

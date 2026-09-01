@@ -1,25 +1,22 @@
 #pragma once
 
 /**
- * @file ros/micro_ros/common.hpp
+ * @file ros/common.hpp
  * @brief Shared micro-ROS adapter types for the Rosette ROS facade.
  *
  * Design goal
  * -----------
- * This layer preserves the shape of the existing `milkros` node/publisher/
- * subscription/service/timer API while swapping the transport and discovery
- * machinery to the community-supported micro-ROS stack (`rcl` + `rclc` +
- * `rmw_microxrcedds`).
+ * This layer gives Rosette a compact, MCU-oriented node/publisher/subscription/
+ * service/timer/action API on top of the community-supported micro-ROS stack
+ * (`rcl` + `rclc` + `rmw_microxrcedds`).
  *
  * Why this exists
  * ---------------
- * Rosette already has a clean MCU-oriented application surface.  The existing
- * `ros/` backend speaks DDS-RTPS directly, which is powerful but asks the MCU
- * to implement discovery, endpoint matching, reliability, and graph exposure
- * locally.  micro-ROS deliberately moves that complexity to the Agent and uses
- * XRCE-DDS as the MCU-to-Agent protocol.  This adapter keeps the application
- * code close to the current `milkros` style while leaning on the supported
- * micro-ROS execution and discovery model.
+ * A microcontroller cannot practically implement DDS discovery, endpoint
+ * matching, reliability, and graph exposure locally. micro-ROS deliberately
+ * moves that complexity to the Agent and uses XRCE-DDS as the MCU-to-Agent
+ * protocol. This adapter keeps application code close to the shape of `rclcpp`
+ * while leaning on the supported micro-ROS execution and discovery model.
  *
  * Architectural fit
  * -----------------
@@ -43,9 +40,9 @@
  *
  * Example
  * -------
- *   #include "rosette/ros/micro_ros.hpp"
+ *   #include "rosette/ros/ros.hpp"
  *
- *   milkros::micro_ros::Context context;
+ *   rosette::Context context;
  *   context.start();
  *   auto node = context.create_node("imu_bridge", "/robot");
  *   auto pub = node.create_publisher<MyMsg>("imu");
@@ -66,7 +63,7 @@
 #error "Rosette micro-ROS support requires rcl, rclc, and rmw_microros headers in the include path."
 #endif
 
-#include "../message_traits.hpp"
+#include "message_traits.hpp"
 #include "agent_locator.hpp"
 #include "custom_transport.hpp"
 
@@ -115,7 +112,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace milkros {
+namespace rosette {
 
 template<typename ServiceT>
 struct service_traits;
@@ -123,9 +120,9 @@ struct service_traits;
 template<typename ActionT>
 struct action_traits;
 
-}  // namespace milkros
+}  // namespace rosette
 
-namespace milkros::micro_ros {
+namespace rosette {
 
 enum class Reliability : uint8_t {
     BEST_EFFORT = 0u,
@@ -496,7 +493,7 @@ struct has_micro_ros_message_traits : std::false_type {};
 template<typename MessageT>
 struct has_micro_ros_message_traits<
     MessageT,
-    std::void_t<decltype(::milkros::message_traits<MessageT>::rosidl_type_support())>>
+    std::void_t<decltype(::rosette::message_traits<MessageT>::rosidl_type_support())>>
     : std::true_type {};
 
 template<typename MessageT>
@@ -509,7 +506,7 @@ struct has_micro_ros_service_traits : std::false_type {};
 template<typename ServiceT>
 struct has_micro_ros_service_traits<
     ServiceT,
-    std::void_t<decltype(::milkros::service_traits<ServiceT>::rosidl_type_support())>>
+    std::void_t<decltype(::rosette::service_traits<ServiceT>::rosidl_type_support())>>
     : std::true_type {};
 
 template<typename ServiceT>
@@ -522,7 +519,7 @@ struct has_micro_ros_action_traits : std::false_type {};
 template<typename ActionT>
 struct has_micro_ros_action_traits<
     ActionT,
-    std::void_t<decltype(::milkros::action_traits<ActionT>::rosidl_action_type_support())>>
+    std::void_t<decltype(::rosette::action_traits<ActionT>::rosidl_action_type_support())>>
     : std::true_type {};
 
 template<typename ActionT>
@@ -535,7 +532,7 @@ struct has_init_message : std::false_type {};
 template<typename MessageT>
 struct has_init_message<
     MessageT,
-    std::void_t<decltype(::milkros::message_traits<MessageT>::init_message(
+    std::void_t<decltype(::rosette::message_traits<MessageT>::init_message(
         std::declval<MessageT&>()))>> : std::true_type {};
 
 template<typename MessageT, typename = void>
@@ -544,14 +541,14 @@ struct has_fini_message : std::false_type {};
 template<typename MessageT>
 struct has_fini_message<
     MessageT,
-    std::void_t<decltype(::milkros::message_traits<MessageT>::fini_message(
+    std::void_t<decltype(::rosette::message_traits<MessageT>::fini_message(
         std::declval<MessageT&>()))>> : std::true_type {};
 
 template<typename MessageT>
 inline void init_message(MessageT& message) noexcept
 {
     if constexpr (has_init_message<MessageT>::value) {
-        ::milkros::message_traits<MessageT>::init_message(message);
+        ::rosette::message_traits<MessageT>::init_message(message);
     } else {
         message = MessageT{};
     }
@@ -561,7 +558,7 @@ template<typename MessageT>
 inline void fini_message(MessageT& message) noexcept
 {
     if constexpr (has_fini_message<MessageT>::value) {
-        ::milkros::message_traits<MessageT>::fini_message(message);
+        ::rosette::message_traits<MessageT>::fini_message(message);
     } else {
         (void)message;
     }
@@ -573,8 +570,8 @@ struct has_init_request : std::false_type {};
 template<typename ServiceT>
 struct has_init_request<
     ServiceT,
-    std::void_t<decltype(::milkros::service_traits<ServiceT>::init_request(
-        std::declval<typename ::milkros::service_traits<ServiceT>::Request&>()))>>
+    std::void_t<decltype(::rosette::service_traits<ServiceT>::init_request(
+        std::declval<typename ::rosette::service_traits<ServiceT>::Request&>()))>>
     : std::true_type {};
 
 template<typename ServiceT, typename = void>
@@ -583,8 +580,8 @@ struct has_fini_request : std::false_type {};
 template<typename ServiceT>
 struct has_fini_request<
     ServiceT,
-    std::void_t<decltype(::milkros::service_traits<ServiceT>::fini_request(
-        std::declval<typename ::milkros::service_traits<ServiceT>::Request&>()))>>
+    std::void_t<decltype(::rosette::service_traits<ServiceT>::fini_request(
+        std::declval<typename ::rosette::service_traits<ServiceT>::Request&>()))>>
     : std::true_type {};
 
 template<typename ServiceT, typename = void>
@@ -593,8 +590,8 @@ struct has_init_response : std::false_type {};
 template<typename ServiceT>
 struct has_init_response<
     ServiceT,
-    std::void_t<decltype(::milkros::service_traits<ServiceT>::init_response(
-        std::declval<typename ::milkros::service_traits<ServiceT>::Response&>()))>>
+    std::void_t<decltype(::rosette::service_traits<ServiceT>::init_response(
+        std::declval<typename ::rosette::service_traits<ServiceT>::Response&>()))>>
     : std::true_type {};
 
 template<typename ServiceT, typename = void>
@@ -603,45 +600,45 @@ struct has_fini_response : std::false_type {};
 template<typename ServiceT>
 struct has_fini_response<
     ServiceT,
-    std::void_t<decltype(::milkros::service_traits<ServiceT>::fini_response(
-        std::declval<typename ::milkros::service_traits<ServiceT>::Response&>()))>>
+    std::void_t<decltype(::rosette::service_traits<ServiceT>::fini_response(
+        std::declval<typename ::rosette::service_traits<ServiceT>::Response&>()))>>
     : std::true_type {};
 
 template<typename ServiceT>
-inline void init_request(typename ::milkros::service_traits<ServiceT>::Request& request) noexcept
+inline void init_request(typename ::rosette::service_traits<ServiceT>::Request& request) noexcept
 {
     if constexpr (has_init_request<ServiceT>::value) {
-        ::milkros::service_traits<ServiceT>::init_request(request);
+        ::rosette::service_traits<ServiceT>::init_request(request);
     } else {
-        request = typename ::milkros::service_traits<ServiceT>::Request{};
+        request = typename ::rosette::service_traits<ServiceT>::Request{};
     }
 }
 
 template<typename ServiceT>
-inline void fini_request(typename ::milkros::service_traits<ServiceT>::Request& request) noexcept
+inline void fini_request(typename ::rosette::service_traits<ServiceT>::Request& request) noexcept
 {
     if constexpr (has_fini_request<ServiceT>::value) {
-        ::milkros::service_traits<ServiceT>::fini_request(request);
+        ::rosette::service_traits<ServiceT>::fini_request(request);
     } else {
         (void)request;
     }
 }
 
 template<typename ServiceT>
-inline void init_response(typename ::milkros::service_traits<ServiceT>::Response& response) noexcept
+inline void init_response(typename ::rosette::service_traits<ServiceT>::Response& response) noexcept
 {
     if constexpr (has_init_response<ServiceT>::value) {
-        ::milkros::service_traits<ServiceT>::init_response(response);
+        ::rosette::service_traits<ServiceT>::init_response(response);
     } else {
-        response = typename ::milkros::service_traits<ServiceT>::Response{};
+        response = typename ::rosette::service_traits<ServiceT>::Response{};
     }
 }
 
 template<typename ServiceT>
-inline void fini_response(typename ::milkros::service_traits<ServiceT>::Response& response) noexcept
+inline void fini_response(typename ::rosette::service_traits<ServiceT>::Response& response) noexcept
 {
     if constexpr (has_fini_response<ServiceT>::value) {
-        ::milkros::service_traits<ServiceT>::fini_response(response);
+        ::rosette::service_traits<ServiceT>::fini_response(response);
     } else {
         (void)response;
     }
@@ -653,8 +650,8 @@ struct has_init_send_goal_request : std::false_type {};
 template<typename ActionT>
 struct has_init_send_goal_request<
     ActionT,
-    std::void_t<decltype(::milkros::action_traits<ActionT>::init_send_goal_request(
-        std::declval<typename ::milkros::action_traits<ActionT>::SendGoalRequest&>()))>>
+    std::void_t<decltype(::rosette::action_traits<ActionT>::init_send_goal_request(
+        std::declval<typename ::rosette::action_traits<ActionT>::SendGoalRequest&>()))>>
     : std::true_type {};
 
 template<typename ActionT, typename = void>
@@ -663,8 +660,8 @@ struct has_fini_send_goal_request : std::false_type {};
 template<typename ActionT>
 struct has_fini_send_goal_request<
     ActionT,
-    std::void_t<decltype(::milkros::action_traits<ActionT>::fini_send_goal_request(
-        std::declval<typename ::milkros::action_traits<ActionT>::SendGoalRequest&>()))>>
+    std::void_t<decltype(::rosette::action_traits<ActionT>::fini_send_goal_request(
+        std::declval<typename ::rosette::action_traits<ActionT>::SendGoalRequest&>()))>>
     : std::true_type {};
 
 template<typename ActionT, typename = void>
@@ -673,8 +670,8 @@ struct has_init_result_response : std::false_type {};
 template<typename ActionT>
 struct has_init_result_response<
     ActionT,
-    std::void_t<decltype(::milkros::action_traits<ActionT>::init_result_response(
-        std::declval<typename ::milkros::action_traits<ActionT>::GetResultResponse&>()))>>
+    std::void_t<decltype(::rosette::action_traits<ActionT>::init_result_response(
+        std::declval<typename ::rosette::action_traits<ActionT>::GetResultResponse&>()))>>
     : std::true_type {};
 
 template<typename ActionT, typename = void>
@@ -683,8 +680,8 @@ struct has_fini_result_response : std::false_type {};
 template<typename ActionT>
 struct has_fini_result_response<
     ActionT,
-    std::void_t<decltype(::milkros::action_traits<ActionT>::fini_result_response(
-        std::declval<typename ::milkros::action_traits<ActionT>::GetResultResponse&>()))>>
+    std::void_t<decltype(::rosette::action_traits<ActionT>::fini_result_response(
+        std::declval<typename ::rosette::action_traits<ActionT>::GetResultResponse&>()))>>
     : std::true_type {};
 
 template<typename ActionT, typename = void>
@@ -693,8 +690,8 @@ struct has_init_feedback_message : std::false_type {};
 template<typename ActionT>
 struct has_init_feedback_message<
     ActionT,
-    std::void_t<decltype(::milkros::action_traits<ActionT>::init_feedback_message(
-        std::declval<typename ::milkros::action_traits<ActionT>::FeedbackMessage&>()))>>
+    std::void_t<decltype(::rosette::action_traits<ActionT>::init_feedback_message(
+        std::declval<typename ::rosette::action_traits<ActionT>::FeedbackMessage&>()))>>
     : std::true_type {};
 
 template<typename ActionT, typename = void>
@@ -703,27 +700,27 @@ struct has_fini_feedback_message : std::false_type {};
 template<typename ActionT>
 struct has_fini_feedback_message<
     ActionT,
-    std::void_t<decltype(::milkros::action_traits<ActionT>::fini_feedback_message(
-        std::declval<typename ::milkros::action_traits<ActionT>::FeedbackMessage&>()))>>
+    std::void_t<decltype(::rosette::action_traits<ActionT>::fini_feedback_message(
+        std::declval<typename ::rosette::action_traits<ActionT>::FeedbackMessage&>()))>>
     : std::true_type {};
 
 template<typename ActionT>
 inline void init_send_goal_request(
-    typename ::milkros::action_traits<ActionT>::SendGoalRequest& request) noexcept
+    typename ::rosette::action_traits<ActionT>::SendGoalRequest& request) noexcept
 {
     if constexpr (has_init_send_goal_request<ActionT>::value) {
-        ::milkros::action_traits<ActionT>::init_send_goal_request(request);
+        ::rosette::action_traits<ActionT>::init_send_goal_request(request);
     } else {
-        request = typename ::milkros::action_traits<ActionT>::SendGoalRequest{};
+        request = typename ::rosette::action_traits<ActionT>::SendGoalRequest{};
     }
 }
 
 template<typename ActionT>
 inline void fini_send_goal_request(
-    typename ::milkros::action_traits<ActionT>::SendGoalRequest& request) noexcept
+    typename ::rosette::action_traits<ActionT>::SendGoalRequest& request) noexcept
 {
     if constexpr (has_fini_send_goal_request<ActionT>::value) {
-        ::milkros::action_traits<ActionT>::fini_send_goal_request(request);
+        ::rosette::action_traits<ActionT>::fini_send_goal_request(request);
     } else {
         (void)request;
     }
@@ -731,21 +728,21 @@ inline void fini_send_goal_request(
 
 template<typename ActionT>
 inline void init_result_response(
-    typename ::milkros::action_traits<ActionT>::GetResultResponse& response) noexcept
+    typename ::rosette::action_traits<ActionT>::GetResultResponse& response) noexcept
 {
     if constexpr (has_init_result_response<ActionT>::value) {
-        ::milkros::action_traits<ActionT>::init_result_response(response);
+        ::rosette::action_traits<ActionT>::init_result_response(response);
     } else {
-        response = typename ::milkros::action_traits<ActionT>::GetResultResponse{};
+        response = typename ::rosette::action_traits<ActionT>::GetResultResponse{};
     }
 }
 
 template<typename ActionT>
 inline void fini_result_response(
-    typename ::milkros::action_traits<ActionT>::GetResultResponse& response) noexcept
+    typename ::rosette::action_traits<ActionT>::GetResultResponse& response) noexcept
 {
     if constexpr (has_fini_result_response<ActionT>::value) {
-        ::milkros::action_traits<ActionT>::fini_result_response(response);
+        ::rosette::action_traits<ActionT>::fini_result_response(response);
     } else {
         (void)response;
     }
@@ -753,24 +750,24 @@ inline void fini_result_response(
 
 template<typename ActionT>
 inline void init_feedback_message(
-    typename ::milkros::action_traits<ActionT>::FeedbackMessage& feedback) noexcept
+    typename ::rosette::action_traits<ActionT>::FeedbackMessage& feedback) noexcept
 {
     if constexpr (has_init_feedback_message<ActionT>::value) {
-        ::milkros::action_traits<ActionT>::init_feedback_message(feedback);
+        ::rosette::action_traits<ActionT>::init_feedback_message(feedback);
     } else {
-        feedback = typename ::milkros::action_traits<ActionT>::FeedbackMessage{};
+        feedback = typename ::rosette::action_traits<ActionT>::FeedbackMessage{};
     }
 }
 
 template<typename ActionT>
 inline void fini_feedback_message(
-    typename ::milkros::action_traits<ActionT>::FeedbackMessage& feedback) noexcept
+    typename ::rosette::action_traits<ActionT>::FeedbackMessage& feedback) noexcept
 {
     if constexpr (has_fini_feedback_message<ActionT>::value) {
-        ::milkros::action_traits<ActionT>::fini_feedback_message(feedback);
+        ::rosette::action_traits<ActionT>::fini_feedback_message(feedback);
     } else {
         (void)feedback;
     }
 }
 
-}  // namespace milkros::micro_ros
+}  // namespace rosette

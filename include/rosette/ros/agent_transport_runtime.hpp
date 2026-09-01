@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file ros/micro_ros/agent_transport_runtime.hpp
+ * @file ros/agent_transport_runtime.hpp
  * @brief Lightweight Agent transport runtime for higher-level firmware stacks.
  *
  * Design goal
@@ -29,7 +29,7 @@
 #include <array>
 #include <cstdlib>
 
-namespace milkros::micro_ros {
+namespace rosette {
 
 enum class AgentTransportError : uint8_t {
     kOk = 0u,
@@ -174,4 +174,4 @@ class UdpAgentTransportRuntime {
   AgentTransportError last_error_ = AgentTransportError::kOk;
 };
 
-}  // namespace milkros::micro_ros
+}  // namespace rosette

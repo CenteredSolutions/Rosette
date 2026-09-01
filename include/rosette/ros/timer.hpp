@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file ros/micro_ros/timer.hpp
+ * @file ros/timer.hpp
  * @brief Executor-backed periodic timers for the micro-ROS backend.
  *
  * Design goal
@@ -27,7 +27,7 @@
 #include "common.hpp"
 #include "context.hpp"
 
-namespace milkros::micro_ros {
+namespace rosette {
 
 template<typename CallbackT>
 class Timer {
@@ -223,4 +223,4 @@ private:
     inline static TimerRegistration registrations_[kMaxRegisteredTimers] = {};
 };
 
-}  // namespace milkros::micro_ros
+}  // namespace rosette

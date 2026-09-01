@@ -1,13 +1,13 @@
 #pragma once
 
 /**
- * @file ros/micro_ros/action.hpp
+ * @file ros/action.hpp
  * @brief micro-ROS action server and client adapters for the Rosette ROS API.
  *
  * Design goal
  * -----------
  * This module gives Rosette applications a C++ action surface that feels like
- * the in-tree RTPS backend while delegating the ROS 2 action protocol to
+ * `rclcpp_action` while delegating the ROS 2 action protocol to
  * upstream `rcl_action` + `rclc`. The wrapper keeps goal acceptance,
  * cooperative execution, feedback publication, cancellation, and result
  * delivery inside the familiar `Context`/`Node` programming model.
@@ -16,14 +16,14 @@
  * -------
  *   auto server = node.create_action_server<Fibonacci>(
  *       "fibonacci",
- *       [](const milkros::micro_ros::GoalId& goal_id,
+ *       [](const rosette::GoalId& goal_id,
  *          const FibonacciGoal& goal) noexcept {
  *           (void)goal_id;
  *           return goal.order <= 32
- *               ? milkros::micro_ros::GoalResponse::ACCEPT
- *               : milkros::micro_ros::GoalResponse::REJECT;
+ *               ? rosette::GoalResponse::ACCEPT
+ *               : rosette::GoalResponse::REJECT;
  *       },
- *       [](milkros::micro_ros::GoalHandle<Fibonacci>& handle) noexcept {
+ *       [](rosette::GoalHandle<Fibonacci>& handle) noexcept {
  *           FibonacciFeedback feedback{};
  *           handle.publish_feedback(feedback);
  *           FibonacciResult result{};
@@ -32,18 +32,18 @@
  *
  *   auto client = node.create_action_client<Fibonacci>("fibonacci");
  *   FibonacciGoal goal{};
- *   milkros::micro_ros::GoalId goal_id{};
+ *   rosette::GoalId goal_id{};
  *   client.send_goal(
  *       goal,
  *       goal_id,
- *       [](const milkros::micro_ros::GoalId&, bool accepted, void*) noexcept {
+ *       [](const rosette::GoalId&, bool accepted, void*) noexcept {
  *           (void)accepted;
  *       },
- *       [](const milkros::micro_ros::GoalId&,
+ *       [](const rosette::GoalId&,
  *          const FibonacciFeedback&,
  *          void*) noexcept {},
- *       [](const milkros::micro_ros::GoalId&,
- *          milkros::micro_ros::GoalStatus status,
+ *       [](const rosette::GoalId&,
+ *          rosette::GoalStatus status,
  *          const FibonacciResult&,
  *          void*) noexcept {
  *           (void)status;
@@ -55,8 +55,8 @@
  * - Cooperative server execution via `Context::tick()`, matching Rosette's MCU
  *   execution model rather than spawning extra threads.
  * - Typed feedback and result callbacks on the client side.
- * - Compatibility shim for `request_result()` so application code can stay
- *   close to the RTPS backend even though `rclc` handles result requests for us.
+ * - Explicit `request_result()` call site for call-site symmetry with
+ *   `send_goal()`, even though `rclc` issues the result request internally.
  *
  * Caveats
  * -------
@@ -100,12 +100,12 @@
 #error "Rosette micro-ROS action support requires rclc/action_client.h and rclc/action_server.h."
 #endif
 
-namespace milkros::micro_ros {
+namespace rosette {
 
 template<typename ActionT>
 class GoalHandle {
 public:
-    using traits = ::milkros::action_traits<ActionT>;
+    using traits = ::rosette::action_traits<ActionT>;
     using Goal = typename traits::Goal;
     using Result = typename traits::Result;
     using Feedback = typename traits::Feedback;
@@ -291,7 +291,7 @@ private:
 template<typename ActionT, typename GoalCbT, typename ExecuteCbT>
 class ActionServer final : public IActionTickable {
 public:
-    using traits = ::milkros::action_traits<ActionT>;
+    using traits = ::rosette::action_traits<ActionT>;
     using Goal = typename traits::Goal;
     using Result = typename traits::Result;
     using SendGoalRequest = typename traits::SendGoalRequest;
@@ -585,7 +585,7 @@ private:
 template<typename ActionT, uint8_t MaxTrackedGoals = 4>
 class ActionClient final {
 public:
-    using traits = ::milkros::action_traits<ActionT>;
+    using traits = ::rosette::action_traits<ActionT>;
     using Goal = typename traits::Goal;
     using Result = typename traits::Result;
     using Feedback = typename traits::Feedback;
@@ -748,13 +748,13 @@ public:
     }
 
     /**
-     * @brief Compatibility shim for the RTPS backend's explicit result-request API.
+     * @brief Explicit result-request call site kept for symmetry with `send_goal()`.
      *
      * Upstream `rclc` manages action result requests internally after a goal is
      * accepted, so no separate wire operation is needed here. The method
-     * returns whether the goal is still tracked, which preserves a similar call
-     * site to the RTPS backend without misleading the application about the
-     * underlying transport behavior.
+     * returns whether the goal is still tracked, which keeps an explicit call
+     * site without misleading the application about the underlying transport
+     * behavior.
      *
      * @param[in] goal_id UUID returned from `send_goal()`.
      * @return `true` if the goal is currently tracked; otherwise `false`.
@@ -1011,4 +1011,4 @@ private:
     bool valid_ = false;
 };
 
-}  // namespace milkros::micro_ros
+}  // namespace rosette

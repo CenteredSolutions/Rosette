@@ -3,7 +3,7 @@
  * @brief Board initialisation for the WIZnet W5100S-EVB-Pico2 (RP2350).
  *
  * Initialises:
- *   1. SPI1 peripheral at RTPS_SPI_BAUDRATE_HZ.
+ *   1. SPI1 peripheral at ROSETTE_SPI_BAUDRATE_HZ.
  *   2. GPIO pin functions (SPI alternate function + CS/RST/INT as GPIO).
  *   3. W5100S hardware reset sequence.
  *   4. WIZnet ioLibrary SPI callback registration (critical section,
@@ -33,29 +33,29 @@
 // ============================================================
 
 static void spi_cs_assert(void) {
-    gpio_put(RTPS_PIN_SPI_CS, 0);
+    gpio_put(ROSETTE_PIN_SPI_CS, 0);
 }
 
 static void spi_cs_deassert(void) {
-    gpio_put(RTPS_PIN_SPI_CS, 1);
+    gpio_put(ROSETTE_PIN_SPI_CS, 1);
 }
 
 static uint8_t spi_read_byte(void) {
     uint8_t rx = 0;
-    spi_read_blocking(RTPS_SPI_INST, 0xFF, &rx, 1);
+    spi_read_blocking(ROSETTE_SPI_INST, 0xFF, &rx, 1);
     return rx;
 }
 
 static void spi_write_byte(uint8_t tx) {
-    spi_write_blocking(RTPS_SPI_INST, &tx, 1);
+    spi_write_blocking(ROSETTE_SPI_INST, &tx, 1);
 }
 
 static void spi_read_burst(uint8_t* buf, uint16_t len) {
-    spi_read_blocking(RTPS_SPI_INST, 0xFF, buf, len);
+    spi_read_blocking(ROSETTE_SPI_INST, 0xFF, buf, len);
 }
 
 static void spi_write_burst(uint8_t* buf, uint16_t len) {
-    spi_write_blocking(RTPS_SPI_INST, buf, len);
+    spi_write_blocking(ROSETTE_SPI_INST, buf, len);
 }
 
 // ============================================================
@@ -73,7 +73,7 @@ static void crit_enter(void) { taskENTER_CRITICAL(); }
 static void crit_exit(void)  { taskEXIT_CRITICAL();  }
 
 static void wiznet_irq_gpio_callback(uint gpio, uint32_t events) {
-    if ((gpio == RTPS_PIN_W5100S_INT) && ((events & GPIO_IRQ_EDGE_FALL) != 0u)) {
+    if ((gpio == ROSETTE_PIN_W5100S_INT) && ((events & GPIO_IRQ_EDGE_FALL) != 0u)) {
         wiznet_macraw_interrupt_from_isr();
     }
 }
@@ -89,51 +89,51 @@ void board_init(void) {
     stdio_init_all();
 
     // 2. Initialise SPI1 at the configured baud rate.
-    spi_init(RTPS_SPI_INST, RTPS_SPI_BAUDRATE_HZ);
+    spi_init(ROSETTE_SPI_INST, ROSETTE_SPI_BAUDRATE_HZ);
 
     // W5100S uses SPI mode 0 (CPOL=0, CPHA=0).
-    spi_set_format(RTPS_SPI_INST,
+    spi_set_format(ROSETTE_SPI_INST,
                    8,           // data bits
                    SPI_CPOL_0,
                    SPI_CPHA_0,
                    SPI_MSB_FIRST);
 
     // 3. Assign GPIO pin functions.
-    gpio_set_function(RTPS_PIN_SPI_SCK, GPIO_FUNC_SPI);
-    gpio_set_function(RTPS_PIN_SPI_TX,  GPIO_FUNC_SPI);
-    gpio_set_function(RTPS_PIN_SPI_RX,  GPIO_FUNC_SPI);
+    gpio_set_function(ROSETTE_PIN_SPI_SCK, GPIO_FUNC_SPI);
+    gpio_set_function(ROSETTE_PIN_SPI_TX,  GPIO_FUNC_SPI);
+    gpio_set_function(ROSETTE_PIN_SPI_RX,  GPIO_FUNC_SPI);
 
     // CS is GPIO-driven (not SPI hardware CS) so we control it manually.
-    gpio_init(RTPS_PIN_SPI_CS);
-    gpio_set_dir(RTPS_PIN_SPI_CS, GPIO_OUT);
-    gpio_put(RTPS_PIN_SPI_CS, 1);  // De-assert.
+    gpio_init(ROSETTE_PIN_SPI_CS);
+    gpio_set_dir(ROSETTE_PIN_SPI_CS, GPIO_OUT);
+    gpio_put(ROSETTE_PIN_SPI_CS, 1);  // De-assert.
 
     // RST — active low.
-    gpio_init(RTPS_PIN_W5100S_RST);
-    gpio_set_dir(RTPS_PIN_W5100S_RST, GPIO_OUT);
-    gpio_put(RTPS_PIN_W5100S_RST, 1);  // De-assert.
+    gpio_init(ROSETTE_PIN_W5100S_RST);
+    gpio_set_dir(ROSETTE_PIN_W5100S_RST, GPIO_OUT);
+    gpio_put(ROSETTE_PIN_W5100S_RST, 1);  // De-assert.
 
     // INT — input with pull-up (active low, unused if polling).
-    gpio_init(RTPS_PIN_W5100S_INT);
-    gpio_set_dir(RTPS_PIN_W5100S_INT, GPIO_IN);
-    gpio_pull_up(RTPS_PIN_W5100S_INT);
-    gpio_set_irq_enabled_with_callback(RTPS_PIN_W5100S_INT,
+    gpio_init(ROSETTE_PIN_W5100S_INT);
+    gpio_set_dir(ROSETTE_PIN_W5100S_INT, GPIO_IN);
+    gpio_pull_up(ROSETTE_PIN_W5100S_INT);
+    gpio_set_irq_enabled_with_callback(ROSETTE_PIN_W5100S_INT,
                                        GPIO_IRQ_EDGE_FALL,
                                        true,
                                        &wiznet_irq_gpio_callback);
 
     // LED.
-    gpio_init(RTPS_PIN_LED);
-    gpio_set_dir(RTPS_PIN_LED, GPIO_OUT);
-    gpio_put(RTPS_PIN_LED, 0);
+    gpio_init(ROSETTE_PIN_LED);
+    gpio_set_dir(ROSETTE_PIN_LED, GPIO_OUT);
+    gpio_put(ROSETTE_PIN_LED, 0);
 
     // 4. Hardware reset the W5100S.
-    // Hold RST low for >= RTPS_W5100S_RST_HOLD_MS.
-    gpio_put(RTPS_PIN_W5100S_RST, 0);
-    sleep_ms(RTPS_W5100S_RST_HOLD_MS);
-    gpio_put(RTPS_PIN_W5100S_RST, 1);
+    // Hold RST low for >= ROSETTE_W5100S_RST_HOLD_MS.
+    gpio_put(ROSETTE_PIN_W5100S_RST, 0);
+    sleep_ms(ROSETTE_W5100S_RST_HOLD_MS);
+    gpio_put(ROSETTE_PIN_W5100S_RST, 1);
     // Wait for PLL lock and internal initialisation.
-    sleep_ms(RTPS_W5100S_RST_WAIT_MS);
+    sleep_ms(ROSETTE_W5100S_RST_WAIT_MS);
 
     // 5. Register WIZnet ioLibrary SPI + CS + critical section callbacks.
     reg_wizchip_cris_cbfunc(crit_enter, crit_exit);

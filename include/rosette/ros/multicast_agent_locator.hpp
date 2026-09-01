@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file ros/micro_ros/multicast_agent_locator.hpp
+ * @file ros/multicast_agent_locator.hpp
  * @brief Upstream-compatible Micro XRCE-DDS Agent discovery over UDP multicast.
  *
  * Design goal
@@ -39,7 +39,7 @@
 #include <cstring>
 #include <memory>
 
-namespace milkros::micro_ros {
+namespace rosette {
 
 struct MulticastAgentLocatorConfig {
     const char* multicast_group = "239.255.0.2";
@@ -568,4 +568,4 @@ private:
     MulticastAgentLocatorConfig config_{};
 };
 
-}  // namespace milkros::micro_ros
+}  // namespace rosette

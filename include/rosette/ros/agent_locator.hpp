@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file ros/micro_ros/agent_locator.hpp
+ * @file ros/agent_locator.hpp
  * @brief Lightweight Agent endpoint discovery contract for Rosette transports.
  *
  * Design goal
@@ -21,7 +21,7 @@
 
 #include <stddef.h>
 
-namespace milkros::micro_ros {
+namespace rosette {
 
 /**
  * @brief Optional Rosette-side Agent discovery shim.
@@ -40,4 +40,4 @@ class AgentLocator {
                        size_t port_capacity) noexcept = 0;
 };
 
-}  // namespace milkros::micro_ros
+}  // namespace rosette

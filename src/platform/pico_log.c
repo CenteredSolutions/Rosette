@@ -1,8 +1,8 @@
 /**
  * @file platform/pico_log.c
- * @brief rtps_log_write() implementation for Raspberry Pi Pico / Pico 2.
+ * @brief rosette_log_write() implementation for Raspberry Pi Pico / Pico 2.
  *
- * Routes all RTPS log output through the Pico SDK's stdio layer, which
+ * Routes all Rosette log output through the Pico SDK's stdio layer, which
  * can target USB CDC or UART depending on CMakeLists.txt:
  *   pico_enable_stdio_usb(target 1)    -- USB CDC (default)
  *   pico_enable_stdio_uart(target 1)   -- hardware UART
@@ -13,20 +13,20 @@
  *   ms tick   level  tag   caller-supplied printf message
  *
  * This file is compiled only for Pico-family targets.  Other platforms
- * should provide their own rtps_log_write() implementation; builds that
- * set -DRTPS_LOG_LEVEL=0 do not reference the symbol at all.
+ * should provide their own rosette_log_write() implementation; builds that
+ * set -DROSETTE_LOG_LEVEL=0 do not reference the symbol at all.
  */
 
 #include "log.hpp"
 
-#if RTPS_LOG_LEVEL > RTPS_LOG_LEVEL_NONE
+#if ROSETTE_LOG_LEVEL > ROSETTE_LOG_LEVEL_NONE
 
 #include <stdio.h>
 #include <stdarg.h>
 
 /* Timestamp source: FreeRTOS tick counter converted to milliseconds.
- * Falls back to 0 for RTPS_NO_FREERTOS builds (unit-test or bare-metal). */
-#ifndef RTPS_NO_FREERTOS
+ * Falls back to 0 for ROSETTE_NO_FREERTOS builds (unit-test or bare-metal). */
+#ifndef ROSETTE_NO_FREERTOS
 #  include "FreeRTOS.h"
 #  include "task.h"
 static unsigned long log_now_ms(void)
@@ -38,10 +38,10 @@ static unsigned long log_now_ms(void)
 static unsigned long log_now_ms(void) { return 0UL; }
 #endif
 
-/* Single-character level prefix — index matches RTPS_LOG_LEVEL_* values. */
+/* Single-character level prefix — index matches ROSETTE_LOG_LEVEL_* values. */
 static const char level_char[] = { '?', 'E', 'W', 'I', 'D', 'T' };
 
-void rtps_log_write(int level, const char* tag, const char* fmt, ...)
+void rosette_log_write(int level, const char* tag, const char* fmt, ...)
 {
     if (level < 1) level = 1;
     if (level > 5) level = 5;
@@ -56,4 +56,4 @@ void rtps_log_write(int level, const char* tag, const char* fmt, ...)
     putchar('\n');
 }
 
-#endif /* RTPS_LOG_LEVEL > RTPS_LOG_LEVEL_NONE */
+#endif /* ROSETTE_LOG_LEVEL > ROSETTE_LOG_LEVEL_NONE */

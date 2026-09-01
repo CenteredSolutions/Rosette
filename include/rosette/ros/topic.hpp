@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file ros/micro_ros/topic.hpp
+ * @file ros/topic.hpp
  * @brief Typed topic publishers and subscriptions for the micro-ROS backend.
  *
  * Design goal
@@ -38,7 +38,7 @@
 #include "common.hpp"
 #include "context.hpp"
 
-namespace milkros::micro_ros {
+namespace rosette {
 
 template<typename MessageT>
 class Publisher {
@@ -75,7 +75,7 @@ public:
         if (rclc_publisher_init(
                 &publisher_,
                 node_,
-                ::milkros::message_traits<MessageT>::rosidl_type_support(),
+                ::rosette::message_traits<MessageT>::rosidl_type_support(),
                 topic_name,
                 &qos) != RCL_RET_OK) {
             publisher_ = rcl_get_zero_initialized_publisher();
@@ -210,7 +210,7 @@ public:
         if (rclc_subscription_init(
                 &subscription_,
                 node_,
-                ::milkros::message_traits<MessageT>::rosidl_type_support(),
+                ::rosette::message_traits<MessageT>::rosidl_type_support(),
                 topic_name,
                 &qos) != RCL_RET_OK) {
             fini_message<MessageT>(message_);
@@ -293,4 +293,4 @@ private:
     bool valid_ = false;
 };
 
-}  // namespace milkros::micro_ros
+}  // namespace rosette

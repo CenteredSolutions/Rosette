@@ -2,7 +2,7 @@
 
 #include <stddef.h>
 
-namespace milkros {
+namespace rosette {
 
 template<typename MessageT>
 struct message_traits;
@@ -15,4 +15,4 @@ struct default_reader_options {
     static constexpr MessageT make() noexcept { return MessageT{}; }
 };
 
-} // namespace milkros
+} // namespace rosette

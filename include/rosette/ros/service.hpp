@@ -1,15 +1,15 @@
 #pragma once
 
 /**
- * @file ros/micro_ros/service.hpp
+ * @file ros/service.hpp
  * @brief micro-ROS service server and client adapters for the Rosette ROS API.
  *
  * Design goal
  * -----------
- * This module keeps the application-facing shape of `milkros::Service` and
- * `milkros::Client` while routing the wire protocol and request correlation
+ * This module keeps the application-facing shape of `rosette::Service` and
+ * `rosette::Client` while routing the wire protocol and request correlation
  * through `rcl` + `rclc`. It gives MCU code the same "create a typed service
- * or client from a node" experience as the RTPS backend without duplicating
+ * or client from a node" experience of `rclcpp` without duplicating
  * ROS 2 service semantics in Rosette itself.
  *
  * Example
@@ -55,12 +55,12 @@
 #include "common.hpp"
 #include "context.hpp"
 
-namespace milkros::micro_ros {
+namespace rosette {
 
 template<typename ServiceT, typename HandlerT>
 class Service {
 public:
-    using traits = ::milkros::service_traits<ServiceT>;
+    using traits = ::rosette::service_traits<ServiceT>;
     using Request = typename traits::Request;
     using Response = typename traits::Response;
 
@@ -278,7 +278,7 @@ Service<ServiceT, HandlerT>* Service<ServiceT, HandlerT>::instance_head_ = nullp
 template<typename ServiceT, uint8_t MaxPending = 4>
 class Client {
 public:
-    using traits = ::milkros::service_traits<ServiceT>;
+    using traits = ::rosette::service_traits<ServiceT>;
     using Request = typename traits::Request;
     using Response = typename traits::Response;
     using ResponseCallback = void(*)(const Response&, void*) noexcept;
@@ -527,4 +527,4 @@ private:
 template<typename ServiceT, uint8_t MaxPending>
 Client<ServiceT, MaxPending>* Client<ServiceT, MaxPending>::instance_head_ = nullptr;
 
-}  // namespace milkros::micro_ros
+}  // namespace rosette

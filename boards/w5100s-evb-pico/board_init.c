@@ -19,26 +19,26 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
-static void spi_cs_assert(void)    { gpio_put(RTPS_PIN_SPI_CS, 0); }
-static void spi_cs_deassert(void)  { gpio_put(RTPS_PIN_SPI_CS, 1); }
+static void spi_cs_assert(void)    { gpio_put(ROSETTE_PIN_SPI_CS, 0); }
+static void spi_cs_deassert(void)  { gpio_put(ROSETTE_PIN_SPI_CS, 1); }
 static uint8_t spi_read_byte(void) {
     uint8_t rx = 0;
-    spi_read_blocking(RTPS_SPI_INST, 0xFF, &rx, 1);
+    spi_read_blocking(ROSETTE_SPI_INST, 0xFF, &rx, 1);
     return rx;
 }
 static void spi_write_byte(uint8_t tx) {
-    spi_write_blocking(RTPS_SPI_INST, &tx, 1);
+    spi_write_blocking(ROSETTE_SPI_INST, &tx, 1);
 }
 static void spi_read_burst(uint8_t* buf, uint16_t len) {
-    spi_read_blocking(RTPS_SPI_INST, 0xFF, buf, len);
+    spi_read_blocking(ROSETTE_SPI_INST, 0xFF, buf, len);
 }
 static void spi_write_burst(uint8_t* buf, uint16_t len) {
-    spi_write_blocking(RTPS_SPI_INST, buf, len);
+    spi_write_blocking(ROSETTE_SPI_INST, buf, len);
 }
 static void crit_enter(void) { taskENTER_CRITICAL(); }
 static void crit_exit(void)  { taskEXIT_CRITICAL();  }
 static void wiznet_irq_gpio_callback(uint gpio, uint32_t events) {
-    if ((gpio == RTPS_PIN_W5100S_INT) && ((events & GPIO_IRQ_EDGE_FALL) != 0u)) {
+    if ((gpio == ROSETTE_PIN_W5100S_INT) && ((events & GPIO_IRQ_EDGE_FALL) != 0u)) {
         wiznet_macraw_interrupt_from_isr();
     }
 }
@@ -46,36 +46,36 @@ static void wiznet_irq_gpio_callback(uint gpio, uint32_t events) {
 void board_init(void) {
     stdio_init_all();
 
-    spi_init(RTPS_SPI_INST, RTPS_SPI_BAUDRATE_HZ);
-    spi_set_format(RTPS_SPI_INST, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
+    spi_init(ROSETTE_SPI_INST, ROSETTE_SPI_BAUDRATE_HZ);
+    spi_set_format(ROSETTE_SPI_INST, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
 
-    gpio_set_function(RTPS_PIN_SPI_SCK, GPIO_FUNC_SPI);
-    gpio_set_function(RTPS_PIN_SPI_TX,  GPIO_FUNC_SPI);
-    gpio_set_function(RTPS_PIN_SPI_RX,  GPIO_FUNC_SPI);
+    gpio_set_function(ROSETTE_PIN_SPI_SCK, GPIO_FUNC_SPI);
+    gpio_set_function(ROSETTE_PIN_SPI_TX,  GPIO_FUNC_SPI);
+    gpio_set_function(ROSETTE_PIN_SPI_RX,  GPIO_FUNC_SPI);
 
-    gpio_init(RTPS_PIN_SPI_CS);
-    gpio_set_dir(RTPS_PIN_SPI_CS, GPIO_OUT);
-    gpio_put(RTPS_PIN_SPI_CS, 1);
+    gpio_init(ROSETTE_PIN_SPI_CS);
+    gpio_set_dir(ROSETTE_PIN_SPI_CS, GPIO_OUT);
+    gpio_put(ROSETTE_PIN_SPI_CS, 1);
 
-    gpio_init(RTPS_PIN_W5100S_RST);
-    gpio_set_dir(RTPS_PIN_W5100S_RST, GPIO_OUT);
-    gpio_put(RTPS_PIN_W5100S_RST, 1);
+    gpio_init(ROSETTE_PIN_W5100S_RST);
+    gpio_set_dir(ROSETTE_PIN_W5100S_RST, GPIO_OUT);
+    gpio_put(ROSETTE_PIN_W5100S_RST, 1);
 
-    gpio_init(RTPS_PIN_W5100S_INT);
-    gpio_set_dir(RTPS_PIN_W5100S_INT, GPIO_IN);
-    gpio_pull_up(RTPS_PIN_W5100S_INT);
-    gpio_set_irq_enabled_with_callback(RTPS_PIN_W5100S_INT,
+    gpio_init(ROSETTE_PIN_W5100S_INT);
+    gpio_set_dir(ROSETTE_PIN_W5100S_INT, GPIO_IN);
+    gpio_pull_up(ROSETTE_PIN_W5100S_INT);
+    gpio_set_irq_enabled_with_callback(ROSETTE_PIN_W5100S_INT,
                                        GPIO_IRQ_EDGE_FALL,
                                        true,
                                        &wiznet_irq_gpio_callback);
 
-    gpio_init(RTPS_PIN_LED);
-    gpio_set_dir(RTPS_PIN_LED, GPIO_OUT);
+    gpio_init(ROSETTE_PIN_LED);
+    gpio_set_dir(ROSETTE_PIN_LED, GPIO_OUT);
 
-    gpio_put(RTPS_PIN_W5100S_RST, 0);
-    sleep_ms(RTPS_W5100S_RST_HOLD_MS);
-    gpio_put(RTPS_PIN_W5100S_RST, 1);
-    sleep_ms(RTPS_W5100S_RST_WAIT_MS);
+    gpio_put(ROSETTE_PIN_W5100S_RST, 0);
+    sleep_ms(ROSETTE_W5100S_RST_HOLD_MS);
+    gpio_put(ROSETTE_PIN_W5100S_RST, 1);
+    sleep_ms(ROSETTE_W5100S_RST_WAIT_MS);
 
     reg_wizchip_cris_cbfunc(crit_enter, crit_exit);
     reg_wizchip_cs_cbfunc(spi_cs_assert, spi_cs_deassert);

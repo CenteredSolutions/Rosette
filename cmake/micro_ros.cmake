@@ -110,7 +110,7 @@ endif()
 
 set(_rosette_micro_ros_transport "${ROSETTE_MICRO_ROS_TRANSPORT}")
 if(_rosette_micro_ros_transport STREQUAL "auto")
-    if(RTPS_BOARD_ENABLE_FREERTOS)
+    if(ROSETTE_BOARD_ENABLE_FREERTOS)
         set(_rosette_micro_ros_transport "custom")
     else()
         set(_rosette_micro_ros_transport "udp")
@@ -119,10 +119,10 @@ endif()
 
 set(_rosette_micro_ros_arch_flags "")
 set(ROSETTE_MICRO_ROS_USE_PICO_TIME OFF)
-if(RTPS_PROCESSOR STREQUAL "RP2040")
+if(ROSETTE_PROCESSOR STREQUAL "RP2040")
     set(_rosette_micro_ros_arch_flags "-mcpu=cortex-m0plus -mthumb")
     set(ROSETTE_MICRO_ROS_USE_PICO_TIME ON)
-elseif(RTPS_PROCESSOR STREQUAL "RP2350")
+elseif(ROSETTE_PROCESSOR STREQUAL "RP2350")
     set(_rosette_micro_ros_arch_flags "-mcpu=cortex-m33 -mthumb")
     set(ROSETTE_MICRO_ROS_USE_PICO_TIME ON)
 endif()
@@ -141,7 +141,7 @@ set(_rosette_micro_ros_bootstrap_script
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated/micro_ros")
 
 set(ROSETTE_MICRO_ROS_TOOLCHAIN_SYSTEM_NAME "Generic")
-if(RTPS_PROCESSOR STREQUAL "HOST")
+if(ROSETTE_PROCESSOR STREQUAL "HOST")
     set(ROSETTE_MICRO_ROS_TOOLCHAIN_SYSTEM_NAME "${CMAKE_SYSTEM_NAME}")
 endif()
 
@@ -207,10 +207,10 @@ add_custom_command(
     VERBATIM)
 
 if(ROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD)
-    add_custom_target(rtps_micro_ros_bootstrap ALL
+    add_custom_target(rosette_micro_ros_bootstrap ALL
         DEPENDS "${_rosette_micro_ros_stamp}")
 else()
-    add_custom_target(rtps_micro_ros_bootstrap
+    add_custom_target(rosette_micro_ros_bootstrap
         DEPENDS "${_rosette_micro_ros_stamp}")
 endif()
 
@@ -218,16 +218,16 @@ add_library(micro_ros_prebuilt STATIC IMPORTED GLOBAL)
 set_target_properties(micro_ros_prebuilt PROPERTIES
     IMPORTED_LOCATION "${_rosette_micro_ros_lib}"
     INTERFACE_INCLUDE_DIRECTORIES "${_rosette_micro_ros_include}")
-add_dependencies(micro_ros_prebuilt rtps_micro_ros_bootstrap)
+add_dependencies(micro_ros_prebuilt rosette_micro_ros_bootstrap)
 
 add_library(micro_ros_vendor INTERFACE)
 target_link_libraries(micro_ros_vendor INTERFACE micro_ros_prebuilt)
-add_dependencies(micro_ros_vendor rtps_micro_ros_bootstrap)
+add_dependencies(micro_ros_vendor rosette_micro_ros_bootstrap)
 target_compile_definitions(micro_ros_vendor INTERFACE
     ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM=$<BOOL:${ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT}>
     ROSETTE_MICRO_ROS_TRANSPORT_UDP=$<BOOL:${ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT}>
     ROSETTE_MICRO_ROS_AGENT_IP="${ROSETTE_MICRO_ROS_AGENT_IP}"
-    ROSETTE_MICRO_ROS_AGENT_PORT="${ROSETTE_MICRO_ROS_AGENT_PORT}"
+    ROSETTE_MICRO_ROS_AGENT_PORT=${ROSETTE_MICRO_ROS_AGENT_PORT}
     ROSETTE_MICRO_ROS_DISCOVERY_GROUP="${ROSETTE_MICRO_ROS_DISCOVERY_GROUP}"
     ROSETTE_MICRO_ROS_DISCOVERY_PORT="${ROSETTE_MICRO_ROS_DISCOVERY_PORT}"
     ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS=${ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS}

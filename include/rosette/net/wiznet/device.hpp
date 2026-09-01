@@ -8,7 +8,7 @@
 #include <type_traits>
 #include <variant>
 
-#ifndef RTPS_NO_FREERTOS
+#ifndef ROSETTE_NO_FREERTOS
 extern "C" {
 #include "FreeRTOS.h"
 #include "task.h"
@@ -160,7 +160,7 @@ public:
         return mode_;
     }
 
-#ifndef RTPS_NO_FREERTOS
+#ifndef ROSETTE_NO_FREERTOS
     void register_socket_rx_task(socket_type socket,
                                  TaskHandle_t task = xTaskGetCurrentTaskHandle()) noexcept
     {
@@ -723,7 +723,7 @@ private:
     }
 
     Bus& bus_;
-#ifndef RTPS_NO_FREERTOS
+#ifndef ROSETTE_NO_FREERTOS
     TaskHandle_t interrupt_dispatch_task_ = nullptr;
     std::array<TaskHandle_t, Chip::socket_count()> socket_rx_tasks_{};
 #endif

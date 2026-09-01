@@ -1,6 +1,10 @@
 # Rosette micro-ROS Refactor
 
-Status: proposed · Branch: `feature/micro_ros` · Date: 2026-09-01
+Status: in progress · Branch: `refactor/excise-rtps` (off `feature/micro_ros`) · Date: 2026-09-01
+
+Progress: phases 1–3 complete (archive tag pushed, RTPS excised, wrapper promoted
+to `rosette::`). LittleFS is retained for persistent device configuration —
+see §2 and the new phase 5.
 
 ## 1. Motivation
 
@@ -32,7 +36,7 @@ its behalf.
 - `examples/main_rp2350.cpp` — RTPS firmware example
 - `tools/msg_gen/` — custom `.msg` → CDR C++ codegen (micro-ROS uses
   rosidl-generated C types instead)
-- `src/rtps/persistence.cpp` + LittleFS wiring specific to RTPS history
+- `src/rtps/persistence.cpp` — the RTPS history file-store on LittleFS
 
 ### Kept and unchanged in intent
 
@@ -42,6 +46,12 @@ its behalf.
 - `cmake/` — `boards.cmake`, `pico_sdk.cmake`, `freertos_tcp.cmake`,
   `wiznet.cmake`, `littlefs.cmake`, `micro_ros.cmake`
 - `src/net/ntp_sync.cpp` — time-source sync for XRCE sessions
+- **LittleFS** (`cmake/littlefs.cmake`, `include/rosette/platform/littlefs_platform.hpp`,
+  new `rosette_fs` target) — retained and repurposed from RTPS history storage
+  to a persistent **device-configuration** volume: network mode and addressing,
+  the micro-ROS Agent endpoint, the XRCE client key, calibration blobs. Survives
+  power cycles and application reflashing. The block-device implementation is
+  phase 5.
 
 ### Kept and promoted (the new mainline)
 
@@ -214,24 +224,39 @@ auto-selects `custom` for FreeRTOS boards, `udp` for POSIX).
 
 ## 7. Phased execution
 
-1. **Archive & branch protection.** Tag `archive/rtps-stack` at current `HEAD`.
-   Confirm the tag pushes to `origin`.
-2. **Excise.** Remove everything in §2 "Cut". Repo must still configure for
-   `ROSETTE_BOARD=posix` (nothing to build yet is fine).
-3. **Promote & rename.** Move `include/rosette/ros/micro_ros/*` up one level.
-   `milkros::micro_ros` → `rosette` across 32 files. `RTPS_*` → `ROSETTE_*`.
+1. **Archive & branch protection.** ✅ Tag `archive/rtps-stack` pushed to `origin`.
+2. **Excise.** ✅ Removed everything in §2 "Cut". `ROSETTE_BOARD=posix` configures
+   and builds `rosette_net` clean.
+3. **Promote & rename.** ✅ Wrapper headers moved to `include/rosette/ros/`.
+   `milkros::micro_ros` → `rosette` (0 residual). `RTPS_*` → `ROSETTE_*` across
+   build system and BSP. LittleFS restored as `rosette_fs`.
 4. **CMake restructure** per §6. Green build of `rosette_smoke` for
    `ROSETTE_BOARD=w5100s-evb-pico2 -DROSETTE_ENABLE_MICRO_ROS=ON` and for
-   `posix`.
-5. **Build `rosette::App`** per §5.2 with the reconnect state machine.
+   `posix`. Introduce a non-RTPS host platform shim (`rosette_platform_get_ms`,
+   `_get_ipv4/6`) so the smoke path compiles again.
+5. **Persistent device configuration (LittleFS).**
+   - Implement `rosette::platform::littlefs_mount()` / `littlefs_unmount()` for
+     the RP2040/RP2350 flash in `src/platform/pico_littlefs.c`, backed by the
+     existing `rosette_platform_flash_*` primitives and a reserved flash region
+     declared per board (`ROSETTE_CONFIG_FLASH_OFFSET` / `_SIZE`).
+   - Add a `rosette::config` key/value store over the mounted volume: typed
+     get/set for the fields the `App` needs at boot (net mode, static IP/mask/
+     gw/dns, Agent host/port, XRCE client key, node namespace), with a
+     versioned on-flash record and safe defaults on first boot or CRC failure.
+   - Host builds get a file-backed block device so `rosette::config` is testable
+     under `ROSETTE_BOARD=posix`.
+   - `App` reads its `AppOptions` from `rosette::config` when present, so a
+     board can be re-addressed without recompiling.
+6. **Build `rosette::App`** per §5.2 with the reconnect state machine.
    Host test against a real `micro_ros_agent` (start agent, run app, kill agent,
    restart agent, assert re-link).
-6. **`Node` executor auto-sizing** per §5.3.
-7. **Examples:** `temperature_publisher`, `fibonacci_action`, `reconnect_demo`.
-8. **Docs:** rewrite `README.md` and `GETTING_STARTED.md` around micro-ROS only;
-   fold `ros/micro_ros/README.md` content into the main docs.
-9. **MicroPython:** re-point `bindings/micropython` at `rosette::` and confirm
-   the host smoke path still compiles (separate PR).
+7. **`Node` executor auto-sizing** per §5.3.
+8. **Examples:** `temperature_publisher`, `fibonacci_action`, `reconnect_demo`,
+   `config_store` (write config over a service, reboot, confirm persistence).
+9. **Docs:** rewrite `README.md` and `GETTING_STARTED.md` around micro-ROS only;
+   fold `docs/micro_ros_backend.md` content into the main docs.
+10. **MicroPython:** re-point `bindings/micropython` at `rosette::` and confirm
+    the host smoke path still compiles (separate PR).
 
 ## 8. Risks and open questions
 
@@ -243,6 +268,10 @@ auto-selects `custom` for FreeRTOS boards, `udp` for POSIX).
 - **Entity limits are libmicroros build-time.** `RMW_UXRCE_MAX_*` in the
   `colcon.meta` must be kept in sync with what `App`/`Node` will actually
   allocate. Consider generating `colcon.meta` maxes from a single config header.
-- **Multi-goal actions.** Deferred; default stays 1. Revisit after §7.7.
+- **Multi-goal actions.** Deferred; default stays 1. Revisit after the examples
+  land (phase 8).
+- **Config store schema.** Phase 5 needs a decision on the on-flash record
+  format and which fields are first-class vs. free-form blobs. Keep it small and
+  versioned; a wrong guess here is a migration headache on deployed boards.
 - **POSIX discovery is Linux-only upstream.** Already handled by the multicast
   locator + host responder; keep the responder script.

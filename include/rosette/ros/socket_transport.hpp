@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file ros/micro_ros/socket_transport.hpp
+ * @file ros/socket_transport.hpp
  * @brief Socket-backed custom transport helpers for the micro-ROS backend.
  *
  * Design goal
@@ -33,7 +33,7 @@
 #include <cstring>
 #include <memory>
 
-namespace milkros::micro_ros {
+namespace rosette {
 
 inline bool make_ipv4_socket_address(const char* text,
                                      uint16_t port,
@@ -242,4 +242,4 @@ private:
     std::unique_ptr<rosette::net::Socket> socket_{};
 };
 
-}  // namespace milkros::micro_ros
+}  // namespace rosette

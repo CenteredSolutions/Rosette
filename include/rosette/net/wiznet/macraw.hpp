@@ -122,12 +122,12 @@ public:
 
     void handle_interrupt_from_isr() noexcept
     {
-#ifndef RTPS_NO_FREERTOS
+#ifndef ROSETTE_NO_FREERTOS
         device_.handle_interrupt_from_isr();
 #endif
     }
 
-#ifndef RTPS_NO_FREERTOS
+#ifndef ROSETTE_NO_FREERTOS
     void register_rx_task(TaskHandle_t task) noexcept
     {
         device_.register_socket_rx_task(Chip::macraw_socket(), task);

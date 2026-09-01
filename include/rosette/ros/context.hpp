@@ -3,8 +3,9 @@
 #include "common.hpp"
 
 #include <string.h>
+#include <cstdio>
 
-namespace milkros::micro_ros {
+namespace rosette {
 
 class Node;
 
@@ -13,8 +14,8 @@ class Node;
  *
  * The context owns ROS initialization state, transport configuration, and the
  * shared `rclc_executor_t`. Endpoint wrappers register themselves with this
- * executor so application code can keep a single `tick()` loop similar to the
- * existing RTPS-backed `milkros::Context`.
+ * executor so application code keeps a single `tick()` loop, similar to a
+ * single-threaded `rclcpp` executor spin.
  *
  * Discovery model
  * ---------------
@@ -28,11 +29,11 @@ class Node;
  *
  * Example
  * -------
- *   milkros::micro_ros::ContextOptions options{};
+ *   rosette::ContextOptions options{};
  *   options.client_key = 0x11223344u;
  *   options.auto_discover_agent = true;
  *
- *   milkros::micro_ros::Context context(options);
+ *   rosette::Context context(options);
  *   if (context.start_result().ok()) {
  *       auto node = context.create_node("motor_controller", "/drive");
  *       (void)node;
@@ -524,4 +525,4 @@ private:
     ContextStartError last_start_error_ = ContextStartError::kOk;
 };
 
-}  // namespace milkros::micro_ros
+}  // namespace rosette

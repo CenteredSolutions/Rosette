@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file ros/micro_ros/node.hpp
+ * @file ros/node.hpp
  * @brief Node wrapper that creates micro-ROS communication entities for Rosette.
  *
  * Design goal
@@ -9,11 +9,11 @@
  * `Node` is the object application code touches after a `Context` has started.
  * It owns the `rcl_node_t` handle and exposes factory methods for publishers,
  * subscriptions, timers, services, clients, and actions so user code can stay
- * close to the API shape already established by Rosette's RTPS backend.
+ * close to the shape of `rclcpp::Node` while staying MCU-friendly.
  *
  * Example
  * -------
- *   milkros::micro_ros::Context context;
+ *   rosette::Context context;
  *   context.start();
  *
  *   auto node = context.create_node("drive_controller", "/robot");
@@ -41,7 +41,7 @@
 #include "timer.hpp"
 #include "topic.hpp"
 
-namespace milkros::micro_ros {
+namespace rosette {
 
 class Node {
 public:
@@ -259,4 +259,4 @@ inline Node Context::create_node(const char* name,
     return Node(this, name, node_namespace);
 }
 
-}  // namespace milkros::micro_ros
+}  // namespace rosette

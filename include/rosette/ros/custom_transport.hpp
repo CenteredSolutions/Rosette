@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file ros/micro_ros/custom_transport.hpp
+ * @file ros/custom_transport.hpp
  * @brief Lightweight transport contract for Rosette micro-ROS integration.
  *
  * Design goal
@@ -21,7 +21,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-namespace milkros::micro_ros {
+namespace rosette {
 
 /**
  * @brief Transport hook that lets Rosette reuse board/network abstractions.
@@ -63,4 +63,4 @@ class CustomTransport {
                       uint8_t* error) noexcept = 0;
 };
 
-}  // namespace milkros::micro_ros
+}  // namespace rosette

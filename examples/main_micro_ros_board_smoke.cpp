@@ -1,5 +1,5 @@
-#include "rosette/ros/micro_ros.hpp"
-#include "rosette/ros/micro_ros/socket_transport.hpp"
+#include "rosette/ros/ros.hpp"
+#include "rosette/ros/socket_transport.hpp"
 
 #include "rosette/rtps/types.hpp"
 
@@ -13,7 +13,7 @@
 #include <cstdlib>
 #include <array>
 
-#ifdef RTPS_NO_FREERTOS
+#ifdef ROSETTE_NO_FREERTOS
 #include "rosette/net/posix/socket.hpp"
 
 #include <chrono>
@@ -75,7 +75,7 @@ constexpr uint32_t kContextStartRetryDelayMs = 2000u;
 #define ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS 3
 #endif
 
-#ifdef RTPS_NO_FREERTOS
+#ifdef ROSETTE_NO_FREERTOS
 
 using SocketProviderImpl = rosette::net::posix::PosixSocketProvider;
 
@@ -155,19 +155,19 @@ float read_posix_temperature_c() noexcept
  * @param[in,out] context Context to start.
  * @return True when the context reaches the running state.
  */
-bool start_context_with_retry(milkros::micro_ros::Context& context) noexcept
+bool start_context_with_retry(rosette::Context& context) noexcept
 {
     for (;;) {
-        const milkros::micro_ros::ContextStartResult result = context.start_result();
+        const rosette::ContextStartResult result = context.start_result();
         if (result.ok()) {
             std::printf("[micro_ros] context started: %s\n",
-                        milkros::micro_ros::context_start_error_string(result.error()));
+                        rosette::context_start_error_string(result.error()));
             return true;
         }
 
         std::fprintf(stderr,
                      "[micro_ros] context start failed: %s; retrying in %u ms\n",
-                     milkros::micro_ros::context_start_error_string(result.error()),
+                     rosette::context_start_error_string(result.error()),
                      static_cast<unsigned>(kContextStartRetryDelayMs));
         std::this_thread::sleep_for(std::chrono::milliseconds(kContextStartRetryDelayMs));
     }
@@ -177,7 +177,7 @@ int run_posix_smoke()
 {
     rosette::net::posix::PosixSocketProvider socket_provider;
 
-    milkros::micro_ros::ContextOptions options{};
+    rosette::ContextOptions options{};
     options.domain_id = 0u;
     options.executor_handles = 4u;
     options.spin_timeout_ns = 1000000ull;
@@ -191,15 +191,15 @@ int run_posix_smoke()
 
     const char* agent_ip = ROSETTE_MICRO_ROS_AGENT_IP;
     if ((agent_ip != nullptr) && (agent_ip[0] != '\0') &&
-        !milkros::micro_ros::make_ipv4_socket_address(agent_ip, agent_port, remote)) {
+        !rosette::make_ipv4_socket_address(agent_ip, agent_port, remote)) {
         std::fprintf(stderr, "[micro_ros] invalid agent IP: %s\n", agent_ip);
         return 1;
     }
 
-    milkros::micro_ros::UdpSocketTransport transport(socket_provider, remote, local, 100u);
-    milkros::micro_ros::MulticastAgentLocator locator(
+    rosette::UdpSocketTransport transport(socket_provider, remote, local, 100u);
+    rosette::MulticastAgentLocator locator(
         socket_provider,
-        milkros::micro_ros::MulticastAgentLocatorConfig{
+        rosette::MulticastAgentLocatorConfig{
             .multicast_group = ROSETTE_MICRO_ROS_DISCOVERY_GROUP,
             .multicast_port =
                 static_cast<uint16_t>(std::atoi(ROSETTE_MICRO_ROS_DISCOVERY_PORT)),
@@ -226,7 +226,7 @@ int run_posix_smoke()
     }
 #endif
 
-    milkros::micro_ros::Context context(options);
+    rosette::Context context(options);
     if (!start_context_with_retry(context)) {
         return 1;
     }
@@ -271,38 +271,38 @@ constexpr uint32_t kBlinkPeriodMs = 500u;
 constexpr EventBits_t kNetworkReadyBit = 1u << 0u;
 constexpr EventBits_t kNtpSyncedBit = 1u << 1u;
 
-#ifndef RTPS_NET_MODE_STATIC
-#define RTPS_NET_MODE_STATIC 0
+#ifndef ROSETTE_NET_MODE_STATIC
+#define ROSETTE_NET_MODE_STATIC 0
 #endif
-#ifndef RTPS_NET_MODE_DHCP
-#define RTPS_NET_MODE_DHCP 1
+#ifndef ROSETTE_NET_MODE_DHCP
+#define ROSETTE_NET_MODE_DHCP 1
 #endif
-#ifndef RTPS_NET_MODE_SLAAC
-#define RTPS_NET_MODE_SLAAC 2
+#ifndef ROSETTE_NET_MODE_SLAAC
+#define ROSETTE_NET_MODE_SLAAC 2
 #endif
-#ifndef RTPS_NET_MODE_ZEROCONF
-#define RTPS_NET_MODE_ZEROCONF 3
+#ifndef ROSETTE_NET_MODE_ZEROCONF
+#define ROSETTE_NET_MODE_ZEROCONF 3
 #endif
-#ifndef RTPS_NET_MODE
-#define RTPS_NET_MODE RTPS_NET_MODE_DHCP
+#ifndef ROSETTE_NET_MODE
+#define ROSETTE_NET_MODE ROSETTE_NET_MODE_DHCP
 #endif
-#ifndef RTPS_NET_HOSTNAME
-#define RTPS_NET_HOSTNAME "rosette-micro-ros"
+#ifndef ROSETTE_NET_HOSTNAME
+#define ROSETTE_NET_HOSTNAME "rosette-micro-ros"
 #endif
-#ifndef RTPS_NET_STATIC_IP
-#define RTPS_NET_STATIC_IP {192u, 168u, 1u, 200u}
+#ifndef ROSETTE_NET_STATIC_IP
+#define ROSETTE_NET_STATIC_IP {192u, 168u, 1u, 200u}
 #endif
-#ifndef RTPS_NET_STATIC_MASK
-#define RTPS_NET_STATIC_MASK {255u, 255u, 255u, 0u}
+#ifndef ROSETTE_NET_STATIC_MASK
+#define ROSETTE_NET_STATIC_MASK {255u, 255u, 255u, 0u}
 #endif
-#ifndef RTPS_NET_STATIC_GW
-#define RTPS_NET_STATIC_GW {192u, 168u, 1u, 1u}
+#ifndef ROSETTE_NET_STATIC_GW
+#define ROSETTE_NET_STATIC_GW {192u, 168u, 1u, 1u}
 #endif
-#ifndef RTPS_NET_STATIC_DNS
-#define RTPS_NET_STATIC_DNS {8u, 8u, 8u, 8u}
+#ifndef ROSETTE_NET_STATIC_DNS
+#define ROSETTE_NET_STATIC_DNS {8u, 8u, 8u, 8u}
 #endif
-#ifndef RTPS_NET_ZEROCONF_IP
-#define RTPS_NET_ZEROCONF_IP {169u, 254u, 1u, 10u}
+#ifndef ROSETTE_NET_ZEROCONF_IP
+#define ROSETTE_NET_ZEROCONF_IP {169u, 254u, 1u, 10u}
 #endif
 
 NetworkInterface_t g_network_interface{};
@@ -312,11 +312,11 @@ bool g_network_started = false;
 uint32_t g_random_state = 0x51A7C0DEu;
 EventGroupHandle_t g_network_events = nullptr;
 
-constexpr std::array<uint8_t, 4> kStaticIp = RTPS_NET_STATIC_IP;
-constexpr std::array<uint8_t, 4> kStaticMask = RTPS_NET_STATIC_MASK;
-constexpr std::array<uint8_t, 4> kStaticGateway = RTPS_NET_STATIC_GW;
-constexpr std::array<uint8_t, 4> kStaticDns = RTPS_NET_STATIC_DNS;
-constexpr std::array<uint8_t, 4> kZeroconfIp = RTPS_NET_ZEROCONF_IP;
+constexpr std::array<uint8_t, 4> kStaticIp = ROSETTE_NET_STATIC_IP;
+constexpr std::array<uint8_t, 4> kStaticMask = ROSETTE_NET_STATIC_MASK;
+constexpr std::array<uint8_t, 4> kStaticGateway = ROSETTE_NET_STATIC_GW;
+constexpr std::array<uint8_t, 4> kStaticDns = ROSETTE_NET_STATIC_DNS;
+constexpr std::array<uint8_t, 4> kZeroconfIp = ROSETTE_NET_ZEROCONF_IP;
 constexpr std::array<uint8_t, 16> kLinkLocalPrefix{
     0xFEu, 0x80u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
     0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
@@ -341,12 +341,12 @@ uint32_t mix_random(uint32_t value) noexcept
 
 bool have_ipv4() noexcept
 {
-    return rtps::rtps_platform_get_ipv4_addr() != 0u;
+    return rosette_platform_get_ipv4_addr() != 0u;
 }
 
 bool have_ipv6(std::array<uint8_t, 16>& out) noexcept
 {
-    return rtps::rtps_platform_get_ipv6_addr(out.data());
+    return rosette_platform_get_ipv6_addr(out.data());
 }
 
 bool network_ready() noexcept
@@ -365,7 +365,7 @@ bool start_board_network() noexcept
     board_get_mac_address(mac);
 
     const std::array<uint8_t, 4> ipv4 =
-        (RTPS_NET_MODE == RTPS_NET_MODE_ZEROCONF) ? kZeroconfIp : kStaticIp;
+        (ROSETTE_NET_MODE == ROSETTE_NET_MODE_ZEROCONF) ? kZeroconfIp : kStaticIp;
 
     FreeRTOS_FillEndPoint(
         &g_network_interface,
@@ -378,7 +378,7 @@ bool start_board_network() noexcept
 
 #if ( ipconfigUSE_DHCP != 0 )
     g_ipv4_endpoint.bits.bWantDHCP =
-        (RTPS_NET_MODE == RTPS_NET_MODE_DHCP) ? pdTRUE_UNSIGNED : pdFALSE_UNSIGNED;
+        (ROSETTE_NET_MODE == ROSETTE_NET_MODE_DHCP) ? pdTRUE_UNSIGNED : pdFALSE_UNSIGNED;
 #endif
 
     IPv6_Address_t ipv6_addr{};
@@ -402,7 +402,7 @@ bool start_board_network() noexcept
 
 #if ( ipconfigUSE_RA != 0 )
     g_ipv6_endpoint.bits.bWantRA =
-        (RTPS_NET_MODE == RTPS_NET_MODE_SLAAC) ? pdTRUE_UNSIGNED : pdFALSE_UNSIGNED;
+        (ROSETTE_NET_MODE == ROSETTE_NET_MODE_SLAAC) ? pdTRUE_UNSIGNED : pdFALSE_UNSIGNED;
 #endif
 
     if (FreeRTOS_IPInit_Multi() != pdPASS) {
@@ -425,18 +425,18 @@ bool start_board_network() noexcept
  * @param[in,out] context Context to start.
  * @return True when the context reaches the running state.
  */
-bool start_context_with_retry(milkros::micro_ros::Context& context) noexcept
+bool start_context_with_retry(rosette::Context& context) noexcept
 {
     for (;;) {
-        const milkros::micro_ros::ContextStartResult result = context.start_result();
+        const rosette::ContextStartResult result = context.start_result();
         if (result.ok()) {
             std::printf("[micro_ros] context started: %s\n",
-                        milkros::micro_ros::context_start_error_string(result.error()));
+                        rosette::context_start_error_string(result.error()));
             return true;
         }
 
         std::printf("[micro_ros] context start failed: %s; retrying in %lu ms\n",
-                    milkros::micro_ros::context_start_error_string(result.error()),
+                    rosette::context_start_error_string(result.error()),
                     static_cast<unsigned long>(kContextStartRetryDelayMs));
         vTaskDelay(pdMS_TO_TICKS(kContextStartRetryDelayMs));
     }
@@ -445,7 +445,7 @@ bool start_context_with_retry(milkros::micro_ros::Context& context) noexcept
 void blink_timer_cb(TimerHandle_t) noexcept
 {
     static bool on = false;
-    gpio_put(RTPS_PIN_LED, on ? 1u : 0u);
+    gpio_put(ROSETTE_PIN_LED, on ? 1u : 0u);
     on = !on;
 }
 
@@ -492,7 +492,7 @@ void service_task(void*) noexcept
                               pdFALSE,
                               pdMS_TO_TICKS(30000u));
 
-    milkros::micro_ros::ContextOptions options{};
+    rosette::ContextOptions options{};
     options.domain_id = 0u;
     options.executor_handles = 4u;
     options.spin_timeout_ns = 1000000ull;
@@ -503,7 +503,7 @@ void service_task(void*) noexcept
     rosette::net::SocketAddress remote =
         rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, agent_port);
     if (ROSETTE_MICRO_ROS_AGENT_IP[0] != '\0' &&
-        !milkros::micro_ros::make_ipv4_socket_address(
+        !rosette::make_ipv4_socket_address(
             ROSETTE_MICRO_ROS_AGENT_IP,
             agent_port,
             remote)) {
@@ -513,11 +513,11 @@ void service_task(void*) noexcept
     }
 
     const auto local = rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u);
-    static milkros::micro_ros::UdpSocketTransport transport(
+    static rosette::UdpSocketTransport transport(
         socket_provider, remote, local, 100u);
-    static milkros::micro_ros::MulticastAgentLocator locator(
+    static rosette::MulticastAgentLocator locator(
         socket_provider,
-        milkros::micro_ros::MulticastAgentLocatorConfig{
+        rosette::MulticastAgentLocatorConfig{
             .multicast_group = ROSETTE_MICRO_ROS_DISCOVERY_GROUP,
             .multicast_port =
                 static_cast<uint16_t>(std::atoi(ROSETTE_MICRO_ROS_DISCOVERY_PORT)),
@@ -544,7 +544,7 @@ void service_task(void*) noexcept
     }
 #endif
 
-    static milkros::micro_ros::Context context(options);
+    static rosette::Context context(options);
     if (!start_context_with_retry(context)) {
         vTaskDelete(nullptr);
         return;
@@ -562,7 +562,7 @@ void service_task(void*) noexcept
 
     uint32_t last_publish_ms = 0u;
     for (;;) {
-        const uint32_t now_ms = rtps_platform_get_ms();
+        const uint32_t now_ms = rosette_platform_get_ms();
         (void)context.tick(now_ms);
 
         if ((now_ms - last_publish_ms) >= kPublishPeriodMs) {
@@ -580,7 +580,7 @@ void service_task(void*) noexcept
 
 }  // namespace
 
-namespace milkros {
+namespace rosette {
 
 template<>
 struct message_traits<std_msgs__msg__Float32> {
@@ -603,9 +603,9 @@ struct message_traits<std_msgs__msg__Float32> {
 template<>
 inline constexpr bool has_message_traits_v<std_msgs__msg__Float32> = true;
 
-}  // namespace milkros
+}  // namespace rosette
 
-#ifdef RTPS_NO_FREERTOS
+#ifdef ROSETTE_NO_FREERTOS
 int main()
 {
     return run_posix_smoke();
@@ -613,7 +613,7 @@ int main()
 #else
 extern "C" const char* pcApplicationHostnameHook(void)
 {
-    return RTPS_NET_HOSTNAME;
+    return ROSETTE_NET_HOSTNAME;
 }
 
 extern "C" BaseType_t xApplicationGetRandomNumber(uint32_t* pulNumber)
@@ -679,7 +679,7 @@ int main()
         }
     }
 
-    gpio_put(RTPS_PIN_LED, 0u);
+    gpio_put(ROSETTE_PIN_LED, 0u);
     TimerHandle_t blink = xTimerCreate("blink",
                                        pdMS_TO_TICKS(kBlinkPeriodMs),
                                        pdTRUE,

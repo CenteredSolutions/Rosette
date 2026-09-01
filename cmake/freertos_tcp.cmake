@@ -33,7 +33,7 @@ endif()
 
 # Port selection: RP2040 and RP2350 both use the ARM_CM33_NTZ/non_secure
 # port on RP2350 and the ARM_CM0 port on RP2040.
-if(RTPS_PROCESSOR STREQUAL "RP2350")
+if(ROSETTE_PROCESSOR STREQUAL "RP2350")
     set(FREERTOS_PORT GCC_ARM_CM33_NTZ_NONSECURE CACHE STRING "" FORCE)
 else()
     set(FREERTOS_PORT GCC_ARM_CM0 CACHE STRING "" FORCE)
@@ -68,6 +68,6 @@ target_include_directories(freertos_tcp PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/config
 )
 
-# Network interface: our MACRAW driver is compiled as part of rtps_bsp.
+# Network interface: our MACRAW driver is compiled as part of rosette_bsp.
 # Tell FreeRTOS+TCP not to compile its own interface.
 set(FREERTOS_TCP_NETWORK_IF "CUSTOM" CACHE STRING "" FORCE)
