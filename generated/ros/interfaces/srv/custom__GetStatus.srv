@@ -1,6 +1,0 @@
----
-bool operational
-float32 cpu_usage_percent
-float32 temperature_celsius
-uint32 uptime_seconds
-string status_message

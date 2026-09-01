@@ -1,4 +1,0 @@
----
-string id
-bool passed
-diagnostic_msgs/DiagnosticStatus[] status

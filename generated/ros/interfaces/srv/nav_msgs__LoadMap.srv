@@ -1,9 +1,0 @@
-string map_url
----
-nav_msgs/OccupancyGrid map
-uint8 result
-uint8 RESULT_SUCCESS=0
-uint8 RESULT_MAP_DOES_NOT_EXIST=1
-uint8 RESULT_INVALID_MAP_DATA=2
-uint8 RESULT_INVALID_MAP_METADATA=3
-uint8 RESULT_UNDEFINED_FAILURE=255
