@@ -13,7 +13,8 @@ if(NOT TARGET rosette_net)
     return()
 endif()
 
-if(ROSETTE_BOARD_ENABLE_FREERTOS)
+# Host-only: a command-line program with an assert-style pass/fail report.
+if(NOT ROSETTE_PROCESSOR STREQUAL "HOST")
     return()
 endif()
 

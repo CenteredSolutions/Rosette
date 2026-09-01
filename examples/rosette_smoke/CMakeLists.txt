@@ -15,15 +15,11 @@ if(NOT TARGET rosette_net)
     return()
 endif()
 
-if(NOT ROSETTE_ENABLE_MICRO_ROS)
+# Host-shaped (stock UDP transport, std::thread). The board publisher example
+# is led_files.
+if(NOT ROSETTE_ENABLE_MICRO_ROS OR NOT ROSETTE_PROCESSOR STREQUAL "HOST")
     return()
 endif()
 
 add_executable(rosette_smoke main.cpp)
 target_link_libraries(rosette_smoke PRIVATE rosette_ros)
-
-if(ROSETTE_BOARD_ENABLE_PICO_SDK)
-    pico_add_extra_outputs(rosette_smoke)
-    pico_enable_stdio_usb(rosette_smoke 1)
-    pico_enable_stdio_uart(rosette_smoke 0)
-endif()
