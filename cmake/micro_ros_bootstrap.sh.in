@@ -163,16 +163,20 @@ fi
 
 # Extra interface packages (from examples/ and any explicitly listed) are copied
 # into the firmware workspace so generate_lib compiles them into libmicroros.
-# When at least one is copied, the mcu_ws build/install and firmware/build are
-# wiped so type supports for changed .msg/.srv regenerate cleanly.
-EXTRA_PACKAGES_DIR="${WORKSPACE_DIR}/firmware/mcu_ws/extra_packages"
-rm -rf "${EXTRA_PACKAGES_DIR}"
-mkdir -p "${EXTRA_PACKAGES_DIR}"
+#
+# NOTE: firmware/mcu_ws/extra_packages/ is micro_ros_setup's own config tree
+# (generic/, esp32/, nucleo_*/ ...). Never wipe it — replace only the specific
+# package directories we add. When a package is (re)copied, wipe the mcu_ws
+# build/install so type supports for changed .msg/.srv regenerate.
+ROSETTE_PKG_DIR="${WORKSPACE_DIR}/firmware/mcu_ws/rosette_packages"
+mkdir -p "${ROSETTE_PKG_DIR}"
 _rosette_copied_pkgs=0
 while IFS= read -r package_dir; do
   [[ -n "${package_dir}" && -f "${package_dir}/package.xml" ]] || continue
-  echo "micro-ROS: including interface package $(basename "${package_dir}")"
-  cp -a "${package_dir%/}" "${EXTRA_PACKAGES_DIR}/"
+  name="$(basename "${package_dir}")"
+  echo "micro-ROS: including interface package ${name}"
+  rm -rf "${ROSETTE_PKG_DIR:?}/${name}"
+  cp -a "${package_dir%/}" "${ROSETTE_PKG_DIR}/"
   _rosette_copied_pkgs=1
 done <<'ROSETTE_INTERFACE_PACKAGES_EOF'
 @ROSETTE_MICRO_ROS_INTERFACE_PACKAGES@

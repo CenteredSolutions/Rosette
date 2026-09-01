@@ -264,26 +264,30 @@ if(ROSETTE_MICRO_ROS_USE_PICO_TIME)
     set(ROSETTE_MICRO_ROS_USE_PICO_TIME_TEXT "ON")
 endif()
 
-# Extra interface packages compiled into libmicroros: every package.xml under
-# examples/ (so an example carries its own .srv/.msg), plus any explicitly
-# listed in ROSETTE_MICRO_ROS_EXTRA_INTERFACE_PACKAGES. Re-glob the .msg/.srv/
-# .action files so editing one retriggers the bootstrap.
-file(GLOB_RECURSE _rosette_micro_ros_example_pkg_xmls CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/package.xml")
+# Extra interface packages compiled into libmicroros: an interface package that
+# an example carries lives at examples/<name>/<pkg>/ or
+# examples/<name>/interfaces/<pkg>/. Deliberately NOT a recursive glob — that
+# would pick up package.xml files inside build directories (the micro_ros_setup
+# config tree, other vendored packages, ...). Plus anything explicitly listed
+# in ROSETTE_MICRO_ROS_EXTRA_INTERFACE_PACKAGES.
+file(GLOB _rosette_micro_ros_example_pkg_xmls
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/*/package.xml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/interfaces/*/package.xml")
 set(_rosette_micro_ros_interface_packages "${ROSETTE_MICRO_ROS_EXTRA_INTERFACE_PACKAGES}")
+set(_rosette_micro_ros_interface_files "")
 foreach(_xml IN LISTS _rosette_micro_ros_example_pkg_xmls)
     get_filename_component(_pkg_dir "${_xml}" DIRECTORY)
-    list(APPEND _rosette_micro_ros_interface_packages "${_pkg_dir}")
+    if(EXISTS "${_pkg_dir}/CMakeLists.txt")
+        list(APPEND _rosette_micro_ros_interface_packages "${_pkg_dir}")
+        file(GLOB _pkg_iface_files CONFIGURE_DEPENDS
+            "${_pkg_dir}/package.xml" "${_pkg_dir}/CMakeLists.txt"
+            "${_pkg_dir}/msg/*" "${_pkg_dir}/srv/*" "${_pkg_dir}/action/*")
+        list(APPEND _rosette_micro_ros_interface_files ${_pkg_iface_files})
+    endif()
 endforeach()
 list(REMOVE_DUPLICATES _rosette_micro_ros_interface_packages)
 string(REPLACE ";" "\n" ROSETTE_MICRO_ROS_INTERFACE_PACKAGES
     "${_rosette_micro_ros_interface_packages}")
-
-file(GLOB_RECURSE _rosette_micro_ros_interface_files CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/*.msg"
-    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/*.srv"
-    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/*.action"
-    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/package.xml")
 
 if(_rosette_micro_ros_interface_packages)
     message(STATUS "micro-ROS: extra interface packages:")
