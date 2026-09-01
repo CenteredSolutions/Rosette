@@ -180,17 +180,20 @@ if(DEFINED ROSETTE_MICRO_ROS_SETUP_PATH AND
     set(_rosette_micro_ros_setup_source_dir "${ROSETTE_MICRO_ROS_SETUP_PATH}")
     message(STATUS "Using local micro_ros_setup: ${_rosette_micro_ros_setup_source_dir}")
 elseif(ROSETTE_MICRO_ROS_FETCH_SETUP)
+    set(FETCHCONTENT_QUIET OFF)
+    message(STATUS "Fetching micro_ros_setup (${ROSETTE_MICRO_ROS_DISTRO}) — first run only")
     FetchContent_Declare(micro_ros_setup
         GIT_REPOSITORY https://github.com/micro-ROS/micro_ros_setup.git
         GIT_TAG        ${ROSETTE_MICRO_ROS_DISTRO}
         GIT_SHALLOW    TRUE
+        GIT_PROGRESS   TRUE
+        # micro_ros_setup is an ament package; download it, don't configure it
+        # (the bootstrap script builds it with colcon).
+        SOURCE_SUBDIR  _rosette_not_a_cmake_dir
     )
-    FetchContent_GetProperties(micro_ros_setup)
-    if(NOT micro_ros_setup_POPULATED)
-        FetchContent_Populate(micro_ros_setup)
-    endif()
+    FetchContent_MakeAvailable(micro_ros_setup)
     set(_rosette_micro_ros_setup_source_dir "${micro_ros_setup_SOURCE_DIR}")
-    message(STATUS "Using fetched micro_ros_setup: ${_rosette_micro_ros_setup_source_dir}")
+    message(STATUS "Fetched micro_ros_setup: ${_rosette_micro_ros_setup_source_dir}")
 else()
     message(FATAL_ERROR
         "ROSETTE_ENABLE_MICRO_ROS=ON but no micro_ros_setup source was provided. "

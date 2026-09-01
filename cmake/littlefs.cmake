@@ -5,6 +5,7 @@
 #   ROSETTE_HAVE_LITTLEFS  - ON when the required files are available
 
 include(FetchContent)
+set(FETCHCONTENT_QUIET OFF)
 
 set(ROSETTE_HAVE_LITTLEFS OFF)
 
@@ -22,17 +23,16 @@ elseif(EXISTS "${_rosette_default_littlefs_dir}/lfs.c")
     set(ROSETTE_LITTLEFS_DIR "${_rosette_default_littlefs_dir}")
     message(STATUS "Using local LittleFS: ${ROSETTE_LITTLEFS_DIR}")
 else()
+    message(STATUS "Fetching LittleFS v2.11.1 — first run only")
     FetchContent_Declare(littlefs
         GIT_REPOSITORY https://github.com/littlefs-project/littlefs.git
         GIT_TAG        v2.11.1
         GIT_SHALLOW    TRUE
+        GIT_PROGRESS   TRUE
     )
-    FetchContent_GetProperties(littlefs)
-    if(NOT littlefs_POPULATED)
-        FetchContent_Populate(littlefs)
-    endif()
+    FetchContent_MakeAvailable(littlefs)
     set(ROSETTE_LITTLEFS_DIR "${littlefs_SOURCE_DIR}")
-    message(STATUS "Using fetched LittleFS: ${ROSETTE_LITTLEFS_DIR}")
+    message(STATUS "Fetched LittleFS: ${ROSETTE_LITTLEFS_DIR}")
 endif()
 
 if(EXISTS "${ROSETTE_LITTLEFS_DIR}/lfs.c" AND

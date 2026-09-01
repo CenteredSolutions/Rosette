@@ -39,6 +39,16 @@ set_property(CACHE ROSETTE_BOARD PROPERTY STRINGS
 include("${CMAKE_CURRENT_LIST_DIR}/boards.cmake")
 rosette_select_board(${ROSETTE_BOARD})
 
+if(ROSETTE_BOARD_ENABLE_PICO_SDK AND NOT DEFINED ENV{PICO_SDK_PATH} AND NOT DEFINED PICO_SDK_PATH)
+    message(STATUS "")
+    message(STATUS "Rosette: first configure for '${ROSETTE_BOARD}' fetches the Pico SDK,")
+    message(STATUS "  FreeRTOS, and the WIZnet driver (a few minutes; progress shown below).")
+    message(STATUS "  Set PICO_SDK_PATH / FREERTOS_KERNEL_PATH / FREERTOS_TCP_PATH /")
+    message(STATUS "  WIZNET_IOLIB_PATH to use existing checkouts. The micro-ROS library")
+    message(STATUS "  is cross-built later, during 'cmake --build' (~20-30 min, one time).")
+    message(STATUS "")
+endif()
+
 if(ROSETTE_BOARD_ENABLE_PICO_SDK)
     include("${CMAKE_CURRENT_LIST_DIR}/pico_sdk.cmake")
 endif()

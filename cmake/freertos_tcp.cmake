@@ -12,6 +12,7 @@
 # If not set, CMake FetchContent pulls them from GitHub.
 
 include(FetchContent)
+set(FETCHCONTENT_QUIET OFF)
 
 # ── FreeRTOS Kernel ───────────────────────────────────────────────────────────
 
@@ -23,10 +24,13 @@ if(DEFINED FREERTOS_KERNEL_PATH AND EXISTS "${FREERTOS_KERNEL_PATH}")
     message(STATUS "Using local FreeRTOS-Kernel: ${FREERTOS_KERNEL_PATH}")
     add_subdirectory(${FREERTOS_KERNEL_PATH} freertos_kernel EXCLUDE_FROM_ALL)
 else()
+    message(STATUS "Fetching FreeRTOS-Kernel V11.1.0 — first run only")
     FetchContent_Declare(freertos_kernel
         GIT_REPOSITORY https://github.com/FreeRTOS/FreeRTOS-Kernel.git
         GIT_TAG        V11.1.0
         GIT_SHALLOW    TRUE
+        GIT_PROGRESS   TRUE
+        GIT_SUBMODULES ""
     )
     FetchContent_MakeAvailable(freertos_kernel)
 endif()
@@ -54,10 +58,13 @@ if(DEFINED FREERTOS_TCP_PATH AND EXISTS "${FREERTOS_TCP_PATH}")
     message(STATUS "Using local FreeRTOS+TCP: ${FREERTOS_TCP_PATH}")
     add_subdirectory(${FREERTOS_TCP_PATH} freertos_tcp EXCLUDE_FROM_ALL)
 else()
+    message(STATUS "Fetching FreeRTOS-Plus-TCP V4.2.2 — first run only")
     FetchContent_Declare(freertos_tcp
         GIT_REPOSITORY https://github.com/FreeRTOS/FreeRTOS-Plus-TCP.git
         GIT_TAG        V4.2.2
         GIT_SHALLOW    TRUE
+        GIT_PROGRESS   TRUE
+        GIT_SUBMODULES ""
     )
     FetchContent_MakeAvailable(freertos_tcp)
 endif()

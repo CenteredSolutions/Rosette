@@ -11,6 +11,7 @@
 # are excluded to keep code size minimal.
 
 include(FetchContent)
+set(FETCHCONTENT_QUIET OFF)
 
 if(DEFINED ENV{WIZNET_IOLIB_PATH})
     set(WIZNET_IOLIB_PATH "$ENV{WIZNET_IOLIB_PATH}")
@@ -20,10 +21,12 @@ if(DEFINED WIZNET_IOLIB_PATH AND EXISTS "${WIZNET_IOLIB_PATH}")
     message(STATUS "Using local WIZnet ioLibrary: ${WIZNET_IOLIB_PATH}")
     set(WIZNET_SRC_DIR "${WIZNET_IOLIB_PATH}")
 else()
+    message(STATUS "Fetching WIZnet ioLibrary_Driver — first run only")
     FetchContent_Declare(wiznet_iolib_src
         GIT_REPOSITORY https://github.com/Wiznet/ioLibrary_Driver.git
         GIT_TAG        master
         GIT_SHALLOW    TRUE
+        GIT_PROGRESS   TRUE
     )
     FetchContent_MakeAvailable(wiznet_iolib_src)
     set(WIZNET_SRC_DIR "${wiznet_iolib_src_SOURCE_DIR}")
