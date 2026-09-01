@@ -48,12 +48,11 @@ its behalf.
 - `cmake/` — `boards.cmake`, `pico_sdk.cmake`, `freertos_tcp.cmake`,
   `wiznet.cmake`, `littlefs.cmake`, `micro_ros.cmake`
 - `src/net/ntp_sync.cpp` — time-source sync for XRCE sessions
-- **LittleFS** (`cmake/littlefs.cmake`, `include/rosette/platform/littlefs_platform.hpp`,
-  new `rosette_fs` target) — retained and repurposed from RTPS history storage
-  to a persistent **device-configuration** volume: network mode and addressing,
-  the micro-ROS Agent endpoint, the XRCE client key, calibration blobs. Survives
-  power cycles and application reflashing. The block-device implementation is
-  phase 5.
+- **LittleFS** (`cmake/littlefs.cmake`, `rosette_fs` + `rosette_storage`
+  targets) — retained and repurposed from RTPS history storage to a generic
+  persistent volume. Rosette provides the volume, an atomic-write file API, a
+  content-agnostic keyed blob store, and its own boot-config record; file
+  formats are the application's. Survives power cycles and reflashing. See §9.
 
 ### Kept and promoted (the new mainline)
 
@@ -117,48 +116,59 @@ the right primitive and are kept. A purely functional/handle-less API is
 rejected: `rclc_executor` needs exact handle accounting and agent reconnect
 needs deterministic teardown order, and both fight a handle-less design.
 
-### 5.2 `rosette::App` — the lifecycle layer (new)
+### 5.2 `rosette::App` + `rosette::Module` — the lifecycle layer (new)
 
 The single most important addition. Every real micro-ROS deployment needs the
 Agent connection state machine; the wrapper should own it so applications never
-hand-roll it.
+hand-roll it. The shape is taken directly from the reference controller's proven
+MicroPython `RosService` / `Section` design (see §10), collapsed to Rosette's
+single-threaded cooperative model.
+
+`App` owns the session. A **`Module`** is one slice of the firmware's ROS
+surface — device, io, motion — that groups the entities and callbacks for a
+feature area:
 
 ```cpp
-rosette::AppOptions opts;
-opts.client_key = 0x11223344u;
-opts.domain_id  = 0u;
-// transport + agent locator resolved from board config by default
+class MotionModule : public rosette::Module {
+public:
+    const char* name() const override { return "motion"; }
+    uint32_t period_ms() const override { return 100; }   // 0 => no periodic publish
 
-rosette::App app(opts);
+    void register_(rosette::Node& node) override {        // once, before first connect
+        state_ = node.create_publisher<MotorState>("motion/state");
+        node.create_service<StopMotor>("motion/stop", [this](auto& rq, auto& rs){ stop(rq, rs); });
+        node.create_subscription<MotionTarget>("motion/target", [this](const auto& m){ on_target(m); });
+    }
+    void on_connect() override { /* reconnect edge: burst current state, clear latches */ }
+    void publish() override    { /* one status frame; called while connected */ }
+};
 
-app.on_setup([](rosette::Node& node) {
-    // Called on every (re)connect to the Agent. Build all entities here.
-    auto temp = node.create_publisher<std_msgs__msg__Float32>("mcu_temperature_c");
-    node.create_subscription<geometry_msgs__msg__Twist>("cmd_vel", on_cmd);
-    node.create_action_server<Fibonacci>("fibonacci", on_goal, on_execute);
-});
-
-app.on_loop([](rosette::LoopContext& lc) {
-    // Called every tick while CONNECTED. Publish, read sensors, etc.
-});
-
-app.on_teardown([](rosette::Node&) { /* optional: release app resources */ });
-
-app.spin();   // never returns; or app.spin_once(now_ms) from your own task loop
+rosette::App app({ .namespace_ = rosette::board_scoped_ns("mach", "controller") });
+app.add<DeviceModule>();
+app.add<IoModule>();
+app.add<MotionModule>();
+app.spin();   // never returns; or app.spin_once(now_ms) from your own task/loop
 ```
 
-Internally `spin()` runs:
+`spin()` runs one state machine and drives every module cooperatively — no task
+or thread per module:
 
 ```
 WAITING_AGENT   ── ping_agent() ok ──▶ AGENT_AVAILABLE
-AGENT_AVAILABLE ── context.start(), on_setup() ok ──▶ CONNECTED
-CONNECTED       ── tick(): spin_some + action tick + on_loop
+AGENT_AVAILABLE ── context.start(); Module::register_() for each; on_setup() ──▶ CONNECTED
+CONNECTED       ── each tick: executor spin_some + action tick
+                             + Module::publish() for each module whose period elapsed
+CONNECTED       ── on the connect edge: Module::on_connect() for each
 CONNECTED       ── ping_agent() fails N times ──▶ DISCONNECTED
-DISCONNECTED    ── on_teardown(), destroy entities, context.fini() ──▶ WAITING_AGENT
+DISCONNECTED    ── Module::on_teardown(); destroy entities; context.fini() ──▶ WAITING_AGENT
 ```
 
+For the simplest firmwares, `app.on_setup(fn)` / `app.on_loop(fn)` /
+`app.on_teardown(fn)` register an anonymous single-module equivalent, so a
+one-topic publisher needs no `Module` subclass.
+
 This is the pattern the micro-ROS reference apps implement by hand with
-`RCCHECK`/`EXECUTE_EVERY_N_MS`. `App` makes it declarative.
+`RCCHECK`/`EXECUTE_EVERY_N_MS`. `App` + `Module` make it declarative.
 
 ### 5.3 `Node` computes the executor budget
 
@@ -363,3 +373,60 @@ payload that size needs in `colcon.meta`.
 - **First-boot log noise.** A blank volume makes LittleFS print one
   "Corrupted dir pair" line before `littlefs_mount()` formats and remounts.
   Harmless; silence by lowering the LittleFS log level if it bothers a product.
+
+## 10. Reference application — the reference motion controller
+
+The first firmware built on Rosette is the reference controller (a multi-axis stepper
+controller around the TMC5160). Its interface package `controller_msgs` and its current
+MicroPython implementation (`controller-firmware/modules/ros`, `.../motors`) are the
+concrete target Rosette's API is measured against: **porting that firmware to
+C++/Rosette should be a mechanical translation, not a redesign.**
+
+### What Rosette must make trivial (from the reference)
+
+- **`RosService` → `rosette::App`.** Owns the session; resolves the Agent
+  (discovery with a static fallback); builds the context and node; runs the
+  reconnect state machine; keeps module state alive across a hard failure.
+- **`Section` → `rosette::Module`.** `name`, `period_ms`, `register_()`,
+  `on_connect()`, `publish()`. The reference's per-section `async run()` loop
+  becomes App-driven cooperative ticking.
+- **Namespace convention.** Board-local entities use *relative* names and land
+  under `/<root>/<board-id>/…`; fleet-wide entities (`/mach/faults`) use
+  *absolute* names. `board-id` is the chip unique id with a leading-letter
+  prefix (a ROS name token cannot start with a digit) — provide
+  `rosette::board_id()` and `rosette::board_scoped_ns()`.
+- **Fault reporting.** A cross-cutting module publishing `controller_msgs/msg/Fault` on
+  an absolute topic; modules call `raise_(source, level, code, msg)` /
+  `clear(source)`; active faults re-assert on a timer and on every reconnect.
+  The `Fault` message is application-owned; the "re-assert retained state on
+  reconnect" behavior is a Rosette pattern worth a small helper.
+- **Sync services, async work.** Service callbacks are `(request, response)`
+  and must return promptly. Long operations (`ConfigureMotor`, firmware apply)
+  return "accepted" and continue on the tick loop; the client polls status.
+  Genuinely long, cancellable, progress-reporting operations are **actions**
+  (`Home`, `JointMotion`, `Calibrate`, `UpdateFirmware` all are) — the
+  cooperative action server (§5.4) is exactly this.
+- **Executor budget.** The reference hand-counts `NUM_HANDLES = 24` "with
+  headroom". `Node` auto-sizing (§5.3) removes that.
+- **IRQ-safe streaming.** Input-edge events set a bitmask + flag in the ISR and
+  publish on the loop. Rosette does not need to provide this, but the tick model
+  must accommodate "publish outside the executor callback".
+- **Config files by name.** `ConfigureMotor.srv` carries a `config_filename`;
+  the firmware loads that file from storage and applies it to the driver. This
+  is exactly `FileStore::get(key)` + the application's own JSON reader (the
+  reference's `MotorConfiguration` maps JSON sections to TMC register writes).
+  Rosette stores and serves the bytes; it never parses them.
+
+### What stays out of Rosette
+
+The TMC5160 register model, motion profiles, unit-aware scaling, homing, and
+StallGuard tuning (`controller-firmware/modules/motors`) are the *application's*
+motor framework. Rosette knows nothing about motors — a `Module` wires the
+app's driver objects into ROS entities and that is the whole seam.
+
+### A note on `controller_msgs` nesting limits
+
+`controller_msgs/README.md` warns of "message nesting up to 2 hops" — that is a limit
+of the reference's **MicroPython dict codec generator**, not micro-ROS. Rosette
+C++ uses the rosidl-generated C types from `libmicroros` directly and has no
+such limit; `.msg` files written for Rosette need not contort around it.
