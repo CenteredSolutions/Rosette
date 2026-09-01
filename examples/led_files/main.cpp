@@ -1,5 +1,5 @@
 /**
- * @file examples/led_files.cpp
+ * @file examples/led_files/main.cpp
  * @brief A minimal Rosette firmware: an LED service and an on-device file store.
  *
  * Shows the whole shape of a Rosette application:
@@ -16,12 +16,12 @@
  *     -DROSETTE_MICRO_ROS_WORKSPACE_DIR=<ws with libmicroros.a>
  *   cmake --build build --target led_files
  *
- * Try it:
- *   ros2 run micro_ros_agent micro_ros_agent udp4 --port 8888
+ * Try it (host `rosette_msgs` must be on the ROS 2 path — `colcon build` it):
+ *   <agent>/micro_ros_agent udp4 --port 8888
  *   ROSETTE_AGENT_IP=127.0.0.1 ./led_files
- *   ros2 service call /led_files/led/set  rosette_msgs/srv/SetLed  "{led: 0, on: true}"
- *   ros2 service call /led_files/files/put rosette_msgs/srv/PutFile "{key: 'k1', body: 'hello'}"
- *   ros2 service call /led_files/files/get rosette_msgs/srv/GetFile "{key: 'k1'}"
+ *   ros2 service call /led_files/led/set   rosette_msgs/srv/SetLed   "{led: 0, state: true}"
+ *   ros2 service call /led_files/files/put  rosette_msgs/srv/PutFile  "{key: k1, body: hello}"
+ *   ros2 service call /led_files/files/get  rosette_msgs/srv/GetFile  "{key: k1}"
  *   ros2 service call /led_files/files/list rosette_msgs/srv/ListFiles "{}"
  */
 
@@ -57,7 +57,7 @@ public:
         node.create_service<rosette::SetLedSrv>(
             service_, "led/set",
             [this](const Request& req, Response& resp) noexcept {
-                set_led(req.led, req.on);
+                set_led(req.led, req.state);
                 resp.success = true;
             });
     }
@@ -191,7 +191,8 @@ int main()
         (agent_ip != nullptr && agent_ip[0] != '\0') ? agent_ip : "127.0.0.1";
     options.context.udp_agent_port = 8888u;
     options.context.auto_discover_agent = false;
-    options.node_name = "led_files";
+    options.node_namespace = "led_files";  // entities land under /led_files/...
+    options.node_name = "board";
 
     rosette::App app(options);
 
