@@ -102,10 +102,10 @@ set(ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS "3" CACHE STRING
 # and the bootstrap paths.
 set(_rosette_micro_ros_transport "${ROSETTE_MICRO_ROS_TRANSPORT}")
 if(_rosette_micro_ros_transport STREQUAL "auto")
-    if(ROSETTE_BOARD_ENABLE_FREERTOS)
-        set(_rosette_micro_ros_transport "custom")
+    if(ROSETTE_PROCESSOR STREQUAL "HOST")
+        set(_rosette_micro_ros_transport "udp")   # stock BSD-socket UDP transport
     else()
-        set(_rosette_micro_ros_transport "udp")
+        set(_rosette_micro_ros_transport "custom") # MCU boards drive their own socket
     endif()
 endif()
 
@@ -202,10 +202,10 @@ endif()
 
 set(_rosette_micro_ros_transport "${ROSETTE_MICRO_ROS_TRANSPORT}")
 if(_rosette_micro_ros_transport STREQUAL "auto")
-    if(ROSETTE_BOARD_ENABLE_FREERTOS)
-        set(_rosette_micro_ros_transport "custom")
+    if(ROSETTE_PROCESSOR STREQUAL "HOST")
+        set(_rosette_micro_ros_transport "udp")   # stock BSD-socket UDP transport
     else()
-        set(_rosette_micro_ros_transport "udp")
+        set(_rosette_micro_ros_transport "custom") # MCU boards drive their own socket
     endif()
 endif()
 

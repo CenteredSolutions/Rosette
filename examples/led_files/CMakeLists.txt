@@ -38,7 +38,7 @@ target_link_libraries(led_files PRIVATE rosette_ros rosette_storage)
 
 if(ROSETTE_BOARD_ENABLE_PICO_SDK)
     target_compile_definitions(led_files PRIVATE ROSETTE_BOARD_PICO)
-    target_link_libraries(led_files PRIVATE rosette_bsp hardware_gpio)
+    target_link_libraries(led_files PRIVATE rosette_bsp pico_stdlib hardware_gpio)
     pico_add_extra_outputs(led_files)
     pico_enable_stdio_usb(led_files 1)
     pico_enable_stdio_uart(led_files 0)

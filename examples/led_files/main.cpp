@@ -6,19 +6,23 @@
  *   - `rosette::App` owns the micro-ROS session and the reconnect loop.
  *   - each `rosette::Module` groups one feature's entities and callbacks.
  *   - services are plain `(request, response)` callbacks.
+ *   - entities live in `std::optional<...>` members so `App` can rebuild them
+ *     across an Agent reconnect.
  *
- * Entities live in `std::optional<...>` members so `App` can tear them down and
- * rebuild them across an Agent reconnect.
+ * Runs on the host (stock UDP transport) and on the W5100S-EVB-Pico2 (WIZnet
+ * hardware sockets, no RTOS, superloop).
  *
- * Build (host):
- *   cmake -S . -B build -DROSETTE_BOARD=posix -DROSETTE_ENABLE_MICRO_ROS=ON \
- *     -DROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD=OFF \
- *     -DROSETTE_MICRO_ROS_WORKSPACE_DIR=<ws with libmicroros.a>
- *   cmake --build build --target led_files
+ * Host:
+ *   cmake -S . -B build -DROSETTE_BOARD=posix ; cmake --build build
+ *   micro_ros_agent udp4 --port 8888
+ *   ROSETTE_AGENT_IP=127.0.0.1 ./build/led_files
  *
- * Try it (host `rosette_msgs` must be on the ROS 2 path — `colcon build` it):
- *   <agent>/micro_ros_agent udp4 --port 8888
- *   ROSETTE_AGENT_IP=127.0.0.1 ./led_files
+ * W5100S-EVB-Pico2:
+ *   cmake -S . -B build -DROSETTE_BOARD=w5100s-evb-pico2 \
+ *         -DROSETTE_MICRO_ROS_AGENT_IP=192.168.1.10
+ *   cmake --build build          # flash build/led_files.uf2
+ *
+ * Try it:
  *   ros2 service call /led_files/led/set   rosette_msgs/srv/SetLed   "{led: 0, state: true}"
  *   ros2 service call /led_files/files/put  rosette_msgs/srv/PutFile  "{key: k1, body: hello}"
  *   ros2 service call /led_files/files/get  rosette_msgs/srv/GetFile  "{key: k1}"
@@ -28,6 +32,7 @@
 #include "rosette_msgs_traits.hpp"
 
 #include "rosette/ros/ros.hpp"
+#include "rosette/ros/socket_transport.hpp"
 #include "rosette/storage/file_store.hpp"
 #include "rosette/storage/volume.hpp"
 
@@ -39,7 +44,9 @@
 #include <optional>
 
 #if defined(ROSETTE_BOARD_PICO)
-#include "pico/stdlib.h"
+#include "board.h"
+#include "rosette/net/wiznet/w5x00_link.hpp"
+#include "rosette/net/wiznet/w5x00_socket.hpp"
 #endif
 
 namespace {
@@ -70,10 +77,11 @@ private:
 
     void set_led(uint8_t index, bool on) noexcept
     {
-#if defined(ROSETTE_BOARD_PICO)
-        if (index == 0u) {
-            gpio_put(PICO_DEFAULT_LED_PIN, on);
+        if (index != 0u) {
+            return;
         }
+#if defined(ROSETTE_BOARD_PICO)
+        board_set_led(on);
 #else
         std::printf("[led] LED %u -> %s\n", index, on ? "on" : "off");
 #endif
@@ -170,39 +178,92 @@ private:
     std::optional<rosette::Service<rosette::EraseFileSrv>> erase_;
 };
 
+void configure_app(rosette::AppOptions& options)
+{
+    options.context.udp_agent_port = 8888u;
+    options.context.auto_discover_agent = false;
+    options.node_namespace = "led_files";   // entities land under /led_files/...
+    options.node_name = "board";
+}
+
 }  // namespace
+
+#if defined(ROSETTE_BOARD_PICO)
 
 int main()
 {
-#if defined(ROSETTE_BOARD_PICO)
-    stdio_init_all();
-    gpio_init(PICO_DEFAULT_LED_PIN);
-    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-#endif
+    board_init();
 
+    std::array<uint8_t, 6> mac{};
+    board_get_mac_address(mac.data());
+
+    rosette::net::wiznet::WiznetLink link(mac, rosette::net::wiznet::LinkMode::dhcp);
+    while (!link.begin()) {
+        std::printf("[led_files] waiting for network link\n");
+        rosette_platform_delay_ms(500u);
+    }
+    const auto ip = link.ipv4();
+    std::printf("[led_files] link up: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+
+    rosette::storage::Volume volume;
+
+    // WIZnet hardware-socket transport to the Agent.
+    const char* agent_ip = ROSETTE_MICRO_ROS_AGENT_IP;
+    if (agent_ip[0] == '\0') {
+        std::printf("[led_files] no ROSETTE_MICRO_ROS_AGENT_IP configured\n");
+        for (;;) { rosette_platform_delay_ms(1000u); }
+    }
+
+    rosette::net::wiznet::W5x00SocketProvider sockets;
+    rosette::net::SocketAddress agent{};
+    (void)rosette::make_ipv4_socket_address(agent_ip, 8888u, agent);
+    const auto local = rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u);
+    rosette::UdpSocketTransport transport(sockets, agent, local, /*receive_timeout_ms=*/50u);
+
+    rosette::AppOptions options{};
+    configure_app(options);
+    options.context.use_custom_transport = true;
+    options.context.custom_transport = &transport;
+    options.context.custom_transport_framing = false;   // UDP is packet-oriented
+
+    rosette::App app(options);
+    static LedModule led;
+    static FilesModule files(volume);
+    app.add(led);
+    app.add(files);
+
+    std::printf("[led_files] agent %s:8888\n", agent_ip);
+    for (;;) {
+        (void)app.spin_once(rosette_platform_get_ms());
+        link.poll();
+        rosette_platform_delay_ms(app.connected() ? 5u : 200u);
+    }
+}
+
+#else  // host
+
+int main()
+{
     rosette::storage::Volume volume;
     if (!volume.ok()) {
         std::printf("[led_files] storage volume not available\n");
     }
 
     rosette::AppOptions options{};
+    configure_app(options);
     const char* agent_ip = std::getenv("ROSETTE_AGENT_IP");
     options.context.udp_agent_address =
         (agent_ip != nullptr && agent_ip[0] != '\0') ? agent_ip : "127.0.0.1";
-    options.context.udp_agent_port = 8888u;
-    options.context.auto_discover_agent = false;
-    options.node_namespace = "led_files";  // entities land under /led_files/...
-    options.node_name = "board";
 
     rosette::App app(options);
-
     static LedModule led;
     static FilesModule files(volume);
     app.add(led);
     app.add(files);
 
-    std::printf("[led_files] starting; agent %s:%u\n",
-                options.context.udp_agent_address, options.context.udp_agent_port);
+    std::printf("[led_files] agent %s:8888\n", options.context.udp_agent_address);
     app.spin();
     return 0;
 }
+
+#endif

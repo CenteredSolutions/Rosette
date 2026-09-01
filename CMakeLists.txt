@@ -57,12 +57,6 @@ add_library(rosette_net STATIC
     src/net/socket.cpp
 )
 
-if(NOT ROSETTE_BOARD_ENABLE_FREERTOS)
-    # Host platform runtime (monotonic clock, local address). The FreeRTOS
-    # boards get the same symbols from src/platform/pico_freertos.c via the BSP.
-    target_sources(rosette_net PRIVATE src/platform/posix/host_runtime.cpp)
-endif()
-
 set(ROSETTE_INTERNAL_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/net
     ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/platform
@@ -77,45 +71,53 @@ target_include_directories(rosette_net PUBLIC
 )
 
 if(NOT ROSETTE_BOARD_ENABLE_FREERTOS)
-    target_compile_definitions(rosette_net PUBLIC
-        ROSETTE_NO_FREERTOS
-    )
+    target_compile_definitions(rosette_net PUBLIC ROSETTE_NO_FREERTOS)
+endif()
+
+if(NOT ROSETTE_BOARD_ENABLE_PICO_SDK)
+    # Host: platform runtime + POSIX socket backend live here.
+    target_sources(rosette_net PRIVATE src/platform/posix/host_runtime.cpp)
 endif()
 
 if(ROSETTE_BOARD_ENABLE_FREERTOS)
-    target_link_libraries(rosette_net PUBLIC
-        freertos_kernel
-        freertos_tcp
-    )
+    target_link_libraries(rosette_net PUBLIC freertos_kernel freertos_tcp)
 endif()
 
 if(ROSETTE_BOARD_ENABLE_WIZNET)
-    target_link_libraries(rosette_net PUBLIC
-        wiznet_iolib
-    )
+    target_link_libraries(rosette_net PUBLIC wiznet_iolib)
+    if(NOT ROSETTE_BOARD_ENABLE_FREERTOS)
+        # Poll-mode WIZnet path: hardware-socket bring-up + DHCP, no RTOS.
+        target_sources(rosette_net PRIVATE src/net/wiznet/w5x00_link.cpp)
+    endif()
 endif()
 
 if(ROSETTE_BOARD_ENABLE_PICO_SDK)
     target_link_libraries(rosette_net PUBLIC
-        pico_stdlib
-        hardware_spi
-        hardware_flash
-        hardware_sync
+        pico_stdlib hardware_spi hardware_flash hardware_sync
     )
 endif()
 
 # ------------------------------------------------------------
-# rosette_bsp — board bring-up, WIZnet MACRAW driver, FreeRTOS glue
+# rosette_bsp — board bring-up + the platform runtime for a real board.
+#
+# The FreeRTOS variant carries the MACRAW driver and FreeRTOS+TCP glue; the
+# no-RTOS variant is just board init + the bare pico platform runtime.
 # ------------------------------------------------------------
 if(ROSETTE_BOARD_BUILD_BSP)
     add_library(rosette_bsp STATIC
         ${ROSETTE_BOARD_DIR}/board_init.c
-        src/net/freertos/igmp.cpp
-        src/net/freertos/socket.cpp
-        src/net/wiznet/macraw.cpp
-        src/platform/pico_freertos.c
-        src/platform/pico_log.c
     )
+
+    if(ROSETTE_BOARD_ENABLE_FREERTOS)
+        target_sources(rosette_bsp PRIVATE
+            src/net/freertos/igmp.cpp
+            src/net/freertos/socket.cpp
+            src/net/wiznet/macraw.cpp
+            src/platform/pico_freertos.c
+        )
+    else()
+        target_sources(rosette_bsp PRIVATE src/platform/pico_bare.c)
+    endif()
 
     target_include_directories(rosette_bsp PUBLIC
         ${ROSETTE_BOARD_DIR}
@@ -125,15 +127,15 @@ if(ROSETTE_BOARD_BUILD_BSP)
     )
 
     target_link_libraries(rosette_bsp PUBLIC
-        rosette_net
-        freertos_kernel
-        freertos_tcp
-        wiznet_iolib
-        pico_stdlib
-        hardware_spi
-        hardware_flash
-        hardware_sync
+        rosette_net pico_stdlib pico_unique_id
+        hardware_spi hardware_flash hardware_sync hardware_gpio
     )
+    if(ROSETTE_BOARD_ENABLE_WIZNET)
+        target_link_libraries(rosette_bsp PUBLIC wiznet_iolib)
+    endif()
+    if(ROSETTE_BOARD_ENABLE_FREERTOS)
+        target_link_libraries(rosette_bsp PUBLIC freertos_kernel freertos_tcp)
+    endif()
 endif()
 
 # ------------------------------------------------------------
@@ -156,7 +158,7 @@ target_include_directories(rosette_storage PUBLIC
 )
 target_link_libraries(rosette_storage PUBLIC rosette_fs)
 
-if(ROSETTE_BOARD_ENABLE_FREERTOS)
+if(ROSETTE_BOARD_ENABLE_PICO_SDK)
     target_sources(rosette_storage PRIVATE src/platform/pico_littlefs.cpp)
     target_include_directories(rosette_storage PRIVATE ${ROSETTE_BOARD_DIR})
     target_link_libraries(rosette_storage PUBLIC rosette_bsp)

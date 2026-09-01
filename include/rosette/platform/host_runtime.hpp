@@ -52,11 +52,24 @@ bool rosette_platform_get_ipv6_addr(uint8_t out[16]);
  * @brief Blocks the caller for approximately @p ms milliseconds.
  *
  * Used by `rosette::App::spin()` to pace its loop. On FreeRTOS this yields to
- * other tasks (`vTaskDelay`); on the host it sleeps the thread.
+ * other tasks (`vTaskDelay`); on the host it sleeps the thread; on a bare
+ * superloop it busy-waits.
  *
  * @param[in] ms Milliseconds to wait.
  */
 void rosette_platform_delay_ms(uint32_t ms);
+
+/**
+ * @brief Records the board's current local IPv4 address.
+ *
+ * The network bring-up layer calls this once DHCP completes (or a static
+ * address is applied) so `rosette_platform_get_ipv4_addr()` and code that gates
+ * on "network up" see the address. Host builds derive the address themselves
+ * and ignore this.
+ *
+ * @param[in] addr_host_order The address in host byte order, or 0 to clear it.
+ */
+void rosette_platform_set_ipv4_addr(uint32_t addr_host_order);
 
 #ifdef __cplusplus
 }  // extern "C"
