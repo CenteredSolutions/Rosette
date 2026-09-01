@@ -2,11 +2,11 @@
 
 Status: in progress · Branch: `refactor/excise-rtps` (off `feature/micro_ros`) · Date: 2026-09-01
 
-Progress: phases 1–4 complete. RTPS archived and excised, wrapper promoted to
-`rosette::`, CMake restructured to `rosette_net` / `rosette_bsp` / `rosette_fs` /
-`rosette_ros` / `rosette_smoke`, and `rosette_smoke` builds and links against a
-prebuilt `libmicroros.a` on `ROSETTE_BOARD=posix`. LittleFS is retained for
-persistent device + motor configuration — see §2 and §9, phase 5.
+Progress: phases 1–5 complete (5b — the file-management ROS service — pending).
+RTPS archived and excised, wrapper promoted to `rosette::`, CMake restructured,
+`rosette_smoke` builds against a prebuilt `libmicroros.a`, and the
+content-agnostic storage layer (`rosette::storage::Volume` / `FileStore` /
+`DeviceConfig`) is built and passing on the host. See §9.
 
 ## 1. Motivation
 
@@ -240,30 +240,27 @@ auto-selects `custom` for FreeRTOS boards, `udp` for POSIX).
    `rosette_smoke` (new minimal `examples/rosette_smoke.cpp`, stock UDP) builds
    and links on `posix`. Embedded (`w5100s-evb-pico2`) build still needs the
    Pico SDK + arm toolchain — verify in CI or on a dev box with the SDK present.
-5. **Persistent storage — device config + motor config (LittleFS).** See §9.
+5. **Persistent storage — content-agnostic (LittleFS).** ✅ See §9.
    - Block device: `rosette::platform::littlefs_mount()` / `littlefs_unmount()`
-     for RP2040/RP2350 flash in `src/platform/pico_littlefs.c`, over the existing
-     `rosette_platform_flash_*` primitives and a per-board reserved region
-     (`ROSETTE_STORAGE_FLASH_OFFSET` / `_SIZE`). Host build: file-backed block
-     device so everything below is testable under `ROSETTE_BOARD=posix`.
-   - `rosette::config` — versioned binary record for what `App` needs at boot
-     (net mode, static IP/mask/gw/dns, Agent host/port, XRCE client key, node
-     namespace). CRC-checked, safe defaults on first boot or corruption. `App`
-     reads its `AppOptions` from it when present, so a board is re-addressable
-     without recompiling.
-   - `rosette::motor_store` — per-motor config files keyed by motor serial
-     number at `/motors/<serial>.<ext>`. Firmware both **stores and parses**
-     them (drive params: current limits, pole pairs, encoder counts, loop
-     gains) and can return the raw file verbatim for round-tripping.
-   - Management: **ROS service** `rosette_msgs/srv` — `GetMotorConfig`,
-     `PutMotorConfig`, `ListMotorConfigs`, `EraseMotorConfig`. Bounded payload
-     string (target 8 KiB); `RMW_UXRCE_*` buffer sizes in `colcon.meta` sized to
-     match. No extra listener or daemon; `ros2 service call` is the client.
-   - Format: **JSON parsed with jsmn** (single-header, zero-alloc tokenizer,
-     proven on MCU) is the recommendation — ubiquitous tooling, ROS-friendly.
-     TOML (tomlc99) is the alternative if hand-editability outweighs the heavier
-     parser. Decision pending; does not block the block-device or `rosette::config`
-     work.
+     for RP2040/RP2350 flash (`src/platform/pico_littlefs.cpp`) over
+     `rosette_platform_flash_*` and a per-board reserved region
+     (`ROSETTE_STORAGE_FLASH_OFFSET` / `_SIZE`). Host: file-backed volume
+     (`src/platform/posix/host_littlefs.cpp`).
+   - `rosette::storage::Volume` — RAII mount, atomic whole-file write, dir ops.
+   - `rosette::storage::FileStore` — generic keyed blob store (`put/get/list/
+     erase`), no content interpretation. This is what per-unit config, whatever
+     its format, is stored through.
+   - `rosette::storage::DeviceConfig` — Rosette's own `{magic,version,crc32}`
+     boot record (net mode + addressing, Agent host/port, client key, domain,
+     namespace). `App` reads it (phase 6) so a board is re-addressable without a
+     rebuild.
+   - New `rosette_storage` target; `examples/storage_demo.cpp` exercises all
+     three on the host (passes).
+   - **5b:** `rosette_msgs/srv` file-management service (`PutFile` / `GetFile` /
+     `ListFiles` / `EraseFile`) over a `FileStore`, plus `colcon.meta` payload
+     knobs (`RMW_UXRCE_MAX_INPUT_BUFFER_SIZE`, `_TRANSPORT_MTU`, history) and a
+     `libmicroros` regen. Application file formats (e.g. the stepper JSON
+     configs, parsed with the app's own JSON reader) stay out of Rosette.
 6. **Build `rosette::App`** per §5.2 with the reconnect state machine.
    Host test against a real `micro_ros_agent` (start agent, run app, kill agent,
    restart agent, assert re-link).
@@ -288,66 +285,81 @@ auto-selects `custom` for FreeRTOS boards, `udp` for POSIX).
   allocate. Consider generating `colcon.meta` maxes from a single config header.
 - **Multi-goal actions.** Deferred; default stays 1. Revisit after the examples
   land (phase 8).
-- **Config store schema.** Phase 5 needs a decision on the on-flash record
-  format and which fields are first-class vs. free-form blobs. Keep it small and
-  versioned; a wrong guess here is a migration headache on deployed boards.
+- **`DeviceConfig` schema drift.** The record is versioned (`{magic,version}`)
+  but there is no migration path yet — a v1→v2 change on deployed boards falls
+  back to defaults. Add a versioned upgrade hook before the field footprint
+  grows.
 - **POSIX discovery is Linux-only upstream.** Already handled by the multicast
   locator + host responder; keep the responder script.
-- **Motor-config payload size vs. XRCE limits.** An 8 KiB config string needs
+- **File-management payload size vs. XRCE limits.** An 8 KiB `body` string needs
   `RMW_UXRCE_MAX_INPUT_BUFFER_SIZE` / `_TRANSPORT_MTU` and history depth raised
-  in `colcon.meta`, and the file must be rejected on the device above the cap
-  rather than truncated. If configs realistically exceed ~16 KiB, revisit the
-  transport choice (chunked service calls, or reinstate a file-transfer path).
-- **Motor-config format.** JSON+jsmn recommended; not yet ratified. Whatever is
-  chosen, the on-device parser must be bounded and non-allocating, and the
-  schema versioned in the file so old configs migrate cleanly.
+  in `colcon.meta` (phase 5b), and the device must reject an over-cap blob
+  rather than truncate it (`FileStore` already does). Blobs past ~16 KiB want a
+  chunked or file-transfer path instead.
+- **LittleFS `FetchContent_Populate` deprecation.** `cmake/littlefs.cmake`,
+  `pico_sdk.cmake`, and `micro_ros.cmake` all use the deprecated call (CMP0169).
+  Modernize the three to `FetchContent_MakeAvailable` in one pass.
+- **Storage is now a hard build dependency.** `rosette_fs` / `rosette_storage`
+  always build (LittleFS fetched if absent). Add `-DROSETTE_ENABLE_STORAGE=OFF`
+  if a consumer genuinely wants it out.
+## 9. Persistent storage
 
-## 9. Persistent storage layout
+Rosette provides a **content-agnostic** storage layer: a mounted volume, a
+keyed blob store, and its own client-configuration record. It does not know or
+care what file formats an application uses — JSON stepper configs, packed
+calibration structs, retained certificates are all just bytes. Parsing and
+schema live in the application.
 
-One LittleFS volume in a per-board reserved flash region.
+One LittleFS volume sits in a per-board reserved flash region
+(`ROSETTE_STORAGE_FLASH_OFFSET` / `_SIZE` in `board_config.h`). On the host the
+volume is a backing file so the same code runs under `ROSETTE_BOARD=posix`.
 
-```
-/device.cfg              rosette::config — versioned binary record:
-                         net mode, static IP/mask/gw/dns, Agent host/port,
-                         XRCE client key, node namespace
-/motors/<serial>.json    rosette::motor_store — one file per motor, keyed by
-                         motor serial number; stored verbatim, also parsed
-                         on-device into drive parameters
-/motors/<serial>.json.bak  last-known-good, written before an overwrite
-```
+### rosette::storage::Volume  (`storage/volume.hpp`)
 
-### rosette::config
+RAII mount of the board region — formats a blank region on first boot. Exposes
+whole-file read, **atomic** whole-file write (temp file + `lfs_rename`), remove,
+exists, `list_dir`, `make_dir`. Every writer above it inherits power-fail
+safety from the atomic write.
 
-Typed accessor over a single fixed-layout record (`{magic, version, crc32,
-payload}`). Read once at boot into RAM; writes go through a read-modify-write
-with CRC and a `.bak` copy. Unreadable or version-mismatched records fall back
-to compiled defaults so a board always boots.
+### rosette::storage::FileStore  (`storage/file_store.hpp`)
 
-### rosette::motor_store
+A keyed blob store over one directory: `put` / `get` / `list` / `erase` /
+`exists`, key → `<dir>/<key><ext>`. Keys are restricted to `[A-Za-z0-9._-]`.
+Contents are never inspected; `put` only enforces a configurable size cap. This
+is the reusable primitive for "store blobs keyed by a name" — per-unit config
+by serial number, calibration, captures. The management ROS service (below)
+wraps one `FileStore`.
 
-```cpp
-bool     put(const char* serial, const uint8_t* data, size_t len) noexcept;  // validates + parses before commit
-size_t   get(const char* serial, uint8_t* out, size_t cap) noexcept;         // raw bytes, verbatim
-bool     params(const char* serial, MotorParams& out) noexcept;              // parsed view
-uint8_t  list(char serials[][kSerialMax], uint8_t cap) noexcept;
-bool     erase(const char* serial) noexcept;
-```
+### rosette::storage::DeviceConfig  (`storage/device_config.hpp`)
 
-`put()` parses and validates against the `MotorParams` schema before it commits;
-a malformed file is rejected, not stored. The raw bytes are kept so `get()` can
-round-trip exactly what was uploaded.
+The micro-ROS client's own boot configuration — net mode + addressing, Agent
+host/port, XRCE client key, domain, node namespace — as one fixed-layout record
+at `/device.cfg` behind a `{magic, version, size, crc32}` header. `load()`
+returns compiled defaults on any mismatch so a board always boots; `store()`
+writes atomically. `App` reads this so a deployed board is re-addressable
+without a rebuild.
 
-### Management service
+### Management service (phase 5b)
 
-`rosette_msgs/srv`, served by the firmware through the normal micro-ROS
-executor (no extra socket):
+`rosette_msgs/srv`, served on the normal micro-ROS executor (no extra socket),
+operating on a `FileStore` — generic keys and opaque blobs:
 
 | Service | Request | Response |
 | --- | --- | --- |
-| `PutMotorConfig`  | `string serial, string body` | `bool ok, string error` |
-| `GetMotorConfig`  | `string serial` | `bool ok, string body` |
-| `ListMotorConfigs`| — | `string[] serials` |
-| `EraseMotorConfig`| `string serial` | `bool ok` |
+| `PutFile`   | `string key, string body` | `bool ok, string error` |
+| `GetFile`   | `string key` | `bool ok, string body` |
+| `ListFiles` | — | `string[] keys` |
+| `EraseFile` | `string key` | `bool ok` |
 
-`body` is bounded (target 8 KiB). The same store backs a future TFTP/HTTP
-provisioning path if one is added; the service is the ratified interface.
+`body` is bounded (target 8 KiB). See §8 for the XRCE buffer-sizing knobs a
+payload that size needs in `colcon.meta`.
+
+### Open questions
+
+- **Flash-write stall.** A `PutFile` on a live session runs the atomic write
+  synchronously; on RP2040 that pauses XIP for tens of ms and the executor with
+  it. The service handler should stage the bytes and commit from the tick loop
+  where a missed Agent ping is tolerable.
+- **First-boot log noise.** A blank volume makes LittleFS print one
+  "Corrupted dir pair" line before `littlefs_mount()` formats and remounts.
+  Harmless; silence by lowering the LittleFS log level if it bothers a product.

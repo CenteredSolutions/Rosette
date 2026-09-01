@@ -60,37 +60,21 @@ if(ROSETTE_BOARD_ENABLE_WIZNET)
 endif()
 
 # ------------------------------------------------------------
-# rosette_fs — persistent device-configuration store (LittleFS)
+# rosette_fs — the LittleFS sources
 #
-# Boards keep a small LittleFS volume in a reserved flash region so device
-# configuration (network mode, addressing, Agent endpoint, XRCE client key)
-# survives power cycles and reflashing of the application image. Host builds
-# link it only when a local LittleFS checkout is available.
+# cmake/littlefs.cmake locates a local checkout (LITTLEFS_PATH) or fetches one.
+# rosette_fs compiles it; rosette_storage layers the file API on top.
 # ------------------------------------------------------------
-set(ROSETTE_HAVE_LITTLEFS OFF)
-if(ROSETTE_BOARD_ENABLE_FREERTOS)
-    include(cmake/littlefs.cmake)
-else()
-    set(_rosette_host_littlefs "${CMAKE_CURRENT_SOURCE_DIR}/../littlefs")
-    if(DEFINED ENV{LITTLEFS_PATH} AND EXISTS "$ENV{LITTLEFS_PATH}/lfs.c")
-        set(ROSETTE_LITTLEFS_DIR "$ENV{LITTLEFS_PATH}")
-        set(ROSETTE_HAVE_LITTLEFS ON)
-    elseif(EXISTS "${_rosette_host_littlefs}/lfs.c")
-        set(ROSETTE_LITTLEFS_DIR "${_rosette_host_littlefs}")
-        set(ROSETTE_HAVE_LITTLEFS ON)
-    endif()
-endif()
+include(cmake/littlefs.cmake)
 
-if(ROSETTE_HAVE_LITTLEFS)
-    add_library(rosette_fs STATIC
-        ${ROSETTE_LITTLEFS_DIR}/lfs.c
-        ${ROSETTE_LITTLEFS_DIR}/lfs_util.c
-    )
-    target_include_directories(rosette_fs PUBLIC
-        ${ROSETTE_LITTLEFS_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
-endif()
+add_library(rosette_fs STATIC
+    ${ROSETTE_LITTLEFS_DIR}/lfs.c
+    ${ROSETTE_LITTLEFS_DIR}/lfs_util.c
+)
+target_include_directories(rosette_fs PUBLIC
+    ${ROSETTE_LITTLEFS_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 
 # ------------------------------------------------------------
 # rosette_net — socket abstraction layer (rosette::net)
@@ -179,11 +163,37 @@ if(ROSETTE_BOARD_BUILD_BSP)
         wiznet_iolib
         pico_stdlib
         hardware_spi
+        hardware_flash
+        hardware_sync
     )
+endif()
 
-    if(TARGET rosette_fs)
-        target_link_libraries(rosette_bsp PUBLIC rosette_fs)
-    endif()
+# ------------------------------------------------------------
+# rosette_storage — LittleFS volume + generic file API
+#
+#   rosette::storage::Volume        mounts the board storage region
+#   rosette::storage::FileStore     content-agnostic keyed blob store
+#   rosette::storage::DeviceConfig  the micro-ROS client's own boot config
+#
+# The board block-device implementation is compiled in per target: the Pico
+# flash binding for FreeRTOS boards, a file-backed volume for host builds.
+# ------------------------------------------------------------
+add_library(rosette_storage STATIC
+    src/storage/volume.cpp
+    src/storage/file_store.cpp
+    src/storage/device_config.cpp
+)
+target_include_directories(rosette_storage PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(rosette_storage PUBLIC rosette_fs)
+
+if(ROSETTE_BOARD_ENABLE_FREERTOS)
+    target_sources(rosette_storage PRIVATE src/platform/pico_littlefs.cpp)
+    target_include_directories(rosette_storage PRIVATE ${ROSETTE_BOARD_DIR})
+    target_link_libraries(rosette_storage PUBLIC rosette_bsp)
+else()
+    target_sources(rosette_storage PRIVATE src/platform/posix/host_littlefs.cpp)
 endif()
 
 # ------------------------------------------------------------
@@ -222,6 +232,14 @@ if(ROSETTE_ENABLE_MICRO_ROS)
         pico_enable_stdio_usb(rosette_smoke 1)
         pico_enable_stdio_uart(rosette_smoke 0)
     endif()
+endif()
+
+# ------------------------------------------------------------
+# storage_demo — exercises Volume / FileStore / DeviceConfig on the host
+# ------------------------------------------------------------
+if(NOT ROSETTE_BOARD_ENABLE_FREERTOS)
+    add_executable(storage_demo examples/storage_demo.cpp)
+    target_link_libraries(storage_demo PRIVATE rosette_storage)
 endif()
 
 message(STATUS "")

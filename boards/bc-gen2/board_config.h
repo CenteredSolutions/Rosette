@@ -47,3 +47,9 @@
 // ── Custom board extras ────────────────────────────────────────────────────────
 // RS-485 direction pin (not used by Rosette).
 #define CUSTOM_PIN_RS485_DE     15
+
+// ── Persistent storage region (LittleFS) ────────────────────────────────────
+// Reserved for rosette::storage. The application image must stay below this
+// offset. RP2040 boards here carry 2 MiB of flash; reserve the top 256 KiB.
+#define ROSETTE_STORAGE_FLASH_OFFSET  0x001C0000u
+#define ROSETTE_STORAGE_FLASH_SIZE    0x00040000u

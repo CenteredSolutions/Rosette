@@ -52,3 +52,10 @@
 #define ROSETTE_IP_MASK            "255.255.255.0"
 #define ROSETTE_IP_GW              "192.168.1.1"
 #define ROSETTE_IP_DNS             "8.8.8.8"
+
+// ── Persistent storage region (LittleFS) ────────────────────────────────────
+// Reserved for rosette::storage. The application linker script / binary must
+// stay below this offset. RP2350 W5100S-EVB-Pico2 carries 4 MiB of flash;
+// reserve the top 512 KiB.
+#define ROSETTE_STORAGE_FLASH_OFFSET  0x00380000u
+#define ROSETTE_STORAGE_FLASH_SIZE    0x00080000u
