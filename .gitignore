@@ -17,3 +17,4 @@ rosette_storage.img
 
 # standalone example build dirs
 examples/*/build*/
+build-micro-ros-pico2/
