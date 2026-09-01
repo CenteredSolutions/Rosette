@@ -55,14 +55,19 @@
 #include "common.hpp"
 #include "context.hpp"
 
+#include "rosette/support/inplace_function.hpp"
+
 namespace rosette {
 
-template<typename ServiceT, typename HandlerT>
+template<typename ServiceT>
 class Service {
 public:
     using traits = ::rosette::service_traits<ServiceT>;
     using Request = typename traits::Request;
     using Response = typename traits::Response;
+
+    /// Type-erased request handler: `handler(const Request&, Response&)`.
+    using Handler = InplaceFunction<void(const Request&, Response&), 24u>;
 
     Service() noexcept = default;
 
@@ -78,17 +83,19 @@ public:
      * @param[in] node Initialized node that will own the service endpoint.
      * @param[in] context Running micro-ROS context whose executor dispatches the service.
      * @param[in] service_name ROS service name relative to the node namespace.
-     * @param[in] handler Callable invoked as `handler(const Request&, Response&)`.
+     * @param[in] handler Callable invoked as `handler(const Request&, Response&)`;
+     * captures must fit `Handler`'s inline buffer.
      * @param[in] options QoS and session-timeout settings applied to the service.
      */
+    template<typename F>
     Service(rcl_node_t* node,
             Context* context,
             const char* service_name,
-            HandlerT handler,
+            F&& handler,
             const ServiceOptions& options) noexcept
         : node_(node)
         , context_(context)
-        , handler_(static_cast<HandlerT&&>(handler))
+        , handler_(static_cast<F&&>(handler))
     {
         static_assert(has_micro_ros_service_traits_v<ServiceT>,
                       "service_traits<ServiceT>::rosidl_type_support() is required for micro-ROS services");
@@ -267,13 +274,13 @@ private:
     Context* context_ = nullptr;
     Request request_{};
     Response response_{};
-    HandlerT handler_{};
+    Handler handler_{};
     Service* next_instance_ = nullptr;
     bool valid_ = false;
 };
 
-template<typename ServiceT, typename HandlerT>
-Service<ServiceT, HandlerT>* Service<ServiceT, HandlerT>::instance_head_ = nullptr;
+template<typename ServiceT>
+Service<ServiceT>* Service<ServiceT>::instance_head_ = nullptr;
 
 template<typename ServiceT, uint8_t MaxPending = 4>
 class Client {

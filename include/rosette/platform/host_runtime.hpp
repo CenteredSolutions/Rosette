@@ -48,6 +48,16 @@ uint32_t rosette_platform_get_ipv4_addr(void);
  */
 bool rosette_platform_get_ipv6_addr(uint8_t out[16]);
 
+/**
+ * @brief Blocks the caller for approximately @p ms milliseconds.
+ *
+ * Used by `rosette::App::spin()` to pace its loop. On FreeRTOS this yields to
+ * other tasks (`vTaskDelay`); on the host it sleeps the thread.
+ *
+ * @param[in] ms Milliseconds to wait.
+ */
+void rosette_platform_delay_ms(uint32_t ms);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

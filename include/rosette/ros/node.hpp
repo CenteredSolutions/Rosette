@@ -41,6 +41,8 @@
 #include "timer.hpp"
 #include "topic.hpp"
 
+#include <optional>
+
 namespace rosette {
 
 class Node {
@@ -152,11 +154,23 @@ public:
      * @param[in] callback Timer callback invoked by the executor.
      * @return Timer wrapper. `valid()` is false on initialization failure.
      */
-    template<typename CallbackT>
-    Timer<CallbackT> create_timer(uint32_t period_ms,
-                                  CallbackT callback) noexcept
+    template<typename F>
+    Timer create_timer(uint32_t period_ms, F&& callback) noexcept
     {
-        return Timer<CallbackT>(context_, period_ms, static_cast<CallbackT&&>(callback));
+        return Timer(context_, period_ms, static_cast<F&&>(callback));
+    }
+
+    /**
+     * @brief Constructs a timer directly into a caller-owned slot.
+     *
+     * Modules hold their entities as `std::optional<...>` so they can be torn
+     * down and rebuilt across an Agent reconnect. This overload emplaces into
+     * that slot without a move.
+     */
+    template<typename F>
+    void create_timer(std::optional<Timer>& slot, uint32_t period_ms, F&& callback) noexcept
+    {
+        slot.emplace(context_, period_ms, static_cast<F&&>(callback));
     }
 
     /**
@@ -167,14 +181,28 @@ public:
      * @param[in] options QoS and session-timeout settings for the service.
      * @return Service wrapper. `valid()` is false on initialization failure.
      */
-    template<typename ServiceT, typename HandlerT>
-    Service<ServiceT, HandlerT> create_service(
+    template<typename ServiceT, typename F>
+    Service<ServiceT> create_service(
         const char* service_name,
-        HandlerT handler,
+        F&& handler,
         const ServiceOptions& options = {}) noexcept
     {
-        return Service<ServiceT, HandlerT>(
-            &node_, context_, service_name, static_cast<HandlerT&&>(handler), options);
+        return Service<ServiceT>(
+            &node_, context_, service_name, static_cast<F&&>(handler), options);
+    }
+
+    /**
+     * @brief Constructs a service directly into a caller-owned slot (see
+     * `create_timer(std::optional<Timer>&, ...)`).
+     */
+    template<typename ServiceT, typename F>
+    void create_service(
+        std::optional<Service<ServiceT>>& slot,
+        const char* service_name,
+        F&& handler,
+        const ServiceOptions& options = {}) noexcept
+    {
+        slot.emplace(&node_, context_, service_name, static_cast<F&&>(handler), options);
     }
 
     /**

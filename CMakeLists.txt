@@ -217,30 +217,16 @@ if(ROSETTE_ENABLE_MICRO_ROS)
 endif()
 
 # ------------------------------------------------------------
-# rosette_smoke — smallest end-to-end micro-ROS client
+# Examples
 #
-# Stock XRCE-DDS UDP transport, no BSP, builds on the host. Board transports
-# and the reconnect state machine arrive in later refactor phases;
-# examples/main_micro_ros_board_smoke.cpp is kept as the board reference.
+# Each example is a self-contained directory (source, headers, its own
+# interface package, its own CMakeLists) so it reads as one unit and can also
+# be configured standalone. Interface packages under examples/ are compiled
+# into libmicroros automatically (see cmake/micro_ros.cmake).
 # ------------------------------------------------------------
-if(ROSETTE_ENABLE_MICRO_ROS)
-    add_executable(rosette_smoke examples/rosette_smoke.cpp)
-    target_link_libraries(rosette_smoke PRIVATE rosette_ros)
-
-    if(ROSETTE_BOARD_ENABLE_PICO_SDK)
-        pico_add_extra_outputs(rosette_smoke)
-        pico_enable_stdio_usb(rosette_smoke 1)
-        pico_enable_stdio_uart(rosette_smoke 0)
-    endif()
-endif()
-
-# ------------------------------------------------------------
-# storage_demo — exercises Volume / FileStore / DeviceConfig on the host
-# ------------------------------------------------------------
-if(NOT ROSETTE_BOARD_ENABLE_FREERTOS)
-    add_executable(storage_demo examples/storage_demo.cpp)
-    target_link_libraries(storage_demo PRIVATE rosette_storage)
-endif()
+add_subdirectory(examples/rosette_smoke)
+add_subdirectory(examples/storage_demo)
+add_subdirectory(examples/led_files)
 
 message(STATUS "")
 message(STATUS "Rosette build configuration")

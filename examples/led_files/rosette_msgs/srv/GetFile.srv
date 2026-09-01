@@ -1,0 +1,6 @@
+# Read a stored blob back verbatim.
+string key
+---
+bool success
+string body
+string message

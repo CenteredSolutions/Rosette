@@ -1,0 +1,5 @@
+# Drive a board indicator LED.
+uint8 led            # LED index; 0 is the primary board LED
+bool on
+---
+bool success

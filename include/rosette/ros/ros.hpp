@@ -39,3 +39,6 @@
 #include "context.hpp"
 #include "multicast_agent_locator.hpp"
 #include "node.hpp"
+
+#include "app.hpp"
+#include "module.hpp"

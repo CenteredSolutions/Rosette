@@ -70,6 +70,12 @@ uint32_t rosette_platform_get_ms(void) {
     return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
 
+// Yields to the scheduler for approximately `ms` milliseconds. Used by
+// rosette::App::spin() to pace its loop.
+void rosette_platform_delay_ms(uint32_t ms) {
+    vTaskDelay(pdMS_TO_TICKS(ms));
+}
+
 // ============================================================
 // rosette_platform_make_guid_prefix()
 //

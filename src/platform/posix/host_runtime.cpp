@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -119,4 +120,9 @@ extern "C" bool rosette_platform_get_ipv6_addr(uint8_t out[16])
         std::memset(out, 0, 16u);
     }
     return false;
+}
+
+extern "C" void rosette_platform_delay_ms(uint32_t ms)
+{
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 }

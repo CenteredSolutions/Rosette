@@ -52,6 +52,10 @@ set_property(CACHE ROSETTE_MICRO_ROS_TRANSPORT PROPERTY STRINGS
 
 set(ROSETTE_MICRO_ROS_SETUP_PATH "" CACHE PATH
     "Path to a local micro_ros_setup checkout")
+set(ROSETTE_MICRO_ROS_EXTRA_INTERFACE_PACKAGES "" CACHE STRING
+    "Semicolon-separated list of extra ROS 2 interface package directories \
+(each containing package.xml) to compile into libmicroros, in addition to any \
+found under examples/")
 set(ROSETTE_MICRO_ROS_WORKSPACE_DIR "${CMAKE_BINARY_DIR}/micro_ros_ws" CACHE PATH
     "Workspace used to build the generated micro-ROS static library")
 set(ROSETTE_MICRO_ROS_ROS_SETUP
@@ -59,11 +63,24 @@ set(ROSETTE_MICRO_ROS_ROS_SETUP
     "ROS 2 setup script sourced before building micro_ros_setup")
 
 set(ROSETTE_MICRO_ROS_MAX_NODES 2 CACHE STRING "rmw_microxrcedds max nodes")
-set(ROSETTE_MICRO_ROS_MAX_PUBLISHERS 8 CACHE STRING "rmw_microxrcedds max publishers")
-set(ROSETTE_MICRO_ROS_MAX_SUBSCRIPTIONS 8 CACHE STRING "rmw_microxrcedds max subscriptions")
-set(ROSETTE_MICRO_ROS_MAX_SERVICES 4 CACHE STRING "rmw_microxrcedds max services")
-set(ROSETTE_MICRO_ROS_MAX_CLIENTS 4 CACHE STRING "rmw_microxrcedds max clients")
+set(ROSETTE_MICRO_ROS_MAX_PUBLISHERS 10 CACHE STRING "rmw_microxrcedds max publishers")
+set(ROSETTE_MICRO_ROS_MAX_SUBSCRIPTIONS 10 CACHE STRING "rmw_microxrcedds max subscriptions")
+set(ROSETTE_MICRO_ROS_MAX_SERVICES 8 CACHE STRING "rmw_microxrcedds max services")
+set(ROSETTE_MICRO_ROS_MAX_CLIENTS 6 CACHE STRING "rmw_microxrcedds max clients")
 set(ROSETTE_MICRO_ROS_MAX_HISTORY 8 CACHE STRING "rmw_microxrcedds max history depth")
+
+# XRCE serialization buffers. The file-management service carries multi-KiB
+# string payloads; these must be large enough to hold the biggest request or
+# response, and the transport MTU large enough to keep an Ethernet datagram
+# unfragmented. They are shared across every entity of the same kind.
+set(ROSETTE_MICRO_ROS_MAX_INPUT_BUFFER_SIZE 8192 CACHE STRING
+    "rmw_microxrcedds max input (deserialization) buffer size")
+set(ROSETTE_MICRO_ROS_MAX_OUTPUT_BUFFER_SIZE 8192 CACHE STRING
+    "rmw_microxrcedds max output (serialization) buffer size")
+set(ROSETTE_MICRO_ROS_MAX_TRANSPORT_MTU 1400 CACHE STRING
+    "Micro XRCE-DDS transport MTU (bytes per datagram)")
+set(ROSETTE_MICRO_ROS_STREAM_HISTORY 8 CACHE STRING
+    "Micro XRCE-DDS reliable stream fragment-buffer depth")
 set(ROSETTE_MICRO_ROS_EXTRA_C_FLAGS "" CACHE STRING
     "Extra C compiler flags appended to the generated micro-ROS toolchain")
 set(ROSETTE_MICRO_ROS_EXTRA_CXX_FLAGS "" CACHE STRING
@@ -244,6 +261,34 @@ if(ROSETTE_MICRO_ROS_USE_PICO_TIME)
     set(ROSETTE_MICRO_ROS_USE_PICO_TIME_TEXT "ON")
 endif()
 
+# Extra interface packages compiled into libmicroros: every package.xml under
+# examples/ (so an example carries its own .srv/.msg), plus any explicitly
+# listed in ROSETTE_MICRO_ROS_EXTRA_INTERFACE_PACKAGES. Re-glob the .msg/.srv/
+# .action files so editing one retriggers the bootstrap.
+file(GLOB_RECURSE _rosette_micro_ros_example_pkg_xmls CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/package.xml")
+set(_rosette_micro_ros_interface_packages "${ROSETTE_MICRO_ROS_EXTRA_INTERFACE_PACKAGES}")
+foreach(_xml IN LISTS _rosette_micro_ros_example_pkg_xmls)
+    get_filename_component(_pkg_dir "${_xml}" DIRECTORY)
+    list(APPEND _rosette_micro_ros_interface_packages "${_pkg_dir}")
+endforeach()
+list(REMOVE_DUPLICATES _rosette_micro_ros_interface_packages)
+string(REPLACE ";" "\n" ROSETTE_MICRO_ROS_INTERFACE_PACKAGES
+    "${_rosette_micro_ros_interface_packages}")
+
+file(GLOB_RECURSE _rosette_micro_ros_interface_files CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/*.msg"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/*.srv"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/*.action"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/package.xml")
+
+if(_rosette_micro_ros_interface_packages)
+    message(STATUS "micro-ROS: extra interface packages:")
+    foreach(_p IN LISTS _rosette_micro_ros_interface_packages)
+        message(STATUS "    ${_p}")
+    endforeach()
+endif()
+
 configure_file(
     "${CMAKE_CURRENT_LIST_DIR}/micro_ros_toolchain.cmake.in"
     "${_rosette_micro_ros_toolchain_file}"
@@ -267,6 +312,7 @@ add_custom_command(
     COMMAND /bin/bash "${_rosette_micro_ros_bootstrap_script}"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_rosette_micro_ros_stamp}"
     DEPENDS
+        ${_rosette_micro_ros_interface_files}
         "${_rosette_micro_ros_toolchain_file}"
         "${_rosette_micro_ros_colcon_meta_file}"
         "${_rosette_micro_ros_bootstrap_script}"

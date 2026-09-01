@@ -27,11 +27,15 @@
 #include "common.hpp"
 #include "context.hpp"
 
+#include "rosette/support/inplace_function.hpp"
+
 namespace rosette {
 
-template<typename CallbackT>
 class Timer {
 public:
+    /// Type-erased timer callback.
+    using Callback = InplaceFunction<void(), 16u>;
+
     Timer() noexcept = default;
 
     /**
@@ -44,11 +48,12 @@ public:
      * @param[in] period_ms Timer period in milliseconds.
      * @param[in] callback Callable invoked by the executor on timer expiry.
      */
+    template<typename F>
     Timer(Context* context,
           uint32_t period_ms,
-          CallbackT callback) noexcept
+          F&& callback) noexcept
         : context_(context)
-        , callback_(static_cast<CallbackT&&>(callback))
+        , callback_(static_cast<F&&>(callback))
     {
         if (context_ == nullptr || period_ms == 0u) {
             return;
@@ -211,12 +216,12 @@ private:
 
     Context* context_ = nullptr;
     rcl_timer_t timer_ = rcl_get_zero_initialized_timer();
-    CallbackT callback_{};
+    Callback callback_{};
     bool valid_ = false;
 
     struct TimerRegistration {
-        rcl_timer_t* timer = nullptr;
-        Timer* owner = nullptr;
+        rcl_timer_t* timer;
+        Timer* owner;
     };
 
     static constexpr size_t kMaxRegisteredTimers = 8u;

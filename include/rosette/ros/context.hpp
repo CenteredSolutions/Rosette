@@ -216,6 +216,14 @@ public:
                      const char* node_namespace = "") noexcept;
 
     const ContextOptions& options() const noexcept { return options_; }
+
+    /**
+     * @brief Mutable access to the options, valid only before `start_result()`.
+     *
+     * `App` uses this to set `executor_handles` from the module handle sum
+     * after modules are added but before the context starts.
+     */
+    ContextOptions& options_mutable() noexcept { return options_; }
     rcl_allocator_t& allocator() noexcept { return allocator_; }
     rclc_support_t& support() noexcept { return support_; }
     rclc_executor_t& executor() noexcept { return executor_; }
