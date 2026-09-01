@@ -2,9 +2,11 @@
 
 Status: in progress · Branch: `refactor/excise-rtps` (off `feature/micro_ros`) · Date: 2026-09-01
 
-Progress: phases 1–3 complete (archive tag pushed, RTPS excised, wrapper promoted
-to `rosette::`). LittleFS is retained for persistent device configuration —
-see §2 and the new phase 5.
+Progress: phases 1–4 complete. RTPS archived and excised, wrapper promoted to
+`rosette::`, CMake restructured to `rosette_net` / `rosette_bsp` / `rosette_fs` /
+`rosette_ros` / `rosette_smoke`, and `rosette_smoke` builds and links against a
+prebuilt `libmicroros.a` on `ROSETTE_BOARD=posix`. LittleFS is retained for
+persistent device + motor configuration — see §2 and §9, phase 5.
 
 ## 1. Motivation
 
@@ -230,10 +232,14 @@ auto-selects `custom` for FreeRTOS boards, `udp` for POSIX).
 3. **Promote & rename.** ✅ Wrapper headers moved to `include/rosette/ros/`.
    `milkros::micro_ros` → `rosette` (0 residual). `RTPS_*` → `ROSETTE_*` across
    build system and BSP. LittleFS restored as `rosette_fs`.
-4. **CMake restructure** per §6. Green build of `rosette_smoke` for
-   `ROSETTE_BOARD=w5100s-evb-pico2 -DROSETTE_ENABLE_MICRO_ROS=ON` and for
-   `posix`. Introduce a non-RTPS host platform shim (`rosette_platform_get_ms`,
-   `_get_ipv4/6`) so the smoke path compiles again.
+4. **CMake restructure** per §6. ✅ Targets renamed; `rosette_ros` INTERFACE
+   target; `micro_ros.cmake` gained a prebuilt fast path
+   (`-DROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD=OFF` + a workspace dir with a built
+   `libmicroros.a`). Non-RTPS host platform shim added
+   (`rosette/platform/host_runtime.hpp` + `src/platform/posix/host_runtime.cpp`).
+   `rosette_smoke` (new minimal `examples/rosette_smoke.cpp`, stock UDP) builds
+   and links on `posix`. Embedded (`w5100s-evb-pico2`) build still needs the
+   Pico SDK + arm toolchain — verify in CI or on a dev box with the SDK present.
 5. **Persistent storage — device config + motor config (LittleFS).** See §9.
    - Block device: `rosette::platform::littlefs_mount()` / `littlefs_unmount()`
      for RP2040/RP2350 flash in `src/platform/pico_littlefs.c`, over the existing

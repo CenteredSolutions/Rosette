@@ -105,6 +105,12 @@ add_library(rosette_net STATIC
     src/net/socket.cpp
 )
 
+if(NOT ROSETTE_BOARD_ENABLE_FREERTOS)
+    # Host platform runtime (monotonic clock, local address). The FreeRTOS
+    # boards get the same symbols from src/platform/pico_freertos.c via the BSP.
+    target_sources(rosette_net PRIVATE src/platform/posix/host_runtime.cpp)
+endif()
+
 set(ROSETTE_INTERNAL_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/net
     ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/platform
@@ -181,12 +187,42 @@ if(ROSETTE_BOARD_BUILD_BSP)
 endif()
 
 # ------------------------------------------------------------
-# Firmware examples and the micro-ROS smoke executable are rebuilt
-# under rosette_* target names in later steps of the micro-ROS
-# refactor (see docs/design/rosette_micro_ros_refactor.md, phases
-# 4 and 7). examples/main_micro_ros_board_smoke.cpp is kept as the
-# reference for that rewrite.
+# rosette_ros — the header-only micro-ROS client wrapper
+#
+# All of include/rosette/ros/*.hpp (Context, Node, Publisher, Subscription,
+# Timer, Service, Client, ActionServer/Client, transports, Agent locators).
+# Consumers link this one target to pull the wrappers plus the generated
+# micro-ROS library and its compile definitions.
 # ------------------------------------------------------------
+if(ROSETTE_ENABLE_MICRO_ROS)
+    add_library(rosette_ros INTERFACE)
+    target_include_directories(rosette_ros INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${ROSETTE_INTERNAL_INCLUDE_DIRS}
+    )
+    target_link_libraries(rosette_ros INTERFACE
+        rosette_net
+        micro_ros_vendor
+    )
+endif()
+
+# ------------------------------------------------------------
+# rosette_smoke — smallest end-to-end micro-ROS client
+#
+# Stock XRCE-DDS UDP transport, no BSP, builds on the host. Board transports
+# and the reconnect state machine arrive in later refactor phases;
+# examples/main_micro_ros_board_smoke.cpp is kept as the board reference.
+# ------------------------------------------------------------
+if(ROSETTE_ENABLE_MICRO_ROS)
+    add_executable(rosette_smoke examples/rosette_smoke.cpp)
+    target_link_libraries(rosette_smoke PRIVATE rosette_ros)
+
+    if(ROSETTE_BOARD_ENABLE_PICO_SDK)
+        pico_add_extra_outputs(rosette_smoke)
+        pico_enable_stdio_usb(rosette_smoke 1)
+        pico_enable_stdio_uart(rosette_smoke 0)
+    endif()
+endif()
 
 message(STATUS "")
 message(STATUS "Rosette build configuration")

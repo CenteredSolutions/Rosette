@@ -81,6 +81,78 @@ set(ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS "750" CACHE STRING
 set(ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS "3" CACHE STRING
     "Number of multicast probe attempts for the Rosette Agent locator")
 
+# Resolve the transport profile up front; it is needed by both the prebuilt
+# and the bootstrap paths.
+set(_rosette_micro_ros_transport "${ROSETTE_MICRO_ROS_TRANSPORT}")
+if(_rosette_micro_ros_transport STREQUAL "auto")
+    if(ROSETTE_BOARD_ENABLE_FREERTOS)
+        set(_rosette_micro_ros_transport "custom")
+    else()
+        set(_rosette_micro_ros_transport "udp")
+    endif()
+endif()
+
+set(ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT OFF)
+set(ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT OFF)
+set(ROSETTE_MICRO_ROS_USE_DISCOVERY OFF)
+if(_rosette_micro_ros_transport STREQUAL "custom")
+    set(ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT ON)
+elseif(_rosette_micro_ros_transport STREQUAL "udp")
+    set(ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT ON)
+    set(ROSETTE_MICRO_ROS_USE_DISCOVERY ON)
+else()
+    message(FATAL_ERROR
+        "Unsupported ROSETTE_MICRO_ROS_TRANSPORT='${_rosette_micro_ros_transport}'. "
+        "Expected custom or udp.")
+endif()
+
+set(_rosette_micro_ros_lib
+    "${ROSETTE_MICRO_ROS_WORKSPACE_DIR}/firmware/build/libmicroros.a")
+set(_rosette_micro_ros_include
+    "${ROSETTE_MICRO_ROS_WORKSPACE_DIR}/firmware/build/include")
+
+# ------------------------------------------------------------
+# Fast path: use an already-built libmicroros.a in place.
+#
+# Point ROSETTE_MICRO_ROS_WORKSPACE_DIR at a prior generate_lib output and pass
+# -DROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD=OFF. This is the CI and offline path
+# and skips micro_ros_setup entirely.
+# ------------------------------------------------------------
+if(NOT ROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD AND
+   EXISTS "${_rosette_micro_ros_lib}" AND
+   EXISTS "${_rosette_micro_ros_include}")
+
+    add_library(micro_ros_prebuilt STATIC IMPORTED GLOBAL)
+    set_target_properties(micro_ros_prebuilt PROPERTIES
+        IMPORTED_LOCATION "${_rosette_micro_ros_lib}"
+        INTERFACE_INCLUDE_DIRECTORIES "${_rosette_micro_ros_include}")
+
+    add_library(micro_ros_vendor INTERFACE)
+    target_link_libraries(micro_ros_vendor INTERFACE micro_ros_prebuilt)
+    target_compile_definitions(micro_ros_vendor INTERFACE
+        ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM=$<BOOL:${ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT}>
+        ROSETTE_MICRO_ROS_TRANSPORT_UDP=$<BOOL:${ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT}>
+        ROSETTE_MICRO_ROS_AGENT_IP="${ROSETTE_MICRO_ROS_AGENT_IP}"
+        ROSETTE_MICRO_ROS_AGENT_PORT=${ROSETTE_MICRO_ROS_AGENT_PORT}
+        ROSETTE_MICRO_ROS_DISCOVERY_GROUP="${ROSETTE_MICRO_ROS_DISCOVERY_GROUP}"
+        ROSETTE_MICRO_ROS_DISCOVERY_PORT="${ROSETTE_MICRO_ROS_DISCOVERY_PORT}"
+        ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS=${ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS}
+        ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS=${ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS})
+
+    add_custom_target(rosette_micro_ros_bootstrap
+        COMMENT "micro-ROS: using prebuilt ${_rosette_micro_ros_lib}")
+
+    set(ROSETTE_MICRO_ROS_LIBRARY "${_rosette_micro_ros_lib}" CACHE FILEPATH
+        "Path to the generated micro-ROS static library" FORCE)
+    set(ROSETTE_MICRO_ROS_INCLUDE_DIR "${_rosette_micro_ros_include}" CACHE PATH
+        "Path to the generated micro-ROS include tree" FORCE)
+
+    message(STATUS "micro-ROS: using prebuilt library")
+    message(STATUS "  Library   : ${_rosette_micro_ros_lib}")
+    message(STATUS "  Transport : ${_rosette_micro_ros_transport}")
+    return()
+endif()
+
 if(DEFINED ENV{MICRO_ROS_SETUP_PATH} AND ROSETTE_MICRO_ROS_SETUP_PATH STREQUAL "")
     set(ROSETTE_MICRO_ROS_SETUP_PATH "$ENV{MICRO_ROS_SETUP_PATH}")
 endif()
@@ -187,11 +259,9 @@ configure_file(
 
 set(_rosette_micro_ros_stamp
     "${ROSETTE_MICRO_ROS_WORKSPACE_DIR}/.rosette_micro_ros_built")
-set(_rosette_micro_ros_lib
-    "${ROSETTE_MICRO_ROS_WORKSPACE_DIR}/firmware/build/libmicroros.a")
-set(_rosette_micro_ros_include
-    "${ROSETTE_MICRO_ROS_WORKSPACE_DIR}/firmware/build/include")
 
+# The prebuilt fast path returns earlier; reaching here means the bootstrap
+# script runs as a build step and produces libmicroros.a.
 add_custom_command(
     OUTPUT "${_rosette_micro_ros_stamp}"
     COMMAND /bin/bash "${_rosette_micro_ros_bootstrap_script}"

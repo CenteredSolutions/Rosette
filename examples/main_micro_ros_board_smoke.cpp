@@ -1,7 +1,7 @@
 #include "rosette/ros/ros.hpp"
 #include "rosette/ros/socket_transport.hpp"
 
-#include "rosette/rtps/types.hpp"
+#include "rosette/platform/host_runtime.hpp"
 
 #include <std_msgs/msg/float32.h>
 #include <std_msgs/msg/detail/float32__functions.h>
