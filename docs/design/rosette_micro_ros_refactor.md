@@ -2,11 +2,13 @@
 
 Status: in progress · Branch: `refactor/excise-rtps` (off `feature/micro_ros`) · Date: 2026-09-01
 
-Progress: phases 1–5 complete (5b — the file-management ROS service — pending).
-RTPS archived and excised, wrapper promoted to `rosette::`, CMake restructured,
-`rosette_smoke` builds against a prebuilt `libmicroros.a`, and the
-content-agnostic storage layer (`rosette::storage::Volume` / `FileStore` /
-`DeviceConfig`) is built and passing on the host. See §9.
+Progress: phases 1–6 substantially done. RTPS archived and excised, wrapper
+promoted to `rosette::`, CMake restructured, the content-agnostic storage layer
+passing on host, and `rosette::App` / `rosette::Module` landed with the
+`led_files` reference example — verified connecting to a live Agent with the
+`/led_files/board` node and all services registered. `PutFile`/`GetFile`
+payload round-trip and the embedded (`w5100s-evb-pico2`) build remain open. See
+§9 and phase 6.
 
 ## 1. Motivation
 
@@ -271,13 +273,26 @@ auto-selects `custom` for FreeRTOS boards, `udp` for POSIX).
      knobs (`RMW_UXRCE_MAX_INPUT_BUFFER_SIZE`, `_TRANSPORT_MTU`, history) and a
      `libmicroros` regen. Application file formats (e.g. the stepper JSON
      configs, parsed with the app's own JSON reader) stay out of Rosette.
-6. **Build `rosette::App`** per §5.2 with the reconnect state machine.
-   Host test against a real `micro_ros_agent` (start agent, run app, kill agent,
-   restart agent, assert re-link).
-7. **`Node` executor auto-sizing** per §5.3.
-8. **Examples:** `temperature_publisher`, `fibonacci_action`, `reconnect_demo`,
-   `motor_config_store` (Put a motor config over the service, reboot, Get it
-   back, confirm the drive picked up the parsed params).
+6. **`rosette::App` + `rosette::Module`** per §5.2. ✅ (core)
+   - `App` runs the connect state machine (liveness ping, rebuild on loss);
+     `Module` is `register_` / `on_connect` / `on_disconnect` / `publish`.
+   - `Node` executor auto-sizing (§5.3) done: `App` sums `Module::executor_handles()`.
+   - `Service` and `Timer` drop the callback-type template param and hold a
+     fixed-capacity `rosette::InplaceFunction`, so modules store them as
+     `std::optional<...>` members and rebuild across reconnect.
+   - `examples/` restructured into self-contained directories; interface
+     packages under `examples/` are auto-compiled into `libmicroros`.
+   - `examples/led_files` — the reference: an LED service + a file store over a
+     `FileStore`, with its own `rosette_msgs` package.
+   - **Verified on `ROSETTE_BOARD=posix` against a live `micro_ros_agent`:**
+     builds/links, `App` connects, `/led_files/board` node + all five services
+     register, `ListFiles` returns a valid response.
+   - **Open:** `PutFile` / `GetFile` string-payload round-trip unconfirmed
+     (response not observed — needs a clean-env debug session). Agent-loss
+     reconnect assertion not yet run. Embedded (`w5100s-evb-pico2`) build
+     pending the cortex-m33 `libmicroros` cross build.
+7. **Examples:** `fibonacci_action`, `reconnect_demo`, and a port of one reference
+   controller module (device or io) to a `rosette::Module`.
 9. **Docs:** rewrite `README.md` and `GETTING_STARTED.md` around micro-ROS only;
    fold `docs/micro_ros_backend.md` content into the main docs.
 10. **MicroPython:** re-point `bindings/micropython` at `rosette::` and confirm
