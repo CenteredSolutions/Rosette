@@ -69,8 +69,8 @@ public:
         }
 
         node_ = rcl_get_zero_initialized_node();
-        if (rclc_node_init_default(
-                &node_, name, node_namespace, &context_->support()) != RCL_RET_OK) {
+        if (!ros_ok(rclc_node_init_default(
+                &node_, name, node_namespace, &context_->support()))) {
             node_ = rcl_get_zero_initialized_node();
             return;
         }
@@ -270,7 +270,7 @@ private:
     void fini() noexcept
     {
         if (valid_) {
-            [[maybe_unused]] const rcl_ret_t fini_ret = rcl_node_fini(&node_);
+            (void)ros_ok(rcl_node_fini(&node_));
         }
         node_ = rcl_get_zero_initialized_node();
         valid_ = false;

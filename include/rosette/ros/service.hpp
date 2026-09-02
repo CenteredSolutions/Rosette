@@ -109,12 +109,12 @@ public:
 
         service_ = rcl_get_zero_initialized_service();
         const rmw_qos_profile_t qos = make_qos_profile(options);
-        if (rclc_service_init(
+        if (!ros_ok(rclc_service_init(
                 &service_,
                 node_,
                 traits::rosidl_type_support(),
                 service_name,
-                &qos) != RCL_RET_OK) {
+                &qos))) {
             fini_request<ServiceT>(request_);
             fini_response<ServiceT>(response_);
             service_ = rcl_get_zero_initialized_service();
@@ -124,20 +124,20 @@ public:
         if (options.session_timeout_ms > 0) {
             rmw_service_t* rmw_service = rcl_service_get_rmw_handle(&service_);
             if (rmw_service != nullptr) {
-                (void)rmw_uros_set_service_session_timeout(
-                    rmw_service, options.session_timeout_ms);
+                (void)ros_ok(rmw_uros_set_service_session_timeout(
+                    rmw_service, options.session_timeout_ms));
             }
         }
 
         register_instance();
-        if (rclc_executor_add_service_with_request_id(
+        if (!ros_ok(rclc_executor_add_service_with_request_id(
                 &context_->executor(),
                 &service_,
                 &request_,
                 &response_,
-                &Service::on_request) != RCL_RET_OK) {
+                &Service::on_request))) {
             unregister_instance();
-            (void)rcl_service_fini(&service_, node_);
+            (void)ros_ok(rcl_service_fini(&service_, node_));
             fini_request<ServiceT>(request_);
             fini_response<ServiceT>(response_);
             service_ = rcl_get_zero_initialized_service();
@@ -258,8 +258,8 @@ private:
     {
         unregister_instance();
         if (valid_) {
-            (void)rclc_executor_remove_service(&context_->executor(), &service_);
-            (void)rcl_service_fini(&service_, node_);
+            (void)ros_ok(rclc_executor_remove_service(&context_->executor(), &service_));
+            (void)ros_ok(rcl_service_fini(&service_, node_));
         }
         fini_request<ServiceT>(request_);
         fini_response<ServiceT>(response_);
@@ -324,12 +324,12 @@ public:
 
         client_ = rcl_get_zero_initialized_client();
         const rmw_qos_profile_t qos = make_qos_profile(options);
-        if (rclc_client_init(
+        if (!ros_ok(rclc_client_init(
                 &client_,
                 node_,
                 traits::rosidl_type_support(),
                 service_name,
-                &qos) != RCL_RET_OK) {
+                &qos))) {
             fini_response<ServiceT>(response_);
             client_ = rcl_get_zero_initialized_client();
             return;
@@ -338,19 +338,19 @@ public:
         if (options.session_timeout_ms > 0) {
             rmw_client_t* rmw_client = rcl_client_get_rmw_handle(&client_);
             if (rmw_client != nullptr) {
-                (void)rmw_uros_set_client_session_timeout(
-                    rmw_client, options.session_timeout_ms);
+                (void)ros_ok(rmw_uros_set_client_session_timeout(
+                    rmw_client, options.session_timeout_ms));
             }
         }
 
         register_instance();
-        if (rclc_executor_add_client_with_request_id(
+        if (!ros_ok(rclc_executor_add_client_with_request_id(
                 &context_->executor(),
                 &client_,
                 &response_,
-                &Client::on_response) != RCL_RET_OK) {
+                &Client::on_response))) {
             unregister_instance();
-            (void)rcl_client_fini(&client_, node_);
+            (void)ros_ok(rcl_client_fini(&client_, node_));
             fini_response<ServiceT>(response_);
             client_ = rcl_get_zero_initialized_client();
             return;
@@ -394,7 +394,7 @@ public:
         for (uint8_t i = 0u; i < MaxPending; ++i) {
             if (!pending_[i].in_use) {
                 int64_t sequence_number = 0;
-                if (rcl_send_request(&client_, &request, &sequence_number) != RCL_RET_OK) {
+                if (!ros_ok(rcl_send_request(&client_, &request, &sequence_number))) {
                     return false;
                 }
                 pending_[i].in_use = true;
@@ -509,8 +509,8 @@ private:
     {
         unregister_instance();
         if (valid_) {
-            (void)rclc_executor_remove_client(&context_->executor(), &client_);
-            (void)rcl_client_fini(&client_, node_);
+            (void)ros_ok(rclc_executor_remove_client(&context_->executor(), &client_));
+            (void)ros_ok(rcl_client_fini(&client_, node_));
         }
         fini_response<ServiceT>(response_);
         client_ = rcl_get_zero_initialized_client();

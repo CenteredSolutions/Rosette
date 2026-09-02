@@ -72,12 +72,12 @@ public:
 
         publisher_ = rcl_get_zero_initialized_publisher();
         const rmw_qos_profile_t qos = make_qos_profile(options);
-        if (rclc_publisher_init(
+        if (!ros_ok(rclc_publisher_init(
                 &publisher_,
                 node_,
                 ::rosette::message_traits<MessageT>::rosidl_type_support(),
                 topic_name,
-                &qos) != RCL_RET_OK) {
+                &qos))) {
             publisher_ = rcl_get_zero_initialized_publisher();
             return;
         }
@@ -85,8 +85,8 @@ public:
         if (options.session_timeout_ms > 0) {
             rmw_publisher_t* rmw_publisher = rcl_publisher_get_rmw_handle(&publisher_);
             if (rmw_publisher != nullptr) {
-                (void)rmw_uros_set_publisher_session_timeout(
-                    rmw_publisher, options.session_timeout_ms);
+                (void)ros_ok(rmw_uros_set_publisher_session_timeout(
+                    rmw_publisher, options.session_timeout_ms));
             }
         }
 
@@ -142,7 +142,7 @@ public:
         if (!valid_) {
             return false;
         }
-        return rcl_publish(&publisher_, &message, nullptr) == RCL_RET_OK;
+        return ros_ok(rcl_publish(&publisher_, &message, nullptr));
     }
 
 private:
@@ -156,7 +156,7 @@ private:
     void fini() noexcept
     {
         if (valid_) {
-            (void)rcl_publisher_fini(&publisher_, node_);
+            (void)ros_ok(rcl_publisher_fini(&publisher_, node_));
         }
         publisher_ = rcl_get_zero_initialized_publisher();
         valid_ = false;
@@ -207,25 +207,25 @@ public:
 
         subscription_ = rcl_get_zero_initialized_subscription();
         const rmw_qos_profile_t qos = make_qos_profile(options);
-        if (rclc_subscription_init(
+        if (!ros_ok(rclc_subscription_init(
                 &subscription_,
                 node_,
                 ::rosette::message_traits<MessageT>::rosidl_type_support(),
                 topic_name,
-                &qos) != RCL_RET_OK) {
+                &qos))) {
             fini_message<MessageT>(message_);
             subscription_ = rcl_get_zero_initialized_subscription();
             return;
         }
 
-        if (rclc_executor_add_subscription_with_context(
+        if (!ros_ok(rclc_executor_add_subscription_with_context(
                 &context_->executor(),
                 &subscription_,
                 &message_,
                 &Subscription::on_message,
                 this,
-                ON_NEW_DATA) != RCL_RET_OK) {
-            (void)rcl_subscription_fini(&subscription_, node_);
+                ON_NEW_DATA))) {
+            (void)ros_ok(rcl_subscription_fini(&subscription_, node_));
             fini_message<MessageT>(message_);
             subscription_ = rcl_get_zero_initialized_subscription();
             return;
@@ -277,8 +277,8 @@ private:
     void fini() noexcept
     {
         if (valid_) {
-            (void)rclc_executor_remove_subscription(&context_->executor(), &subscription_);
-            (void)rcl_subscription_fini(&subscription_, node_);
+            (void)ros_ok(rclc_executor_remove_subscription(&context_->executor(), &subscription_));
+            (void)ros_ok(rcl_subscription_fini(&subscription_, node_));
         }
         fini_message<MessageT>(message_);
         subscription_ = rcl_get_zero_initialized_subscription();

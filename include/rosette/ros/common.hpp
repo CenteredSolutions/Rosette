@@ -68,6 +68,7 @@
 #include "custom_transport.hpp"
 
 #include <rcl/rcl.h>
+#include <rcl/error_handling.h>
 #include <rcl/init_options.h>
 #include <rcl/node.h>
 #include <rcl/publisher.h>
@@ -119,6 +120,34 @@ struct service_traits;
 
 template<typename ActionT>
 struct action_traits;
+
+/**
+ * @brief Reports whether an rcl/rmw call succeeded, clearing error state if not.
+ *
+ * rcl records every failure in thread-local error state (`rcl_get_error_string`
+ * reads it). Left set, the next `RCUTILS_SET_ERROR_MSG` overwrites it with a
+ * warning to stderr and — worse for a reconnect loop — the stale message can
+ * mask the real cause of a later failure. Any non-OK return on a path that
+ * keeps going (a retry, a teardown that presses on, a best-effort call) must
+ * clear it, so route those checks through this helper:
+ *
+ *   if (!ros_ok(rclc_node_init_default(&node_, ...))) { ...bail, retry later... }
+ *   (void)ros_ok(rcl_node_fini(&node_));   // teardown: swallow + clear
+ *
+ * `rcl_ret_t` and `rmw_ret_t` are the same underlying type, so one overload
+ * covers both.
+ *
+ * @param[in] rc Return code from an rcl or rmw call.
+ * @return `true` when @p rc is `RCL_RET_OK`.
+ */
+inline bool ros_ok(rcl_ret_t rc) noexcept
+{
+    if (rc == RCL_RET_OK) {
+        return true;
+    }
+    rcl_reset_error();
+    return false;
+}
 
 }  // namespace rosette
 

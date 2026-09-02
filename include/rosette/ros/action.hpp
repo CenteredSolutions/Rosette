@@ -162,7 +162,7 @@ public:
 
         copy_goal_id(goal_id_, feedback_message_->goal_id);
         feedback_message_->feedback = feedback;
-        (void)rclc_action_publish_feedback(goal_handle_, feedback_message_);
+        (void)ros_ok(rclc_action_publish_feedback(goal_handle_, feedback_message_));
     }
 
     /**
@@ -337,19 +337,19 @@ public:
         init_feedback_message<ActionT>(feedback_message_);
 
         action_server_ = rclc_action_server_t{};
-        if (rclc_action_server_init_default(
+        if (!ros_ok(rclc_action_server_init_default(
                 &action_server_,
                 node_,
                 &context_->support(),
                 traits::rosidl_action_type_support(),
-                action_name) != RCL_RET_OK) {
+                action_name))) {
             fini_send_goal_request<ActionT>(send_goal_request_);
             fini_result_response<ActionT>(result_response_);
             fini_feedback_message<ActionT>(feedback_message_);
             return;
         }
 
-        if (rclc_executor_add_action_server(
+        if (!ros_ok(rclc_executor_add_action_server(
                 &context_->executor(),
                 &action_server_,
                 1u,
@@ -357,8 +357,8 @@ public:
                 sizeof(send_goal_request_),
                 &ActionServer::on_goal_request,
                 &ActionServer::on_cancel_request,
-                this) != RCL_RET_OK) {
-            (void)rclc_action_server_fini(&action_server_, node_);
+                this))) {
+            (void)ros_ok(rclc_action_server_fini(&action_server_, node_));
             fini_send_goal_request<ActionT>(send_goal_request_);
             fini_result_response<ActionT>(result_response_);
             fini_feedback_message<ActionT>(feedback_message_);
@@ -367,7 +367,7 @@ public:
         }
 
         if (!context_->register_action_tickable(this)) {
-            (void)rclc_action_server_fini(&action_server_, node_);
+            (void)ros_ok(rclc_action_server_fini(&action_server_, node_));
             fini_send_goal_request<ActionT>(send_goal_request_);
             fini_result_response<ActionT>(result_response_);
             fini_feedback_message<ActionT>(feedback_message_);
@@ -524,11 +524,10 @@ private:
             return;
         }
 
-        const rcl_ret_t rc = rclc_action_send_result(
-            active_goal_handle_,
-            to_rcl_goal_status(terminal_status_),
-            &result_response_);
-        if (rc == RCL_RET_OK) {
+        if (ros_ok(rclc_action_send_result(
+                active_goal_handle_,
+                to_rcl_goal_status(terminal_status_),
+                &result_response_))) {
             goal_handle_.unbind();
             active_goal_handle_ = nullptr;
             active_goal_id_ = GoalId{};
@@ -536,6 +535,8 @@ private:
             terminal_status_ = GoalStatus::UNKNOWN;
             terminal_result_pending_ = false;
         }
+        // On failure the pending flag stays set for a later retry; ros_ok() has
+        // already cleared the error state.
     }
 
     /**
@@ -553,7 +554,7 @@ private:
             context_->unregister_action_tickable(this);
         }
         if (valid_) {
-            (void)rclc_action_server_fini(&action_server_, node_);
+            (void)ros_ok(rclc_action_server_fini(&action_server_, node_));
         }
         goal_handle_.unbind();
         fini_send_goal_request<ActionT>(send_goal_request_);
@@ -629,18 +630,18 @@ public:
         init_feedback_message<ActionT>(feedback_message_);
 
         action_client_ = rclc_action_client_t{};
-        if (rclc_action_client_init_default(
+        if (!ros_ok(rclc_action_client_init_default(
                 &action_client_,
                 node_,
                 traits::rosidl_action_type_support(),
-                action_name) != RCL_RET_OK) {
+                action_name))) {
             fini_send_goal_request<ActionT>(send_goal_request_);
             fini_result_response<ActionT>(result_response_);
             fini_feedback_message<ActionT>(feedback_message_);
             return;
         }
 
-        if (rclc_executor_add_action_client(
+        if (!ros_ok(rclc_executor_add_action_client(
                 &context_->executor(),
                 &action_client_,
                 MaxTrackedGoals,
@@ -650,8 +651,8 @@ public:
                 &ActionClient::on_feedback,
                 &ActionClient::on_result,
                 &ActionClient::on_cancel_response,
-                this) != RCL_RET_OK) {
-            (void)rclc_action_client_fini(&action_client_, node_);
+                this))) {
+            (void)ros_ok(rclc_action_client_fini(&action_client_, node_));
             fini_send_goal_request<ActionT>(send_goal_request_);
             fini_result_response<ActionT>(result_response_);
             fini_feedback_message<ActionT>(feedback_message_);
@@ -710,9 +711,9 @@ public:
         copy_goal_id(goal_id, send_goal_request_.goal_id);
 
         rclc_action_goal_handle_t* goal_handle = nullptr;
-        const rcl_ret_t rc =
-            rclc_action_send_goal_request(&action_client_, &send_goal_request_, &goal_handle);
-        if (rc != RCL_RET_OK || goal_handle == nullptr) {
+        if (!ros_ok(rclc_action_send_goal_request(
+                &action_client_, &send_goal_request_, &goal_handle)) ||
+            goal_handle == nullptr) {
             *slot = TrackedGoal{};
             return false;
         }
@@ -744,7 +745,7 @@ public:
         if (slot == nullptr || slot->goal_handle == nullptr) {
             return false;
         }
-        return rclc_action_send_cancel_request(slot->goal_handle) == RCL_RET_OK;
+        return ros_ok(rclc_action_send_cancel_request(slot->goal_handle));
     }
 
     /**
@@ -988,7 +989,7 @@ private:
     void fini() noexcept
     {
         if (valid_) {
-            (void)rclc_action_client_fini(&action_client_, node_);
+            (void)ros_ok(rclc_action_client_fini(&action_client_, node_));
         }
         fini_send_goal_request<ActionT>(send_goal_request_);
         fini_result_response<ActionT>(result_response_);

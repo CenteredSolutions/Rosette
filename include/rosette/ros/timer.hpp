@@ -60,24 +60,24 @@ public:
         }
 
         timer_ = rcl_get_zero_initialized_timer();
-        if (rclc_timer_init_default(
+        if (!ros_ok(rclc_timer_init_default(
                 &timer_,
                 &context_->support(),
                 static_cast<uint64_t>(period_ms) * 1000000ull,
-                &Timer::on_timer) != RCL_RET_OK) {
+                &Timer::on_timer))) {
             timer_ = rcl_get_zero_initialized_timer();
             return;
         }
 
-        if (rclc_executor_add_timer(&context_->executor(), &timer_) != RCL_RET_OK) {
-            (void)rcl_timer_fini(&timer_);
+        if (!ros_ok(rclc_executor_add_timer(&context_->executor(), &timer_))) {
+            (void)ros_ok(rcl_timer_fini(&timer_));
             timer_ = rcl_get_zero_initialized_timer();
             return;
         }
 
         if (!register_timer(&timer_, this)) {
-            (void)rclc_executor_remove_timer(&context_->executor(), &timer_);
-            (void)rcl_timer_fini(&timer_);
+            (void)ros_ok(rclc_executor_remove_timer(&context_->executor(), &timer_));
+            (void)ros_ok(rcl_timer_fini(&timer_));
             timer_ = rcl_get_zero_initialized_timer();
             return;
         }
@@ -207,8 +207,8 @@ private:
     {
         if (valid_) {
             unregister_timer(&timer_);
-            (void)rclc_executor_remove_timer(&context_->executor(), &timer_);
-            (void)rcl_timer_fini(&timer_);
+            (void)ros_ok(rclc_executor_remove_timer(&context_->executor(), &timer_));
+            (void)ros_ok(rcl_timer_fini(&timer_));
         }
         timer_ = rcl_get_zero_initialized_timer();
         valid_ = false;

@@ -90,12 +90,12 @@ public:
 
         allocator_ = rcl_get_default_allocator();
         init_options_ = rcl_get_zero_initialized_init_options();
-        if (rcl_init_options_init(&init_options_, allocator_) != RCL_RET_OK) {
+        if (!ros_ok(rcl_init_options_init(&init_options_, allocator_))) {
             return fail_start(ContextStartError::kInitOptionsInitFailed);
         }
         init_options_initialized_ = true;
 
-        if (rcl_init_options_set_domain_id(&init_options_, options_.domain_id) != RCL_RET_OK) {
+        if (!ros_ok(rcl_init_options_set_domain_id(&init_options_, options_.domain_id))) {
             fini();
             return fail_start(ContextStartError::kDomainIdSetFailed);
         }
@@ -107,7 +107,7 @@ public:
             return fail_start(ContextStartError::kRmwOptionsUnavailable);
         }
 
-        if (rmw_uros_options_set_client_key(options_.client_key, rmw_options) != RMW_RET_OK) {
+        if (!ros_ok(rmw_uros_options_set_client_key(options_.client_key, rmw_options))) {
             fini();
             return fail_start(ContextStartError::kClientKeySetFailed);
         }
@@ -124,29 +124,36 @@ public:
             return fail_start(status);
         }
 
+        // Set the cleanup flags *before* the calls that can partially succeed:
+        // rclc_support_init_with_options() runs rcl_init() (which claims a
+        // finite XRCE session-memory slot) and does not unwind it if a later
+        // step like rcl_clock_init() fails. If fini() then skipped
+        // rclc_support_fini(), that slot would leak and every future connect
+        // attempt would fail. rclc_support_fini()/rclc_executor_fini() are safe
+        // on a zero- or partially-initialized handle.
         support_ = {};
-        if (rclc_support_init_with_options(
-                &support_, 0, nullptr, &init_options_, &allocator_) != RCL_RET_OK) {
+        support_initialized_ = true;
+        if (!ros_ok(rclc_support_init_with_options(
+                &support_, 0, nullptr, &init_options_, &allocator_))) {
             fini();
             return fail_start(ContextStartError::kSupportInitFailed);
         }
-        support_initialized_ = true;
 
         executor_ = rclc_executor_get_zero_initialized_executor();
-        if (rclc_executor_init(
+        executor_initialized_ = true;
+        if (!ros_ok(rclc_executor_init(
                 &executor_,
                 &support_.context,
                 options_.executor_handles,
-                &allocator_) != RCL_RET_OK) {
+                &allocator_))) {
             fini();
             return fail_start(ContextStartError::kExecutorInitFailed);
         }
-        executor_initialized_ = true;
 
         started_ = true;
 
         if (options_.synchronize_epoch) {
-            (void)rmw_uros_sync_session(options_.epoch_sync_timeout_ms);
+            (void)ros_ok(rmw_uros_sync_session(options_.epoch_sync_timeout_ms));
         }
 
         last_start_error_ = ContextStartError::kOk;
@@ -175,18 +182,17 @@ public:
         action_tickable_count_ = 0u;
 
         if (executor_initialized_) {
-            (void)rclc_executor_fini(&executor_);
+            (void)ros_ok(rclc_executor_fini(&executor_));
             executor_initialized_ = false;
         }
 
         if (support_initialized_) {
-            (void)rclc_support_fini(&support_);
+            (void)ros_ok(rclc_support_fini(&support_));
             support_initialized_ = false;
         }
 
         if (init_options_initialized_) {
-            [[maybe_unused]] const rcl_ret_t fini_ret =
-                rcl_init_options_fini(&init_options_);
+            (void)ros_ok(rcl_init_options_fini(&init_options_));
             init_options_initialized_ = false;
         }
 
@@ -201,6 +207,10 @@ public:
 
         const rcl_ret_t rc = rclc_executor_spin_some(&executor_, options_.spin_timeout_ns);
         if (rc != RCL_RET_OK && rc != RCL_RET_TIMEOUT) {
+            // A hard executor error (not the routine spin_some timeout). Clear
+            // the error state so it doesn't bleed into the next tick or the
+            // reconnect that App triggers after enough ping failures.
+            rcl_reset_error();
             return false;
         }
 
@@ -310,14 +320,14 @@ private:
                 return ContextStartError::kCustomTransportEndpointRejected;
             }
 
-            return rmw_uros_options_set_custom_transport(
+            return ros_ok(rmw_uros_options_set_custom_transport(
                        options_.custom_transport_framing,
                        options_.custom_transport,
                        &Context::open_transport,
                        &Context::close_transport,
                        &Context::write_transport,
                        &Context::read_transport,
-                       &rmw_options) == RMW_RET_OK
+                       &rmw_options))
                        ? ContextStartError::kOk
                        : ContextStartError::kCustomTransportUnavailable;
 #else
@@ -326,10 +336,10 @@ private:
         }
 
         if (options_.udp_agent_address != nullptr) {
-            return rmw_uros_options_set_udp_address(
+            return ros_ok(rmw_uros_options_set_udp_address(
                        options_.udp_agent_address,
                        port_str,
-                       &rmw_options) == RMW_RET_OK
+                       &rmw_options))
                        ? ContextStartError::kOk
                        : ContextStartError::kUdpAddressSetFailed;
         }
@@ -358,10 +368,10 @@ private:
     ContextStartError discover_agent(rmw_init_options_t& rmw_options) noexcept
     {
         if (options_.udp_agent_address != nullptr) {
-            return rmw_uros_ping_agent_options(
+            return ros_ok(rmw_uros_ping_agent_options(
                        options_.discovery_timeout_ms,
                        options_.discovery_attempts,
-                       &rmw_options) == RMW_RET_OK
+                       &rmw_options))
                        ? ContextStartError::kOk
                        : ContextStartError::kStaticAgentPingFailed;
         }
@@ -386,15 +396,14 @@ private:
                     !options_.custom_transport->configure_agent_endpoint(address, port)) {
                     return ContextStartError::kAgentLocatorEndpointRejected;
                 }
-            } else if (rmw_uros_options_set_udp_address(address, port, &rmw_options) !=
-                       RMW_RET_OK) {
+            } else if (!ros_ok(rmw_uros_options_set_udp_address(address, port, &rmw_options))) {
                 return ContextStartError::kDiscoveredUdpAddressSetFailed;
             }
 
-            return rmw_uros_ping_agent_options(
+            return ros_ok(rmw_uros_ping_agent_options(
                        options_.discovery_timeout_ms,
                        options_.discovery_attempts,
-                       &rmw_options) == RMW_RET_OK
+                       &rmw_options))
                        ? ContextStartError::kOk
                        : ContextStartError::kStaticAgentPingFailed;
         }
@@ -408,7 +417,7 @@ private:
         }
 
 #if defined(RMW_UXRCE_TRANSPORT_UDP) || defined(RMW_UXRCE_TRANSPORT_TCP)
-        return rmw_uros_discover_agent(&rmw_options) == RMW_RET_OK
+        return ros_ok(rmw_uros_discover_agent(&rmw_options))
                ? ContextStartError::kOk
                : ContextStartError::kAutoDiscoveryFailed;
 #else

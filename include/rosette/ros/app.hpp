@@ -151,7 +151,7 @@ public:
         if (static_cast<int32_t>(now_ms - (last_ping_ms_ + options_.agent_ping_period_ms)) >= 0) {
             last_ping_ms_ = now_ms;
             const bool alive =
-                rmw_uros_ping_agent(options_.agent_ping_timeout_ms, 1) == RMW_RET_OK;
+                ros_ok(rmw_uros_ping_agent(options_.agent_ping_timeout_ms, 1));
             if (alive) {
                 ping_failures_ = 0u;
             } else if (++ping_failures_ >= options_.agent_ping_failures) {

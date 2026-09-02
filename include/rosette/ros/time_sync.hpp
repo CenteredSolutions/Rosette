@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <rcl/error_handling.h>
 #include <rmw_microros/time_sync.h>
 
 #include <stdint.h>
@@ -77,7 +78,13 @@ inline Stamp time_stamp() noexcept
  */
 inline bool sync_time(int timeout_ms = 1000) noexcept
 {
-    return rmw_uros_sync_session(timeout_ms) == RMW_RET_OK;
+    if (rmw_uros_sync_session(timeout_ms) == RMW_RET_OK) {
+        return true;
+    }
+    // A failed sync (Agent slow/unreachable) still leaves rcl error state set;
+    // clear it so the next connect's rcl calls start clean.
+    rcl_reset_error();
+    return false;
 }
 
 }  // namespace rosette
