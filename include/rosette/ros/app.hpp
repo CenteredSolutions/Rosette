@@ -29,6 +29,8 @@
 #include "rosette/ros/node.hpp"
 #include "rosette/ros/time_sync.hpp"
 
+#include <cstdio>
+
 #include "rosette/platform/host_runtime.hpp"
 
 namespace rosette {
@@ -201,12 +203,17 @@ private:
         context_.options_mutable().executor_handles = handles;
 
         if (!context_.start_result().ok()) {
+            std::printf("[app] context start failed: %s\n",
+                        context_start_error_string(context_.last_start_error()));
             context_.fini();
             return false;
         }
 
         node_ = context_.create_node(options_.node_name, options_.node_namespace);
         if (!node_.valid()) {
+            std::printf("[app] node '%s' (ns '%s') creation failed\n",
+                        options_.node_name != nullptr ? options_.node_name : "",
+                        options_.node_namespace != nullptr ? options_.node_namespace : "");
             context_.fini();
             return false;
         }

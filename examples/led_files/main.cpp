@@ -229,6 +229,10 @@ int main()
     options.context.use_custom_transport = true;
     options.context.custom_transport = &transport;
     options.context.custom_transport_framing = false;   // UDP is packet-oriented
+    // Hand the compiled-in Agent IP to the context: the custom-transport path
+    // has no auto-discovery, so without a static endpoint Context::discover_agent
+    // fails with kCustomTransportRequiresEndpoint.
+    options.context.udp_agent_address = agent_ip;
 
     rosette::App app(options);
     static LedModule led;
