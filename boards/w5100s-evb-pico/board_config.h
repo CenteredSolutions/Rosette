@@ -2,8 +2,8 @@
  * @file boards/w5100s-evb-pico/board_config.h
  * @brief Hardware pin mapping for the WIZnet W5100S-EVB-Pico (RP2040).
  *
- * Identical wiring to the Pico2 EVB; the only difference is the processor
- * variant, which affects the SDK target and clock speeds.
+ * No-RTOS poll-mode board — same WIZnet wiring as the RP2350 EVB; the RP2040
+ * variant is the debugger-friendly one. See w5100s-evb-pico2 for the RP2350.
  */
 
 #pragma once
@@ -11,7 +11,13 @@
 #define BOARD_IS_RP2350         0
 #define BOARD_IS_RP2040         1
 
-#define ROSETTE_SPI_INST           spi1
+// Names the chip-trait struct (rosette::net::wiznet::<token>) the register-level
+// driver builds against; see include/rosette/net/wiznet/chip_select.hpp.
+#define ROSETTE_WIZNET_CHIP        W5100S
+
+// GPIO 16/17/18/19 are SPI0 RX/CSn/SCK/TX (matches the pico-sdk
+// wiznet_w5100s_evb_pico board header).
+#define ROSETTE_SPI_INST           spi0
 #define ROSETTE_PIN_SPI_SCK        18
 #define ROSETTE_PIN_SPI_TX         19
 #define ROSETTE_PIN_SPI_RX         16
@@ -20,7 +26,7 @@
 #define ROSETTE_PIN_W5100S_RST     20
 #define ROSETTE_PIN_W5100S_INT     21
 
-// RP2040 sys_clk is 125 MHz; SPI1 can achieve up to 62.5 MHz.
+// RP2040 sys_clk is 125 MHz; SPI0 can achieve up to 62.5 MHz.
 // W5100S max is 33.3 MHz — use 31.25 MHz (125/4).
 #define ROSETTE_SPI_BAUDRATE_HZ    (31250000u)
 

@@ -60,6 +60,22 @@ bool rosette_platform_get_ipv6_addr(uint8_t out[16]);
 void rosette_platform_delay_ms(uint32_t ms);
 
 /**
+ * @brief Sleeps until an interrupt wakes the CPU or @p max_wait_ms elapses.
+ *
+ * Unlike `rosette_platform_delay_ms()`, this returns early when *any* enabled
+ * interrupt fires. The WIZnet poll-mode socket path uses it so a receive wakes
+ * on the chip's INT line (a GPIO IRQ wired in `board_init`) rather than on a
+ * fixed polling tick.
+ *
+ * On the bare Pico this is `WFE` with a hardware-alarm timeout; on the host a
+ * short thread sleep; on FreeRTOS a `vTaskDelay` (the RTOS socket path is
+ * event-driven and does not call this).
+ *
+ * @param[in] max_wait_ms Upper bound on the wait; the call may return sooner.
+ */
+void rosette_platform_wait_for_event(uint32_t max_wait_ms);
+
+/**
  * @brief Records the board's current local IPv4 address.
  *
  * The network bring-up layer calls this once DHCP completes (or a static

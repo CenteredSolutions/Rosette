@@ -34,6 +34,13 @@ void rosette_platform_delay_ms(uint32_t ms)
     sleep_ms(ms);
 }
 
+void rosette_platform_wait_for_event(uint32_t max_wait_ms)
+{
+    // WFE with a hardware-alarm backstop: returns on the alarm, or earlier when
+    // any enabled IRQ fires (e.g. the WIZnet INT GPIO edge wired in board_init).
+    (void)best_effort_wfe_or_timeout(make_timeout_time_ms(max_wait_ms));
+}
+
 void rosette_platform_set_ipv4_addr(uint32_t addr_host_order)
 {
     s_local_ipv4_host_order = addr_host_order;

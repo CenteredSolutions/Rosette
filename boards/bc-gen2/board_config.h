@@ -17,6 +17,10 @@
 #define BOARD_IS_RP2350         1
 #define BOARD_IS_RP2040         0
 
+// Names the chip-trait struct (rosette::net::wiznet::<token>) the register-level
+// driver builds against; see include/rosette/net/wiznet/chip_select.hpp.
+#define ROSETTE_WIZNET_CHIP        W5100S
+
 // W5100S wired to SPI1 on non-standard pins.
 #define ROSETTE_SPI_INST           spi1
 #define ROSETTE_PIN_SPI_SCK        10

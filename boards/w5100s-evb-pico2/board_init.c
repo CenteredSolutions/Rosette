@@ -55,6 +55,17 @@ static uint32_t s_crit_save;
 static void crit_enter(void) { s_crit_save = save_and_disable_interrupts(); }
 static void crit_exit(void)  { restore_interrupts(s_crit_save); }
 
+// ── WIZnet INT line ─────────────────────────────────────────────────────────
+// Active-low, asserted while a socket has an unserviced interrupt (RX). The
+// handler does nothing: the ISR merely running pulls the superloop out of the
+// WFE in rosette_platform_wait_for_event(), which then re-polls the chip. The
+// SDK acknowledges the GPIO IRQ before calling this.
+static void wiznet_int_callback(uint gpio, uint32_t events)
+{
+    (void)gpio;
+    (void)events;
+}
+
 void board_init(void)
 {
     stdio_init_all();
@@ -73,6 +84,13 @@ void board_init(void)
     gpio_init(ROSETTE_PIN_W5100S_RST);
     gpio_set_dir(ROSETTE_PIN_W5100S_RST, GPIO_OUT);
     gpio_put(ROSETTE_PIN_W5100S_RST, 1);
+
+    gpio_init(ROSETTE_PIN_W5100S_INT);
+    gpio_set_dir(ROSETTE_PIN_W5100S_INT, GPIO_IN);
+    gpio_pull_up(ROSETTE_PIN_W5100S_INT);
+    gpio_set_irq_enabled_with_callback(ROSETTE_PIN_W5100S_INT,
+                                       GPIO_IRQ_EDGE_FALL, true,
+                                       &wiznet_int_callback);
 
     gpio_init(ROSETTE_PIN_LED);
     gpio_set_dir(ROSETTE_PIN_LED, GPIO_OUT);

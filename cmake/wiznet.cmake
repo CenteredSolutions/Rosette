@@ -5,7 +5,10 @@
 # Variables (set before including):
 #   WIZNET_IOLIB_PATH     — path to ioLibrary_Driver repo root, or unset to
 #                           let FetchContent pull it.
-#   ROSETTE_WIZNET_CHIP   — chip variant: W5100S (default) or W6300.
+#   ROSETTE_WIZNET_CHIP   — chip variant: W5100S (default) or W6300. This drives
+#                           the vendored ioLibrary only. The register-level
+#                           template driver takes its part from ROSETTE_WIZNET_CHIP
+#                           in the board's board_config.h (see chip_select.hpp).
 #
 # Only the Ethernet/socket layer is compiled; the HTTP/MQTT/DHCP layers
 # are excluded to keep code size minimal.

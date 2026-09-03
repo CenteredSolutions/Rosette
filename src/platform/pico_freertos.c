@@ -76,6 +76,12 @@ void rosette_platform_delay_ms(uint32_t ms) {
     vTaskDelay(pdMS_TO_TICKS(ms));
 }
 
+// The FreeRTOS WIZnet socket path is interrupt-driven (FreeRtosExecutor), so
+// nothing here calls this; provide it for symbol completeness as a plain yield.
+void rosette_platform_wait_for_event(uint32_t max_wait_ms) {
+    vTaskDelay(pdMS_TO_TICKS(max_wait_ms));
+}
+
 // ============================================================
 // rosette_platform_make_guid_prefix()
 //

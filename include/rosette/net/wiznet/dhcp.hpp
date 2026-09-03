@@ -1,3 +1,19 @@
+/**
+ * @file net/wiznet/dhcp.hpp
+ * @brief DHCPv4 client over a `WiznetSocketProvider`.
+ *
+ * `DhcpProtocol` is the execution-independent core: it builds and parses the
+ * DISCOVER/OFFER/REQUEST/ACK wire format, runs one exchange to completion, and
+ * applies the lease to the chip (`WiznetDevice::configure_ipv4`). Deadlines are
+ * measured with `rosette_platform_get_ms()`, so it carries no RTOS dependency.
+ *
+ * Two thin drivers pace it:
+ *   - @ref DhcpPoller — `acquire()` once, then `poll()` from the superloop.
+ *     No threads; a renewal exchange briefly blocks the caller.
+ *   - @ref DhcpTask — a FreeRTOS task that acquires, sleeps to T1, renews.
+ *     Present only when FreeRTOS is available.
+ */
+
 #pragma once
 
 #include <array>
@@ -7,14 +23,18 @@
 #include <cstring>
 #include <memory>
 
+#include "rosette/platform/host_runtime.hpp"
+
+#include "device.hpp"
+#include "socket_provider.hpp"
+
+#ifndef ROSETTE_NO_FREERTOS
 extern "C" {
 #include "FreeRTOS.h"
 #include "semphr.h"
 #include "task.h"
 }
-
-#include "device.hpp"
-#include "socket_iolibrary.hpp"
+#endif
 
 namespace rosette::net::wiznet {
 
@@ -47,82 +67,172 @@ struct DhcpConfig {
     uint32_t receive_timeout_ms = 1000u;
     uint32_t exchange_timeout_ms = 60000u;
     uint32_t retry_delay_ms = 10000u;
-    uint16_t task_stack_words = 768u;
-    UBaseType_t task_priority = tskIDLE_PRIORITY + 1u;
-    const char* task_name = "dhcp";
     const char* host_name = nullptr;
 };
 
-template<typename Chip, typename Bus>
-class IolibraryDhcpClient {
+/**
+ * @brief Execution-independent DHCPv4 protocol engine.
+ *
+ * Drivers call the protected `run_exchange()` and read `lease()` / `state()`.
+ */
+template<typename Chip, typename Bus,
+         template<typename> class ExecutorT = DefaultExecutor>
+class DhcpProtocol {
 public:
     using device_type = WiznetDevice<Chip, Bus>;
-    using socket_provider_type = IolibrarySocketProvider<Chip, Bus>;
-
-    using DhcpLease = rosette::net::wiznet::DhcpLease;
-    using DhcpState = rosette::net::wiznet::DhcpState;
+    using socket_provider_type = WiznetSocketProvider<Chip, Bus, ExecutorT>;
 
     using assign_callback_type = void (*)(const DhcpLease& lease, void* user);
     using change_callback_type = void (*)(const DhcpLease& old_lease,
                                           const DhcpLease& new_lease,
                                           void* user);
 
-    IolibraryDhcpClient(device_type& device,
-                        socket_provider_type& provider,
-                        const DhcpConfig& config = {}) noexcept
+    DhcpProtocol(device_type& device,
+                 socket_provider_type& provider,
+                 const DhcpConfig& config = {}) noexcept
         : device_(device)
         , provider_(provider)
         , config_(config) {}
 
-    bool start(assign_callback_type on_assign = nullptr,
-               change_callback_type on_change = nullptr,
-               void* callback_user = nullptr) noexcept
-    {
-        on_assign_ = on_assign;
-        on_change_ = on_change;
-        callback_user_ = callback_user;
-
-        if (lease_mutex_ == nullptr) {
-            lease_mutex_ = xSemaphoreCreateMutex();
-            if (lease_mutex_ == nullptr) {
-                return false;
-            }
-        }
-
-        if (task_handle_ != nullptr) {
-            return true;
-        }
-
-        const BaseType_t rc = xTaskCreate(&task_entry,
-                                          config_.task_name,
-                                          config_.task_stack_words,
-                                          this,
-                                          config_.task_priority,
-                                          &task_handle_);
-        return rc == pdPASS;
-    }
-
+    /// Copies the current lease into @p out; returns whether it is valid.
     bool lease(DhcpLease& out) const noexcept
     {
-        if (lease_mutex_ == nullptr) {
-            return false;
-        }
-
-        xSemaphoreTake(lease_mutex_, portMAX_DELAY);
+        lease_lock();
         out = lease_;
-        xSemaphoreGive(lease_mutex_);
+        lease_unlock();
         return out.valid;
     }
 
-    DhcpState state() const noexcept
+    DhcpState state() const noexcept { return state_; }
+
+    const DhcpConfig& config() const noexcept { return config_; }
+
+    void set_callbacks(assign_callback_type on_assign,
+                       change_callback_type on_change,
+                       void* user) noexcept
     {
-        return state_;
+        on_assign_ = on_assign;
+        on_change_ = on_change;
+        callback_user_ = user;
     }
 
-    void force_renew() noexcept
+protected:
+    void set_state(DhcpState state) noexcept { state_ = state; }
+
+    /**
+     * @brief Runs one DISCOVER/OFFER/REQUEST/ACK exchange.
+     *
+     * Blocks (via the socket's receive timeout) until a lease is obtained,
+     * a server NAKs, an error occurs, or `config_.exchange_timeout_ms` lapses.
+     * On success the lease is applied to the chip and stored.
+     */
+    bool run_exchange() noexcept
     {
-        force_renew_ = true;
+        std::printf("[DHCP] resetting IPv4 configuration before exchange\n");
+        device_.configure_ipv4({}, {}, {});
+
+        std::unique_ptr<Socket> socket = provider_.open();
+        if (!socket) {
+            std::printf("[DHCP] failed to open DHCP socket\n");
+            return false;
+        }
+
+        if (socket->bind({.address = {0u, 0u, 0u, 0u}, .port = config_.client_port}) != 0) {
+            std::printf("[DHCP] bind failed on client port %u, error=%s\n",
+                        config_.client_port,
+                        socket_error_string(socket->last_error()));
+            return false;
+        }
+        std::printf("[DHCP] bound to UDP/%u\n", config_.client_port);
+
+        if (socket->set_receive_timeout(config_.receive_timeout_ms) != 0) {
+            std::printf("[DHCP] failed to set receive timeout=%lu ms, error=%s\n",
+                        static_cast<unsigned long>(config_.receive_timeout_ms),
+                        socket_error_string(socket->last_error()));
+            return false;
+        }
+
+        ExchangeContext exchange{};
+        exchange.xid = next_xid();
+        std::printf("[DHCP] exchange xid=0x%08lx timeout=%lu ms\n",
+                    static_cast<unsigned long>(exchange.xid),
+                    static_cast<unsigned long>(config_.exchange_timeout_ms));
+
+        if (!send_discover(*socket, exchange.xid)) {
+            std::printf("[DHCP] DISCOVER send failed\n");
+            return false;
+        }
+        std::printf("[DHCP] DISCOVER sent\n");
+
+        const uint32_t deadline = rosette_platform_get_ms() + config_.exchange_timeout_ms;
+        if (!await_offer(*socket, exchange, deadline)) {
+            std::printf("[DHCP] OFFER wait failed for xid=0x%08lx\n",
+                        static_cast<unsigned long>(exchange.xid));
+            return false;
+        }
+
+        std::printf("[DHCP] OFFER received ");
+        log_ipv4("ip=", exchange.offer.ip);
+        std::printf(" ");
+        log_ipv4("server=", exchange.offer.server_identifier);
+        std::printf("\n");
+
+        if (!send_request(*socket, exchange.xid, exchange.offer)) {
+            std::printf("[DHCP] REQUEST send failed\n");
+            return false;
+        }
+        std::printf("[DHCP] REQUEST sent\n");
+
+        DhcpLease leased{};
+        if (!await_ack(*socket, exchange, deadline, leased)) {
+            std::printf("[DHCP] ACK wait failed for xid=0x%08lx\n",
+                        static_cast<unsigned long>(exchange.xid));
+            return false;
+        }
+
+        std::printf("[DHCP] ACK received ");
+        log_ipv4("ip=", leased.ip);
+        std::printf(" ");
+        log_ipv4("gateway=", leased.gateway);
+        std::printf(" lease=%lu s t1=%lu s t2=%lu s\n",
+                    static_cast<unsigned long>(leased.lease_seconds),
+                    static_cast<unsigned long>(leased.t1_seconds),
+                    static_cast<unsigned long>(leased.t2_seconds));
+
+        store_lease(leased);
+        return true;
     }
+
+    void lease_lock() const noexcept
+    {
+#ifndef ROSETTE_NO_FREERTOS
+        if (lease_mutex_ != nullptr) {
+            xSemaphoreTake(lease_mutex_, portMAX_DELAY);
+        }
+#endif
+    }
+
+    void lease_unlock() const noexcept
+    {
+#ifndef ROSETTE_NO_FREERTOS
+        if (lease_mutex_ != nullptr) {
+            xSemaphoreGive(lease_mutex_);
+        }
+#endif
+    }
+
+    device_type& device_;
+    socket_provider_type& provider_;
+    DhcpConfig config_{};
+    DhcpLease lease_{};
+    volatile DhcpState state_ = DhcpState::init;
+    assign_callback_type on_assign_ = nullptr;
+    change_callback_type on_change_ = nullptr;
+    void* callback_user_ = nullptr;
+    uint32_t xid_seed_ = 0x4d445343u;
+#ifndef ROSETTE_NO_FREERTOS
+    SemaphoreHandle_t lease_mutex_ = nullptr;
+#endif
 
 private:
     static constexpr std::size_t kPacketBytes = 548u;
@@ -156,49 +266,48 @@ private:
     static constexpr uint8_t kMessageAck = 5u;
     static constexpr uint8_t kMessageNak = 6u;
 
-    static constexpr TickType_t ms_to_ticks(uint32_t ms) noexcept
-    {
-        return pdMS_TO_TICKS(ms);
-    }
+    static constexpr uint32_t kInitialRetransmitMs = 2000u;
+    static constexpr uint32_t kMaxRetransmitMs = 16000u;
 
     struct ExchangeContext {
         uint32_t xid = 0u;
         DhcpLease offer{};
     };
 
-    static const char* state_string(DhcpState state) noexcept
-    {
-        switch (state) {
-        case DhcpState::init:
-            return "init";
-        case DhcpState::acquiring:
-            return "acquiring";
-        case DhcpState::leased:
-            return "leased";
-        case DhcpState::renewing:
-            return "renewing";
-        case DhcpState::failed:
-            return "failed";
-        default:
-            return "unknown";
+    /**
+     * @brief Exponential-backoff retransmit clock (RFC 2131 §4.1).
+     *
+     * `due()` returns true at ~2 s, 4 s, 8 s, 16 s, 16 s, ... after
+     * construction. UDP is lossy and the first broadcast DISCOVER often goes
+     * out before the switch port forwards (STP), so the request must be resent
+     * rather than waited on.
+     */
+    struct RetransmitTimer {
+        uint32_t next_ms = rosette_platform_get_ms() + kInitialRetransmitMs;
+        uint32_t interval_ms = kInitialRetransmitMs;
+
+        bool due() noexcept
+        {
+            const uint32_t now = rosette_platform_get_ms();
+            if (static_cast<int32_t>(now - next_ms) < 0) {
+                return false;
+            }
+            interval_ms = interval_ms < kMaxRetransmitMs ? (interval_ms * 2u)
+                                                         : kMaxRetransmitMs;
+            next_ms = now + interval_ms;
+            return true;
         }
-    }
+    };
 
     static const char* message_type_string(uint8_t type) noexcept
     {
         switch (type) {
-        case kMessageDiscover:
-            return "DISCOVER";
-        case kMessageOffer:
-            return "OFFER";
-        case kMessageRequest:
-            return "REQUEST";
-        case kMessageAck:
-            return "ACK";
-        case kMessageNak:
-            return "NAK";
-        default:
-            return "UNKNOWN";
+        case kMessageDiscover: return "DISCOVER";
+        case kMessageOffer:    return "OFFER";
+        case kMessageRequest:  return "REQUEST";
+        case kMessageAck:      return "ACK";
+        case kMessageNak:      return "NAK";
+        default:               return "UNKNOWN";
         }
     }
 
@@ -206,151 +315,7 @@ private:
                          const std::array<uint8_t, 4>& address) noexcept
     {
         std::printf("%s%u.%u.%u.%u",
-                    label,
-                    address[0], address[1], address[2], address[3]);
-    }
-
-    static void task_entry(void* arg) noexcept
-    {
-        static_cast<IolibraryDhcpClient*>(arg)->task_main();
-    }
-
-    void task_main() noexcept
-    {
-        for (;;) {
-            DhcpLease snapshot{};
-            (void)lease(snapshot);
-
-            if (!snapshot.valid) {
-                state_ = DhcpState::acquiring;
-                std::printf("[DHCP] state=%s starting lease acquisition\n",
-                            state_string(state_));
-                if (run_exchange()) {
-                    state_ = DhcpState::leased;
-                    std::printf("[DHCP] state=%s lease acquisition complete\n",
-                                state_string(state_));
-                } else {
-                    state_ = DhcpState::failed;
-                    std::printf("[DHCP] state=%s acquisition failed, retry in %lu ms\n",
-                                state_string(state_),
-                                static_cast<unsigned long>(config_.retry_delay_ms));
-                    vTaskDelay(ms_to_ticks(config_.retry_delay_ms));
-                }
-                continue;
-            }
-
-            state_ = DhcpState::leased;
-            std::printf("[DHCP] state=%s lease valid, renew in %lu s\n",
-                        state_string(state_),
-                        static_cast<unsigned long>(snapshot.t1_seconds));
-            TickType_t wake_at =
-                xTaskGetTickCount() + ms_to_ticks(snapshot.t1_seconds * 1000u);
-            while (!force_renew_) {
-                const TickType_t now = xTaskGetTickCount();
-                if (static_cast<int32_t>(now - wake_at) >= 0) {
-                    break;
-                }
-
-                const TickType_t remaining = wake_at - now;
-                const TickType_t chunk = ms_to_ticks(5000u);
-                vTaskDelay(remaining < chunk ? remaining : chunk);
-            }
-
-            force_renew_ = false;
-            state_ = DhcpState::renewing;
-            std::printf("[DHCP] state=%s starting renewal\n",
-                        state_string(state_));
-            if (run_exchange()) {
-                state_ = DhcpState::leased;
-                std::printf("[DHCP] state=%s renewal complete\n",
-                            state_string(state_));
-            } else {
-                state_ = DhcpState::failed;
-                std::printf("[DHCP] state=%s renewal failed, retry in %lu ms\n",
-                            state_string(state_),
-                            static_cast<unsigned long>(config_.retry_delay_ms));
-                vTaskDelay(ms_to_ticks(config_.retry_delay_ms));
-            }
-        }
-    }
-
-    bool run_exchange() noexcept
-    {
-        std::printf("[DHCP] resetting IPv4 configuration before exchange\n");
-        device_.configure_ipv4({}, {}, {});
-
-        std::unique_ptr<Socket> socket = provider_.open();
-        if (!socket) {
-            std::printf("[DHCP] failed to open DHCP socket\n");
-            return false;
-        }
-        std::printf("[DHCP] socket opened\n");
-
-        if (socket->bind({.address = {0u, 0u, 0u, 0u}, .port = config_.client_port}) != 0) {
-            std::printf("[DHCP] bind failed on client port %u, error=%s\n",
-                        config_.client_port,
-                        socket_error_string(socket->last_error()));
-            return false;
-        }
-        std::printf("[DHCP] bound to UDP/%u\n", config_.client_port);
-
-        if (socket->set_receive_timeout(config_.receive_timeout_ms) != 0) {
-            std::printf("[DHCP] failed to set receive timeout=%lu ms, error=%s\n",
-                        static_cast<unsigned long>(config_.receive_timeout_ms),
-                        socket_error_string(socket->last_error()));
-            return false;
-        }
-
-        ExchangeContext exchange{};
-        exchange.xid = next_xid();
-        std::printf("[DHCP] exchange xid=0x%08lx timeout=%lu ms\n",
-                    static_cast<unsigned long>(exchange.xid),
-                    static_cast<unsigned long>(config_.exchange_timeout_ms));
-
-        if (!send_discover(*socket, exchange.xid)) {
-            std::printf("[DHCP] DISCOVER send failed\n");
-            return false;
-        }
-        std::printf("[DHCP] DISCOVER sent\n");
-
-        const TickType_t deadline =
-            xTaskGetTickCount() + ms_to_ticks(config_.exchange_timeout_ms);
-        if (!await_offer(*socket, exchange, deadline)) {
-            std::printf("[DHCP] OFFER wait failed for xid=0x%08lx\n",
-                        static_cast<unsigned long>(exchange.xid));
-            return false;
-        }
-
-        std::printf("[DHCP] OFFER received ");
-        log_ipv4("ip=", exchange.offer.ip);
-        std::printf(" ");
-        log_ipv4("server=", exchange.offer.server_identifier);
-        std::printf("\n");
-
-        if (!send_request(*socket, exchange.xid, exchange.offer)) {
-            std::printf("[DHCP] REQUEST send failed\n");
-            return false;
-        }
-        std::printf("[DHCP] REQUEST sent\n");
-
-        DhcpLease leased{};
-        if (!await_ack(*socket, exchange.xid, deadline, leased)) {
-            std::printf("[DHCP] ACK wait failed for xid=0x%08lx\n",
-                        static_cast<unsigned long>(exchange.xid));
-            return false;
-        }
-
-        std::printf("[DHCP] ACK received ");
-        log_ipv4("ip=", leased.ip);
-        std::printf(" ");
-        log_ipv4("gateway=", leased.gateway);
-        std::printf(" lease=%lu s t1=%lu s t2=%lu s\n",
-                    static_cast<unsigned long>(leased.lease_seconds),
-                    static_cast<unsigned long>(leased.t1_seconds),
-                    static_cast<unsigned long>(leased.t2_seconds));
-
-        store_lease(leased);
-        return true;
+                    label, address[0], address[1], address[2], address[3]);
     }
 
     bool send_discover(Socket& socket, uint32_t xid) noexcept
@@ -379,12 +344,19 @@ private:
 
     bool await_offer(Socket& socket,
                      ExchangeContext& exchange,
-                     TickType_t deadline) noexcept
+                     uint32_t deadline_ms) noexcept
     {
         std::array<uint8_t, kPacketBytes> packet{};
+        RetransmitTimer retransmit{};
         for (;;) {
-            if (force_renew_ || time_expired(deadline)) {
+            if (time_expired(deadline_ms)) {
                 return false;
+            }
+
+            if (retransmit.due()) {
+                std::printf("[DHCP] retransmitting DISCOVER xid=0x%08lx\n",
+                            static_cast<unsigned long>(exchange.xid));
+                (void)send_discover(socket, exchange.xid);
             }
 
             SocketAddress remote{};
@@ -393,7 +365,6 @@ private:
             if (received < 0) {
                 if ((socket.last_error() == SocketError::timed_out) ||
                     (socket.last_error() == SocketError::would_block)) {
-                    std::printf("[DHCP] waiting for OFFER timed out, retrying\n");
                     continue;
                 }
                 std::printf("[DHCP] receive error while waiting for OFFER: %s\n",
@@ -429,14 +400,21 @@ private:
     }
 
     bool await_ack(Socket& socket,
-                   uint32_t xid,
-                   TickType_t deadline,
+                   const ExchangeContext& exchange,
+                   uint32_t deadline_ms,
                    DhcpLease& leased) noexcept
     {
         std::array<uint8_t, kPacketBytes> packet{};
+        RetransmitTimer retransmit{};
         for (;;) {
-            if (force_renew_ || time_expired(deadline)) {
+            if (time_expired(deadline_ms)) {
                 return false;
+            }
+
+            if (retransmit.due()) {
+                std::printf("[DHCP] retransmitting REQUEST xid=0x%08lx\n",
+                            static_cast<unsigned long>(exchange.xid));
+                (void)send_request(socket, exchange.xid, exchange.offer);
             }
 
             SocketAddress remote{};
@@ -445,7 +423,6 @@ private:
             if (received < 0) {
                 if ((socket.last_error() == SocketError::timed_out) ||
                     (socket.last_error() == SocketError::would_block)) {
-                    std::printf("[DHCP] waiting for ACK timed out, retrying\n");
                     continue;
                 }
                 std::printf("[DHCP] receive error while waiting for ACK: %s\n",
@@ -456,7 +433,7 @@ private:
             uint8_t message_type = 0u;
             if (!parse_packet(packet.data(),
                               static_cast<std::size_t>(received),
-                              xid,
+                              exchange.xid,
                               leased,
                               message_type)) {
                 std::printf("[DHCP] ignored packet while waiting for ACK from %u.%u.%u.%u:%u\n",
@@ -506,10 +483,10 @@ private:
         device_.configure_ipv4(lease.ip, lease.subnet, lease.gateway);
 
         DhcpLease old{};
-        xSemaphoreTake(lease_mutex_, portMAX_DELAY);
+        lease_lock();
         old = lease_;
         lease_ = lease;
-        xSemaphoreGive(lease_mutex_);
+        lease_unlock();
 
         if (!old.valid) {
             if (on_assign_ != nullptr) {
@@ -801,9 +778,9 @@ private:
         return index + length;
     }
 
-    static bool time_expired(TickType_t deadline) noexcept
+    static bool time_expired(uint32_t deadline_ms) noexcept
     {
-        return static_cast<int32_t>(xTaskGetTickCount() - deadline) >= 0;
+        return static_cast<int32_t>(rosette_platform_get_ms() - deadline_ms) >= 0;
     }
 
     uint32_t next_xid() noexcept
@@ -814,7 +791,7 @@ private:
                      (static_cast<uint32_t>(mac[4]) << 8u) |
                      static_cast<uint32_t>(mac[5]);
         xid_seed_ += 0x01010101u;
-        xid_seed_ ^= static_cast<uint32_t>(xTaskGetTickCount());
+        xid_seed_ ^= rosette_platform_get_ms();
         return xid_seed_;
     }
 
@@ -844,19 +821,186 @@ private:
         data[2] = static_cast<uint8_t>(value >> 8u);
         data[3] = static_cast<uint8_t>(value);
     }
-
-    device_type& device_;
-    socket_provider_type& provider_;
-    DhcpConfig config_{};
-    TaskHandle_t task_handle_ = nullptr;
-    SemaphoreHandle_t lease_mutex_ = nullptr;
-    DhcpLease lease_{};
-    volatile bool force_renew_ = false;
-    volatile DhcpState state_ = DhcpState::init;
-    assign_callback_type on_assign_ = nullptr;
-    change_callback_type on_change_ = nullptr;
-    void* callback_user_ = nullptr;
-    uint32_t xid_seed_ = 0x4d445343u;
 };
+
+/**
+ * @brief Cooperative DHCP driver for a bare superloop.
+ *
+ *     DhcpPoller<W5100S, PicoSpiBus> dhcp{device, provider};
+ *     while (!dhcp.acquire()) { rosette_platform_delay_ms(1000u); }
+ *     for (;;) { ...; dhcp.poll(); }        // ~1 Hz is plenty
+ *
+ * `acquire()` and a due `poll()` block the caller for one exchange (bounded by
+ * `config().exchange_timeout_ms`; a working server answers in tens of ms).
+ */
+template<typename Chip, typename Bus,
+         template<typename> class ExecutorT = DefaultExecutor>
+class DhcpPoller : public DhcpProtocol<Chip, Bus, ExecutorT> {
+public:
+    using base = DhcpProtocol<Chip, Bus, ExecutorT>;
+    using base::base;
+
+    /// Runs one exchange now. Returns true once a lease is applied.
+    bool acquire() noexcept
+    {
+        this->set_state(DhcpState::acquiring);
+        if (this->run_exchange()) {
+            arm_renew();
+            this->set_state(DhcpState::leased);
+            return true;
+        }
+        this->set_state(DhcpState::failed);
+        retry_at_ms_ = rosette_platform_get_ms() + this->config().retry_delay_ms;
+        return false;
+    }
+
+    /// Superloop tick: renews at T1, retries after a failure.
+    void poll() noexcept
+    {
+        const uint32_t now = rosette_platform_get_ms();
+        switch (this->state()) {
+        case DhcpState::leased:
+            if (static_cast<int32_t>(now - renew_at_ms_) < 0) {
+                return;
+            }
+            this->set_state(DhcpState::renewing);
+            if (this->run_exchange()) {
+                arm_renew();
+                this->set_state(DhcpState::leased);
+            } else {
+                this->set_state(DhcpState::failed);
+                retry_at_ms_ = now + this->config().retry_delay_ms;
+            }
+            return;
+        case DhcpState::failed:
+            if (static_cast<int32_t>(now - retry_at_ms_) >= 0) {
+                (void)acquire();
+            }
+            return;
+        default:
+            return;
+        }
+    }
+
+private:
+    void arm_renew() noexcept
+    {
+        DhcpLease current{};
+        (void)this->lease(current);
+        const uint32_t t1_s = current.t1_seconds != 0u ? current.t1_seconds : 1800u;
+        renew_at_ms_ = rosette_platform_get_ms() + (t1_s * 1000u);
+    }
+
+    uint32_t renew_at_ms_ = 0u;
+    uint32_t retry_at_ms_ = 0u;
+};
+
+#ifndef ROSETTE_NO_FREERTOS
+
+/**
+ * @brief FreeRTOS DHCP driver: acquires, sleeps to T1, renews, on its own task.
+ */
+template<typename Chip, typename Bus,
+         template<typename> class ExecutorT = DefaultExecutor>
+class DhcpTask : public DhcpProtocol<Chip, Bus, ExecutorT> {
+public:
+    using base = DhcpProtocol<Chip, Bus, ExecutorT>;
+    using base::base;
+
+    ~DhcpTask()
+    {
+        if (task_handle_ != nullptr) {
+            vTaskDelete(task_handle_);
+        }
+    }
+
+    struct TaskOptions {
+        uint16_t stack_words = 768u;
+        UBaseType_t priority = tskIDLE_PRIORITY + 1u;
+        const char* name = "dhcp";
+    };
+
+    bool start(typename base::assign_callback_type on_assign = nullptr,
+               typename base::change_callback_type on_change = nullptr,
+               void* callback_user = nullptr,
+               const TaskOptions& options = {}) noexcept
+    {
+        this->set_callbacks(on_assign, on_change, callback_user);
+
+        if (this->lease_mutex_ == nullptr) {
+            this->lease_mutex_ = xSemaphoreCreateMutex();
+            if (this->lease_mutex_ == nullptr) {
+                return false;
+            }
+        }
+
+        if (task_handle_ != nullptr) {
+            return true;
+        }
+
+        options_ = options;
+        return xTaskCreate(&task_entry,
+                           options_.name,
+                           options_.stack_words,
+                           this,
+                           options_.priority,
+                           &task_handle_) == pdPASS;
+    }
+
+    void force_renew() noexcept { force_renew_ = true; }
+
+private:
+    static void task_entry(void* arg) noexcept
+    {
+        static_cast<DhcpTask*>(arg)->task_main();
+    }
+
+    void task_main() noexcept
+    {
+        for (;;) {
+            DhcpLease snapshot{};
+            (void)this->lease(snapshot);
+
+            if (!snapshot.valid) {
+                this->set_state(DhcpState::acquiring);
+                if (this->run_exchange()) {
+                    this->set_state(DhcpState::leased);
+                } else {
+                    this->set_state(DhcpState::failed);
+                    vTaskDelay(pdMS_TO_TICKS(this->config().retry_delay_ms));
+                }
+                continue;
+            }
+
+            this->set_state(DhcpState::leased);
+            TickType_t wake_at =
+                xTaskGetTickCount() + pdMS_TO_TICKS(snapshot.t1_seconds * 1000u);
+            while (!force_renew_) {
+                const TickType_t now = xTaskGetTickCount();
+                if (static_cast<int32_t>(now - wake_at) >= 0) {
+                    break;
+                }
+                const TickType_t remaining = wake_at - now;
+                const TickType_t chunk = pdMS_TO_TICKS(5000u);
+                vTaskDelay(remaining < chunk ? remaining : chunk);
+            }
+
+            force_renew_ = false;
+            this->set_state(DhcpState::renewing);
+            if (this->run_exchange()) {
+                this->set_state(DhcpState::leased);
+            } else {
+                this->set_state(DhcpState::failed);
+                vTaskDelay(pdMS_TO_TICKS(this->config().retry_delay_ms));
+            }
+        }
+    }
+
+    TaskHandle_t task_handle_ = nullptr;
+    TaskOptions options_{};
+    volatile bool force_renew_ = false;
+};
+
+#endif  // ROSETTE_NO_FREERTOS
 
 }  // namespace rosette::net::wiznet

@@ -515,12 +515,14 @@ public:
             pointer = ring_skip(pointer, payload_len);
             set_socket_rx_read_pointer(socket, pointer);
             issue_socket_command(socket, Chip::command_receive_done());
+            ack_socket_rx_interrupt(socket);
             return -1;
         }
 
         pointer = ring_read(socket, pointer, data, payload_len);
         set_socket_rx_read_pointer(socket, pointer);
         issue_socket_command(socket, Chip::command_receive_done());
+        ack_socket_rx_interrupt(socket);
         return payload_len;
     }
 
@@ -617,6 +619,23 @@ private:
         write_u8(Chip::socket_command(socket), command);
         while (read_u8(Chip::socket_command(socket)) != 0u) {
         }
+    }
+
+    /**
+     * @brief Clears the socket's RX interrupt so the chip INT line deasserts.
+     *
+     * On the no-RTOS build this lets the next datagram raise a fresh edge for
+     * the polling executor's `WFE` wake. Under FreeRTOS the interrupt-dispatch
+     * task owns `Sn_IR` servicing and its per-socket notification, so this is a
+     * no-op there.
+     */
+    void ack_socket_rx_interrupt(socket_type socket) noexcept
+    {
+#ifdef ROSETTE_NO_FREERTOS
+        write_u8(Chip::socket_interrupt(socket), Chip::socket_interrupt_receive());
+#else
+        (void)socket;
+#endif
     }
 
     uint16_t socket_rx_received_size(socket_type socket) noexcept

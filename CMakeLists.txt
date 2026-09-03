@@ -85,10 +85,10 @@ endif()
 
 if(ROSETTE_BOARD_ENABLE_WIZNET)
     target_link_libraries(rosette_net PUBLIC wiznet_iolib)
-    if(NOT ROSETTE_BOARD_ENABLE_FREERTOS)
-        # Poll-mode WIZnet path: hardware-socket bring-up + DHCP, no RTOS.
-        target_sources(rosette_net PRIVATE src/net/wiznet/w5x00_link.cpp)
-    endif()
+    # The register-level WIZnet driver (WiznetDevice / WiznetSocketProvider /
+    # WiznetLink / Dhcp*) is header-only and templated on <Chip, Bus>; the
+    # firmware TU that builds the board's BoardLink instantiates it. No source
+    # here picks a concrete chip/bus.
 endif()
 
 if(ROSETTE_BOARD_ENABLE_PICO_SDK)

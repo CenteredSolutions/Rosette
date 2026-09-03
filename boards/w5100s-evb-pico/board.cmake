@@ -1,15 +1,19 @@
 set(ROSETTE_BOARD_FAMILY "pico" PARENT_SCOPE)
 set(ROSETTE_BOARD_ENABLE_PICO_SDK ON PARENT_SCOPE)
-set(ROSETTE_BOARD_ENABLE_FREERTOS ON PARENT_SCOPE)
+
+# No RTOS: the W5100S runs the TCP/IP stack in hardware and rosette::App is a
+# cooperative superloop — the same poll-mode path as the RP2350 EVB. The RP2040
+# EVB is the debugger-friendly variant of that board.
+set(ROSETTE_BOARD_ENABLE_FREERTOS OFF PARENT_SCOPE)
 set(ROSETTE_BOARD_ENABLE_WIZNET ON PARENT_SCOPE)
+set(ROSETTE_BOARD_NET_STACK "wiznet_iolib" PARENT_SCOPE)
+
 set(ROSETTE_BOARD_BUILD_BSP ON PARENT_SCOPE)
-set(ROSETTE_BOARD_BUILD_EXAMPLE ON PARENT_SCOPE)
-set(ROSETTE_BOARD_EXAMPLE_SOURCE "examples/main_rp2350.cpp" PARENT_SCOPE)
 
 set(PICO_BOARD "wiznet_w5100s_evb_pico" CACHE STRING "" FORCE)
 set(ROSETTE_PROCESSOR  "RP2040"   PARENT_SCOPE)
 
-# Standard WIZnet EVB wiring — same across pico and pico2 EVBs.
+# W5100S wiring (identical to the RP2350 EVB).
 set(ROSETTE_SPI_SCK    18         PARENT_SCOPE)
 set(ROSETTE_SPI_TX     19         PARENT_SCOPE)   # MOSI
 set(ROSETTE_SPI_RX     16         PARENT_SCOPE)   # MISO

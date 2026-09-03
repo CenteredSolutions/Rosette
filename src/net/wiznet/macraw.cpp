@@ -1,15 +1,13 @@
 #include "wiznet/macraw.hpp"
 
-#include "board_config.h"
-#include "bus_pico_spi.hpp"
-#include "wiznet/w5100s.hpp"
+#include "wiznet/board.hpp"
 
 #include <cstring>
 
 namespace {
 
-using DefaultChip = rosette::net::wiznet::W5100S;
-using DefaultBus = rosette::platform::PicoSpiBus;
+using DefaultChip = rosette::net::wiznet::BoardChip;
+using DefaultBus = rosette::net::wiznet::BoardBus;
 using DefaultMacDevice = rosette::net::wiznet::WiznetMacrawDevice<DefaultChip, DefaultBus>;
 using DefaultInterface = rosette::net::wiznet::MacrawNetworkInterface<DefaultChip, DefaultBus>;
 

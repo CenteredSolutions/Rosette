@@ -126,3 +126,11 @@ extern "C" void rosette_platform_delay_ms(uint32_t ms)
 {
     std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 }
+
+extern "C" void rosette_platform_wait_for_event(uint32_t max_wait_ms)
+{
+    // No hardware event source on the host; a short sleep keeps the poll loop
+    // from spinning while staying responsive.
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(max_wait_ms < 2u ? max_wait_ms : 2u));
+}

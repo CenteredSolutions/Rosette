@@ -29,10 +29,12 @@ if(ROSETTE_NET_STACK STREQUAL "wiznet_iolib")
             "target does not exist. Include wiznet.cmake before rosette_net.cmake.")
     endif()
 
+    # The register-level WIZnet driver (WiznetSocketProvider / WiznetLink /
+    # Dhcp*) is header-only and templated on <Chip, Bus>; the consuming firmware
+    # instantiates its BoardLink for the fitted part. Nothing to compile here.
     add_library(rosette_net_wiznet STATIC
         "${_rosette_root}/src/net/socket.cpp"
-        "${_rosette_root}/src/net/ntp_sync.cpp"
-        "${_rosette_root}/src/net/wiznet/dhcp_iolibrary.cpp")
+        "${_rosette_root}/src/net/ntp_sync.cpp")
 
     target_include_directories(rosette_net_wiznet PUBLIC
         "${_rosette_root}/include"

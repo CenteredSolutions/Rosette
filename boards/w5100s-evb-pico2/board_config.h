@@ -15,9 +15,17 @@
 #define BOARD_IS_RP2350         1
 #define BOARD_IS_RP2040         0
 
+// ── WIZnet part ──────────────────────────────────────────────────────────────
+// Names the chip-trait struct (rosette::net::wiznet::<token>) that the
+// register-level driver builds against; see include/rosette/net/wiznet/
+// chip_select.hpp. The ioLibrary equivalent is the ROSETTE_WIZNET_CHIP cache
+// variable in cmake/wiznet.cmake.
+#define ROSETTE_WIZNET_CHIP        W5100S
+
 // ── SPI peripheral ───────────────────────────────────────────────────────────
-// The W5100S is connected to spi1 on the EVB.
-#define ROSETTE_SPI_INST           spi1
+// The W5100S is on SPI0: GPIO 16/17/18/19 are SPI0 RX/CSn/SCK/TX on RP2350
+// (matches the pico-sdk wiznet_w5100s_evb_pico2 board header).
+#define ROSETTE_SPI_INST           spi0
 
 #define ROSETTE_PIN_SPI_SCK        18   ///< SPI1 SCK
 #define ROSETTE_PIN_SPI_TX         19   ///< SPI1 TX (MOSI)
@@ -55,7 +63,7 @@
 
 // ── Persistent storage region (LittleFS) ────────────────────────────────────
 // Reserved for rosette::storage. The application linker script / binary must
-// stay below this offset. RP2350 W5100S-EVB-Pico2 carries 4 MiB of flash;
-// reserve the top 512 KiB.
-#define ROSETTE_STORAGE_FLASH_OFFSET  0x00380000u
-#define ROSETTE_STORAGE_FLASH_SIZE    0x00080000u
+// stay below this offset. The W5100S-EVB-Pico2 has 2 MiB of flash
+// (PICO_FLASH_SIZE_BYTES in the pico-sdk board header); reserve the top 256 KiB.
+#define ROSETTE_STORAGE_FLASH_OFFSET  0x001C0000u
+#define ROSETTE_STORAGE_FLASH_SIZE    0x00040000u

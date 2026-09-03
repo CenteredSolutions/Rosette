@@ -45,8 +45,8 @@
 
 #if defined(ROSETTE_BOARD_PICO)
 #include "board.h"
-#include "rosette/net/wiznet/w5x00_link.hpp"
-#include "rosette/net/wiznet/w5x00_socket.hpp"
+#include "rosette/net/wiznet/board.hpp"
+#include "rosette/net/wiznet/link.hpp"
 #endif
 
 namespace {
@@ -197,7 +197,12 @@ int main()
     std::array<uint8_t, 6> mac{};
     board_get_mac_address(mac.data());
 
-    rosette::net::wiznet::WiznetLink link(mac, rosette::net::wiznet::LinkMode::dhcp);
+    namespace wiz = rosette::net::wiznet;
+    auto bus = wiz::make_board_bus();
+    wiz::BoardDevice device{bus};
+    wiz::BoardSocketProvider sockets{device};
+
+    wiz::BoardLink link{device, sockets, mac, wiz::LinkMode::dhcp};
     while (!link.begin()) {
         std::printf("[led_files] waiting for network link\n");
         rosette_platform_delay_ms(500u);
@@ -214,7 +219,6 @@ int main()
         for (;;) { rosette_platform_delay_ms(1000u); }
     }
 
-    rosette::net::wiznet::W5x00SocketProvider sockets;
     rosette::net::SocketAddress agent{};
     (void)rosette::make_ipv4_socket_address(agent_ip, 8888u, agent);
     const auto local = rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u);
@@ -233,9 +237,15 @@ int main()
     app.add(files);
 
     std::printf("[led_files] agent %s:8888\n", agent_ip);
+    bool was_connected = false;
     for (;;) {
         (void)app.spin_once(rosette_platform_get_ms());
         link.poll();
+        if (app.connected() != was_connected) {
+            was_connected = app.connected();
+            std::printf("[led_files] %s\n",
+                        was_connected ? "agent connected" : "agent lost, retrying");
+        }
         rosette_platform_delay_ms(app.connected() ? 5u : 200u);
     }
 }
