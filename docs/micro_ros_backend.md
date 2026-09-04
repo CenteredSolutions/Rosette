@@ -117,37 +117,46 @@ practice that means:
 - MCU boards should treat Agent resolution as a Rosette concern and feed the
   resolved endpoint into the custom transport through `AgentLocator`.
 
-Rosette now includes a transport-agnostic multicast locator in
-[multicast_agent_locator.hpp](path/to/Rosette/ros/micro_ros/multicast_agent_locator.hpp).
-It reuses the upstream Micro XRCE-DDS discovery request and reply format on top
-of Rosette's socket abstraction. The default settings match the upstream
-documentation and client implementation:
+Rosette provides two `AgentLocator` implementations, both transport-agnostic and
+both built on Rosette's socket abstraction.
 
-- multicast group: `239.255.0.2`
-- multicast port: `7400`
-- Agent UDP port: `8888`
+### mDNS / DNS-SD locator (default)
 
-That means a stock discovery-capable Agent on Linux and Rosette's own MCU
-locator now speak the same `GET_INFO` / `INFO` exchange on the wire.
+[mdns_agent_locator.hpp](../include/rosette/ros/mdns_agent_locator.hpp) resolves
+the Agent with standard zero-configuration discovery, backed by the reusable
+[net/mdns.hpp](../include/rosette/net/mdns.hpp) resolver and
+[net/dns_wire.hpp](../include/rosette/net/dns_wire.hpp) codec. Two modes:
 
-The matching host-side responder lives at
-[tools/micro_ros/agent_multicast_responder.py](path/to/Rosette/tools/micro_ros/agent_multicast_responder.py).
-It is useful as a reference endpoint and as a fallback helper when the host
-environment does not expose the upstream discovery server behavior directly.
-Run it on the host that also runs the micro-ROS Agent:
+- **By advertisement:** browse a DNS-SD service type, default
+  `_microrosagent._udp.local`. The SRV record supplies the port.
+- **By name:** query the A record of a fixed host name.
 
-```bash
-python3 tools/micro_ros/agent_multicast_responder.py --agent-port 8888
-```
+The key property for containerised Agents: the resolved address is the **source
+address of the mDNS reply packet**, which is routable from the board by
+construction. An advertised A record is used only as a fallback, and loopback,
+link-local, and `0.0.0.0` are always rejected. This is why mDNS discovery works
+where the XRCE `GET_INFO` reply — which echoes whatever locators the Agent was
+configured with — reports an address no other host can reach.
 
-If the responder is not on the same host or interface as the Agent, advertise
-an explicit Agent IPv4 address:
+Advertise the Agent from its host with Avahi:
 
 ```bash
-python3 tools/micro_ros/agent_multicast_responder.py \
-  --agent-port 8888 \
-  --agent-address 192.168.1.50
+tools/micro_ros/advertise_agent_mdns.sh 8888
 ```
+
+The resolver sends one-shot queries from an ephemeral port with the RFC 6762
+unicast-response bit set; it does not claim port 5353 or join the multicast
+group, so it coexists with a host mDNS daemon without contention.
+
+### XRCE `GET_INFO` locator
+
+[multicast_agent_locator.hpp](../include/rosette/ros/multicast_agent_locator.hpp)
+reuses the upstream Micro XRCE-DDS discovery request and reply format
+(`GET_INFO` / `INFO` on `239.255.0.2:7400`), so a stock discovery-capable Agent
+on Linux and Rosette's MCU locator speak the same exchange on the wire. Its
+host-side responder is
+[tools/micro_ros/agent_multicast_responder.py](../tools/micro_ros/agent_multicast_responder.py).
+Select it with `ROSETTE_MICRO_ROS_DISCOVERY=xrce`.
 
 ## Board Smoke Target
 
@@ -171,7 +180,8 @@ the host OS does not expose one.
 For custom transports, the smoke target follows this policy:
 
 - if `ROSETTE_MICRO_ROS_AGENT_IP` is set, use that static endpoint
-- otherwise, use upstream-compatible XRCE multicast discovery
+- otherwise, autodiscover: mDNS / DNS-SD by default, or the XRCE `GET_INFO`
+  locator when `ROSETTE_MICRO_ROS_DISCOVERY=xrce`
 
 ## Actions
 

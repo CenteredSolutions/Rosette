@@ -98,6 +98,26 @@ set(ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS "750" CACHE STRING
 set(ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS "3" CACHE STRING
     "Number of multicast probe attempts for the Rosette Agent locator")
 
+# --- Agent autodiscovery mechanism for the board smoke targets ---------------
+# "mdns"  -> MdnsAgentLocator: browse a DNS-SD service or resolve a host name.
+# "xrce"  -> MulticastAgentLocator: the upstream-compatible XRCE GET_INFO probe.
+set(ROSETTE_MICRO_ROS_DISCOVERY "mdns" CACHE STRING
+    "Agent autodiscovery mechanism: mdns or xrce")
+set(ROSETTE_MICRO_ROS_MDNS_SERVICE "_microrosagent._udp.local" CACHE STRING
+    "DNS-SD service type browsed by the mDNS Agent locator")
+set(ROSETTE_MICRO_ROS_MDNS_HOSTNAME "" CACHE STRING
+    "When set, the mDNS Agent locator resolves this host name instead of browsing a service")
+set(ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS "1000" CACHE STRING
+    "Per-attempt receive timeout for the mDNS Agent locator")
+set(ROSETTE_MICRO_ROS_MDNS_ATTEMPTS "3" CACHE STRING
+    "Number of mDNS query attempts for the mDNS Agent locator")
+
+if(ROSETTE_MICRO_ROS_DISCOVERY STREQUAL "mdns")
+    set(_rosette_discovery_mdns 1)
+else()
+    set(_rosette_discovery_mdns 0)
+endif()
+
 # Resolve the transport profile up front; it is needed by both the prebuilt
 # and the bootstrap paths.
 set(_rosette_micro_ros_transport "${ROSETTE_MICRO_ROS_TRANSPORT}")
@@ -154,7 +174,12 @@ if(NOT ROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD AND
         ROSETTE_MICRO_ROS_DISCOVERY_GROUP="${ROSETTE_MICRO_ROS_DISCOVERY_GROUP}"
         ROSETTE_MICRO_ROS_DISCOVERY_PORT="${ROSETTE_MICRO_ROS_DISCOVERY_PORT}"
         ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS=${ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS}
-        ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS=${ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS})
+        ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS=${ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS}
+        ROSETTE_MICRO_ROS_DISCOVERY_MDNS=${_rosette_discovery_mdns}
+        ROSETTE_MICRO_ROS_MDNS_SERVICE="${ROSETTE_MICRO_ROS_MDNS_SERVICE}"
+        ROSETTE_MICRO_ROS_MDNS_HOSTNAME="${ROSETTE_MICRO_ROS_MDNS_HOSTNAME}"
+        ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS=${ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS}
+        ROSETTE_MICRO_ROS_MDNS_ATTEMPTS=${ROSETTE_MICRO_ROS_MDNS_ATTEMPTS})
 
     add_custom_target(rosette_micro_ros_bootstrap
         COMMENT "micro-ROS: using prebuilt ${_rosette_micro_ros_lib}")

@@ -75,6 +75,34 @@ constexpr uint32_t kContextStartRetryDelayMs = 2000u;
 #define ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS 3
 #endif
 
+#ifndef ROSETTE_MICRO_ROS_DISCOVERY_MDNS
+#define ROSETTE_MICRO_ROS_DISCOVERY_MDNS 1
+#endif
+
+#ifndef ROSETTE_MICRO_ROS_MDNS_SERVICE
+#define ROSETTE_MICRO_ROS_MDNS_SERVICE "_microrosagent._udp.local"
+#endif
+
+#ifndef ROSETTE_MICRO_ROS_MDNS_HOSTNAME
+#define ROSETTE_MICRO_ROS_MDNS_HOSTNAME ""
+#endif
+
+#ifndef ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS
+#define ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS 1000
+#endif
+
+#ifndef ROSETTE_MICRO_ROS_MDNS_ATTEMPTS
+#define ROSETTE_MICRO_ROS_MDNS_ATTEMPTS 3
+#endif
+
+// The mDNS locator resolves a fixed host name when one is configured, and
+// otherwise browses the DNS-SD service type. An empty macro means "unset".
+inline const char* mdns_host_name_or_null() noexcept
+{
+    const char* name = ROSETTE_MICRO_ROS_MDNS_HOSTNAME;
+    return (name[0] != '\0') ? name : nullptr;
+}
+
 #ifdef ROSETTE_NO_FREERTOS
 
 using SocketProviderImpl = rosette::net::posix::PosixSocketProvider;
@@ -197,6 +225,17 @@ int run_posix_smoke()
     }
 
     rosette::UdpSocketTransport transport(socket_provider, remote, local, 100u);
+#if ROSETTE_MICRO_ROS_DISCOVERY_MDNS
+    rosette::MdnsAgentLocator locator(
+        socket_provider,
+        rosette::MdnsAgentLocatorConfig{
+            .service_type = ROSETTE_MICRO_ROS_MDNS_SERVICE,
+            .host_name = mdns_host_name_or_null(),
+            .default_agent_port = agent_port,
+            .receive_timeout_ms = ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS,
+            .attempts = ROSETTE_MICRO_ROS_MDNS_ATTEMPTS,
+        });
+#else
     rosette::MulticastAgentLocator locator(
         socket_provider,
         rosette::MulticastAgentLocatorConfig{
@@ -207,6 +246,7 @@ int run_posix_smoke()
             .receive_timeout_ms = ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS,
             .attempts = ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS,
         });
+#endif
     options.use_custom_transport = true;
     options.custom_transport_framing = false;
     options.custom_transport = &transport;
@@ -515,6 +555,17 @@ void service_task(void*) noexcept
     const auto local = rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u);
     static rosette::UdpSocketTransport transport(
         socket_provider, remote, local, 100u);
+#if ROSETTE_MICRO_ROS_DISCOVERY_MDNS
+    static rosette::MdnsAgentLocator locator(
+        socket_provider,
+        rosette::MdnsAgentLocatorConfig{
+            .service_type = ROSETTE_MICRO_ROS_MDNS_SERVICE,
+            .host_name = mdns_host_name_or_null(),
+            .default_agent_port = agent_port,
+            .receive_timeout_ms = ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS,
+            .attempts = ROSETTE_MICRO_ROS_MDNS_ATTEMPTS,
+        });
+#else
     static rosette::MulticastAgentLocator locator(
         socket_provider,
         rosette::MulticastAgentLocatorConfig{
@@ -525,6 +576,7 @@ void service_task(void*) noexcept
             .receive_timeout_ms = ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS,
             .attempts = ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS,
         });
+#endif
     options.use_custom_transport = true;
     options.custom_transport_framing = false;
     options.custom_transport = &transport;

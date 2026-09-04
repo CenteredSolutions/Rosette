@@ -233,20 +233,28 @@ source /opt/ros/humble/setup.bash
 ros2 run micro_ros_agent micro_ros_agent udp4 --port 8888
 ```
 
-When the board is using Rosette's multicast Agent locator, run the discovery
-responder on the same host in a second terminal:
+By default the board finds the Agent over mDNS / DNS-SD. Advertise the Agent on
+the same host (or its Docker host) in a second terminal and leave it running:
+
+```bash
+tools/micro_ros/advertise_agent_mdns.sh 8888
+```
+
+This registers the `_microrosagent._udp.local` service with Avahi. The board
+browses that service and connects to the **source address of the mDNS reply**,
+so the Agent is reachable even when it runs behind a Docker bridge and would
+otherwise advertise an unreachable address.
+
+To find the Agent by host name instead of by service, build with
+`-DROSETTE_MICRO_ROS_MDNS_HOSTNAME=myhost` (the board resolves `myhost.local`)
+and skip the script — any mDNS responder for that host, including a plain Linux
+box running Avahi, is enough.
+
+The legacy XRCE `GET_INFO` locator is still available with
+`-DROSETTE_MICRO_ROS_DISCOVERY=xrce`, paired with its responder:
 
 ```bash
 python3 tools/micro_ros/agent_multicast_responder.py --agent-port 8888
-```
-
-If the responder is not running on the same interface or host that the Agent
-should advertise, pass the address explicitly:
-
-```bash
-python3 tools/micro_ros/agent_multicast_responder.py \
-  --agent-port 8888 \
-  --agent-address 192.168.1.50
 ```
 
 After flashing the board, observe the smoke topic from a ROS 2 terminal:
@@ -266,7 +274,18 @@ cmake -S . -B build/micro-ros-pico2 \
   -DROSETTE_MICRO_ROS_AGENT_PORT=8888
 ```
 
-Without an agent IP, the smoke target uses the multicast agent locator settings:
+Without an agent IP, the smoke target autodiscovers the Agent. The mechanism is
+chosen by `ROSETTE_MICRO_ROS_DISCOVERY` (default `mdns`, or `xrce`).
+
+mDNS locator settings (`ROSETTE_MICRO_ROS_DISCOVERY=mdns`):
+
+- `ROSETTE_MICRO_ROS_MDNS_SERVICE`, default `_microrosagent._udp.local`.
+- `ROSETTE_MICRO_ROS_MDNS_HOSTNAME`, default empty; when set, the board
+  resolves this host's A record instead of browsing the service.
+- `ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS`, default `1000`.
+- `ROSETTE_MICRO_ROS_MDNS_ATTEMPTS`, default `3`.
+
+XRCE locator settings (`ROSETTE_MICRO_ROS_DISCOVERY=xrce`):
 
 - `ROSETTE_MICRO_ROS_DISCOVERY_GROUP`, default `239.255.0.2`.
 - `ROSETTE_MICRO_ROS_DISCOVERY_PORT`, default `7400`.
