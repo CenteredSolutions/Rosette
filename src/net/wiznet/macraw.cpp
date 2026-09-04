@@ -9,10 +9,14 @@ namespace {
 using DefaultChip = rosette::net::wiznet::BoardChip;
 using DefaultBus = rosette::net::wiznet::BoardBus;
 using DefaultMacDevice = rosette::net::wiznet::WiznetMacrawDevice<DefaultChip, DefaultBus>;
-using DefaultInterface = rosette::net::wiznet::MacrawNetworkInterface<DefaultChip, DefaultBus>;
 
-DefaultInterface g_default_interface{
-    DefaultMacDevice{DefaultBus{ROSETTE_SPI_INST, ROSETTE_PIN_SPI_CS}},
+// The device holds a reference to its own bus and is referenced by the
+// interface, so it must be a named object that outlives both -- never a
+// temporary. Declared before g_default_interface to fix construction order.
+DefaultMacDevice g_default_device{DefaultBus{ROSETTE_SPI_INST, ROSETTE_PIN_SPI_CS}};
+
+rosette::net::freertos::NetworkInterface g_default_interface{
+    g_default_device,
     std::array<uint8_t, 6> ROSETTE_MAC_ADDR_DEFAULT
 };
 

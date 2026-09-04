@@ -11,8 +11,10 @@
 #include <fcntl.h>
 #include <net/if.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 namespace rosette::net::posix {
@@ -156,6 +158,15 @@ SocketAddress from_sockaddr(const sockaddr_storage& source) noexcept
 int family_for_domain(const SocketDomain domain) noexcept
 {
     return domain == SocketDomain::ipv6 ? AF_INET6 : AF_INET;
+}
+
+/// Milliseconds on a monotonic clock, for bounding a receive wait.
+int64_t monotonic_ms() noexcept
+{
+    timespec ts{};
+    (void)::clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (static_cast<int64_t>(ts.tv_sec) * 1000) +
+           (static_cast<int64_t>(ts.tv_nsec) / 1000000);
 }
 
 }  // namespace
@@ -303,6 +314,12 @@ public:
             return -1;
         }
 
+        // The fd is non-blocking, so SO_RCVTIMEO has no effect on its own. The
+        // timeout is remembered and enforced by recv_from() via poll(); it is
+        // also set on the socket so the semantics still hold if the fd is ever
+        // switched to blocking.
+        receive_timeout_ms_ = timeout_ms;
+
         timeval tv{};
         tv.tv_sec = static_cast<time_t>(timeout_ms / 1000u);
         tv.tv_usec = static_cast<suseconds_t>((timeout_ms % 1000u) * 1000u);
@@ -343,6 +360,22 @@ public:
         return static_cast<std::ptrdiff_t>(rc);
     }
 
+    /**
+     * @brief Receive one datagram, waiting up to the configured receive timeout.
+     *
+     * The underlying fd is non-blocking. When a receive timeout has been set,
+     * an empty socket does not fail immediately: recv_from() waits for the fd
+     * to become readable with poll(), bounded by the time remaining against a
+     * monotonic deadline, and retries. This gives the same "block up to the
+     * timeout" contract that the FreeRTOS socket backend provides. With no
+     * timeout configured the call returns at once, reporting `would_block`.
+     *
+     * @param[out] data     Buffer for the datagram payload.
+     * @param[in]  capacity Size of @p data; a larger datagram is truncated.
+     * @param[out] remote    Source address of the datagram, when not null.
+     * @return Bytes received, or -1 with `last_error()` set (`timed_out` when
+     *     nothing arrived before the deadline).
+     */
     std::ptrdiff_t recv_from(void* data,
                              const std::size_t capacity,
                              SocketAddress* remote) noexcept override
@@ -352,21 +385,55 @@ public:
             return -1;
         }
 
-        sockaddr_storage from{};
-        socklen_t from_len = static_cast<socklen_t>(sizeof(from));
-        const ssize_t rc =
-            ::recvfrom(fd_, data, capacity, 0, reinterpret_cast<sockaddr*>(&from), &from_len);
-        if (rc < 0) {
-            last_error_ = map_errno(errno);
-            return -1;
-        }
+        const int64_t deadline = (receive_timeout_ms_ > 0u)
+            ? (monotonic_ms() + static_cast<int64_t>(receive_timeout_ms_))
+            : 0;
 
-        if (remote != nullptr) {
-            *remote = from_sockaddr(from);
-        }
+        for (;;) {
+            sockaddr_storage from{};
+            socklen_t from_len = static_cast<socklen_t>(sizeof(from));
+            const ssize_t rc = ::recvfrom(fd_, data, capacity, 0,
+                                          reinterpret_cast<sockaddr*>(&from),
+                                          &from_len);
+            if (rc >= 0) {
+                if (remote != nullptr) {
+                    *remote = from_sockaddr(from);
+                }
+                last_error_ = SocketError::none;
+                return static_cast<std::ptrdiff_t>(rc);
+            }
 
-        last_error_ = SocketError::none;
-        return static_cast<std::ptrdiff_t>(rc);
+            const int err = errno;
+            const bool would_block =
+                (err == EWOULDBLOCK) || (err == EAGAIN);
+            if (!would_block || (receive_timeout_ms_ == 0u)) {
+                last_error_ = map_errno(err);
+                return -1;
+            }
+
+            const int64_t remaining = deadline - monotonic_ms();
+            if (remaining <= 0) {
+                last_error_ = SocketError::timed_out;
+                return -1;
+            }
+
+            pollfd pfd{};
+            pfd.fd = fd_;
+            pfd.events = POLLIN;
+            const int ready = ::poll(&pfd, 1u, static_cast<int>(remaining));
+            if (ready == 0) {
+                last_error_ = SocketError::timed_out;
+                return -1;
+            }
+            if (ready < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                last_error_ = map_errno(errno);
+                return -1;
+            }
+            // Readable (or an error is pending): loop and let recvfrom report it.
+        }
     }
 
     void close() noexcept override
@@ -386,6 +453,7 @@ public:
 private:
     int fd_ = -1;
     SocketError last_error_ = SocketError::none;
+    uint32_t receive_timeout_ms_ = 0u;
 };
 
 std::unique_ptr<Socket> PosixSocketProvider::open(SocketDomain domain,

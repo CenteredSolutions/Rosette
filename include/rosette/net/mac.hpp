@@ -1,13 +1,29 @@
 #pragma once
 
+/**
+ * @file mac.hpp
+ * @brief Hardware-neutral contract for an Ethernet MAC / link device.
+ *
+ * rosette::net::MacDevice is the abstract interface that the FreeRTOS+TCP
+ * network interface (rosette::net::freertos::NetworkInterface) and any other
+ * link-layer consumer program against. A concrete driver -- today the WIZnet
+ * MACRAW device -- derives from it and implements the data-plane and PHY
+ * status operations against real hardware.
+ *
+ * The interface mirrors rosette::net::IAddressProvider in style: a small set
+ * of pure virtual operations, no templates, no compile-time capability
+ * probing. Consumers hold a MacDevice reference and call it directly; the
+ * vtable indirection is negligible next to the SPI burst that backs every
+ * frame operation.
+ */
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <type_traits>
-#include <utility>
 
 namespace rosette::net {
 
+/// Six-octet IEEE 802 hardware address, transmitted most-significant byte first.
 using MacAddress = std::array<uint8_t, 6>;
 
 enum class PhySpeed : uint8_t {
@@ -23,13 +39,12 @@ enum class PhyDuplex : uint8_t {
     full,
 };
 
-struct PhyConfig {
-    bool auto_negotiation = true;
-    PhySpeed speed = PhySpeed::unknown;
-    PhyDuplex duplex = PhyDuplex::unknown;
-    bool power_down = false;
-};
-
+/**
+ * @brief Snapshot of the PHY's negotiated link state.
+ *
+ * Implementations that only track carrier presence populate @c link_up and
+ * leave the negotiated fields at their unknown defaults.
+ */
 struct PhyStatus {
     bool link_up = false;
     bool auto_negotiation_complete = false;
@@ -37,193 +52,108 @@ struct PhyStatus {
     PhyDuplex duplex = PhyDuplex::unknown;
 };
 
-struct PacketBuffer {
-    uint8_t* data = nullptr;
-    std::size_t size = 0u;
+/**
+ * @brief Abstract Ethernet MAC device: framed transmit/receive plus link state.
+ *
+ * A MacDevice sits directly above the register interface of an Ethernet
+ * controller and exposes whole-frame send and receive to the IP stack. It
+ * owns the controller's data path: callers never touch chip registers, they
+ * hand down frames and query link state.
+ *
+ * Lifetime and threading: a MacDevice is constructed once and lives for the
+ * duration of the network stack. receive_frame() and peek_frame_size() run
+ * on the network interface's RX task; send_frame() runs on the IP task and
+ * the IGMP output path. Implementations must make those two call sites safe
+ * to run concurrently, either lock-free (independent controller sockets) or
+ * behind the bus mutex.
+ */
+class MacDevice {
+public:
+    virtual ~MacDevice() = default;
 
-    explicit operator bool() const noexcept
-    {
-        return (data != nullptr) && (size > 0u);
-    }
+    /**
+     * @brief Bring the controller out of reset and program @p mac.
+     *
+     * Called once, before any frame traffic, from the network interface's
+     * initialise path. Implementations verify the chip, place it in the
+     * mode that presents raw Ethernet frames, and latch the station address.
+     *
+     * @param[in] mac Station hardware address to program.
+     * @return True once the device is ready to carry frames; false on any
+     *         probe or configuration failure, leaving the interface down.
+     */
+    virtual bool initialise(const MacAddress& mac) noexcept = 0;
+
+    /**
+     * @brief Update the station hardware address on an initialised controller.
+     *
+     * Invoked when FreeRTOS+TCP resolves its endpoint MAC after the device
+     * is already running. Safe to call at any point after initialise().
+     *
+     * @param[in] mac New station hardware address.
+     */
+    virtual void set_mac_address(const MacAddress& mac) noexcept = 0;
+
+    /**
+     * @brief Largest frame the controller can move, in bytes.
+     *
+     * Measured as the buffer handed to send_frame(): the Ethernet header
+     * plus payload, without the hardware-appended FCS. The network interface
+     * rejects oversized transmit descriptors before calling send_frame().
+     *
+     * @return Maximum frame size in bytes; 0 disables the length check.
+     */
+    virtual std::size_t max_frame_size() const noexcept = 0;
+
+    /**
+     * @brief Transmit one complete Ethernet frame.
+     *
+     * @param[in] data   Frame bytes, starting at the destination MAC.
+     * @param[in] length Frame length in bytes; the caller guarantees it is
+     *                   non-zero and within max_frame_size().
+     * @return True if the frame was handed to the controller for
+     *         transmission; false on a bus error or an exhausted TX buffer.
+     */
+    virtual bool send_frame(const uint8_t* data, std::size_t length) noexcept = 0;
+
+    /**
+     * @brief Copy the frame at the head of the RX queue into @p buffer.
+     *
+     * Call after peek_frame_size() reports a non-zero size. Consumes exactly
+     * one frame from the controller's receive queue.
+     *
+     * @param[out] buffer   Destination for the frame bytes.
+     * @param[in]  capacity Size of @p buffer; at least the most recent
+     *                      peek_frame_size() result.
+     * @return Number of bytes written to @p buffer, or 0 if no frame was
+     *         available or it did not fit.
+     */
+    virtual std::size_t receive_frame(uint8_t* buffer, std::size_t capacity) noexcept = 0;
+
+    /**
+     * @brief Length of the head-of-queue received frame without consuming it.
+     *
+     * Drives the RX task loop: a non-zero result means receive_frame() has a
+     * frame to hand over; zero means the task blocks until the next RX
+     * notification.
+     *
+     * @return Byte length of the next frame, or 0 when the RX queue is empty.
+     */
+    virtual std::size_t peek_frame_size() noexcept = 0;
+
+    /**
+     * @brief Current PHY link state.
+     *
+     * @return A PhyStatus snapshot for the controller's link.
+     */
+    virtual PhyStatus phy_status() noexcept = 0;
+
+protected:
+    MacDevice() = default;
+    MacDevice(const MacDevice&) = default;
+    MacDevice(MacDevice&&) = default;
+    MacDevice& operator=(const MacDevice&) = default;
+    MacDevice& operator=(MacDevice&&) = default;
 };
-
-namespace detail {
-
-template<typename...>
-using void_t = void;
-
-template<typename D, typename = void_t<>>
-struct has_send_packet : std::false_type {};
-template<typename D>
-struct has_send_packet<D,
-                       void_t<decltype(std::declval<D&>().send_packet(
-                           static_cast<const uint8_t*>(nullptr),
-                           std::declval<std::size_t>()))>> : std::true_type {};
-
-template<typename D, typename = void_t<>>
-struct has_receive_packet : std::false_type {};
-template<typename D>
-struct has_receive_packet<D,
-                          void_t<decltype(std::declval<D&>().receive_packet(
-                              static_cast<uint8_t*>(nullptr),
-                              std::declval<std::size_t>()))>> : std::true_type {};
-
-template<typename D, typename = void_t<>>
-struct has_peek_packet_size : std::false_type {};
-template<typename D>
-struct has_peek_packet_size<D,
-                            void_t<decltype(std::declval<D&>().peek_packet_size())>> : std::true_type {};
-
-template<typename D, typename = void_t<>>
-struct has_available_packets : std::false_type {};
-template<typename D>
-struct has_available_packets<D,
-                             void_t<decltype(std::declval<D&>().available_packets())>> : std::true_type {};
-
-template<typename D, typename = void_t<>>
-struct has_set_mac_address : std::false_type {};
-template<typename D>
-struct has_set_mac_address<D,
-                           void_t<decltype(std::declval<D&>().set_mac_address(
-                               std::declval<const MacAddress&>()))>> : std::true_type {};
-
-template<typename D, typename = void_t<>>
-struct has_get_mac_address : std::false_type {};
-template<typename D>
-struct has_get_mac_address<D,
-                           void_t<decltype(std::declval<D&>().get_mac_address())>> : std::true_type {};
-
-template<typename D, typename = void_t<>>
-struct has_set_phy_config : std::false_type {};
-template<typename D>
-struct has_set_phy_config<D,
-                          void_t<decltype(std::declval<D&>().set_phy_config(
-                              std::declval<const PhyConfig&>()))>> : std::true_type {};
-
-template<typename D, typename = void_t<>>
-struct has_get_phy_config : std::false_type {};
-template<typename D>
-struct has_get_phy_config<D,
-                          void_t<decltype(std::declval<D&>().get_phy_config())>> : std::true_type {};
-
-template<typename D, typename = void_t<>>
-struct has_get_phy_status : std::false_type {};
-template<typename D>
-struct has_get_phy_status<D,
-                          void_t<decltype(std::declval<D&>().get_phy_status())>> : std::true_type {};
-
-template<typename D, typename = void_t<>>
-struct has_max_frame_size : std::false_type {};
-template<typename D>
-struct has_max_frame_size<D,
-                          void_t<decltype(std::declval<const D&>().max_frame_size())>> : std::true_type {};
-
-template<typename D>
-inline bool call_set_phy_config(D& device, const PhyConfig& config)
-{
-    if constexpr (has_set_phy_config<D>::value) {
-        return static_cast<bool>(device.set_phy_config(config));
-    } else {
-        (void)device;
-        (void)config;
-        return false;
-    }
-}
-
-template<typename D>
-inline bool call_send_packet(D& device, const uint8_t* data, std::size_t length)
-{
-    if constexpr (std::is_void<decltype(device.send_packet(data, length))>::value) {
-        device.send_packet(data, length);
-        return true;
-    } else {
-        return static_cast<bool>(device.send_packet(data, length));
-    }
-}
-
-template<typename D>
-inline PhyConfig call_get_phy_config(D& device)
-{
-    if constexpr (has_get_phy_config<D>::value) {
-        return device.get_phy_config();
-    } else {
-        (void)device;
-        return {};
-    }
-}
-
-template<typename D>
-inline PhyStatus call_get_phy_status(D& device)
-{
-    if constexpr (has_get_phy_status<D>::value) {
-        return device.get_phy_status();
-    } else {
-        (void)device;
-        return {};
-    }
-}
-
-template<typename D>
-inline std::size_t call_max_frame_size(const D& device)
-{
-    if constexpr (has_max_frame_size<D>::value) {
-        return static_cast<std::size_t>(device.max_frame_size());
-    } else {
-        (void)device;
-        return 0u;
-    }
-}
-
-}  // namespace detail
-
-template<typename Device>
-struct is_mac_device
-    : std::integral_constant<bool,
-                             detail::has_send_packet<Device>::value &&
-                                 detail::has_receive_packet<Device>::value &&
-                                 detail::has_peek_packet_size<Device>::value> {};
-
-template<typename Device, typename Callback>
-std::size_t receive_packet_zero_copy(Device& device, Callback&& callback)
-{
-    static_assert(is_mac_device<Device>::value,
-                  "Device must satisfy the MAC data-plane contract");
-
-    const std::size_t receive_size = device.peek_packet_size();
-    if (receive_size == 0u) {
-        return 0u;
-    }
-
-    PacketBuffer buffer = std::forward<Callback>(callback)(receive_size);
-    if (!buffer) {
-        return 0u;
-    }
-
-    return device.receive_packet(buffer.data, buffer.size);
-}
-
-template<typename Device>
-inline bool set_phy_config(Device& device, const PhyConfig& config) noexcept
-{
-    return detail::call_set_phy_config(device, config);
-}
-
-template<typename Device>
-inline PhyConfig get_phy_config(Device& device) noexcept
-{
-    return detail::call_get_phy_config(device);
-}
-
-template<typename Device>
-inline PhyStatus get_phy_status(Device& device) noexcept
-{
-    return detail::call_get_phy_status(device);
-}
-
-template<typename Device>
-inline std::size_t max_frame_size(const Device& device) noexcept
-{
-    return detail::call_max_frame_size(device);
-}
 
 }  // namespace rosette::net
