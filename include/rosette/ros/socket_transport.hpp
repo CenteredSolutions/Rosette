@@ -30,7 +30,6 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <cstring>
 #include <memory>
 
 namespace rosette {
@@ -46,35 +45,39 @@ class StaticAgentLocator final : public AgentLocator {
 public:
     StaticAgentLocator(const char* address,
                        const char* port) noexcept
-        : address_(address)
-        , port_(port)
-    {}
-
-    bool resolve(char* address,
-                 size_t address_capacity,
-                 char* port,
-                 size_t port_capacity) noexcept override
     {
-        if ((address_ == nullptr) || (port_ == nullptr) ||
-            (address_capacity == 0u) || (port_capacity == 0u)) {
-            return false;
-        }
+        valid_ = (address != nullptr) && (port != nullptr) &&
+                 parse_endpoint(address, port, endpoint_);
+    }
 
-        const size_t address_length = std::strlen(address_);
-        const size_t port_length = std::strlen(port_);
-        if ((address_length + 1u) > address_capacity ||
-            (port_length + 1u) > port_capacity) {
-            return false;
+    size_t resolve(rosette::net::SocketAddress* out,
+                   size_t capacity) noexcept override
+    {
+        if (!valid_ || (out == nullptr) || (capacity == 0u)) {
+            return 0u;
         }
-
-        std::memcpy(address, address_, address_length + 1u);
-        std::memcpy(port, port_, port_length + 1u);
-        return true;
+        out[0] = endpoint_;
+        return 1u;
     }
 
 private:
-    const char* address_ = nullptr;
-    const char* port_ = nullptr;
+    /// Parses decimal port text; @p address is IPv4 dotted-decimal text.
+    static bool parse_endpoint(const char* address,
+                               const char* port,
+                               rosette::net::SocketAddress& out) noexcept
+    {
+        char* parse_end = nullptr;
+        const unsigned long parsed_port = std::strtoul(port, &parse_end, 10);
+        if ((parse_end == port) || (parse_end == nullptr) ||
+            (*parse_end != '\0') || (parsed_port > 65535u)) {
+            return false;
+        }
+        return make_ipv4_socket_address(
+            address, static_cast<uint16_t>(parsed_port), out);
+    }
+
+    rosette::net::SocketAddress endpoint_{};
+    bool valid_ = false;
 };
 
 /**
@@ -111,26 +114,10 @@ public:
         return socket_ && socket_->is_open();
     }
 
-    bool configure_agent_endpoint(const char* address,
-                                  const char* port) noexcept override
+    bool configure_agent_endpoint(
+        const rosette::net::SocketAddress& endpoint) noexcept override
     {
-        if ((address == nullptr) || (port == nullptr)) {
-            return false;
-        }
-
-        const int parsed_port = std::atoi(port);
-        if ((parsed_port < 0) || (parsed_port > 65535)) {
-            return false;
-        }
-
-        rosette::net::SocketAddress remote{};
-        if (!make_ipv4_socket_address(address,
-                                      static_cast<uint16_t>(parsed_port),
-                                      remote)) {
-            return false;
-        }
-
-        remote_ = remote;
+        remote_ = endpoint;
         return true;
     }
 

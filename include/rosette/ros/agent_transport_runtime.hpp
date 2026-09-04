@@ -21,20 +21,14 @@
 #include "agent_locator.hpp"
 #include "socket_transport.hpp"
 
-#include "rosette/net/inet.h"
-
 #include <stddef.h>
 #include <stdint.h>
-
-#include <array>
-#include <cstdlib>
 
 namespace rosette {
 
 enum class AgentTransportError : uint8_t {
     kOk = 0u,
     kLocatorFailed,
-    kInvalidEndpoint,
     kEndpointRejected,
     kOpenFailed,
 };
@@ -47,8 +41,6 @@ inline const char* agent_transport_error_string(
         return "ok";
     case AgentTransportError::kLocatorFailed:
         return "agent locator did not resolve an endpoint";
-    case AgentTransportError::kInvalidEndpoint:
-        return "agent endpoint was empty or malformed";
     case AgentTransportError::kEndpointRejected:
         return "transport rejected the selected agent endpoint";
     case AgentTransportError::kOpenFailed:
@@ -84,17 +76,9 @@ class UdpAgentTransportRuntime {
    *     transport opened successfully.
    */
   bool begin_connect(AgentLocator& locator) noexcept {
-    char address[16] = {};
-    char port[6] = {};
-    if (!locator.resolve(address, sizeof(address), port, sizeof(port))) {
-      last_error_ = AgentTransportError::kLocatorFailed;
-      connected_ = false;
-      return false;
-    }
-
     rosette::net::SocketAddress remote{};
-    if (!parse_endpoint(address, port, remote)) {
-      last_error_ = AgentTransportError::kInvalidEndpoint;
+    if (locator.resolve(&remote, 1u) == 0u) {
+      last_error_ = AgentTransportError::kLocatorFailed;
       connected_ = false;
       return false;
     }
@@ -140,33 +124,6 @@ class UdpAgentTransportRuntime {
   const UdpSocketTransport& transport() const noexcept { return transport_; }
 
  private:
-  /**
-   * @brief Parse a text endpoint into Rosette's socket-address type.
-   *
-   * @param[in] address IPv4 text address.
-   * @param[in] port UDP port text.
-   * @param[out] out Parsed Rosette socket address on success.
-   * @return `true` when the endpoint text was valid.
-   */
-  static bool parse_endpoint(const char* address,
-                             const char* port,
-                             rosette::net::SocketAddress& out) noexcept {
-    if ((address == nullptr) || (address[0] == '\0') ||
-        (port == nullptr) || (port[0] == '\0')) {
-      return false;
-    }
-
-    char* parse_end = nullptr;
-    const unsigned long parsed_port = std::strtoul(port, &parse_end, 10);
-    if ((parse_end == port) || (parse_end == nullptr) || (*parse_end != '\0') ||
-        (parsed_port > 65535u)) {
-      return false;
-    }
-
-    return rosette::net::inet::make_socket_address_v4(
-        address, static_cast<uint16_t>(parsed_port), out);
-  }
-
   UdpSocketTransport transport_;
   rosette::net::SocketAddress remote_ =
       rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u);

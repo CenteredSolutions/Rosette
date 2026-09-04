@@ -35,11 +35,42 @@
 #include <stdint.h>
 
 #include <array>
-#include <cstdio>
 #include <cstring>
 #include <memory>
 
 namespace rosette {
+
+/**
+ * @brief Filters candidate Agent transport locators.
+ *
+ * An Agent's `INFO` reply can advertise several addresses (for example a
+ * container's bridge IP alongside its host-routable one, or an IPv4 locator
+ * next to an IPv6 one). This is called once per locator that decoded as a
+ * supported address format; return true to accept it, false to keep looking
+ * at the remaining locators in the same reply.
+ */
+using AgentAddressFilter =
+    bool (*)(const rosette::net::SocketAddress& address) noexcept;
+
+/// Rejects the unspecified address and loopback, IPv4 ("0.0.0.0",
+/// "127.0.0.1") or IPv6 ("::", "::1").
+inline bool reject_unreachable_agent_address(
+    const rosette::net::SocketAddress& address) noexcept
+{
+    if (address.is_ipv4()) {
+        static constexpr std::array<uint8_t, 4> kUnspecified = {0u, 0u, 0u, 0u};
+        static constexpr std::array<uint8_t, 4> kLoopback = {127u, 0u, 0u, 1u};
+        const auto ipv4 = address.ipv4();
+        return (ipv4 != kUnspecified) && (ipv4 != kLoopback);
+    }
+    if (address.is_ipv6()) {
+        std::array<uint8_t, 16> unspecified{};
+        std::array<uint8_t, 16> loopback{};
+        loopback[15] = 1u;
+        return (address.address != unspecified) && (address.address != loopback);
+    }
+    return false;
+}
 
 struct MulticastAgentLocatorConfig {
     const char* multicast_group = "239.255.0.2";
@@ -47,6 +78,10 @@ struct MulticastAgentLocatorConfig {
     uint16_t default_agent_port = 8888u;
     uint32_t receive_timeout_ms = 750u;
     uint8_t attempts = 3u;
+    /// Accepts or rejects each candidate locator from the Agent's INFO reply.
+    /// Defaults to rejecting 0.0.0.0 and 127.0.0.1; firmware can override this
+    /// to pick out whichever advertised address is actually reachable from it.
+    AgentAddressFilter address_filter = reject_unreachable_agent_address;
 };
 
 namespace detail {
@@ -303,10 +338,21 @@ inline bool build_get_info_packet(uint8_t out[kGetInfoPacketSize]) noexcept
     return writer.ok() && (writer.size() == kGetInfoPacketSize);
 }
 
+/**
+ * @brief Decode one XRCE transport locator into a socket address.
+ *
+ * @param[out] out           Decoded endpoint; only meaningful when
+ *                           @p out_supported is true.
+ * @param[out] out_supported True for the address formats Rosette speaks
+ *                           (medium = IPv4, large = IPv6); the small
+ *                           (well-known) and string (e.g. serial) formats
+ *                           decode but are left unsupported.
+ * @return False only when the rdata itself was malformed; an unsupported but
+ *         well-formed format still returns true with @p out_supported false.
+ */
 inline bool parse_transport_locator(
     LittleEndianCdrReader& reader,
-    std::array<uint8_t, 4>& out_ipv4,
-    uint16_t& out_port,
+    rosette::net::SocketAddress& out,
     bool& out_supported) noexcept
 {
     uint8_t format = 0u;
@@ -326,20 +372,28 @@ inline bool parse_transport_locator(
         break;
     }
     case kAddressFormatMedium: {
-        if (!reader.read_bytes(out_ipv4.data(), out_ipv4.size()) ||
-            !reader.read_u16(out_port)) {
+        std::array<uint8_t, 4> address{};
+        uint16_t port = 0u;
+        if (!reader.read_bytes(address.data(), address.size()) ||
+            !reader.read_u16(port)) {
             return false;
         }
+        out = rosette::net::make_socket_address_v4(address, port);
         out_supported = true;
         break;
     }
     case kAddressFormatLarge: {
-        uint8_t address[16] = {};
+        std::array<uint8_t, 16> address{};
         uint32_t port = 0u;
-        if (!reader.read_bytes(address, sizeof(address)) ||
+        if (!reader.read_bytes(address.data(), address.size()) ||
             !reader.read_u32(port)) {
             return false;
         }
+        // The wire field is 4 bytes, but UDP/TCP ports are 16-bit; the upper
+        // half is padding, not part of the port value.
+        out = rosette::net::make_socket_address_v6(
+            address, static_cast<uint16_t>(port & 0xFFFFu));
+        out_supported = true;
         break;
     }
     case kAddressFormatString:
@@ -350,14 +404,27 @@ inline bool parse_transport_locator(
     return true;
 }
 
+/**
+ * @brief Parse an `INFO` reply into up to @p out_capacity accepted locators.
+ *
+ * @param[in]  filter       Accepts or rejects each candidate address; a
+ *                          locator is skipped (not treated as failure) when
+ *                          rejected.
+ * @param[out] out          Destination array for accepted endpoints.
+ * @param[in]  out_capacity Number of entries @p out can hold.
+ * @param[out] out_count    Number of endpoints written to @p out.
+ * @return True when at least one endpoint was written.
+ */
 inline bool parse_info_packet(const uint8_t* packet,
                               size_t length,
-                              char* out_address,
-                              size_t out_address_capacity,
-                              char* out_port,
-                              size_t out_port_capacity) noexcept
+                              AgentAddressFilter filter,
+                              rosette::net::SocketAddress* out,
+                              size_t out_capacity,
+                              size_t& out_count) noexcept
 {
-    if ((packet == nullptr) || (length < kGetInfoPacketSize)) {
+    out_count = 0u;
+    if ((packet == nullptr) || (length < kGetInfoPacketSize) ||
+        (out == nullptr) || (out_capacity == 0u)) {
         return false;
     }
 
@@ -449,32 +516,22 @@ inline bool parse_info_packet(const uint8_t* packet,
         return false;
     }
 
-    for (uint32_t i = 0; i < locator_count; ++i) {
-        std::array<uint8_t, 4> ipv4{};
-        uint16_t port = 0u;
+    for (uint32_t i = 0; (i < locator_count) && (out_count < out_capacity); ++i) {
+        rosette::net::SocketAddress candidate{};
         bool supported = false;
-        if (!parse_transport_locator(reader, ipv4, port, supported)) {
-            return false;
+        if (!parse_transport_locator(reader, candidate, supported)) {
+            // rdata past this point can't be trusted; stop, keep what we have.
+            break;
         }
 
-        if (!supported) {
+        if (!supported || ((filter != nullptr) && !filter(candidate))) {
             continue;
         }
 
-        if (rosette::net::inet::ntop4(ipv4.data(),
-                                      out_address,
-                                      out_address_capacity) == nullptr) {
-            return false;
-        }
-
-        const int rc = std::snprintf(out_port,
-                                     out_port_capacity,
-                                     "%u",
-                                     static_cast<unsigned>(port));
-        return (rc > 0) && (static_cast<size_t>(rc) < out_port_capacity);
+        out[out_count++] = candidate;
     }
 
-    return false;
+    return out_count > 0u;
 }
 
 }  // namespace detail
@@ -483,8 +540,10 @@ inline bool parse_info_packet(const uint8_t* packet,
  * @brief Resolve a micro-ROS Agent with upstream-compatible XRCE discovery.
  *
  * The locator opens a temporary UDP socket, multicasts a `GET_INFO` request to
- * the standard discovery group, and returns the first valid `INFO` response
- * that advertises an IPv4 transport locator.
+ * the standard discovery group, and returns the `INFO` reply's locators that
+ * pass `MulticastAgentLocatorConfig::address_filter` (an Agent's reply
+ * commonly advertises several addresses, only some of which are reachable
+ * from here, and can mix IPv4 and IPv6 transports).
  */
 class MulticastAgentLocator final : public AgentLocator {
 public:
@@ -494,46 +553,43 @@ public:
         , config_(config)
     {}
 
-    bool resolve(char* address,
-                 size_t address_capacity,
-                 char* port,
-                 size_t port_capacity) noexcept override
+    size_t resolve(rosette::net::SocketAddress* out,
+                   size_t capacity) noexcept override
     {
-        if ((address == nullptr) || (port == nullptr) ||
-            (address_capacity == 0u) || (port_capacity == 0u) ||
+        if ((out == nullptr) || (capacity == 0u) ||
             (config_.multicast_group == nullptr) ||
             (config_.multicast_group[0] == '\0') ||
             (config_.multicast_port == 0u)) {
-            return false;
+            return 0u;
         }
 
         auto socket = socket_provider_.open(rosette::net::SocketDomain::ipv4,
                                             rosette::net::SocketType::datagram,
                                             rosette::net::SocketProtocol::udp);
         if (!socket) {
-            return false;
+            return 0u;
         }
 
         const auto local =
             rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u);
         if (socket->bind(local) != 0) {
-            return false;
+            return 0u;
         }
 
         if (socket->set_receive_timeout(config_.receive_timeout_ms) != 0) {
-            return false;
+            return 0u;
         }
 
         rosette::net::SocketAddress group{};
         if (!rosette::net::inet::make_socket_address_v4(
                 config_.multicast_group, config_.multicast_port, group)) {
-            return false;
+            return 0u;
         }
 
         const uint8_t attempts = (config_.attempts == 0u) ? 1u : config_.attempts;
         uint8_t probe[detail::kGetInfoPacketSize] = {};
         if (!detail::build_get_info_packet(probe)) {
-            return false;
+            return 0u;
         }
 
         for (uint8_t attempt = 0u; attempt < attempts; ++attempt) {
@@ -550,17 +606,18 @@ public:
                 continue;
             }
 
+            size_t count = 0u;
             if (detail::parse_info_packet(reply,
                                           static_cast<size_t>(received),
-                                          address,
-                                          address_capacity,
-                                          port,
-                                          port_capacity)) {
-                return true;
+                                          config_.address_filter,
+                                          out,
+                                          capacity,
+                                          count)) {
+                return count;
             }
         }
 
-        return false;
+        return 0u;
     }
 
 private:

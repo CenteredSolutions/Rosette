@@ -18,6 +18,8 @@
  * ordinary C++ infrastructure.
  */
 
+#include "rosette/net/socket.hpp"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -45,10 +47,9 @@ class CustomTransport {
    * @return `true` when the endpoint was accepted.
    * @return `false` when the transport does not support endpoint updates.
    */
-  virtual bool configure_agent_endpoint(const char* address,
-                                        const char* port) noexcept {
-    (void)address;
-    (void)port;
+  virtual bool configure_agent_endpoint(
+      const rosette::net::SocketAddress& endpoint) noexcept {
+    (void)endpoint;
     return false;
   }
 

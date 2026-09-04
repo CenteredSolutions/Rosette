@@ -2,6 +2,8 @@
 
 #include "common.hpp"
 
+#include "rosette/net/inet.h"
+
 #include <string.h>
 #include <cstdio>
 
@@ -304,20 +306,21 @@ private:
      */
     ContextStartError configure_transport(rmw_init_options_t& rmw_options) noexcept
     {
-        char port_str[6];
-        std::snprintf(port_str, sizeof(port_str), "%u", options_.udp_agent_port);
-
         if (options_.use_custom_transport) {
 #if ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM
             if (options_.custom_transport == nullptr) {
                 return ContextStartError::kCustomTransportMissing;
             }
 
-            if (options_.udp_agent_address != nullptr &&
-                !options_.custom_transport->configure_agent_endpoint(
-                    options_.udp_agent_address,
-                    port_str)) {
-                return ContextStartError::kCustomTransportEndpointRejected;
+            if (options_.udp_agent_address != nullptr) {
+                rosette::net::SocketAddress endpoint{};
+                if (!rosette::net::inet::make_socket_address_v4(
+                        options_.udp_agent_address, options_.udp_agent_port,
+                        endpoint) ||
+                    !options_.custom_transport->configure_agent_endpoint(
+                        endpoint)) {
+                    return ContextStartError::kCustomTransportEndpointRejected;
+                }
             }
 
             return ros_ok(rmw_uros_options_set_custom_transport(
@@ -336,6 +339,8 @@ private:
         }
 
         if (options_.udp_agent_address != nullptr) {
+            char port_str[6];
+            std::snprintf(port_str, sizeof(port_str), "%u", options_.udp_agent_port);
             return ros_ok(rmw_uros_options_set_udp_address(
                        options_.udp_agent_address,
                        port_str,
@@ -377,27 +382,32 @@ private:
         }
 
         if (options_.agent_locator != nullptr) {
-            char address[64] = {};
-            char port[16] = {};
-            if (!options_.agent_locator->resolve(
-                    address, sizeof(address), port, sizeof(port))) {
+            rosette::net::SocketAddress endpoint{};
+            if (options_.agent_locator->resolve(&endpoint, 1u) == 0u) {
                 return ContextStartError::kAgentLocatorFailed;
             }
-
-            if (address[0] == '\0') {
-                return ContextStartError::kAgentLocatorNoAddress;
-            }
-            if (port[0] == '\0') {
-                std::snprintf(port, sizeof(port), "%u", options_.udp_agent_port);
+            if (endpoint.port == 0u) {
+                endpoint.port = options_.udp_agent_port;
             }
 
             if (options_.use_custom_transport) {
                 if ((options_.custom_transport == nullptr) ||
-                    !options_.custom_transport->configure_agent_endpoint(address, port)) {
+                    !options_.custom_transport->configure_agent_endpoint(endpoint)) {
                     return ContextStartError::kAgentLocatorEndpointRejected;
                 }
-            } else if (!ros_ok(rmw_uros_options_set_udp_address(address, port, &rmw_options))) {
-                return ContextStartError::kDiscoveredUdpAddressSetFailed;
+            } else {
+                char address_text[40] = {};
+                if (rosette::net::inet::ntop(endpoint, address_text,
+                                             sizeof(address_text)) == nullptr) {
+                    return ContextStartError::kAgentLocatorNoAddress;
+                }
+                char port_text[6] = {};
+                std::snprintf(port_text, sizeof(port_text), "%u",
+                             static_cast<unsigned>(endpoint.port));
+                if (!ros_ok(rmw_uros_options_set_udp_address(
+                        address_text, port_text, &rmw_options))) {
+                    return ContextStartError::kDiscoveredUdpAddressSetFailed;
+                }
             }
 
             return ros_ok(rmw_uros_ping_agent_options(

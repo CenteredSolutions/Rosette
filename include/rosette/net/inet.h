@@ -195,6 +195,50 @@ inline const char* ntop(int af,
     return nullptr;
 }
 
+/**
+ * @brief Render a 16-byte IPv6 address as text.
+ *
+ * Produces the plain eight-group colon-hex form (e.g.
+ * "fe80:0:0:0:202:b3ff:fe1e:8329"). This is not RFC 5952 canonical form (no
+ * "::" zero-run compression), but it is valid IPv6 text that any conformant
+ * parser accepts.
+ */
+inline const char* ntop6(const uint8_t in[16],
+                         char* out,
+                         size_t capacity) noexcept
+{
+    if ((in == nullptr) || (out == nullptr) || (capacity == 0u)) {
+        return nullptr;
+    }
+
+    const int rc = std::snprintf(
+        out, capacity, "%x:%x:%x:%x:%x:%x:%x:%x",
+        (static_cast<unsigned>(in[0]) << 8u) | in[1],
+        (static_cast<unsigned>(in[2]) << 8u) | in[3],
+        (static_cast<unsigned>(in[4]) << 8u) | in[5],
+        (static_cast<unsigned>(in[6]) << 8u) | in[7],
+        (static_cast<unsigned>(in[8]) << 8u) | in[9],
+        (static_cast<unsigned>(in[10]) << 8u) | in[11],
+        (static_cast<unsigned>(in[12]) << 8u) | in[13],
+        (static_cast<unsigned>(in[14]) << 8u) | in[15]);
+    if ((rc <= 0) || (static_cast<size_t>(rc) >= capacity)) {
+        return nullptr;
+    }
+    return out;
+}
+
+/// Renders a `SocketAddress` as text, dispatching on its address family.
+inline const char* ntop(const SocketAddress& address,
+                        char* out,
+                        size_t capacity) noexcept
+{
+    if (address.is_ipv6()) {
+        return ntop6(address.address.data(), out, capacity);
+    }
+    const auto v4 = address.ipv4();
+    return ntop4(v4.data(), out, capacity);
+}
+
 inline bool make_socket_address_v4(const char* text,
                                    uint16_t port,
                                    SocketAddress& out) noexcept
