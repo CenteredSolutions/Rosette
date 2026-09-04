@@ -8,7 +8,7 @@
 #include <type_traits>
 #include <variant>
 
-#ifndef RTPS_NO_FREERTOS
+#ifndef ROSETTE_NO_FREERTOS
 extern "C" {
 #include "FreeRTOS.h"
 #include "task.h"
@@ -142,6 +142,7 @@ public:
             write_u8(Chip::socket_interrupt_mask(socket), 0u);
             write_u8(Chip::socket_interrupt(socket), 0xFFu);
             issue_socket_command(socket, Chip::command_close());
+            send_pending_[socket] = false;
             socket_rx_bases_[socket] = rx_base;
             socket_tx_bases_[socket] = tx_base;
             rx_base += static_cast<address_type>(1024 * Chip::socket_rx_buffer_kib() / Chip::socket_count());
@@ -160,7 +161,7 @@ public:
         return mode_;
     }
 
-#ifndef RTPS_NO_FREERTOS
+#ifndef ROSETTE_NO_FREERTOS
     void register_socket_rx_task(socket_type socket,
                                  TaskHandle_t task = xTaskGetCurrentTaskHandle()) noexcept
     {
@@ -354,7 +355,11 @@ public:
         while (socket_tx_free_size(socket) < required) {
         }
 
-       
+        // Finish the previous frame before reusing the TX ring; usually a no-op
+        // by now. Its SENDOK/timeout result is not propagated — FreeRTOS+TCP
+        // treats the output return as advisory and retransmits at L4.
+        wait_pending_send(socket);
+
         uint16_t pointer = socket_tx_write_pointer(socket);
         pointer = ring_write(socket,
                              socket_tx_buffer_base(socket),
@@ -363,16 +368,7 @@ public:
                              required);
         set_socket_tx_write_pointer(socket, pointer);
         issue_socket_command(socket, Chip::command_send());
-
-        const uint8_t irq = read_u8(Chip::socket_interrupt(socket));
-        if ((irq & Chip::socket_interrupt_send_ok()) == 0u) {
-            if ((irq & Chip::socket_interrupt_timeout()) != 0u) {
-                write_u8(Chip::socket_interrupt(socket), Chip::socket_interrupt_timeout());
-            }
-            return false;
-        }
-
-        write_u8(Chip::socket_interrupt(socket), Chip::socket_interrupt_send_ok());
+        send_pending_[socket] = true;
         return true;
     }
 
@@ -418,6 +414,10 @@ public:
     void close_socket(socket_type socket) noexcept
     {
         const auto lock = bus_.acquire();
+        // Let any outstanding SEND finish and clear send_pending_ — CLOSE wipes
+        // Sn_IR, so a stale flag would make the next send on a reopened socket
+        // spin forever waiting for a SENDOK that can never arrive.
+        wait_pending_send(socket);
         write_u8(Chip::socket_interrupt_mask(socket), 0u);
         write_u8(Chip::common_socket_interrupt_mask(),
                  static_cast<uint8_t>(read_u8(Chip::common_socket_interrupt_mask()) &
@@ -463,6 +463,10 @@ public:
         while (socket_tx_free_size(socket) < required) {
         }
 
+        // Finish the previous datagram before reusing the TX ring so the chip
+        // does not fuse the two. Usually already done by now.
+        wait_pending_send(socket);
+
         uint16_t pointer = socket_tx_write_pointer(socket);
         pointer = ring_write(socket,
                              socket_tx_buffer_base(socket),
@@ -471,6 +475,7 @@ public:
                              required);
         set_socket_tx_write_pointer(socket, pointer);
         issue_socket_command(socket, Chip::command_send());
+        send_pending_[socket] = true;
 
         return static_cast<std::ptrdiff_t>(length);
     }
@@ -515,12 +520,14 @@ public:
             pointer = ring_skip(pointer, payload_len);
             set_socket_rx_read_pointer(socket, pointer);
             issue_socket_command(socket, Chip::command_receive_done());
+            ack_socket_rx_interrupt(socket);
             return -1;
         }
 
         pointer = ring_read(socket, pointer, data, payload_len);
         set_socket_rx_read_pointer(socket, pointer);
         issue_socket_command(socket, Chip::command_receive_done());
+        ack_socket_rx_interrupt(socket);
         return payload_len;
     }
 
@@ -530,14 +537,17 @@ public:
         return socket_rx_received_size(socket);
     }
 
+    // Sn_RXBUF_SIZE / Sn_TXBUF_SIZE are single-byte registers holding the KiB
+    // allocation. A 16-bit read here straddles into the neighbouring register
+    // (Sn_TXBUF_SIZE / Sn_TX_FSR), so the size must be read one byte at a time.
     uint16_t socket_rx_capacity(socket_type socket) noexcept
     {
-        return read_u16(Chip::socket_rx_buffer_size(socket)) * 1024u;
+        return static_cast<uint16_t>(read_u8(Chip::socket_rx_buffer_size(socket)) * 1024u);
     }
 
     uint16_t socket_tx_capacity(socket_type socket) noexcept
     {
-        return read_u16(Chip::socket_tx_buffer_size(socket)) * 1024u;
+        return static_cast<uint16_t>(read_u8(Chip::socket_tx_buffer_size(socket)) * 1024u);
     }
 
 private:
@@ -617,6 +627,60 @@ private:
         write_u8(Chip::socket_command(socket), command);
         while (read_u8(Chip::socket_command(socket)) != 0u) {
         }
+    }
+
+    /**
+     * @brief Completes the previous SEND on this socket, if one is outstanding.
+     *
+     * Datasheet: "HOST must execute next SEND Command after Sn_IR[SENDOK] is set
+     * to 1." The command register clears as soon as SEND is *accepted*, well
+     * before the datagram is on the wire, and the chip transmits everything
+     * between Sn_TX_RD and Sn_TX_WR — so issuing the next SEND before SENDOK
+     * races the write pointer and the chip fuses both payloads into one datagram
+     * (or drops the second).
+     *
+     * Rather than block at the tail of every send, `udp_send_to` / `write_frame`
+     * just set `send_pending_[socket]` and call this at the head of the next one.
+     * By then the SPI traffic since the SEND has almost always covered the
+     * transmit time, so the common case is a single Sn_IR read that already
+     * shows SENDOK. The `send_pending_` guard also means a context that never
+     * sent (or whose SENDOK another path already consumed) does not spin.
+     *
+     * SENDOK is cleared here unconditionally (harmless when already clear).
+     * `Sn_IR.TIMEOUT` (ARP/retransmit failure) and a closed socket end the wait
+     * so a dead peer cannot hang the caller.
+     */
+    void wait_pending_send(socket_type socket) noexcept
+    {
+        while (send_pending_[socket]) {
+            const uint8_t irq = read_u8(Chip::socket_interrupt(socket));
+            if ((irq & (Chip::socket_interrupt_send_ok() |
+                        Chip::socket_interrupt_timeout())) != 0u) {
+                break;
+            }
+            if (read_u8(Chip::socket_status(socket)) == Chip::socket_status_closed()) {
+                break;
+            }
+        }
+        send_pending_[socket] = false;
+        write_u8(Chip::socket_interrupt(socket), Chip::socket_interrupt_send_ok());
+    }
+
+    /**
+     * @brief Clears the socket's RX interrupt so the chip INT line deasserts.
+     *
+     * On the no-RTOS build this lets the next datagram raise a fresh edge for
+     * the polling executor's `WFE` wake. Under FreeRTOS the interrupt-dispatch
+     * task owns `Sn_IR` servicing and its per-socket notification, so this is a
+     * no-op there.
+     */
+    void ack_socket_rx_interrupt(socket_type socket) noexcept
+    {
+#ifdef ROSETTE_NO_FREERTOS
+        write_u8(Chip::socket_interrupt(socket), Chip::socket_interrupt_receive());
+#else
+        (void)socket;
+#endif
     }
 
     uint16_t socket_rx_received_size(socket_type socket) noexcept
@@ -723,13 +787,16 @@ private:
     }
 
     Bus& bus_;
-#ifndef RTPS_NO_FREERTOS
+#ifndef ROSETTE_NO_FREERTOS
     TaskHandle_t interrupt_dispatch_task_ = nullptr;
     std::array<TaskHandle_t, Chip::socket_count()> socket_rx_tasks_{};
 #endif
     mode_type mode_ = DeviceMode::uninitialized;
     std::array<address_type, Chip::socket_count()> socket_rx_bases_{};
     std::array<address_type, Chip::socket_count()> socket_tx_bases_{};
+    // A SEND was issued on this socket and its Sn_IR.SENDOK has not been
+    // drained yet; see wait_pending_send().
+    std::array<bool, Chip::socket_count()> send_pending_{};
 };
 
 }  // namespace rosette::wiznet

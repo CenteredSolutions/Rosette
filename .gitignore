@@ -10,3 +10,11 @@
 
 # macOS extras
 **/.DS_Store
+
+# storage_demo host backing volume
+rosette_storage.img
+*.img
+
+# standalone example build dirs
+examples/*/build*/
+build-micro-ros-pico2/

@@ -1,0 +1,4 @@
+# Remove a stored blob. Succeeds even if the key was not present.
+string key
+---
+bool success

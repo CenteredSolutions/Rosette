@@ -2,52 +2,45 @@
 
 /**
  * @file ros/ros.hpp
- * @brief Umbrella header for the milkros ROS 2-compatible embedded layer.
+ * @brief micro-ROS backend for the Rosette ROS facade.
  *
- * Include this single header to access the full milkros API:
+ * Include this header when the MCU should speak to a micro-ROS Agent through
+ * `rclc` and `rmw_microxrcedds`.
+ *
+ * Typical usage:
  *
  *   #include "rosette/ros/ros.hpp"
  *
+ *   rosette::Context context(...);
+ *   context.start();
+ *   auto node = context.create_node("motor_controller", "/drive");
+ *   auto pub = node.create_publisher<MyMsg>("status");
+ *
  * Included surfaces
  * -----------------
- *   milkros::Context             — owns participant, endpoint pools, timer registry
- *   milkros::Node                — factory for all endpoint types
- *   milkros::Publisher<T>        — typed topic publisher (analogous to rclcpp::Publisher)
- *   milkros::Subscription<T,CB>  — typed topic subscriber
- *   milkros::Timer<CB>           — periodic callback timer (analogous to rclcpp::Timer)
- *   milkros::Service<T,H>        — service server (analogous to rclcpp::Service)
- *   milkros::Client<T,N>         — service client (analogous to rclcpp::Client)
- *   milkros::ActionServer<T,G,E> — action server  (analogous to rclcpp_action::Server)
- *   milkros::ActionClient<T>     — action client  (analogous to rclcpp_action::Client)
- *   milkros::GoalHandle<T>       — passed to the execute callback by the ActionServer
+ *   rosette::Context                — XRCE client session + executor
+ *   rosette::Node                   — factory for communication entities
+ *   rosette::Publisher<T>           — typed topic publisher
+ *   rosette::Subscription<T, CB>    — typed topic subscription
+ *   rosette::Service<T, H>          — typed service server
+ *   rosette::Client<T, N>           — typed async service client
+ *   rosette::ActionServer<T, G, E>  — typed action server
+ *   rosette::ActionClient<T, N>     — typed action client
  *
- * Trait templates (user specializes these for their message/service/action types)
- * ---------------------------------------------------------------------------------
- *   milkros::message_traits<T>   — topic serialization
- *   milkros::service_traits<T>   — service request/response serialization
- *   milkros::action_traits<T>    — action goal/result/feedback serialization
- *
- * Utilities (milkros/topic_names.hpp — also included transitively)
- * ----------------------------------------------------------------
- *   milkros::compose_topic_name()            — rt/<ns>/<topic>
- *   milkros::compose_service_request_topic() — rq/<ns>/<svc>Request
- *   milkros::compose_service_response_topic()— rr/<ns>/<svc>Reply
- *   milkros::compose_action_subtopic()       — rq|rr|rt/<ns>/<action>/<suffix>
- *
- * Configuration constants (override with -D before including this header)
- * -------------------------------------------------------------------------
- *   MILKROS_MAX_TIMER_SIZE    (default 64  B) — max sizeof(Timer<CallbackT>)
- *   MILKROS_MAX_TIMERS        (default 8)     — timer pool depth
- *   MILKROS_MAX_SERVICE_SIZE  (default 128 B) — max sizeof(Service<T,H>)
- *   MILKROS_MAX_SERVICES      (default 4)     — service server pool depth
- *   MILKROS_MAX_CLIENT_SIZE   (default 256 B) — max sizeof(Client<T,N>)
- *   MILKROS_MAX_CLIENTS       (default 4)     — service client pool depth
- *   MILKROS_MAX_ACTION_SIZE   (default 512 B) — max sizeof(ActionServer/Client<T,...>)
- *   MILKROS_MAX_ACTIONS       (default 2)     — action pool depth (servers + clients)
- *
- * Also relevant (from the RTPS layer):
- *   RTPS_MAX_USER_WRITERS  — increase to ≥ 8 when using action servers/clients
- *   RTPS_MAX_USER_READERS  — increase to ≥ 8 when using action servers/clients
+ * Caveats
+ * -------
+ * - Requires vendored micro-ROS headers and libraries from the
+ *   `micro_ros_setup` generate-lib workflow.
+ * - Action wrappers require upstream `rclc` action headers, available in ROS 2
+ *   Humble and newer.
  */
 
+#include "common.hpp"
 #include "context.hpp"
+#include "mdns_agent_locator.hpp"
+#include "multicast_agent_locator.hpp"
+#include "node.hpp"
+
+#include "app.hpp"
+#include "module.hpp"
+#include "time_sync.hpp"

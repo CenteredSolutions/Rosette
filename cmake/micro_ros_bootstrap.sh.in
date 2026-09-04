@@ -214,6 +214,16 @@ if [[ ! -f "${ROS_SETUP}" ]]; then
   exit 1
 fi
 
+# A project virtualenv left active on PATH can shadow the system Python that
+# carries catkin_pkg / colcon / empy, which the ament/rosidl build steps import.
+# Fall back to the system interpreter when the active venv cannot import them.
+if [[ -n "${VIRTUAL_ENV:-}" ]] && ! python3 -c 'import catkin_pkg' >/dev/null 2>&1; then
+  echo "micro-ROS: active virtualenv lacks catkin_pkg; falling back to system Python" >&2
+  PATH="/usr/bin:${PATH}"
+  unset VIRTUAL_ENV
+  hash -r 2>/dev/null || true
+fi
+
 mkdir -p "${WORKSPACE_DIR}/src"
 
 if [[ -L "${WORKSPACE_DIR}/src/micro_ros_setup" ]]; then
@@ -240,6 +250,33 @@ source_setup_file "${WORKSPACE_DIR}/install/local_setup.bash"
 
 if [[ ! -d "${WORKSPACE_DIR}/firmware" ]]; then
   ros2 run micro_ros_setup create_firmware_ws.sh generate_lib
+fi
+
+# Extra interface packages (from examples/ and any explicitly listed) are copied
+# into the firmware workspace so generate_lib compiles them into libmicroros.
+#
+# NOTE: firmware/mcu_ws/extra_packages/ is micro_ros_setup's own config tree
+# (generic/, esp32/, nucleo_*/ ...). Never wipe it — replace only the specific
+# package directories we add. When a package is (re)copied, wipe the mcu_ws
+# build/install so type supports for changed .msg/.srv regenerate.
+ROSETTE_PKG_DIR="${WORKSPACE_DIR}/firmware/mcu_ws/rosette_packages"
+mkdir -p "${ROSETTE_PKG_DIR}"
+_rosette_copied_pkgs=0
+while IFS= read -r package_dir; do
+  [[ -n "${package_dir}" && -f "${package_dir}/package.xml" ]] || continue
+  name="$(basename "${package_dir}")"
+  echo "micro-ROS: including interface package ${name}"
+  rm -rf "${ROSETTE_PKG_DIR:?}/${name}"
+  cp -a "${package_dir%/}" "${ROSETTE_PKG_DIR}/"
+  _rosette_copied_pkgs=1
+done <<'ROSETTE_INTERFACE_PACKAGES_EOF'
+@ROSETTE_MICRO_ROS_INTERFACE_PACKAGES@
+ROSETTE_INTERFACE_PACKAGES_EOF
+
+if [[ "${_rosette_copied_pkgs}" -eq 1 ]]; then
+  rm -rf "${WORKSPACE_DIR}/firmware/mcu_ws/build" \
+         "${WORKSPACE_DIR}/firmware/mcu_ws/install" \
+         "${WORKSPACE_DIR}/firmware/build"
 fi
 
 patch_libyaml_vendor_for_cmake4 \

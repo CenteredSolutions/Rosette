@@ -5,8 +5,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <type_traits>
-#include <utility>
 
 extern "C" {
 #include "FreeRTOS_IP.h"
@@ -21,78 +19,62 @@ extern "C" {
 
 namespace rosette::net::freertos {
 
-namespace detail {
+/**
+ * @brief net::MacDevice extended with the two hooks the FreeRTOS RX path uses.
+ *
+ * NetworkInterface drives frame reception from a dedicated task. A driver
+ * that can raise an interrupt when a frame arrives overrides
+ * register_rx_task() to capture the task handle and
+ * handle_interrupt_from_isr() to notify it, turning the RX loop from a poll
+ * into an event wait. A driver with no interrupt line inherits the default
+ * no-ops and the task polls on a short timeout.
+ */
+class FreeRtosMacDevice : public net::MacDevice {
+public:
+    /**
+     * @brief Record the task to notify when a received frame is queued.
+     *
+     * @param[in] task Handle of the owning NetworkInterface's RX task.
+     */
+    virtual void register_rx_task(TaskHandle_t task) noexcept { (void)task; }
 
-template<typename...>
-using void_t = void;
+    /**
+     * @brief Service the controller's frame-ready interrupt.
+     *
+     * Called from the board's Ethernet ISR trampoline. Implementations clear
+     * the controller interrupt source and notify the registered RX task.
+     */
+    virtual void handle_interrupt_from_isr() noexcept {}
+};
 
-template<typename D, typename = void_t<>>
-struct has_initialise : std::false_type {};
-template<typename D>
-struct has_initialise<D,
-                      void_t<decltype(std::declval<D&>().initialise(
-                          std::declval<const net::MacAddress&>()))>> : std::true_type {};
-
-template<typename D, typename = void_t<>>
-struct has_register_rx_task : std::false_type {};
-template<typename D>
-struct has_register_rx_task<D,
-                            void_t<decltype(std::declval<D&>().register_rx_task(
-                                std::declval<TaskHandle_t>()))>> : std::true_type {};
-
-template<typename D, typename = void_t<>>
-struct has_handle_interrupt_from_isr : std::false_type {};
-template<typename D>
-struct has_handle_interrupt_from_isr<D,
-                                     void_t<decltype(std::declval<D&>().handle_interrupt_from_isr())>> : std::true_type {};
-
-template<typename D>
-inline bool call_initialise(D& device, const net::MacAddress& mac)
-{
-    if constexpr (has_initialise<D>::value) {
-        return static_cast<bool>(device.initialise(mac));
-    } else {
-        (void)device;
-        (void)mac;
-        return true;
-    }
-}
-
-template<typename D>
-inline void call_register_rx_task(D& device, TaskHandle_t task)
-{
-    if constexpr (has_register_rx_task<D>::value) {
-        device.register_rx_task(task);
-    } else {
-        (void)device;
-        (void)task;
-    }
-}
-
-template<typename D>
-inline void call_handle_interrupt_from_isr(D& device) noexcept
-{
-    if constexpr (has_handle_interrupt_from_isr<D>::value) {
-        device.handle_interrupt_from_isr();
-    } else {
-        (void)device;
-    }
-}
-
-}  // namespace detail
-
-template<typename Device>
+/**
+ * @brief Binds a FreeRtosMacDevice to a FreeRTOS+TCP NetworkInterface_t.
+ *
+ * This is the glue between the driver-neutral MAC contract and the C
+ * NetworkInterface_t descriptor that FreeRTOS+TCP registers and calls back
+ * through. It owns the RX task, translates the C callback ABI into method
+ * calls on the referenced device, and feeds received frames into the IP
+ * task after the multicast service has inspected them.
+ *
+ * One instance backs one hardware interface for the lifetime of the stack.
+ * The referenced device must outlive the NetworkInterface; both are
+ * typically file-scope objects in the board's link translation unit.
+ */
 class NetworkInterface {
 public:
-    using device_type = Device;
     using mac_address_type = net::MacAddress;
 
-    static_assert(net::is_mac_device<device_type>::value,
-                  "Device must satisfy MAC data-plane methods");
-
-    explicit NetworkInterface(device_type device,
+    /**
+     * @brief Construct the binding around @p device.
+     *
+     * @param[in] device       MAC driver to carry this interface's frames;
+     *                         must outlive the NetworkInterface.
+     * @param[in] fallback_mac Station address used until FreeRTOS+TCP
+     *                         supplies an endpoint MAC.
+     */
+    explicit NetworkInterface(FreeRtosMacDevice& device,
                               mac_address_type fallback_mac = {}) noexcept
-        : device_(std::move(device))
+        : device_(device)
         , mac_address_(fallback_mac) {}
 
     NetworkInterface_t* fill_interface_descriptor(NetworkInterface_t& interface,
@@ -124,9 +106,7 @@ public:
     void set_fallback_mac_address(const mac_address_type& mac) noexcept
     {
         mac_address_ = mac;
-        if constexpr (net::detail::has_set_mac_address<device_type>::value) {
-            device_.set_mac_address(mac_address_);
-        }
+        device_.set_mac_address(mac_address_);
     }
 
     BaseType_t initialise()
@@ -136,11 +116,11 @@ public:
         }
 
         if (!started_) {
-            if (!detail::call_initialise(device_, mac_address_)) {
+            if (!device_.initialise(mac_address_)) {
                 return pdFALSE;
             }
             started_ = true;
-        } else if constexpr (net::detail::has_set_mac_address<device_type>::value) {
+        } else {
             device_.set_mac_address(mac_address_);
         }
 
@@ -159,7 +139,7 @@ public:
                 return pdFALSE;
             }
 
-            detail::call_register_rx_task(device_, rx_task_handle_);
+            device_.register_rx_task(rx_task_handle_);
         }
 
         return pdTRUE;
@@ -169,14 +149,14 @@ public:
                       BaseType_t xReleaseAfterSend)
     {
         BaseType_t ret = pdFALSE;
-        const std::size_t max_frame = net::max_frame_size(device_);
+        const std::size_t max_frame = device_.max_frame_size();
 
         if ((pxDescriptor != nullptr) &&
             (pxDescriptor->pucEthernetBuffer != nullptr) &&
             (pxDescriptor->xDataLength > 0u) &&
             ((max_frame == 0u) || (pxDescriptor->xDataLength <= max_frame))) {
-            if (net::detail::call_send_packet(
-                    device_, pxDescriptor->pucEthernetBuffer, pxDescriptor->xDataLength)) {
+            if (device_.send_frame(pxDescriptor->pucEthernetBuffer,
+                                   pxDescriptor->xDataLength)) {
                 ret = pdTRUE;
             }
         }
@@ -192,16 +172,15 @@ public:
 
     BaseType_t link_status() noexcept
     {
-        const net::PhyStatus status = net::get_phy_status(device_);
-        return status.link_up ? pdTRUE : pdFALSE;
+        return device_.phy_status().link_up ? pdTRUE : pdFALSE;
     }
 
     void handle_interrupt_from_isr() noexcept
     {
-        detail::call_handle_interrupt_from_isr(device_);
+        device_.handle_interrupt_from_isr();
     }
 
-    device_type& device() noexcept
+    FreeRtosMacDevice& device() noexcept
     {
         return device_;
     }
@@ -262,13 +241,13 @@ private:
             return false;
         }
 
-        const std::size_t max_frame = net::max_frame_size(self->device_);
+        const std::size_t max_frame = self->device_.max_frame_size();
         if ((frame == nullptr) || (length == 0u) ||
             ((max_frame != 0u) && (length > max_frame))) {
             return false;
         }
 
-        return net::detail::call_send_packet(self->device_, frame, length);
+        return self->device_.send_frame(frame, length);
     }
 
     static void rx_task_entry(void* arg)
@@ -303,7 +282,7 @@ private:
     void rx_task()
     {
         for (;;) {
-            const std::size_t bytes_received = device_.peek_packet_size();
+            const std::size_t bytes_received = device_.peek_frame_size();
             if (bytes_received == 0u) {
                 (void)ulTaskNotifyTake(pdTRUE, 64);
                 continue;
@@ -317,7 +296,7 @@ private:
             }
 
             const std::size_t bytes_read =
-                device_.receive_packet(pxDescriptor->pucEthernetBuffer, bytes_received);
+                device_.receive_frame(pxDescriptor->pucEthernetBuffer, bytes_received);
             pxDescriptor->xDataLength = bytes_read;
             pxDescriptor->pxInterface = interface_;
 
@@ -348,7 +327,7 @@ private:
     }
 
 private:
-    device_type device_;
+    FreeRtosMacDevice& device_;
     NetworkInterface_t* interface_ = nullptr;
     TaskHandle_t rx_task_handle_ = nullptr;
     std::array<char, 16> name_{};

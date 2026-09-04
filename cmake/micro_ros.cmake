@@ -55,6 +55,10 @@ set_property(CACHE ROSETTE_MICRO_ROS_TRANSPORT PROPERTY STRINGS
 
 set(ROSETTE_MICRO_ROS_SETUP_PATH "" CACHE PATH
     "Path to a local micro_ros_setup checkout")
+set(ROSETTE_MICRO_ROS_EXTRA_INTERFACE_PACKAGES "" CACHE STRING
+    "Semicolon-separated list of extra ROS 2 interface package directories \
+(each containing package.xml) to compile into libmicroros, in addition to any \
+found under examples/")
 set(ROSETTE_MICRO_ROS_WORKSPACE_DIR "${CMAKE_BINARY_DIR}/micro_ros_ws" CACHE PATH
     "Workspace used to build the generated micro-ROS static library")
 set(ROSETTE_MICRO_ROS_ROS_SETUP
@@ -62,11 +66,24 @@ set(ROSETTE_MICRO_ROS_ROS_SETUP
     "ROS 2 setup script sourced before building micro_ros_setup")
 
 set(ROSETTE_MICRO_ROS_MAX_NODES 2 CACHE STRING "rmw_microxrcedds max nodes")
-set(ROSETTE_MICRO_ROS_MAX_PUBLISHERS 8 CACHE STRING "rmw_microxrcedds max publishers")
-set(ROSETTE_MICRO_ROS_MAX_SUBSCRIPTIONS 8 CACHE STRING "rmw_microxrcedds max subscriptions")
-set(ROSETTE_MICRO_ROS_MAX_SERVICES 4 CACHE STRING "rmw_microxrcedds max services")
-set(ROSETTE_MICRO_ROS_MAX_CLIENTS 4 CACHE STRING "rmw_microxrcedds max clients")
+set(ROSETTE_MICRO_ROS_MAX_PUBLISHERS 10 CACHE STRING "rmw_microxrcedds max publishers")
+set(ROSETTE_MICRO_ROS_MAX_SUBSCRIPTIONS 10 CACHE STRING "rmw_microxrcedds max subscriptions")
+set(ROSETTE_MICRO_ROS_MAX_SERVICES 8 CACHE STRING "rmw_microxrcedds max services")
+set(ROSETTE_MICRO_ROS_MAX_CLIENTS 6 CACHE STRING "rmw_microxrcedds max clients")
 set(ROSETTE_MICRO_ROS_MAX_HISTORY 8 CACHE STRING "rmw_microxrcedds max history depth")
+
+# XRCE serialization buffers. The file-management service carries multi-KiB
+# string payloads; these must be large enough to hold the biggest request or
+# response, and the transport MTU large enough to keep an Ethernet datagram
+# unfragmented. They are shared across every entity of the same kind.
+set(ROSETTE_MICRO_ROS_MAX_INPUT_BUFFER_SIZE 8192 CACHE STRING
+    "rmw_microxrcedds max input (deserialization) buffer size")
+set(ROSETTE_MICRO_ROS_MAX_OUTPUT_BUFFER_SIZE 8192 CACHE STRING
+    "rmw_microxrcedds max output (serialization) buffer size")
+set(ROSETTE_MICRO_ROS_MAX_TRANSPORT_MTU 1400 CACHE STRING
+    "Micro XRCE-DDS transport MTU (bytes per datagram)")
+set(ROSETTE_MICRO_ROS_STREAM_HISTORY 8 CACHE STRING
+    "Micro XRCE-DDS reliable stream fragment-buffer depth")
 set(ROSETTE_MICRO_ROS_EXTRA_C_FLAGS "" CACHE STRING
     "Extra C compiler flags appended to the generated micro-ROS toolchain")
 set(ROSETTE_MICRO_ROS_EXTRA_CXX_FLAGS "" CACHE STRING
@@ -84,6 +101,103 @@ set(ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS "750" CACHE STRING
 set(ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS "3" CACHE STRING
     "Number of multicast probe attempts for the Rosette Agent locator")
 
+# --- Agent autodiscovery mechanism for the board smoke targets ---------------
+# "mdns"  -> MdnsAgentLocator: browse a DNS-SD service or resolve a host name.
+# "xrce"  -> MulticastAgentLocator: the upstream-compatible XRCE GET_INFO probe.
+set(ROSETTE_MICRO_ROS_DISCOVERY "mdns" CACHE STRING
+    "Agent autodiscovery mechanism: mdns or xrce")
+set(ROSETTE_MICRO_ROS_MDNS_SERVICE "_microrosagent._udp.local" CACHE STRING
+    "DNS-SD service type browsed by the mDNS Agent locator")
+set(ROSETTE_MICRO_ROS_MDNS_HOSTNAME "" CACHE STRING
+    "When set, the mDNS Agent locator resolves this host name instead of browsing a service")
+set(ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS "1000" CACHE STRING
+    "Per-attempt receive timeout for the mDNS Agent locator")
+set(ROSETTE_MICRO_ROS_MDNS_ATTEMPTS "3" CACHE STRING
+    "Number of mDNS query attempts for the mDNS Agent locator")
+
+if(ROSETTE_MICRO_ROS_DISCOVERY STREQUAL "mdns")
+    set(_rosette_discovery_mdns 1)
+else()
+    set(_rosette_discovery_mdns 0)
+endif()
+
+# Resolve the transport profile up front; it is needed by both the prebuilt
+# and the bootstrap paths.
+set(_rosette_micro_ros_transport "${ROSETTE_MICRO_ROS_TRANSPORT}")
+if(_rosette_micro_ros_transport STREQUAL "auto")
+    if(ROSETTE_PROCESSOR STREQUAL "HOST")
+        set(_rosette_micro_ros_transport "udp")   # stock BSD-socket UDP transport
+    else()
+        set(_rosette_micro_ros_transport "custom") # MCU boards drive their own socket
+    endif()
+endif()
+
+set(ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT OFF)
+set(ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT OFF)
+set(ROSETTE_MICRO_ROS_USE_DISCOVERY OFF)
+if(_rosette_micro_ros_transport STREQUAL "custom")
+    set(ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT ON)
+elseif(_rosette_micro_ros_transport STREQUAL "udp")
+    set(ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT ON)
+    set(ROSETTE_MICRO_ROS_USE_DISCOVERY ON)
+else()
+    message(FATAL_ERROR
+        "Unsupported ROSETTE_MICRO_ROS_TRANSPORT='${_rosette_micro_ros_transport}'. "
+        "Expected custom or udp.")
+endif()
+
+set(_rosette_micro_ros_lib
+    "${ROSETTE_MICRO_ROS_WORKSPACE_DIR}/firmware/build/libmicroros.a")
+set(_rosette_micro_ros_include
+    "${ROSETTE_MICRO_ROS_WORKSPACE_DIR}/firmware/build/include")
+
+# ------------------------------------------------------------
+# Fast path: use an already-built libmicroros.a in place.
+#
+# Point ROSETTE_MICRO_ROS_WORKSPACE_DIR at a prior generate_lib output and pass
+# -DROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD=OFF. This is the CI and offline path
+# and skips micro_ros_setup entirely.
+# ------------------------------------------------------------
+if(NOT ROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD AND
+   EXISTS "${_rosette_micro_ros_lib}" AND
+   EXISTS "${_rosette_micro_ros_include}")
+
+    add_library(micro_ros_prebuilt STATIC IMPORTED GLOBAL)
+    set_target_properties(micro_ros_prebuilt PROPERTIES
+        IMPORTED_LOCATION "${_rosette_micro_ros_lib}"
+        INTERFACE_INCLUDE_DIRECTORIES "${_rosette_micro_ros_include}")
+
+    add_library(micro_ros_vendor INTERFACE)
+    target_link_libraries(micro_ros_vendor INTERFACE micro_ros_prebuilt)
+    target_compile_definitions(micro_ros_vendor INTERFACE
+        ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM=$<BOOL:${ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT}>
+        ROSETTE_MICRO_ROS_TRANSPORT_UDP=$<BOOL:${ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT}>
+        ROSETTE_MICRO_ROS_AGENT_IP="${ROSETTE_MICRO_ROS_AGENT_IP}"
+        ROSETTE_MICRO_ROS_AGENT_PORT=${ROSETTE_MICRO_ROS_AGENT_PORT}
+        ROSETTE_MICRO_ROS_DISCOVERY_GROUP="${ROSETTE_MICRO_ROS_DISCOVERY_GROUP}"
+        ROSETTE_MICRO_ROS_DISCOVERY_PORT="${ROSETTE_MICRO_ROS_DISCOVERY_PORT}"
+        ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS=${ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS}
+        ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS=${ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS}
+        ROSETTE_MICRO_ROS_DISCOVERY_MDNS=${_rosette_discovery_mdns}
+        ROSETTE_MICRO_ROS_MDNS_SERVICE="${ROSETTE_MICRO_ROS_MDNS_SERVICE}"
+        ROSETTE_MICRO_ROS_MDNS_HOSTNAME="${ROSETTE_MICRO_ROS_MDNS_HOSTNAME}"
+        ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS=${ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS}
+        ROSETTE_MICRO_ROS_MDNS_ATTEMPTS=${ROSETTE_MICRO_ROS_MDNS_ATTEMPTS})
+
+    add_custom_target(rosette_micro_ros_bootstrap
+        COMMENT "micro-ROS: using prebuilt ${_rosette_micro_ros_lib}")
+
+    set(ROSETTE_MICRO_ROS_LIBRARY "${_rosette_micro_ros_lib}" CACHE FILEPATH
+        "Path to the generated micro-ROS static library" FORCE)
+    set(ROSETTE_MICRO_ROS_INCLUDE_DIR "${_rosette_micro_ros_include}" CACHE PATH
+        "Path to the generated micro-ROS include tree" FORCE)
+
+    message(STATUS "micro-ROS: using prebuilt library")
+    message(STATUS "  Library   : ${_rosette_micro_ros_lib}")
+    message(STATUS "  Transport : ${_rosette_micro_ros_transport}")
+    return()
+endif()
+
 if(DEFINED ENV{MICRO_ROS_SETUP_PATH} AND ROSETTE_MICRO_ROS_SETUP_PATH STREQUAL "")
     set(ROSETTE_MICRO_ROS_SETUP_PATH "$ENV{MICRO_ROS_SETUP_PATH}")
 endif()
@@ -94,17 +208,20 @@ if(DEFINED ROSETTE_MICRO_ROS_SETUP_PATH AND
     set(_rosette_micro_ros_setup_source_dir "${ROSETTE_MICRO_ROS_SETUP_PATH}")
     message(STATUS "Using local micro_ros_setup: ${_rosette_micro_ros_setup_source_dir}")
 elseif(ROSETTE_MICRO_ROS_FETCH_SETUP)
+    set(FETCHCONTENT_QUIET OFF)
+    message(STATUS "Fetching micro_ros_setup (${ROSETTE_MICRO_ROS_DISTRO}) — first run only")
     FetchContent_Declare(micro_ros_setup
         GIT_REPOSITORY https://github.com/micro-ROS/micro_ros_setup.git
         GIT_TAG        ${ROSETTE_MICRO_ROS_DISTRO}
         GIT_SHALLOW    TRUE
+        GIT_PROGRESS   TRUE
+        # micro_ros_setup is an ament package; download it, don't configure it
+        # (the bootstrap script builds it with colcon).
+        SOURCE_SUBDIR  _rosette_not_a_cmake_dir
     )
-    FetchContent_GetProperties(micro_ros_setup)
-    if(NOT micro_ros_setup_POPULATED)
-        FetchContent_Populate(micro_ros_setup)
-    endif()
+    FetchContent_MakeAvailable(micro_ros_setup)
     set(_rosette_micro_ros_setup_source_dir "${micro_ros_setup_SOURCE_DIR}")
-    message(STATUS "Using fetched micro_ros_setup: ${_rosette_micro_ros_setup_source_dir}")
+    message(STATUS "Fetched micro_ros_setup: ${_rosette_micro_ros_setup_source_dir}")
 else()
     message(FATAL_ERROR
         "ROSETTE_ENABLE_MICRO_ROS=ON but no micro_ros_setup source was provided. "
@@ -113,17 +230,15 @@ endif()
 
 set(_rosette_micro_ros_transport "${ROSETTE_MICRO_ROS_TRANSPORT}")
 if(_rosette_micro_ros_transport STREQUAL "auto")
-    if(RTPS_BOARD_ENABLE_FREERTOS)
-        set(_rosette_micro_ros_transport "custom")
+    if(ROSETTE_PROCESSOR STREQUAL "HOST")
+        set(_rosette_micro_ros_transport "udp")   # stock BSD-socket UDP transport
     else()
-        set(_rosette_micro_ros_transport "udp")
+        set(_rosette_micro_ros_transport "custom") # MCU boards drive their own socket
     endif()
 endif()
 
 set(_rosette_micro_ros_arch_flags "")
 set(ROSETTE_MICRO_ROS_USE_PICO_TIME OFF)
-# Detect RP2xxx targets via RTPS_PROCESSOR (Rosette native builds) or
-# PICO_PLATFORM (MicroPython / Pico SDK builds).
 if(RTPS_PROCESSOR STREQUAL "RP2040" OR PICO_PLATFORM STREQUAL "rp2040")
     set(_rosette_micro_ros_arch_flags "-mcpu=cortex-m0plus -mthumb")
     set(ROSETTE_MICRO_ROS_USE_PICO_TIME ON)
@@ -154,7 +269,7 @@ set(_rosette_micro_ros_bootstrap_script
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated/micro_ros")
 
 set(ROSETTE_MICRO_ROS_TOOLCHAIN_SYSTEM_NAME "Generic")
-if(RTPS_PROCESSOR STREQUAL "HOST")
+if(ROSETTE_PROCESSOR STREQUAL "HOST")
     set(ROSETTE_MICRO_ROS_TOOLCHAIN_SYSTEM_NAME "${CMAKE_SYSTEM_NAME}")
 endif()
 
@@ -229,6 +344,38 @@ if(ROSETTE_MICRO_ROS_RMW_ERROR_HANDLING)
     set(ROSETTE_MICRO_ROS_RMW_ERROR_HANDLING_TEXT "ON")
 endif()
 
+# Extra interface packages compiled into libmicroros: an interface package that
+# an example carries lives at examples/<name>/<pkg>/ or
+# examples/<name>/interfaces/<pkg>/. Deliberately NOT a recursive glob — that
+# would pick up package.xml files inside build directories (the micro_ros_setup
+# config tree, other vendored packages, ...). Plus anything explicitly listed
+# in ROSETTE_MICRO_ROS_EXTRA_INTERFACE_PACKAGES.
+file(GLOB _rosette_micro_ros_example_pkg_xmls
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/*/package.xml"
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/*/interfaces/*/package.xml")
+set(_rosette_micro_ros_interface_packages "${ROSETTE_MICRO_ROS_EXTRA_INTERFACE_PACKAGES}")
+set(_rosette_micro_ros_interface_files "")
+foreach(_xml IN LISTS _rosette_micro_ros_example_pkg_xmls)
+    get_filename_component(_pkg_dir "${_xml}" DIRECTORY)
+    if(EXISTS "${_pkg_dir}/CMakeLists.txt")
+        list(APPEND _rosette_micro_ros_interface_packages "${_pkg_dir}")
+        file(GLOB _pkg_iface_files CONFIGURE_DEPENDS
+            "${_pkg_dir}/package.xml" "${_pkg_dir}/CMakeLists.txt"
+            "${_pkg_dir}/msg/*" "${_pkg_dir}/srv/*" "${_pkg_dir}/action/*")
+        list(APPEND _rosette_micro_ros_interface_files ${_pkg_iface_files})
+    endif()
+endforeach()
+list(REMOVE_DUPLICATES _rosette_micro_ros_interface_packages)
+string(REPLACE ";" "\n" ROSETTE_MICRO_ROS_INTERFACE_PACKAGES
+    "${_rosette_micro_ros_interface_packages}")
+
+if(_rosette_micro_ros_interface_packages)
+    message(STATUS "micro-ROS: extra interface packages:")
+    foreach(_p IN LISTS _rosette_micro_ros_interface_packages)
+        message(STATUS "    ${_p}")
+    endforeach()
+endif()
+
 configure_file(
     "${CMAKE_CURRENT_LIST_DIR}/micro_ros_toolchain.cmake.in"
     "${_rosette_micro_ros_toolchain_file}"
@@ -244,16 +391,15 @@ configure_file(
 
 set(_rosette_micro_ros_stamp
     "${ROSETTE_MICRO_ROS_WORKSPACE_DIR}/.rosette_micro_ros_built")
-set(_rosette_micro_ros_lib
-    "${ROSETTE_MICRO_ROS_WORKSPACE_DIR}/firmware/build/libmicroros.a")
-set(_rosette_micro_ros_include
-    "${ROSETTE_MICRO_ROS_WORKSPACE_DIR}/firmware/build/include")
 
+# The prebuilt fast path returns earlier; reaching here means the bootstrap
+# script runs as a build step and produces libmicroros.a.
 add_custom_command(
     OUTPUT "${_rosette_micro_ros_stamp}"
     COMMAND /bin/bash "${_rosette_micro_ros_bootstrap_script}"
     COMMAND "${CMAKE_COMMAND}" -E touch "${_rosette_micro_ros_stamp}"
     DEPENDS
+        ${_rosette_micro_ros_interface_files}
         "${_rosette_micro_ros_toolchain_file}"
         "${_rosette_micro_ros_colcon_meta_file}"
         "${_rosette_micro_ros_bootstrap_script}"
@@ -264,10 +410,10 @@ add_custom_command(
     VERBATIM)
 
 if(ROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD)
-    add_custom_target(rtps_micro_ros_bootstrap ALL
+    add_custom_target(rosette_micro_ros_bootstrap ALL
         DEPENDS "${_rosette_micro_ros_stamp}")
 else()
-    add_custom_target(rtps_micro_ros_bootstrap
+    add_custom_target(rosette_micro_ros_bootstrap
         DEPENDS "${_rosette_micro_ros_stamp}")
 endif()
 
@@ -275,16 +421,16 @@ add_library(micro_ros_prebuilt STATIC IMPORTED GLOBAL)
 set_target_properties(micro_ros_prebuilt PROPERTIES
     IMPORTED_LOCATION "${_rosette_micro_ros_lib}"
     INTERFACE_INCLUDE_DIRECTORIES "${_rosette_micro_ros_include}")
-add_dependencies(micro_ros_prebuilt rtps_micro_ros_bootstrap)
+add_dependencies(micro_ros_prebuilt rosette_micro_ros_bootstrap)
 
 add_library(micro_ros_vendor INTERFACE)
 target_link_libraries(micro_ros_vendor INTERFACE micro_ros_prebuilt)
-add_dependencies(micro_ros_vendor rtps_micro_ros_bootstrap)
+add_dependencies(micro_ros_vendor rosette_micro_ros_bootstrap)
 target_compile_definitions(micro_ros_vendor INTERFACE
     ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM=$<BOOL:${ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT}>
     ROSETTE_MICRO_ROS_TRANSPORT_UDP=$<BOOL:${ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT}>
     ROSETTE_MICRO_ROS_AGENT_IP="${ROSETTE_MICRO_ROS_AGENT_IP}"
-    ROSETTE_MICRO_ROS_AGENT_PORT="${ROSETTE_MICRO_ROS_AGENT_PORT}"
+    ROSETTE_MICRO_ROS_AGENT_PORT=${ROSETTE_MICRO_ROS_AGENT_PORT}
     ROSETTE_MICRO_ROS_DISCOVERY_GROUP="${ROSETTE_MICRO_ROS_DISCOVERY_GROUP}"
     ROSETTE_MICRO_ROS_DISCOVERY_PORT="${ROSETTE_MICRO_ROS_DISCOVERY_PORT}"
     ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS=${ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS}

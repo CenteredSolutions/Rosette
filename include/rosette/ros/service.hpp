@@ -1,470 +1,537 @@
-/**
- * @file ros/service.hpp
- * @brief ROS 2-compatible embedded service server and client.
- *
- * Analogues
- * ---------
- *   milkros::Service<T,H>      ≈  rclcpp::Service<T>
- *   milkros::Client<T,N>       ≈  rclcpp::Client<T>
- *   milkros::service_traits<T> ≈  rosidl_typesupport specialisation
- *
- * Wire format
- * -----------
- * Topic names follow the ROS 2 DDS convention:
- *   Request:  rq/<namespace>/<service_name>Request
- *   Response: rr/<namespace>/<service_name>Reply
- *
- * The request/response payload carries only the service_traits-encoded
- * message body.  Request/response correlation uses RTPS sample identity:
- *
- *   Request identity:
- *     Derived from the incoming DATA sample's writer GUID + sequence number.
- *   Response correlation:
- *     Sent via RelatedSampleIdentity InlineQoS in the response DATA submessage.
- *
- * This matches the ROS 2 service wire expectation closely enough for
- * DATA-only service interoperability.  DATA_FRAG InlineQoS is not yet
- * implemented in Rosette.
- *
- * Defining service_traits
- * -----------------------
- *   struct MyService {};
- *
- *   template<> struct milkros::service_traits<MyService> {
- *       using Request  = MyRequest;
- *       using Response = MyResponse;
- *       static const char* request_type_name()  noexcept { return "my_pkg::srv::dds_::MyService_Request_"; }
- *       static const char* response_type_name() noexcept { return "my_pkg::srv::dds_::MyService_Response_"; }
- *       static constexpr size_t max_request_serialized_size  = 64u;
- *       static constexpr size_t max_response_serialized_size = 64u;
- *       static Request  make_request()  noexcept { return {}; }
- *       static Response make_response() noexcept { return {}; }
- *       static size_t encode_request (uint8_t* d, size_t c, const Request&  m) noexcept { ... }
- *       static bool   decode_request (const uint8_t* s, size_t n, Request&  m) noexcept { ... }
- *       static size_t encode_response(uint8_t* d, size_t c, const Response& m) noexcept { ... }
- *       static bool   decode_response(const uint8_t* s, size_t n, Response& m) noexcept { ... }
- *   };
- *   template<> inline constexpr bool milkros::has_service_traits_v<MyService> = true;
- *
- * Pool sizes
- * ----------
- *   MILKROS_MAX_SERVICES      (default 4) — service server slots in Context
- *   MILKROS_MAX_SERVICE_SIZE  (default 128 B) — max sizeof(Service<T,H>)
- *   MILKROS_MAX_CLIENTS       (default 4) — client slots in Context
- *   MILKROS_MAX_CLIENT_SIZE   (default 256 B) — max sizeof(Client<T,N>)
- */
-
 #pragma once
 
-#include "message_traits.hpp"
-#include "rosette/rtps/participant.hpp"
-
-#include <stdint.h>
-#include <string.h>
-
-#ifndef MILKROS_MAX_SERVICES
-#  define MILKROS_MAX_SERVICES 4u
-#endif
-#ifndef MILKROS_MAX_SERVICE_SIZE
-/// Must be >= sizeof(Service<ServiceT, LargestHandlerT>) for all handlers used.
-#  define MILKROS_MAX_SERVICE_SIZE 128u
-#endif
-#ifndef MILKROS_MAX_CLIENTS
-#  define MILKROS_MAX_CLIENTS 4u
-#endif
-#ifndef MILKROS_MAX_CLIENT_SIZE
-/// Must be >= sizeof(Client<ServiceT, MaxPending>) for the largest MaxPending used.
-/// Default 256 B covers Client<T,4> with typical payload sizes.
-#  define MILKROS_MAX_CLIENT_SIZE 256u
-#endif
-
-namespace milkros {
-
-// ============================================================
-// RequestId — 24-byte correlation identity used by services/actions
-// ============================================================
-
-/// Identifies a specific in-flight service request.
-/// The wire-equivalent RTPS identity is { writer GUID, sequence number }.
-struct RequestId {
-    uint8_t client_guid[16];  ///< Writer GUID: GuidPrefix(12B) + EntityId(4B).
-    int64_t sequence_number;  ///< Monotonically increasing per client writer.
-
-    bool operator==(const RequestId& o) const noexcept {
-        return sequence_number == o.sequence_number &&
-               memcmp(client_guid, o.client_guid, 16u) == 0;
-    }
-    bool operator!=(const RequestId& o) const noexcept { return !(*this == o); }
-};
-
-static_assert(sizeof(RequestId) == 24u, "RequestId wire size must be exactly 24 bytes");
-
-inline RequestId request_id_from_sample_identity(
-        const rtps::SampleIdentity& sid) noexcept
-{
-    RequestId rid{};
-    memcpy(rid.client_guid, sid.writerGuid.prefix.value, 12u);
-    memcpy(rid.client_guid + 12u, sid.writerGuid.entityId.entityKey, 3u);
-    rid.client_guid[15] = sid.writerGuid.entityId.entityKind;
-    rid.sequence_number = sid.sequenceNumber.to_int64();
-    return rid;
-}
-
-inline RequestId request_id_from_guid_sn(const rtps::Guid&           writer_guid,
-                                         const rtps::SequenceNumber& sn) noexcept
-{
-    return request_id_from_sample_identity(rtps::SampleIdentity{writer_guid, sn});
-}
-
-inline rtps::SampleIdentity sample_identity_from_request_id(
-        const RequestId& rid) noexcept
-{
-    rtps::SampleIdentity sid{};
-    memcpy(sid.writerGuid.prefix.value, rid.client_guid, 12u);
-    memcpy(sid.writerGuid.entityId.entityKey, rid.client_guid + 12u, 3u);
-    sid.writerGuid.entityId.entityKind = rid.client_guid[15];
-    sid.sequenceNumber = rtps::SequenceNumber::from_int64(rid.sequence_number);
-    return sid;
-}
-
-// ============================================================
-// service_traits<ServiceT> — user specializes this
-// ============================================================
-
-template<typename ServiceT>
-struct service_traits;  ///< Must be specialised before instantiating Service<T> or Client<T>.
-
-template<typename ServiceT>
-inline constexpr bool has_service_traits_v = false;
-
-// ============================================================
-// ServiceOptions
-// ============================================================
-
-struct ServiceOptions {
-    rtps::ReliabilityKind reliability = rtps::ReliabilityKind::RELIABLE;
-    rtps::DurabilityKind  durability  = rtps::DurabilityKind::VOLATILE;
-};
-
-// ============================================================
-// IService — type-erased base stored in Context pool
-// ============================================================
-
-class IService {
-protected:
-    ~IService() = default;
-};
-
-// ============================================================
-// Service<ServiceT, HandlerT> — server side
-// ============================================================
-
 /**
- * @brief ROS 2-compatible service server.
+ * @file ros/service.hpp
+ * @brief micro-ROS service server and client adapters for the Rosette ROS API.
  *
- * @tparam ServiceT   Service tag type with a service_traits<ServiceT> specialisation.
- * @tparam HandlerT   Callable with signature:
- *                      void(const Request& request, Response& response) noexcept
+ * Design goal
+ * -----------
+ * This module keeps the application-facing shape of `rosette::Service` and
+ * `rosette::Client` while routing the wire protocol and request correlation
+ * through `rcl` + `rclc`. It gives MCU code the same "create a typed service
+ * or client from a node" experience of `rclcpp` without duplicating
+ * ROS 2 service semantics in Rosette itself.
  *
- * Instances are created via Node::create_service() and owned by the Context
- * placement-new pool.  Never move or copy after creation.
+ * Example
+ * -------
+ *   auto service = node.create_service<AddTwoInts>(
+ *       "add_two_ints",
+ *       [](const AddTwoIntsRequest& request,
+ *          AddTwoIntsResponse& response) noexcept {
+ *           response.sum = request.a + request.b;
+ *       });
  *
- * The handler is called synchronously from the RTPS RX task when a request
- * arrives, so it must complete quickly and not block.
+ *   auto client = node.create_client<AddTwoInts>("add_two_ints");
+ *   AddTwoIntsRequest request{};
+ *   request.a = 2;
+ *   request.b = 40;
+ *   client.async_send_request(
+ *       request,
+ *       [](const AddTwoIntsResponse& response, void*) noexcept {
+ *           (void)response;
+ *       });
+ *
+ * Features
+ * --------
+ * - Typed request and response access based on `service_traits<ServiceT>`.
+ * - `rclc_executor_t` integration for both service callbacks and async replies.
+ * - Optional per-handle XRCE session timeout tuning through `ServiceOptions`.
+ *
+ * Caveats
+ * -------
+ * - The service callback executes on the shared `rclc_executor_t` thread of
+ *   control. Keep it short and non-blocking.
+ * - The current implementation uses local callback registries keyed by the
+ *   executor-owned request/response message storage. This avoids global
+ *   singleton state in the transport layer while remaining compatible with the
+ *   C callback signatures provided by `rclc`.
+ *
+ * References
+ * ----------
+ * - ROS 2 services design: https://design.ros2.org/articles/ros_on_dds.html
+ * - rclc service/client APIs: https://docs.ros.org/en/humble/p/rclc/
  */
-template<typename ServiceT, typename HandlerT>
-class Service final : public IService {
-    static_assert(has_service_traits_v<ServiceT>,
-                  "milkros::service_traits specialization required for ServiceT");
 
+#include "common.hpp"
+#include "context.hpp"
+
+#include "rosette/support/inplace_function.hpp"
+
+namespace rosette {
+
+template<typename ServiceT>
+class Service {
 public:
-    using traits   = service_traits<ServiceT>;
-    using Request  = typename traits::Request;
+    using traits = ::rosette::service_traits<ServiceT>;
+    using Request = typename traits::Request;
     using Response = typename traits::Response;
+
+    /// Type-erased request handler: `handler(const Request&, Response&)`.
+    using Handler = InplaceFunction<void(const Request&, Response&), 24u>;
 
     Service() noexcept = default;
 
-    Service(rtps::StatefulReader* req_reader,
-            rtps::StatefulWriter<1>* resp_writer,
-            HandlerT handler) noexcept
-        : req_reader_ (req_reader)
-        , resp_writer_(resp_writer)
-        , handler_    (static_cast<HandlerT&&>(handler))
+    /**
+     * @brief Constructs a typed micro-ROS service wrapper.
+     *
+     * The wrapper owns the `rcl_service_t` handle and the executor-owned
+     * request/response storage associated with that service endpoint. Incoming
+     * requests are delivered into `request_`; the callback registry maps that
+     * storage address back to this object so the user-supplied C++ handler can
+     * be invoked from the plain-C `rclc` callback.
+     *
+     * @param[in] node Initialized node that will own the service endpoint.
+     * @param[in] context Running micro-ROS context whose executor dispatches the service.
+     * @param[in] service_name ROS service name relative to the node namespace.
+     * @param[in] handler Callable invoked as `handler(const Request&, Response&)`;
+     * captures must fit `Handler`'s inline buffer.
+     * @param[in] options QoS and session-timeout settings applied to the service.
+     */
+    template<typename F>
+    Service(rcl_node_t* node,
+            Context* context,
+            const char* service_name,
+            F&& handler,
+            const ServiceOptions& options) noexcept
+        : node_(node)
+        , context_(context)
+        , handler_(static_cast<F&&>(handler))
     {
-        if (req_reader_) {
-            req_reader_->set_on_change_available(&Service::on_request, this);
-        }
-    }
+        static_assert(has_micro_ros_service_traits_v<ServiceT>,
+                      "service_traits<ServiceT>::rosidl_type_support() is required for micro-ROS services");
 
-    // Move-only: after a move the old object is invalid; the callback this-pointer
-    // must be re-registered on the new address.
-    Service(const Service&)            = delete;
-    Service& operator=(const Service&) = delete;
-
-    Service(Service&& o) noexcept
-        : req_reader_ (o.req_reader_)
-        , resp_writer_(o.resp_writer_)
-        , handler_    (static_cast<HandlerT&&>(o.handler_))
-    {
-        o.req_reader_  = nullptr;
-        o.resp_writer_ = nullptr;
-        if (req_reader_) {
-            req_reader_->set_on_change_available(&Service::on_request, this);
-        }
-    }
-
-    Service& operator=(Service&& o) noexcept {
-        if (this != &o) {
-            req_reader_  = o.req_reader_;
-            resp_writer_ = o.resp_writer_;
-            handler_     = static_cast<HandlerT&&>(o.handler_);
-            o.req_reader_  = nullptr;
-            o.resp_writer_ = nullptr;
-            if (req_reader_) {
-                req_reader_->set_on_change_available(&Service::on_request, this);
-            }
-        }
-        return *this;
-    }
-
-    bool valid() const noexcept {
-        return req_reader_ != nullptr && resp_writer_ != nullptr;
-    }
-
-private:
-    static void on_request(const rtps::CacheChange& change,
-                            void* user_data) noexcept {
-        if (!user_data) return;
-        auto* self = static_cast<Service*>(user_data);
-
-        const uint8_t* src = change.payload.data;
-        const size_t   len = change.payload.size;
-        const RequestId rid =
-            request_id_from_guid_sn(change.writerGuid, change.sequenceNumber);
-
-        Request req = traits::make_request();
-        if (!traits::decode_request(src, len, req)) {
+        if (node_ == nullptr || context_ == nullptr) {
             return;
         }
 
-        // Call the user handler.
-        Response resp = traits::make_response();
-        self->handler_(req, resp);
+        init_request<ServiceT>(request_);
+        init_response<ServiceT>(response_);
 
-        constexpr size_t kMaxPayload = traits::max_response_serialized_size;
-        uint8_t buf[kMaxPayload];
+        service_ = rcl_get_zero_initialized_service();
+        const rmw_qos_profile_t qos = make_qos_profile(options);
+        if (!ros_ok(rclc_service_init(
+                &service_,
+                node_,
+                traits::rosidl_type_support(),
+                service_name,
+                &qos))) {
+            fini_request<ServiceT>(request_);
+            fini_response<ServiceT>(response_);
+            service_ = rcl_get_zero_initialized_service();
+            return;
+        }
 
-        const size_t encoded = traits::encode_response(
-            buf,
-            sizeof(buf),
-            resp);
-        if (encoded == 0u) return;
+        if (options.session_timeout_ms > 0) {
+            rmw_service_t* rmw_service = rcl_service_get_rmw_handle(&service_);
+            if (rmw_service != nullptr) {
+                (void)ros_ok(rmw_uros_set_service_session_timeout(
+                    rmw_service, options.session_timeout_ms));
+            }
+        }
 
-        rtps::InlineQos inline_qos{};
-        inline_qos.hasRelatedSampleIdentity = true;
-        inline_qos.relatedSampleIdentity = sample_identity_from_request_id(rid);
+        register_instance();
+        if (!ros_ok(rclc_executor_add_service_with_request_id(
+                &context_->executor(),
+                &service_,
+                &request_,
+                &response_,
+                &Service::on_request))) {
+            unregister_instance();
+            (void)ros_ok(rcl_service_fini(&service_, node_));
+            fini_request<ServiceT>(request_);
+            fini_response<ServiceT>(response_);
+            service_ = rcl_get_zero_initialized_service();
+            return;
+        }
 
-        self->resp_writer_->write_reliable(rtps::ChangeKind::ALIVE,
-                                            buf,
-                                            static_cast<uint32_t>(encoded),
-                                            inline_qos);
+        valid_ = true;
     }
 
-    rtps::StatefulReader*  req_reader_  = nullptr;
-    rtps::StatefulWriter<1>* resp_writer_ = nullptr;
-    HandlerT               handler_{};
+    Service(const Service&) = delete;
+    Service& operator=(const Service&) = delete;
+    Service(Service&&) = delete;
+    Service& operator=(Service&&) = delete;
+
+    ~Service()
+    {
+        fini();
+    }
+
+    bool valid() const noexcept { return valid_; }
+
+private:
+    /**
+     * @brief Dispatches a service request from the executor to the matching wrapper.
+     *
+     * `rclc_executor_add_service_with_request_id()` exposes a pure C callback
+     * without user context. The executor always passes the address of the
+     * registered request storage, so the wrapper can recover `this` by looking
+     * up the request pointer in a small intrusive registry for this template
+     * instantiation. The response object is filled in place and returned
+     * through the normal `rclc` service response path.
+     *
+     * @param[in] request Pointer to the executor-owned request storage.
+     * @param[in] request_id Correlation header for the request.
+     * @param[out] response Pointer to the executor-owned response storage.
+     */
+    static void on_request(const void* request,
+                           rmw_request_id_t* request_id,
+                           void* response) noexcept
+    {
+        (void)request_id;
+        if (request == nullptr || response == nullptr) {
+            return;
+        }
+
+        Service* self = find_by_request(request);
+        if (self == nullptr) {
+            return;
+        }
+
+        self->handler_(*static_cast<const Request*>(request),
+                       *static_cast<Response*>(response));
+    }
+
+    /**
+     * @brief Returns the wrapper whose registered request storage matches a callback pointer.
+     *
+     * The registry is intentionally per-template-instantiation, which keeps the
+     * lookup logic simple and avoids type erasure across unrelated service
+     * types. The executor uses stable request-storage addresses, so pointer
+     * identity is a safe key while the wrapper remains alive.
+     *
+     * @param[in] request Pointer supplied by the `rclc` executor callback.
+     * @return Matching wrapper instance, or `nullptr` if none is registered.
+     */
+    static Service* find_by_request(const void* request) noexcept
+    {
+        Service* current = instance_head_;
+        while (current != nullptr) {
+            if (request == &current->request_) {
+                return current;
+            }
+            current = current->next_instance_;
+        }
+        return nullptr;
+    }
+
+    /**
+     * @brief Adds this wrapper to the callback registry for its template specialization.
+     *
+     * The registry exists solely to bridge the gap between the context-free C
+     * callback signature used by `rclc` services and the stateful C++ wrapper
+     * API exposed by Rosette.
+     */
+    void register_instance() noexcept
+    {
+        next_instance_ = instance_head_;
+        instance_head_ = this;
+    }
+
+    /**
+     * @brief Removes this wrapper from the callback registry.
+     *
+     * Removal preserves the relative order of the remaining nodes and leaves
+     * the registry in a valid state even when destruction happens out of order.
+     */
+    void unregister_instance() noexcept
+    {
+        Service** cursor = &instance_head_;
+        while (*cursor != nullptr) {
+            if (*cursor == this) {
+                *cursor = next_instance_;
+                next_instance_ = nullptr;
+                return;
+            }
+            cursor = &((*cursor)->next_instance_);
+        }
+    }
+
+    /**
+     * @brief Releases executor and service resources owned by this wrapper.
+     *
+     * The request and response messages are finalized regardless of whether the
+     * `rcl_service_t` handle successfully initialized, which keeps generated C
+     * message lifetimes balanced when traits provide custom init/fini hooks.
+     */
+    void fini() noexcept
+    {
+        unregister_instance();
+        if (valid_) {
+            (void)ros_ok(rclc_executor_remove_service(&context_->executor(), &service_));
+            (void)ros_ok(rcl_service_fini(&service_, node_));
+        }
+        fini_request<ServiceT>(request_);
+        fini_response<ServiceT>(response_);
+        service_ = rcl_get_zero_initialized_service();
+        valid_ = false;
+    }
+
+    static Service* instance_head_;
+
+    rcl_service_t service_ = rcl_get_zero_initialized_service();
+    rcl_node_t* node_ = nullptr;
+    Context* context_ = nullptr;
+    Request request_{};
+    Response response_{};
+    Handler handler_{};
+    Service* next_instance_ = nullptr;
+    bool valid_ = false;
 };
 
-// ============================================================
-// Client<ServiceT, MaxPending> — client side
-// ============================================================
+template<typename ServiceT>
+Service<ServiceT>* Service<ServiceT>::instance_head_ = nullptr;
 
-/**
- * @brief ROS 2-compatible service client.
- *
- * @tparam ServiceT   Service tag type with a service_traits<ServiceT> specialisation.
- * @tparam MaxPending Maximum number of concurrent in-flight requests (default 4).
- *
- * Response callbacks use a plain function-pointer + void* pattern for
- * zero-overhead embedded use.  To use a lambda, wrap it in a static context:
- *
- *   static MyState ctx;
- *   client->async_send_request(req,
- *       [](const Response& r, void* ud) {
- *           static_cast<MyState*>(ud)->handle(r);
- *       }, &ctx);
- *
- * Instances are created via Node::create_client() and owned by the Context
- * placement-new pool.  Never move or copy after creation.
- */
 template<typename ServiceT, uint8_t MaxPending = 4>
-class Client final : public IService {
-    static_assert(has_service_traits_v<ServiceT>,
-                  "milkros::service_traits specialization required for ServiceT");
-    static_assert(MaxPending >= 1u, "MaxPending must be at least 1");
-
+class Client {
 public:
-    using traits   = service_traits<ServiceT>;
-    using Request  = typename traits::Request;
+    using traits = ::rosette::service_traits<ServiceT>;
+    using Request = typename traits::Request;
     using Response = typename traits::Response;
-
-    /// Callback type for async_send_request: (response, user_data).
     using ResponseCallback = void(*)(const Response&, void*) noexcept;
 
     Client() noexcept = default;
 
-    Client(rtps::StatefulWriter<1>* req_writer,
-           rtps::StatefulReader*    resp_reader) noexcept
-        : req_writer_ (req_writer)
-        , resp_reader_(resp_reader)
+    /**
+     * @brief Constructs a typed micro-ROS service client wrapper.
+     *
+     * The client owns an `rcl_client_t` and a single executor-owned response
+     * message instance. Completed requests are matched back to the wrapper
+     * through that response storage and then correlated to user callbacks by
+     * sequence number.
+     *
+     * @param[in] node Initialized node that will own the client handle.
+     * @param[in] context Running micro-ROS context whose executor dispatches replies.
+     * @param[in] service_name ROS service name relative to the node namespace.
+     * @param[in] options QoS and session-timeout settings applied to the client.
+     */
+    Client(rcl_node_t* node,
+           Context* context,
+           const char* service_name,
+           const ServiceOptions& options) noexcept
+        : node_(node)
+        , context_(context)
     {
-        if (resp_reader_) {
-            resp_reader_->set_on_change_available(&Client::on_response, this);
-        }
-        // Capture writer GUID for request correlation.
-        if (req_writer_) {
-            const rtps::Guid& g = req_writer_->guid();
-            memcpy(writer_guid_, g.prefix.value,   12u);
-            memcpy(writer_guid_ + 12u, g.entityId.entityKey, 3u);
-            writer_guid_[15] = g.entityId.entityKind;
-        }
-    }
+        static_assert(has_micro_ros_service_traits_v<ServiceT>,
+                      "service_traits<ServiceT>::rosidl_type_support() is required for micro-ROS clients");
+        static_assert(MaxPending >= 1u, "MaxPending must be at least 1");
 
-    // Move-only
-    Client(const Client&)            = delete;
-    Client& operator=(const Client&) = delete;
-
-    Client(Client&& o) noexcept
-        : req_writer_ (o.req_writer_)
-        , resp_reader_(o.resp_reader_)
-    {
-        memcpy(writer_guid_, o.writer_guid_, 16u);
-        memcpy(pending_,     o.pending_,     sizeof(pending_));
-        o.req_writer_  = nullptr;
-        o.resp_reader_ = nullptr;
-        if (resp_reader_) {
-            resp_reader_->set_on_change_available(&Client::on_response, this);
+        if (node_ == nullptr || context_ == nullptr) {
+            return;
         }
-    }
 
-    Client& operator=(Client&& o) noexcept {
-        if (this != &o) {
-            req_writer_  = o.req_writer_;
-            resp_reader_ = o.resp_reader_;
-            memcpy(writer_guid_, o.writer_guid_, 16u);
-            memcpy(pending_,     o.pending_,     sizeof(pending_));
-            o.req_writer_  = nullptr;
-            o.resp_reader_ = nullptr;
-            if (resp_reader_) {
-                resp_reader_->set_on_change_available(&Client::on_response, this);
+        init_response<ServiceT>(response_);
+
+        client_ = rcl_get_zero_initialized_client();
+        const rmw_qos_profile_t qos = make_qos_profile(options);
+        if (!ros_ok(rclc_client_init(
+                &client_,
+                node_,
+                traits::rosidl_type_support(),
+                service_name,
+                &qos))) {
+            fini_response<ServiceT>(response_);
+            client_ = rcl_get_zero_initialized_client();
+            return;
+        }
+
+        if (options.session_timeout_ms > 0) {
+            rmw_client_t* rmw_client = rcl_client_get_rmw_handle(&client_);
+            if (rmw_client != nullptr) {
+                (void)ros_ok(rmw_uros_set_client_session_timeout(
+                    rmw_client, options.session_timeout_ms));
             }
         }
-        return *this;
-    }
 
-    bool valid() const noexcept {
-        return req_writer_ != nullptr && resp_reader_ != nullptr;
-    }
-
-    /// Number of currently pending (un-answered) requests.
-    uint8_t pending_count() const noexcept {
-        uint8_t n = 0u;
-        for (uint8_t i = 0u; i < MaxPending; ++i) {
-            if (pending_[i].in_use) ++n;
+        register_instance();
+        if (!ros_ok(rclc_executor_add_client_with_request_id(
+                &context_->executor(),
+                &client_,
+                &response_,
+                &Client::on_response))) {
+            unregister_instance();
+            (void)ros_ok(rcl_client_fini(&client_, node_));
+            fini_response<ServiceT>(response_);
+            client_ = rcl_get_zero_initialized_client();
+            return;
         }
-        return n;
+
+        valid_ = true;
     }
+
+    Client(const Client&) = delete;
+    Client& operator=(const Client&) = delete;
+    Client(Client&&) = delete;
+    Client& operator=(Client&&) = delete;
+
+    ~Client()
+    {
+        fini();
+    }
+
+    bool valid() const noexcept { return valid_; }
 
     /**
-     * @brief Send a request asynchronously.
+     * @brief Sends a request asynchronously and registers an optional completion callback.
      *
-     * @param req     Request to send.
-     * @param cb      Called when the matching response arrives (may be nullptr).
-     * @param ud      Passed verbatim to cb.
-     * @returns true if the request was enqueued and sent, false if no pending
-     *          slot was free or the writer is invalid.
+     * The micro-ROS client API returns a sequence number for each request. This
+     * wrapper stores that sequence number in a fixed-size pending table so the
+     * eventual response callback can be correlated without dynamic allocation.
+     *
+     * @param[in] request Request object to send.
+     * @param[in] callback Optional completion callback invoked on response receipt.
+     * @param[in] user_data Opaque pointer forwarded to the callback.
+     * @return `true` if the request was queued successfully; otherwise `false`.
      */
-    bool async_send_request(const Request&   req,
-                             ResponseCallback cb  = nullptr,
-                             void*            ud  = nullptr) noexcept {
-        if (!req_writer_) return false;
-
-        // Find a free pending slot.
-        int slot = -1;
-        for (uint8_t i = 0u; i < MaxPending; ++i) {
-            if (!pending_[i].in_use) { slot = static_cast<int>(i); break; }
-        }
-        if (slot < 0) return false;
-
-        constexpr size_t kMaxPayload = traits::max_request_serialized_size;
-        uint8_t buf[kMaxPayload];
-
-        const size_t encoded = traits::encode_request(
-            buf,
-            sizeof(buf),
-            req);
-        if (encoded == 0u) return false;
-
-        rtps::SequenceNumber req_sn{};
-        if (!req_writer_->write_reliable(
-                rtps::ChangeKind::ALIVE, buf,
-                static_cast<uint32_t>(encoded),
-                rtps::InlineQos{}, &req_sn)) {
+    bool async_send_request(const Request& request,
+                            ResponseCallback callback = nullptr,
+                            void* user_data = nullptr) noexcept
+    {
+        if (!valid_) {
             return false;
         }
 
-        RequestId rid{};
-        memcpy(rid.client_guid, writer_guid_, 16u);
-        rid.sequence_number = req_sn.to_int64();
-
-        // Record pending entry.
-        pending_[slot].id      = rid;
-        pending_[slot].cb      = cb;
-        pending_[slot].ud      = ud;
-        pending_[slot].in_use  = true;
-        return true;
+        for (uint8_t i = 0u; i < MaxPending; ++i) {
+            if (!pending_[i].in_use) {
+                int64_t sequence_number = 0;
+                if (!ros_ok(rcl_send_request(&client_, &request, &sequence_number))) {
+                    return false;
+                }
+                pending_[i].in_use = true;
+                pending_[i].sequence_number = sequence_number;
+                pending_[i].callback = callback;
+                pending_[i].user_data = user_data;
+                return true;
+            }
+        }
+        return false;
     }
 
 private:
-    struct PendingEntry {
-        RequestId        id{};
-        ResponseCallback cb      = nullptr;
-        void*            ud      = nullptr;
-        bool             in_use  = false;
+    struct PendingRequest {
+        bool in_use = false;
+        int64_t sequence_number = 0;
+        ResponseCallback callback = nullptr;
+        void* user_data = nullptr;
     };
 
-    static void on_response(const rtps::CacheChange& change,
-                              void* user_data) noexcept {
-        if (!user_data) return;
-        auto* self = static_cast<Client*>(user_data);
-
-        const uint8_t* src = change.payload.data;
-        const size_t   len = change.payload.size;
-        if (!change.inlineQos.hasRelatedSampleIdentity) return;
-        const RequestId rid =
-            request_id_from_sample_identity(change.inlineQos.relatedSampleIdentity);
-
-        // Find the matching pending slot.
-        for (uint8_t i = 0u; i < MaxPending; ++i) {
-            PendingEntry& e = self->pending_[i];
-            if (!e.in_use || e.id != rid) continue;
-
-            // Decode the response body.
-            Response resp = traits::make_response();
-            if (traits::decode_response(src, len, resp)) {
-                if (e.cb) e.cb(resp, e.ud);
-            }
-
-            e.in_use = false;
+    /**
+     * @brief Dispatches a client response from the executor to the matching pending request.
+     *
+     * The wrapper first identifies the owning client instance by response
+     * storage address, then scans the fixed-size pending table for the returned
+     * request sequence number. Matching callbacks are invoked exactly once and
+     * the slot is released for reuse.
+     *
+     * @param[in] response Pointer to the executor-owned response storage.
+     * @param[in] request_id RMW request header containing the correlation sequence number.
+     */
+    static void on_response(const void* response,
+                            rmw_request_id_t* request_id) noexcept
+    {
+        if (response == nullptr || request_id == nullptr) {
             return;
         }
-        // Unmatched response — ignore (may be for a different client).
+
+        Client* self = find_by_response(response);
+        if (self == nullptr) {
+            return;
+        }
+
+        for (uint8_t i = 0u; i < MaxPending; ++i) {
+            PendingRequest& pending = self->pending_[i];
+            if (!pending.in_use || pending.sequence_number != request_id->sequence_number) {
+                continue;
+            }
+
+            if (pending.callback != nullptr) {
+                pending.callback(*static_cast<const Response*>(response), pending.user_data);
+            }
+
+            pending = PendingRequest{};
+            return;
+        }
     }
 
-    rtps::StatefulWriter<1>* req_writer_  = nullptr;
-    rtps::StatefulReader*    resp_reader_ = nullptr;
-    uint8_t                  writer_guid_[16] = {};
-    PendingEntry             pending_[MaxPending] = {};
+    /**
+     * @brief Returns the wrapper whose registered response storage matches a callback pointer.
+     *
+     * The response buffer is stable for the lifetime of the wrapper, which
+     * makes pointer identity a safe and allocation-free lookup key.
+     *
+     * @param[in] response Pointer supplied by the `rclc` executor callback.
+     * @return Matching wrapper instance, or `nullptr` if none is registered.
+     */
+    static Client* find_by_response(const void* response) noexcept
+    {
+        Client* current = instance_head_;
+        while (current != nullptr) {
+            if (response == &current->response_) {
+                return current;
+            }
+            current = current->next_instance_;
+        }
+        return nullptr;
+    }
+
+    /**
+     * @brief Adds this wrapper to the client callback registry for its template specialization.
+     */
+    void register_instance() noexcept
+    {
+        next_instance_ = instance_head_;
+        instance_head_ = this;
+    }
+
+    /**
+     * @brief Removes this wrapper from the client callback registry.
+     */
+    void unregister_instance() noexcept
+    {
+        Client** cursor = &instance_head_;
+        while (*cursor != nullptr) {
+            if (*cursor == this) {
+                *cursor = next_instance_;
+                next_instance_ = nullptr;
+                return;
+            }
+            cursor = &((*cursor)->next_instance_);
+        }
+    }
+
+    /**
+     * @brief Releases executor and client resources owned by this wrapper.
+     *
+     * Pending callbacks are discarded because the underlying XRCE session is no
+     * longer able to deliver their responses once the client handle is finalized.
+     */
+    void fini() noexcept
+    {
+        unregister_instance();
+        if (valid_) {
+            (void)ros_ok(rclc_executor_remove_client(&context_->executor(), &client_));
+            (void)ros_ok(rcl_client_fini(&client_, node_));
+        }
+        fini_response<ServiceT>(response_);
+        client_ = rcl_get_zero_initialized_client();
+        for (uint8_t i = 0u; i < MaxPending; ++i) {
+            pending_[i] = PendingRequest{};
+        }
+        valid_ = false;
+    }
+
+    static Client* instance_head_;
+
+    rcl_client_t client_ = rcl_get_zero_initialized_client();
+    rcl_node_t* node_ = nullptr;
+    Context* context_ = nullptr;
+    Response response_{};
+    PendingRequest pending_[MaxPending] = {};
+    Client* next_instance_ = nullptr;
+    bool valid_ = false;
 };
 
-} // namespace milkros
+template<typename ServiceT, uint8_t MaxPending>
+Client<ServiceT, MaxPending>* Client<ServiceT, MaxPending>::instance_head_ = nullptr;
+
+}  // namespace rosette

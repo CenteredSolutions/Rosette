@@ -1,14 +1,14 @@
 /**
- * @file platform/rtps_platform.c
+ * @file platform/pico_freertos.c
  * @brief Platform hook implementations for RP2350 and RP2040.
  *
  * Implements the three extern "C" hooks declared in the RTPS stack:
  *
- *   rtps_platform_get_ms()              — monotonic millisecond counter
- *   rtps_platform_make_guid_prefix()    — unique participant GUID prefix
- *   rtps_platform_flash_erase()         — RP2350/RP2040 flash erase
- *   rtps_platform_flash_write()         — RP2350/RP2040 flash program
- *   rtps_platform_flash_read()          — RP2350/RP2040 flash read
+ *   rosette_platform_get_ms()              — monotonic millisecond counter
+ *   rosette_platform_make_guid_prefix()    — unique participant GUID prefix
+ *   rosette_platform_flash_erase()         — RP2350/RP2040 flash erase
+ *   rosette_platform_flash_write()         — RP2350/RP2040 flash program
+ *   rosette_platform_flash_read()          — RP2350/RP2040 flash read
  *
  * All hooks are board-agnostic (no GPIO pin dependencies) and compile
  * identically for RP2040 and RP2350 from the same source file.
@@ -16,7 +16,7 @@
  * Flash layout note
  * -----------------
  * The RP2350/RP2040 execute-in-place flash starts at XIP_BASE (0x10000000).
- * rtps_platform_flash_erase/write operate on addresses relative to the
+ * rosette_platform_flash_erase/write operate on addresses relative to the
  * start of flash (i.e. offset 0 = XIP_BASE).  The caller (persistence.cpp)
  * must pass offsets that do not overlap with the firmware image.
  *
@@ -56,7 +56,7 @@ extern "C" {
 #endif
 
 // ============================================================
-// rtps_platform_get_ms()
+// rosette_platform_get_ms()
 //
 // Returns a monotonically increasing millisecond counter derived
 // from the FreeRTOS tick count.  Wraps at ~49.7 days (uint32_t).
@@ -66,12 +66,24 @@ extern "C" {
 // With configTICK_RATE_HZ = 100, multiply by 10.
 // ============================================================
 
-uint32_t rtps_platform_get_ms(void) {
+uint32_t rosette_platform_get_ms(void) {
     return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
 
+// Yields to the scheduler for approximately `ms` milliseconds. Used by
+// rosette::App::spin() to pace its loop.
+void rosette_platform_delay_ms(uint32_t ms) {
+    vTaskDelay(pdMS_TO_TICKS(ms));
+}
+
+// The FreeRTOS WIZnet socket path is interrupt-driven (FreeRtosExecutor), so
+// nothing here calls this; provide it for symbol completeness as a plain yield.
+void rosette_platform_wait_for_event(uint32_t max_wait_ms) {
+    vTaskDelay(pdMS_TO_TICKS(max_wait_ms));
+}
+
 // ============================================================
-// rtps_platform_make_guid_prefix()
+// rosette_platform_make_guid_prefix()
 //
 // Derives a 12-byte GUID prefix unique to this device.
 //
@@ -85,13 +97,13 @@ uint32_t rtps_platform_get_ms(void) {
 // via the QSPI flash RUID command — unique per device.
 // ============================================================
 
-typedef struct { uint8_t value[12]; } rtps_GuidPrefix;  /* mirrors GuidPrefix */
+typedef struct { uint8_t value[12]; } rosette_GuidPrefix;  /* mirrors GuidPrefix */
 
-rtps_GuidPrefix rtps_platform_make_guid_prefix(uint8_t participant_id) {
+rosette_GuidPrefix rosette_platform_make_guid_prefix(uint8_t participant_id) {
     pico_unique_board_id_t uid;
     pico_get_unique_board_id(&uid);
 
-    rtps_GuidPrefix prefix;
+    rosette_GuidPrefix prefix;
     prefix.value[0]  = 0xEEu;           /* Project vendor byte 0 */
     prefix.value[1]  = 0xC0u;           /* Project vendor byte 1 */
     prefix.value[2]  = participant_id;
@@ -107,7 +119,7 @@ rtps_GuidPrefix rtps_platform_make_guid_prefix(uint8_t participant_id) {
     return prefix;
 }
 
-uint32_t rtps_platform_get_ipv4_addr(void) {
+uint32_t rosette_platform_get_ipv4_addr(void) {
 #if defined(ROSETTE_FREERTOS_TCP)
     for (NetworkEndPoint_t *ep = FreeRTOS_FirstEndPoint(NULL);
          ep != NULL;
@@ -122,7 +134,7 @@ uint32_t rtps_platform_get_ipv4_addr(void) {
 #endif
 }
 
-bool rtps_platform_get_ipv6_addr(uint8_t out[16]) {
+bool rosette_platform_get_ipv6_addr(uint8_t out[16]) {
     if (out == NULL) {
         return false;
     }
@@ -175,7 +187,7 @@ bool rtps_platform_get_ipv6_addr(uint8_t out[16]) {
 // prevent ISR-driven flash reads.
 // ============================================================
 
-void rtps_platform_flash_erase(uint32_t addr, uint32_t size) {
+void rosette_platform_flash_erase(uint32_t addr, uint32_t size) {
     /* addr is the flash byte offset (relative to flash start).
      * FLASH_SECTOR_SIZE = 4096 on RP2350/RP2040. */
     configASSERT((addr % FLASH_SECTOR_SIZE) == 0);
@@ -191,7 +203,7 @@ void rtps_platform_flash_erase(uint32_t addr, uint32_t size) {
     xTaskResumeAll();
 }
 
-void rtps_platform_flash_write(uint32_t addr,
+void rosette_platform_flash_write(uint32_t addr,
                                 const void* data,
                                 uint32_t size) {
     /* addr must be 256-byte aligned (flash page size). */
@@ -207,7 +219,7 @@ void rtps_platform_flash_write(uint32_t addr,
     xTaskResumeAll();
 }
 
-void rtps_platform_flash_read(uint32_t addr, void* data, uint32_t size) {
+void rosette_platform_flash_read(uint32_t addr, void* data, uint32_t size) {
     /* Flash is memory-mapped at XIP_BASE; read via memcpy. */
     memcpy(data, (const void*)(XIP_BASE + addr), size);
 }

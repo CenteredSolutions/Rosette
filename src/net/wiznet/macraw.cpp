@@ -1,21 +1,23 @@
 #include "wiznet/macraw.hpp"
 
-#include "board_config.h"
-#include "bus_pico_spi.hpp"
-#include "wiznet/w5100s.hpp"
+#include "wiznet/board.hpp"
 
 #include <cstring>
 
 namespace {
 
-using DefaultChip = rosette::net::wiznet::W5100S;
-using DefaultBus = rosette::platform::PicoSpiBus;
+using DefaultChip = rosette::net::wiznet::BoardChip;
+using DefaultBus = rosette::net::wiznet::BoardBus;
 using DefaultMacDevice = rosette::net::wiznet::WiznetMacrawDevice<DefaultChip, DefaultBus>;
-using DefaultInterface = rosette::net::wiznet::MacrawNetworkInterface<DefaultChip, DefaultBus>;
 
-DefaultInterface g_default_interface{
-    DefaultMacDevice{DefaultBus{RTPS_SPI_INST, RTPS_PIN_SPI_CS}},
-    std::array<uint8_t, 6> RTPS_MAC_ADDR_DEFAULT
+// The device holds a reference to its own bus and is referenced by the
+// interface, so it must be a named object that outlives both -- never a
+// temporary. Declared before g_default_interface to fix construction order.
+DefaultMacDevice g_default_device{DefaultBus{ROSETTE_SPI_INST, ROSETTE_PIN_SPI_CS}};
+
+rosette::net::freertos::NetworkInterface g_default_interface{
+    g_default_device,
+    std::array<uint8_t, 6> ROSETTE_MAC_ADDR_DEFAULT
 };
 
 NetworkInterface_t g_default_network_interface;

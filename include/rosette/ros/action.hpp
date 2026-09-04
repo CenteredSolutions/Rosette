@@ -1,922 +1,1015 @@
-/**
- * @file ros/action.hpp
- * @brief ROS 2-compatible embedded action server and client.
- *
- * Analogues
- * ---------
- *   milkros::ActionServer<T,G,E>  ≈  rclcpp_action::Server<T>
- *   milkros::ActionClient<T>      ≈  rclcpp_action::Client<T>
- *   milkros::GoalHandle<T>        ≈  rclcpp_action::ServerGoalHandle<T>
- *   milkros::action_traits<T>     ≈  rosidl_typesupport specialisation
- *
- * Protocol
- * --------
- * Follows the ROS 2 action protocol: 3 service pairs + 2 topics.
- *
- * Topics (server side — writers):
- *   rr/<ns>/<action>/_action/send_goalReply     — accept/reject response
- *   rr/<ns>/<action>/_action/get_resultReply    — result when goal is done
- *   rr/<ns>/<action>/_action/cancel_goalReply   — cancel acknowledgement
- *   rt/<ns>/<action>/_action/feedback            — feedback messages
- *   rt/<ns>/<action>/_action/status              — goal status updates
- *
- * Topics (server side — readers):
- *   rq/<ns>/<action>/_action/send_goalRequest
- *   rq/<ns>/<action>/_action/get_resultRequest
- *   rq/<ns>/<action>/_action/cancel_goalRequest
- *
- * Resource usage per ActionServer:  5 user writers + 3 user readers.
- * Resource usage per ActionClient:  3 user writers + 5 user readers.
- *
- * ⚠ Increase defaults before using actions:
- *   #define RTPS_MAX_USER_WRITERS 8
- *   #define RTPS_MAX_USER_READERS 8
- *
- * Wire payload layouts (embedded in payload, not InlineQoS — see service.hpp):
- *   send_goal request:   RequestId(24) + GoalId(16) + encoded_goal
- *   send_goal response:  RequestId(24) + accepted(1) + stamp_sec(4) + stamp_nsec(4)
- *   get_result request:  RequestId(24) + GoalId(16)
- *   get_result response: RequestId(24) + status(1) + encoded_result
- *   cancel request:      RequestId(24) + GoalId(16) + stamp_sec(4) + stamp_nsec(4)
- *   cancel response:     RequestId(24) + return_code(1) + GoalId(16)
- *   feedback topic:      GoalId(16) + encoded_feedback
- *   status topic:        GoalId(16) + status(1)
- *
- * Execute callback
- * ----------------
- * ExecuteCbT is called on every Context::tick() while the goal is EXECUTING.
- * The handler advances the goal each call, publishing intermediate feedback,
- * and calls handle.succeed() / handle.abort() / handle.cancel() to finish.
- * This is deliberately cooperative (no separate task needed) — suitable for
- * embedded systems.
- *
- * Defining action_traits
- * ----------------------
- *   struct Fibonacci {};
- *
- *   template<> struct milkros::action_traits<Fibonacci> {
- *       using Goal     = FibonacciGoal;
- *       using Result   = FibonacciResult;
- *       using Feedback = FibonacciFeedback;
- *
- *       // Base action type name (without _SendGoal_Request_ etc.).
- *       // The library appends sub-service suffixes automatically.
- *       static const char* action_type_name() noexcept {
- *           return "example_interfaces::action::dds_::Fibonacci";
- *       }
- *
- *       static constexpr size_t max_goal_serialized_size     = 8u;
- *       static constexpr size_t max_result_serialized_size   = 512u;
- *       static constexpr size_t max_feedback_serialized_size = 64u;
- *
- *       static Goal     make_goal()     noexcept { return {}; }
- *       static Result   make_result()   noexcept { return {}; }
- *       static Feedback make_feedback() noexcept { return {}; }
- *
- *       static size_t encode_goal(uint8_t* d, size_t c, const Goal& g)         noexcept { ... }
- *       static bool   decode_goal(const uint8_t* s, size_t n, Goal& g)          noexcept { ... }
- *       static size_t encode_result(uint8_t* d, size_t c, const Result& r)     noexcept { ... }
- *       static bool   decode_result(const uint8_t* s, size_t n, Result& r)      noexcept { ... }
- *       static size_t encode_feedback(uint8_t* d, size_t c, const Feedback& f) noexcept { ... }
- *       static bool   decode_feedback(const uint8_t* s, size_t n, Feedback& f)  noexcept { ... }
- *   };
- *   template<> inline constexpr bool milkros::has_action_traits_v<Fibonacci> = true;
- *
- * Pool sizes
- * ----------
- *   MILKROS_MAX_ACTIONS      (default 2) — action server/client slots in Context
- *   MILKROS_MAX_ACTION_SIZE  (default 512 B) — max sizeof(ActionServer<T,G,E>)
- */
-
 #pragma once
 
-#include "service.hpp"
-#include "topic_names.hpp"
-#include "rosette/rtps/participant.hpp"
-
-#include <stdint.h>
-#include <string.h>
-
-#ifndef MILKROS_MAX_ACTIONS
-#  define MILKROS_MAX_ACTIONS 2u
-#endif
-#ifndef MILKROS_MAX_ACTION_SIZE
-/// Must be >= sizeof(ActionServer<ActionT, GoalCbT, ExecuteCbT>) for all types used.
-#  define MILKROS_MAX_ACTION_SIZE 512u
-#endif
-
-namespace milkros {
-
-// ============================================================
-// GoalId — 16-byte UUID (matches unique_identifier_msgs/UUID)
-// ============================================================
-
-struct GoalId {
-    uint8_t uuid[16] = {};
-
-    bool operator==(const GoalId& o) const noexcept {
-        return memcmp(uuid, o.uuid, 16u) == 0;
-    }
-    bool operator!=(const GoalId& o) const noexcept { return !(*this == o); }
-    bool is_zero()   const noexcept {
-        for (uint8_t b : uuid) { if (b) return false; }
-        return true;
-    }
-};
-
-// ============================================================
-// GoalStatus — mirrors action_msgs/GoalStatus status codes
-// ============================================================
-
-enum class GoalStatus : int8_t {
-    UNKNOWN   = 0,  ///< Status not yet known.
-    ACCEPTED  = 1,  ///< Goal accepted, queued for execution.
-    EXECUTING = 2,  ///< Goal is being actively executed.
-    CANCELING = 3,  ///< Cancel requested; waiting for handler to acknowledge.
-    SUCCEEDED = 4,  ///< Goal completed successfully.
-    CANCELED  = 5,  ///< Goal was canceled.
-    ABORTED   = 6,  ///< Goal was aborted (failure).
-};
-
-/// Return value from the goal-acceptance callback.
-enum class GoalResponse : uint8_t {
-    ACCEPT = 0,
-    REJECT = 1,
-};
-
-// ============================================================
-// action_traits<ActionT> — user specializes this
-// ============================================================
-
-template<typename ActionT>
-struct action_traits;  ///< Must be specialised before instantiating ActionServer/ActionClient.
-
-template<typename ActionT>
-inline constexpr bool has_action_traits_v = false;
-
-// ============================================================
-// Internal helpers
-// ============================================================
-
-namespace detail {
-
-/// Get current time in seconds + nanoseconds (uses RTPS_GET_MS()).
-inline void now_stamp(uint32_t& sec_out, uint32_t& nsec_out) noexcept {
-    const uint32_t ms = RTPS_GET_MS();
-    sec_out  = ms / 1000u;
-    nsec_out = (ms % 1000u) * 1000000u;
-}
-
-} // namespace detail
-
-// ============================================================
-// GoalHandle<ActionT> — passed to execute callback by reference
-// ============================================================
-
 /**
- * @brief Handle to an active action goal.
+ * @file ros/action.hpp
+ * @brief micro-ROS action server and client adapters for the Rosette ROS API.
  *
- * Passed by reference to the execute callback.  The callback uses it to:
- *   - Query goal status and ID.
- *   - Publish intermediate feedback.
- *   - Complete the goal (succeed, abort, cancel).
+ * Design goal
+ * -----------
+ * This module gives Rosette applications a C++ action surface that feels like
+ * `rclcpp_action` while delegating the ROS 2 action protocol to
+ * upstream `rcl_action` + `rclc`. The wrapper keeps goal acceptance,
+ * cooperative execution, feedback publication, cancellation, and result
+ * delivery inside the familiar `Context`/`Node` programming model.
  *
- * GoalHandle is owned by ActionServer and valid only while the goal is active.
- * Do not store a pointer to it across ticks.
+ * Example
+ * -------
+ *   auto server = node.create_action_server<Fibonacci>(
+ *       "fibonacci",
+ *       [](const rosette::GoalId& goal_id,
+ *          const FibonacciGoal& goal) noexcept {
+ *           (void)goal_id;
+ *           return goal.order <= 32
+ *               ? rosette::GoalResponse::ACCEPT
+ *               : rosette::GoalResponse::REJECT;
+ *       },
+ *       [](rosette::GoalHandle<Fibonacci>& handle) noexcept {
+ *           FibonacciFeedback feedback{};
+ *           handle.publish_feedback(feedback);
+ *           FibonacciResult result{};
+ *           handle.succeed(result);
+ *       });
+ *
+ *   auto client = node.create_action_client<Fibonacci>("fibonacci");
+ *   FibonacciGoal goal{};
+ *   rosette::GoalId goal_id{};
+ *   client.send_goal(
+ *       goal,
+ *       goal_id,
+ *       [](const rosette::GoalId&, bool accepted, void*) noexcept {
+ *           (void)accepted;
+ *       },
+ *       [](const rosette::GoalId&,
+ *          const FibonacciFeedback&,
+ *          void*) noexcept {},
+ *       [](const rosette::GoalId&,
+ *          rosette::GoalStatus status,
+ *          const FibonacciResult&,
+ *          void*) noexcept {
+ *           (void)status;
+ *       });
+ *
+ * Features
+ * --------
+ * - Goal acceptance and cancellation callbacks routed through upstream `rclc`.
+ * - Cooperative server execution via `Context::tick()`, matching Rosette's MCU
+ *   execution model rather than spawning extra threads.
+ * - Typed feedback and result callbacks on the client side.
+ * - Explicit `request_result()` call site for call-site symmetry with
+ *   `send_goal()`, even though `rclc` issues the result request internally.
+ *
+ * Caveats
+ * -------
+ * - This wrapper currently supports one active goal per action server
+ *   instance. Additional goals are rejected while a goal is executing or
+ *   waiting to flush its terminal result.
+ * - Upstream `rclc` action APIs provide add-to-executor functions but no
+ *   remove-from-executor counterpart. Action endpoints should therefore live at
+ *   least as long as the `Context` executor that dispatches them.
+ * - `action_traits<ActionT>` must expose the generated ROS action support types
+ *   expected by this wrapper, as documented below.
+ *
+ * Required action_traits<ActionT> members
+ * ---------------------------------------
+ *   using Goal = <generated action goal struct>;
+ *   using Result = <generated action result struct>;
+ *   using Feedback = <generated action feedback struct>;
+ *   using SendGoalRequest = <generated *_SendGoal_Request struct>;
+ *   using GetResultResponse = <generated *_GetResult_Response struct>;
+ *   using FeedbackMessage = <generated *_FeedbackMessage struct>;
+ *   static const rosidl_action_type_support_t* rosidl_action_type_support() noexcept;
+ *
+ * Optional helpers:
+ *   static void init_send_goal_request(SendGoalRequest&) noexcept;
+ *   static void fini_send_goal_request(SendGoalRequest&) noexcept;
+ *   static void init_result_response(GetResultResponse&) noexcept;
+ *   static void fini_result_response(GetResultResponse&) noexcept;
+ *   static void init_feedback_message(FeedbackMessage&) noexcept;
+ *   static void fini_feedback_message(FeedbackMessage&) noexcept;
+ *
+ * References
+ * ----------
+ * - ROS 2 actions design: https://design.ros2.org/articles/actions.html
+ * - rclc action APIs: https://docs.ros.org/en/humble/p/rclc/
  */
+
+#include "common.hpp"
+#include "context.hpp"
+
+#if !ROSETTE_MICRO_ROS_HAS_ACTION_API
+#error "Rosette micro-ROS action support requires rclc/action_client.h and rclc/action_server.h."
+#endif
+
+namespace rosette {
+
 template<typename ActionT>
 class GoalHandle {
-    static_assert(has_action_traits_v<ActionT>,
-                  "milkros::action_traits specialization required for ActionT");
 public:
-    using traits   = action_traits<ActionT>;
+    using traits = ::rosette::action_traits<ActionT>;
+    using Goal = typename traits::Goal;
+    using Result = typename traits::Result;
     using Feedback = typename traits::Feedback;
-    using Result   = typename traits::Result;
+    using GetResultResponse = typename traits::GetResultResponse;
+    using FeedbackMessage = typename traits::FeedbackMessage;
 
     GoalHandle() noexcept = default;
 
-    // ----------------------------------------------------------
-    // State queries
-    // ----------------------------------------------------------
-
-    GoalStatus     status()      const noexcept { return *status_; }
-    const GoalId&  goal_id()     const noexcept { return *goal_id_; }
-    bool           is_active()   const noexcept { return status() == GoalStatus::EXECUTING; }
-    bool           is_canceling()const noexcept { return status() == GoalStatus::CANCELING; }
-
-    // ----------------------------------------------------------
-    // Feedback
-    // ----------------------------------------------------------
-
-    /// Publish an intermediate feedback message.
-    void publish_feedback(const Feedback& fb) noexcept {
-        if (!feedback_writer_ || !goal_id_) return;
-
-        constexpr size_t kMax = 16u + traits::max_feedback_serialized_size;
-        uint8_t buf[kMax];
-
-        memcpy(buf, goal_id_->uuid, 16u);
-        const size_t encoded = traits::encode_feedback(buf + 16u, sizeof(buf) - 16u, fb);
-        if (encoded == 0u) return;
-
-        feedback_writer_->write_reliable(rtps::ChangeKind::ALIVE,
-                                          buf,
-                                          static_cast<uint32_t>(16u + encoded));
-    }
-
-    // ----------------------------------------------------------
-    // Terminal transitions — call at most once per goal
-    // ----------------------------------------------------------
-
-    /// Signal successful completion with a result.
-    void succeed(const Result& result) noexcept {
-        terminal(GoalStatus::SUCCEEDED, result);
-    }
-
-    /// Signal aborted execution with a result.
-    void abort(const Result& result) noexcept {
-        terminal(GoalStatus::ABORTED, result);
-    }
-
-    /// Acknowledge cancellation with a result (call when is_canceling()).
-    void cancel(const Result& result) noexcept {
-        terminal(GoalStatus::CANCELED, result);
-    }
-
-    // Internal: called by ActionServer to wire up the handle.
-    void bind(GoalId*               goal_id,
-              GoalStatus*           status,
-              rtps::StatefulWriter<1>* feedback_writer,
-              rtps::StatefulWriter<1>* status_writer,
-              uint8_t*              result_buf,
-              size_t                result_buf_cap,
-              size_t*               result_encoded_size) noexcept {
-        goal_id_             = goal_id;
-        status_              = status;
-        feedback_writer_     = feedback_writer;
-        status_writer_       = status_writer;
-        result_buf_          = result_buf;
-        result_buf_cap_      = result_buf_cap;
-        result_encoded_size_ = result_encoded_size;
-    }
-
-private:
-    void terminal(GoalStatus s, const Result& result) noexcept {
-        if (!status_ || !goal_id_) return;
-        if (*status_ != GoalStatus::EXECUTING &&
-            *status_ != GoalStatus::CANCELING) return;  // already terminal
-
-        *status_ = s;
-
-        // Encode the result into the ActionServer's result buffer for later
-        // retrieval via get_result service.
-        if (result_buf_ && result_encoded_size_) {
-            *result_encoded_size_ = traits::encode_result(result_buf_,
-                                                           result_buf_cap_,
-                                                           result);
-        }
-
-        // Publish updated status.
-        publish_status();
-    }
-
-    void publish_status() noexcept {
-        if (!status_writer_ || !goal_id_) return;
-
-        uint8_t buf[17];
-        memcpy(buf, goal_id_->uuid, 16u);
-        buf[16] = static_cast<uint8_t>(*status_);
-        status_writer_->write_reliable(rtps::ChangeKind::ALIVE, buf, 17u);
-    }
-
-    GoalId*                  goal_id_             = nullptr;
-    GoalStatus*              status_              = nullptr;
-    rtps::StatefulWriter<1>* feedback_writer_     = nullptr;
-    rtps::StatefulWriter<1>* status_writer_       = nullptr;
-    uint8_t*                 result_buf_          = nullptr;
-    size_t                   result_buf_cap_      = 0u;
-    size_t*                  result_encoded_size_ = nullptr;
-};
-
-// ============================================================
-// IAction — type-erased base stored in Context pool
-// ============================================================
-
-class IAction {
-public:
-    virtual void tick(uint32_t now_ms) noexcept = 0;
-protected:
-    ~IAction() = default;
-};
-
-// ============================================================
-// ActionServer<ActionT, GoalCbT, ExecuteCbT>
-// ============================================================
-
-/**
- * @brief ROS 2-compatible action server.
- *
- * Supports one active goal at a time (embedded constraint).
- *
- * @tparam ActionT     Action tag type with action_traits<ActionT> specialisation.
- * @tparam GoalCbT     Callable: GoalResponse(const GoalId&, const Goal&) noexcept
- * @tparam ExecuteCbT  Callable: void(GoalHandle<ActionT>&) noexcept
- *                     Called every tick while goal is EXECUTING or CANCELING.
- *                     Must call handle.succeed(), handle.abort(), or handle.cancel()
- *                     when finished.
- *
- * Instances are created via Node::create_action_server() and owned by the
- * Context pool. Never move or copy after creation.
- *
- * The server's tick() is registered as an ITimer with the Context so it is
- * driven automatically by Context::tick_timers().
- */
-template<typename ActionT, typename GoalCbT, typename ExecuteCbT>
-class ActionServer final : public IAction {
-    static_assert(has_action_traits_v<ActionT>,
-                  "milkros::action_traits specialization required for ActionT");
-
-public:
-    using traits   = action_traits<ActionT>;
-    using Goal     = typename traits::Goal;
-    using Result   = typename traits::Result;
-    using Feedback = typename traits::Feedback;
-
-    ActionServer() noexcept = default;
-
-    ActionServer(// send_goal service endpoints
-                 rtps::StatefulReader*    sg_req_reader,
-                 rtps::StatefulWriter<1>* sg_resp_writer,
-                 // get_result service endpoints
-                 rtps::StatefulReader*    gr_req_reader,
-                 rtps::StatefulWriter<1>* gr_resp_writer,
-                 // cancel_goal service endpoints
-                 rtps::StatefulReader*    cg_req_reader,
-                 rtps::StatefulWriter<1>* cg_resp_writer,
-                 // topic publishers
-                 rtps::StatefulWriter<1>* feedback_writer,
-                 rtps::StatefulWriter<1>* status_writer,
-                 GoalCbT    goal_cb,
-                 ExecuteCbT execute_cb) noexcept
-        : sg_req_reader_ (sg_req_reader)
-        , sg_resp_writer_(sg_resp_writer)
-        , gr_req_reader_ (gr_req_reader)
-        , gr_resp_writer_(gr_resp_writer)
-        , cg_req_reader_ (cg_req_reader)
-        , cg_resp_writer_(cg_resp_writer)
-        , feedback_writer_(feedback_writer)
-        , status_writer_  (status_writer)
-        , goal_cb_   (static_cast<GoalCbT&&>(goal_cb))
-        , execute_cb_(static_cast<ExecuteCbT&&>(execute_cb))
+    GoalStatus status() const noexcept
     {
-        // Wire callbacks.
-        if (sg_req_reader_) sg_req_reader_->set_on_change_available(&ActionServer::on_send_goal,   this);
-        if (gr_req_reader_) gr_req_reader_->set_on_change_available(&ActionServer::on_get_result,  this);
-        if (cg_req_reader_) cg_req_reader_->set_on_change_available(&ActionServer::on_cancel_goal, this);
-
-        // Bind the goal handle.
-        active_handle_.bind(&active_goal_id_,
-                             &active_status_,
-                             feedback_writer_,
-                             status_writer_,
-                             result_buf_,
-                             sizeof(result_buf_),
-                             &result_encoded_size_);
+        if (goal_handle_ == nullptr) {
+            return GoalStatus::UNKNOWN;
+        }
+        return to_goal_status(goal_handle_->status);
     }
 
-    // Move-only
-    ActionServer(const ActionServer&)            = delete;
-    ActionServer& operator=(const ActionServer&) = delete;
-
-    bool valid() const noexcept { return sg_req_reader_ != nullptr; }
-
-    GoalStatus current_status() const noexcept { return active_status_; }
-
-    // IAction: called every tick while a goal is active.
-    void tick(uint32_t /*now_ms*/) noexcept override {
-        if (active_status_ == GoalStatus::EXECUTING ||
-            active_status_ == GoalStatus::CANCELING) {
-            execute_cb_(active_handle_);
-
-            // If the handler just made the goal terminal, deliver any pending result.
-            if (is_terminal(active_status_) && pending_result_rid_.sequence_number >= 0) {
-                send_result_response(pending_result_rid_);
-                pending_result_rid_.sequence_number = -1;
-            }
-        }
+    const GoalId& goal_id() const noexcept
+    {
+        return goal_id_;
     }
 
-private:
-    // ---- send_goal ----
-    static void on_send_goal(const rtps::CacheChange& change, void* ud) noexcept {
-        auto* self = static_cast<ActionServer*>(ud);
-        const uint8_t* src = change.payload.data;
-        const size_t   len = change.payload.size;
-
-        // Minimum: RequestId(24) + GoalId(16) = 40 bytes.
-        if (len < 40u) return;
-
-        RequestId rid{};
-        memcpy(rid.client_guid,      src,       16u);
-        memcpy(&rid.sequence_number, src + 16u, 8u);
-
-        GoalId goal_id{};
-        memcpy(goal_id.uuid, src + 24u, 16u);
-
-        Goal goal = traits::make_goal();
-        if (len > 40u) {
-            traits::decode_goal(src + 40u, len - 40u, goal);
-        }
-
-        const GoalResponse resp = self->goal_cb_(goal_id, goal);
-        const bool accepted = (resp == GoalResponse::ACCEPT);
-
-        if (accepted) {
-            // Only accept if no goal is currently active.
-            if (!is_terminal(self->active_status_) &&
-                self->active_status_ != GoalStatus::UNKNOWN) {
-                // Reject: already executing.
-                // (A production server would queue goals; embedded allows one.)
-                self->send_goal_response(rid, false);
-                return;
-            }
-
-            self->active_goal_id_ = goal_id;
-            self->active_status_  = GoalStatus::EXECUTING;
-            // Store goal for execute callback via handle.
-            self->active_goal_    = goal;
-            self->result_encoded_size_ = 0u;
-            self->pending_result_rid_.sequence_number = -1;
-        }
-
-        self->send_goal_response(rid, accepted);
+    const Goal& goal() const noexcept
+    {
+        return *goal_;
     }
 
-    void send_goal_response(const RequestId& rid, bool accepted) noexcept {
-        if (!sg_resp_writer_) return;
-        uint32_t sec = 0u, nsec = 0u;
-        detail::now_stamp(sec, nsec);
-
-        // Payload: RequestId(24) + accepted(1) + stamp_sec(4) + stamp_nsec(4) = 33 bytes.
-        uint8_t buf[33];
-        memcpy(buf,       rid.client_guid,      16u);
-        memcpy(buf + 16u, &rid.sequence_number,  8u);
-        buf[24]  = accepted ? 1u : 0u;
-        memcpy(buf + 25u, &sec,  4u);
-        memcpy(buf + 29u, &nsec, 4u);
-
-        sg_resp_writer_->write_reliable(rtps::ChangeKind::ALIVE, buf, 33u);
-
-        // Publish initial status.
-        if (accepted) {
-            uint8_t sbuf[17];
-            memcpy(sbuf, active_goal_id_.uuid, 16u);
-            sbuf[16] = static_cast<uint8_t>(active_status_);
-            if (status_writer_) {
-                status_writer_->write_reliable(rtps::ChangeKind::ALIVE, sbuf, 17u);
-            }
-        }
+    bool is_active() const noexcept
+    {
+        const GoalStatus current = status();
+        return current == GoalStatus::ACCEPTED || current == GoalStatus::EXECUTING;
     }
 
-    // ---- get_result ----
-    static void on_get_result(const rtps::CacheChange& change, void* ud) noexcept {
-        auto* self = static_cast<ActionServer*>(ud);
-        const uint8_t* src = change.payload.data;
-        const size_t   len = change.payload.size;
+    bool is_canceling() const noexcept
+    {
+        return status() == GoalStatus::CANCELING;
+    }
 
-        // Minimum: RequestId(24) + GoalId(16) = 40 bytes.
-        if (len < 40u) return;
-
-        RequestId rid{};
-        memcpy(rid.client_guid,      src,       16u);
-        memcpy(&rid.sequence_number, src + 16u, 8u);
-
-        GoalId goal_id{};
-        memcpy(goal_id.uuid, src + 24u, 16u);
-
-        if (!(goal_id == self->active_goal_id_)) {
-            // Unknown goal — send UNKNOWN status with empty result.
-            self->send_result_response_status(rid, GoalStatus::UNKNOWN);
+    /**
+     * @brief Publishes an action feedback sample for the active goal.
+     *
+     * The wrapper reuses a preallocated generated `FeedbackMessage` instance so
+     * the MCU does not need to allocate on the heap while publishing feedback.
+     * The goal UUID is copied into the envelope on every publish so the action
+     * client can correlate feedback even after multiple goals have passed
+     * through the same action server.
+     *
+     * @param[in] feedback Generated ROS action feedback payload.
+     */
+    void publish_feedback(const Feedback& feedback) noexcept
+    {
+        if (goal_handle_ == nullptr || feedback_message_ == nullptr) {
             return;
         }
 
-        if (is_terminal(self->active_status_)) {
-            // Goal already done — respond immediately.
-            self->send_result_response(rid);
-        } else {
-            // Goal still running — remember who asked; respond when done.
-            self->pending_result_rid_ = rid;
-        }
+        copy_goal_id(goal_id_, feedback_message_->goal_id);
+        feedback_message_->feedback = feedback;
+        (void)ros_ok(rclc_action_publish_feedback(goal_handle_, feedback_message_));
     }
 
-    void send_result_response(const RequestId& rid) noexcept {
-        send_result_response_status(rid, active_status_);
-    }
-
-    void send_result_response_status(const RequestId& rid, GoalStatus s) noexcept {
-        if (!gr_resp_writer_) return;
-
-        // Payload: RequestId(24) + status(1) + result(N).
-        constexpr size_t kMax = 25u + traits::max_result_serialized_size;
-        uint8_t buf[kMax];
-
-        memcpy(buf,       rid.client_guid,      16u);
-        memcpy(buf + 16u, &rid.sequence_number,  8u);
-        buf[24] = static_cast<uint8_t>(s);
-
-        size_t result_len = 0u;
-        if (s != GoalStatus::UNKNOWN && result_encoded_size_ > 0u) {
-            const size_t copy_len = (result_encoded_size_ < (sizeof(buf) - 25u))
-                                    ? result_encoded_size_ : (sizeof(buf) - 25u);
-            memcpy(buf + 25u, result_buf_, copy_len);
-            result_len = copy_len;
-        }
-
-        gr_resp_writer_->write_reliable(rtps::ChangeKind::ALIVE,
-                                         buf,
-                                         static_cast<uint32_t>(25u + result_len));
-    }
-
-    // ---- cancel_goal ----
-    static void on_cancel_goal(const rtps::CacheChange& change, void* ud) noexcept {
-        auto* self = static_cast<ActionServer*>(ud);
-        const uint8_t* src = change.payload.data;
-        const size_t   len = change.payload.size;
-
-        // Minimum: RequestId(24) + GoalId(16) = 40 bytes.
-        if (len < 40u) return;
-
-        RequestId rid{};
-        memcpy(rid.client_guid,      src,       16u);
-        memcpy(&rid.sequence_number, src + 16u, 8u);
-
-        GoalId goal_id{};
-        memcpy(goal_id.uuid, src + 24u, 16u);
-
-        // return_code: 0=OK, 1=rejected, 2=unknown_goal_id, 3=goal_terminated
-        uint8_t return_code = 0u;
-        if (!(goal_id == self->active_goal_id_)) {
-            return_code = 2u;  // unknown goal
-        } else if (is_terminal(self->active_status_)) {
-            return_code = 3u;  // already done
-        } else {
-            // Transition to CANCELING; execute_cb will call handle.cancel().
-            self->active_status_ = GoalStatus::CANCELING;
-        }
-
-        // Payload: RequestId(24) + return_code(1) + GoalId(16) = 41 bytes.
-        uint8_t buf[41];
-        memcpy(buf,       rid.client_guid,      16u);
-        memcpy(buf + 16u, &rid.sequence_number,  8u);
-        buf[24] = return_code;
-        memcpy(buf + 25u, goal_id.uuid, 16u);
-
-        if (self->cg_resp_writer_) {
-            self->cg_resp_writer_->write_reliable(rtps::ChangeKind::ALIVE, buf, 41u);
-        }
-    }
-
-    static bool is_terminal(GoalStatus s) noexcept {
-        return s == GoalStatus::SUCCEEDED ||
-               s == GoalStatus::CANCELED  ||
-               s == GoalStatus::ABORTED;
-    }
-
-    // ---- Members ----
-
-    rtps::StatefulReader*    sg_req_reader_  = nullptr;
-    rtps::StatefulWriter<1>* sg_resp_writer_ = nullptr;
-    rtps::StatefulReader*    gr_req_reader_  = nullptr;
-    rtps::StatefulWriter<1>* gr_resp_writer_ = nullptr;
-    rtps::StatefulReader*    cg_req_reader_  = nullptr;
-    rtps::StatefulWriter<1>* cg_resp_writer_ = nullptr;
-    rtps::StatefulWriter<1>* feedback_writer_ = nullptr;
-    rtps::StatefulWriter<1>* status_writer_   = nullptr;
-
-    GoalCbT    goal_cb_{};
-    ExecuteCbT execute_cb_{};
-
-    GoalHandle<ActionT> active_handle_{};
-
-    GoalId     active_goal_id_{};
-    GoalStatus active_status_ = GoalStatus::UNKNOWN;
-    Goal       active_goal_{};
-
-    // Encoded result buffer — populated by GoalHandle::terminal().
-    alignas(4) uint8_t result_buf_[traits::max_result_serialized_size] = {};
-    size_t              result_encoded_size_ = 0u;
-
-    // Deferred get_result requestor (seq_number = -1 means none pending).
-    RequestId pending_result_rid_ = { {}, -1 };
-};
-
-// ============================================================
-// ActionClient<ActionT>
-// ============================================================
-
-/**
- * @brief ROS 2-compatible action client.
- *
- * @tparam ActionT  Action tag type with action_traits<ActionT> specialisation.
- *
- * Response/feedback callbacks use plain function-pointer + void* for
- * zero-overhead embedded use.
- *
- * Instances are created via Node::create_action_client() and owned by the
- * Context pool. Never move or copy after creation.
- *
- * Typical usage:
- *   auto* client = node.create_action_client<Fibonacci>("fibonacci");
- *
- *   GoalId gid{};
- *   client->send_goal(goal, gid,
- *       [](const GoalId& id, bool ok, void*) { ... },   // goal_resp_cb
- *       [](const GoalId& id, const Feedback& fb, void*) { ... }, // feedback_cb
- *       [](const GoalId& id, GoalStatus s, const Result& r, void*) { ... }, // result_cb
- *       nullptr);
- *
- *   // Later, when ready to retrieve the result:
- *   client->request_result(gid);
- */
-template<typename ActionT>
-class ActionClient final : public IAction {
-    static_assert(has_action_traits_v<ActionT>,
-                  "milkros::action_traits specialization required for ActionT");
-
-public:
-    using traits   = action_traits<ActionT>;
-    using Goal     = typename traits::Goal;
-    using Result   = typename traits::Result;
-    using Feedback = typename traits::Feedback;
-
-    using GoalRespCb  = void(*)(const GoalId&, bool accepted,            void*) noexcept;
-    using FeedbackCb  = void(*)(const GoalId&, const Feedback&,           void*) noexcept;
-    using ResultCb    = void(*)(const GoalId&, GoalStatus, const Result&, void*) noexcept;
-
-    ActionClient() noexcept = default;
-
-    ActionClient(// send_goal service client endpoints
-                 rtps::StatefulWriter<1>* sg_req_writer,
-                 rtps::StatefulReader*    sg_resp_reader,
-                 // get_result service client endpoints
-                 rtps::StatefulWriter<1>* gr_req_writer,
-                 rtps::StatefulReader*    gr_resp_reader,
-                 // cancel_goal service client endpoints
-                 rtps::StatefulWriter<1>* cg_req_writer,
-                 rtps::StatefulReader*    cg_resp_reader,
-                 // topic subscribers
-                 rtps::StatefulReader*    feedback_reader,
-                 rtps::StatefulReader*    status_reader) noexcept
-        : sg_req_writer_ (sg_req_writer)
-        , sg_resp_reader_(sg_resp_reader)
-        , gr_req_writer_ (gr_req_writer)
-        , gr_resp_reader_(gr_resp_reader)
-        , cg_req_writer_ (cg_req_writer)
-        , cg_resp_reader_(cg_resp_reader)
-        , feedback_reader_(feedback_reader)
-        , status_reader_  (status_reader)
+    /**
+     * @brief Completes the goal successfully and stages the result for delivery.
+     *
+     * The actual transport-level result send happens in `ActionServer::tick()`
+     * so the wrapper can retry the upstream `rclc_action_send_result()` call if
+     * the client has not yet issued a result request.
+     *
+     * @param[in] result Generated ROS action result payload.
+     */
+    void succeed(const Result& result) noexcept
     {
-        // Capture writer GUID for send_goal correlation.
-        if (sg_req_writer_) {
-            const rtps::Guid& g = sg_req_writer_->guid();
-            memcpy(sg_writer_guid_, g.prefix.value,   12u);
-            memcpy(sg_writer_guid_ + 12u, g.entityId.entityKey, 3u);
-            sg_writer_guid_[15] = g.entityId.entityKind;
-        }
-        // Capture writer GUID for get_result correlation.
-        if (gr_req_writer_) {
-            const rtps::Guid& g = gr_req_writer_->guid();
-            memcpy(gr_writer_guid_, g.prefix.value,   12u);
-            memcpy(gr_writer_guid_ + 12u, g.entityId.entityKey, 3u);
-            gr_writer_guid_[15] = g.entityId.entityKind;
-        }
-
-        if (sg_resp_reader_) sg_resp_reader_->set_on_change_available(&ActionClient::on_sg_response,  this);
-        if (gr_resp_reader_) gr_resp_reader_->set_on_change_available(&ActionClient::on_gr_response,  this);
-        if (cg_resp_reader_) cg_resp_reader_->set_on_change_available(&ActionClient::on_cg_response,  this);
-        if (feedback_reader_) feedback_reader_->set_on_change_available(&ActionClient::on_feedback,   this);
-        if (status_reader_)   status_reader_->set_on_change_available(&ActionClient::on_status,       this);
+        terminal(GoalStatus::SUCCEEDED, result);
     }
 
-    // Move-only
-    ActionClient(const ActionClient&)            = delete;
-    ActionClient& operator=(const ActionClient&) = delete;
-
-    bool valid() const noexcept { return sg_req_writer_ != nullptr; }
-
-    // IAction — no periodic tick needed for client.
-    void tick(uint32_t /*now_ms*/) noexcept override {}
-
     /**
-     * @brief Send a goal to the action server.
+     * @brief Completes the goal with an aborted terminal state.
      *
-     * @param goal          Goal to send.
-     * @param goal_id_out   Receives the generated GoalId (use for subsequent calls).
-     * @param goal_resp_cb  Called when accept/reject response arrives (may be nullptr).
-     * @param feedback_cb   Called when feedback messages arrive (may be nullptr).
-     * @param result_cb     Called when the result is available (may be nullptr).
-     * @param ud            User data passed to all callbacks.
-     * @returns true if the goal was sent successfully.
+     * @param[in] result Generated ROS action result payload.
      */
-    bool send_goal(const Goal&  goal,
-                   GoalId&      goal_id_out,
-                   GoalRespCb   goal_resp_cb  = nullptr,
-                   FeedbackCb   feedback_cb   = nullptr,
-                   ResultCb     result_cb     = nullptr,
-                   void*        ud            = nullptr) noexcept {
-        if (!sg_req_writer_) return false;
-
-        // Generate GoalId from writer GUID prefix + seqno (unique within participant).
-        GoalId gid{};
-        memcpy(gid.uuid, sg_writer_guid_, 12u);
-        // Use seqno bytes for uniqueness: 4 bytes big-endian at end.
-        const uint32_t s = static_cast<uint32_t>(sg_next_seqno_);
-        gid.uuid[12] = static_cast<uint8_t>(s >> 24u);
-        gid.uuid[13] = static_cast<uint8_t>(s >> 16u);
-        gid.uuid[14] = static_cast<uint8_t>(s >>  8u);
-        gid.uuid[15] = static_cast<uint8_t>(s);
-        goal_id_out = gid;
-
-        // Build RequestId for correlation.
-        RequestId rid{};
-        memcpy(rid.client_guid, sg_writer_guid_, 16u);
-        rid.sequence_number = sg_next_seqno_++;
-
-        // Store callbacks.
-        pending_goal_rid_   = rid;
-        pending_goal_id_    = gid;
-        goal_resp_cb_       = goal_resp_cb;
-        feedback_cb_        = feedback_cb;
-        result_cb_          = result_cb;
-        user_data_          = ud;
-        pending_goal_active_= true;
-
-        // Payload: RequestId(24) + GoalId(16) + encoded_goal.
-        constexpr size_t kMax = 40u + traits::max_goal_serialized_size;
-        uint8_t buf[kMax];
-
-        memcpy(buf,       rid.client_guid,      16u);
-        memcpy(buf + 16u, &rid.sequence_number,  8u);
-        memcpy(buf + 24u, gid.uuid,             16u);
-
-        const size_t encoded = traits::encode_goal(buf + 40u, sizeof(buf) - 40u, goal);
-        return sg_req_writer_->write_reliable(rtps::ChangeKind::ALIVE,
-                                               buf,
-                                               static_cast<uint32_t>(40u + encoded));
+    void abort(const Result& result) noexcept
+    {
+        terminal(GoalStatus::ABORTED, result);
     }
 
     /**
-     * @brief Request the result from the server for an accepted goal.
+     * @brief Completes a canceling goal with a canceled terminal state.
      *
-     * Call this after receiving a goal_accepted = true response, or at any
-     * time after sending the goal.  The ResultCb registered in send_goal() is
-     * called when the result arrives.
+     * @param[in] result Generated ROS action result payload.
      */
-    bool request_result(const GoalId& goal_id) noexcept {
-        if (!gr_req_writer_) return false;
-
-        RequestId rid{};
-        memcpy(rid.client_guid, gr_writer_guid_, 16u);
-        rid.sequence_number = gr_next_seqno_++;
-
-        pending_result_rid_ = rid;
-
-        // Payload: RequestId(24) + GoalId(16) = 40 bytes.
-        uint8_t buf[40];
-        memcpy(buf,       rid.client_guid,      16u);
-        memcpy(buf + 16u, &rid.sequence_number,  8u);
-        memcpy(buf + 24u, goal_id.uuid,         16u);
-
-        return gr_req_writer_->write_reliable(rtps::ChangeKind::ALIVE, buf, 40u);
-    }
-
-    /**
-     * @brief Send a cancel request for the given goal.
-     */
-    bool cancel_goal(const GoalId& goal_id) noexcept {
-        if (!cg_req_writer_) return false;
-
-        RequestId rid{};
-        memcpy(rid.client_guid, sg_writer_guid_, 16u);  // reuse sg GUID
-        rid.sequence_number = sg_next_seqno_++;
-
-        uint32_t sec = 0u, nsec = 0u;
-        detail::now_stamp(sec, nsec);
-
-        // Payload: RequestId(24) + GoalId(16) + stamp_sec(4) + stamp_nsec(4) = 48 bytes.
-        uint8_t buf[48];
-        memcpy(buf,       rid.client_guid,      16u);
-        memcpy(buf + 16u, &rid.sequence_number,  8u);
-        memcpy(buf + 24u, goal_id.uuid,         16u);
-        memcpy(buf + 40u, &sec,                  4u);
-        memcpy(buf + 44u, &nsec,                 4u);
-
-        return cg_req_writer_->write_reliable(rtps::ChangeKind::ALIVE, buf, 48u);
+    void cancel(const Result& result) noexcept
+    {
+        terminal(GoalStatus::CANCELED, result);
     }
 
 private:
-    // ---- send_goal response ----
-    static void on_sg_response(const rtps::CacheChange& change, void* ud) noexcept {
-        auto* self = static_cast<ActionClient*>(ud);
-        const uint8_t* src = change.payload.data;
-        const size_t   len = change.payload.size;
-        if (len < 33u || !self->pending_goal_active_) return;  // RequestId(24)+accepted(1)+stamp(8)
+    template<typename, typename, typename> friend class ActionServer;
 
-        RequestId rid{};
-        memcpy(rid.client_guid,      src,       16u);
-        memcpy(&rid.sequence_number, src + 16u, 8u);
-        if (rid != self->pending_goal_rid_) return;
-
-        const bool accepted = (src[24] != 0u);
-        if (self->goal_resp_cb_) {
-            self->goal_resp_cb_(self->pending_goal_id_, accepted, self->user_data_);
-        }
-        if (!accepted) {
-            self->pending_goal_active_ = false;
-        }
+    /**
+     * @brief Wires this facade to an upstream `rclc_action_goal_handle_t`.
+     *
+     * The server binds a handle once a goal request is accepted. From that
+     * point on the facade offers safe access to goal metadata, feedback
+     * publication, and terminal transitions without exposing the raw `rclc`
+     * structures to application code.
+     *
+     * @param[in] goal_handle Upstream goal handle for the active goal.
+     * @param[in] goal_id Cached UUID copied from the request envelope.
+     * @param[in] goal Pointer to the accepted goal payload.
+     * @param[in,out] feedback_message Preallocated generated feedback envelope.
+     * @param[in,out] result_response Preallocated generated result response envelope.
+     * @param[in,out] terminal_status Storage for the staged terminal state.
+     * @param[in,out] terminal_pending Flag set when a result is waiting to flush.
+     */
+    void bind(rclc_action_goal_handle_t* goal_handle,
+              const GoalId& goal_id,
+              const Goal* goal,
+              FeedbackMessage* feedback_message,
+              GetResultResponse* result_response,
+              GoalStatus* terminal_status,
+              bool* terminal_pending) noexcept
+    {
+        goal_handle_ = goal_handle;
+        goal_id_ = goal_id;
+        goal_ = goal;
+        feedback_message_ = feedback_message;
+        result_response_ = result_response;
+        terminal_status_ = terminal_status;
+        terminal_pending_ = terminal_pending;
     }
 
-    // ---- get_result response ----
-    static void on_gr_response(const rtps::CacheChange& change, void* ud) noexcept {
-        auto* self = static_cast<ActionClient*>(ud);
-        const uint8_t* src = change.payload.data;
-        const size_t   len = change.payload.size;
-        if (len < 25u) return;  // RequestId(24) + status(1)
+    /**
+     * @brief Detaches this facade from the upstream goal handle after completion.
+     *
+     * Clearing the stored pointers ensures stale application references cannot
+     * accidentally publish feedback or overwrite a completed result.
+     */
+    void unbind() noexcept
+    {
+        goal_handle_ = nullptr;
+        goal_ = nullptr;
+        feedback_message_ = nullptr;
+        result_response_ = nullptr;
+        terminal_status_ = nullptr;
+        terminal_pending_ = nullptr;
+        goal_id_ = GoalId{};
+    }
 
-        RequestId rid{};
-        memcpy(rid.client_guid,      src,       16u);
-        memcpy(&rid.sequence_number, src + 16u, 8u);
-        if (rid != self->pending_result_rid_) return;
-
-        const auto status = static_cast<GoalStatus>(src[24]);
-        Result result = traits::make_result();
-        if (len > 25u) {
-            traits::decode_result(src + 25u, len - 25u, result);
+    /**
+     * @brief Records a terminal transition and copies the result payload into the staged response.
+     *
+     * `rclc_action_send_result()` may need to wait until the client requests
+     * the result. This helper therefore records the desired terminal state and
+     * response payload instead of sending immediately, allowing the server tick
+     * loop to retry at a safe cadence.
+     *
+     * @param[in] status Terminal action state requested by the application.
+     * @param[in] result Generated ROS action result payload.
+     */
+    void terminal(GoalStatus status, const Result& result) noexcept
+    {
+        if (goal_handle_ == nullptr ||
+            result_response_ == nullptr ||
+            terminal_status_ == nullptr ||
+            terminal_pending_ == nullptr) {
+            return;
         }
 
-        if (self->result_cb_) {
-            self->result_cb_(self->pending_goal_id_, status, result, self->user_data_);
-        }
-        self->pending_goal_active_ = false;
+        result_response_->status = static_cast<int8_t>(status);
+        result_response_->result = result;
+        goal_handle_->status = to_rcl_goal_status(status);
+        *terminal_status_ = status;
+        *terminal_pending_ = true;
     }
 
-    // ---- cancel_goal response (informational) ----
-    static void on_cg_response(const rtps::CacheChange& /*change*/,
-                                 void* /*ud*/) noexcept {
-        // Acknowledged — application may inspect the cancel response payload
-        // if needed. For now, the cancel is considered complete on receipt.
-    }
-
-    // ---- feedback topic ----
-    static void on_feedback(const rtps::CacheChange& change, void* ud) noexcept {
-        auto* self = static_cast<ActionClient*>(ud);
-        const uint8_t* src = change.payload.data;
-        const size_t   len = change.payload.size;
-        if (len < 16u || !self->pending_goal_active_ || !self->feedback_cb_) return;
-
-        GoalId gid{};
-        memcpy(gid.uuid, src, 16u);
-        if (!(gid == self->pending_goal_id_)) return;
-
-        Feedback fb = traits::make_feedback();
-        if (len > 16u && traits::decode_feedback(src + 16u, len - 16u, fb)) {
-            self->feedback_cb_(gid, fb, self->user_data_);
-        }
-    }
-
-    // ---- status topic ----
-    static void on_status(const rtps::CacheChange& /*change*/,
-                            void* /*ud*/) noexcept {
-        // Status updates are informational; callbacks are not wired for now.
-        // The result_cb fires via on_gr_response after request_result() is called.
-    }
-
-    // ---- Members ----
-
-    rtps::StatefulWriter<1>* sg_req_writer_  = nullptr;
-    rtps::StatefulReader*    sg_resp_reader_ = nullptr;
-    rtps::StatefulWriter<1>* gr_req_writer_  = nullptr;
-    rtps::StatefulReader*    gr_resp_reader_ = nullptr;
-    rtps::StatefulWriter<1>* cg_req_writer_  = nullptr;
-    rtps::StatefulReader*    cg_resp_reader_ = nullptr;
-    rtps::StatefulReader*    feedback_reader_ = nullptr;
-    rtps::StatefulReader*    status_reader_   = nullptr;
-
-    uint8_t sg_writer_guid_[16] = {};
-    uint8_t gr_writer_guid_[16] = {};
-    int64_t sg_next_seqno_ = 0;
-    int64_t gr_next_seqno_ = 0;
-
-    // Pending goal state.
-    RequestId  pending_goal_rid_   = {{}, -1};
-    GoalId     pending_goal_id_    = {};
-    bool       pending_goal_active_= false;
-    GoalRespCb goal_resp_cb_       = nullptr;
-    FeedbackCb feedback_cb_        = nullptr;
-    ResultCb   result_cb_          = nullptr;
-    void*      user_data_          = nullptr;
-
-    RequestId  pending_result_rid_ = {{}, -1};
+    rclc_action_goal_handle_t* goal_handle_ = nullptr;
+    GoalId goal_id_{};
+    const Goal* goal_ = nullptr;
+    FeedbackMessage* feedback_message_ = nullptr;
+    GetResultResponse* result_response_ = nullptr;
+    GoalStatus* terminal_status_ = nullptr;
+    bool* terminal_pending_ = nullptr;
 };
 
-} // namespace milkros
+template<typename ActionT, typename GoalCbT, typename ExecuteCbT>
+class ActionServer final : public IActionTickable {
+public:
+    using traits = ::rosette::action_traits<ActionT>;
+    using Goal = typename traits::Goal;
+    using Result = typename traits::Result;
+    using SendGoalRequest = typename traits::SendGoalRequest;
+    using GetResultResponse = typename traits::GetResultResponse;
+    using FeedbackMessage = typename traits::FeedbackMessage;
+
+    ActionServer() noexcept = default;
+
+    /**
+     * @brief Constructs a typed micro-ROS action server wrapper.
+     *
+     * The wrapper registers the upstream `rclc_action_server_t` with the shared
+     * executor and then drives goal execution cooperatively from
+     * `Context::tick()`. This mirrors Rosette's embedded execution style:
+     * callbacks remain short, while the actual action work advances in a
+     * deterministic application-controlled loop.
+     *
+     * @param[in] node Initialized node that will own the action server.
+     * @param[in] context Running micro-ROS context whose executor dispatches action traffic.
+     * @param[in] action_name ROS action name relative to the node namespace.
+     * @param[in] goal_callback Goal accept/reject callback.
+     * @param[in] execute_callback Cooperative execution callback driven by `Context::tick()`.
+     */
+    ActionServer(rcl_node_t* node,
+                 Context* context,
+                 const char* action_name,
+                 GoalCbT goal_callback,
+                 ExecuteCbT execute_callback) noexcept
+        : node_(node)
+        , context_(context)
+        , goal_callback_(static_cast<GoalCbT&&>(goal_callback))
+        , execute_callback_(static_cast<ExecuteCbT&&>(execute_callback))
+    {
+        static_assert(has_micro_ros_action_traits_v<ActionT>,
+                      "action_traits<ActionT>::rosidl_action_type_support() is required for micro-ROS actions");
+
+        if (node_ == nullptr || context_ == nullptr) {
+            return;
+        }
+
+        init_send_goal_request<ActionT>(send_goal_request_);
+        init_result_response<ActionT>(result_response_);
+        init_feedback_message<ActionT>(feedback_message_);
+
+        action_server_ = rclc_action_server_t{};
+        if (!ros_ok(rclc_action_server_init_default(
+                &action_server_,
+                node_,
+                &context_->support(),
+                traits::rosidl_action_type_support(),
+                action_name))) {
+            fini_send_goal_request<ActionT>(send_goal_request_);
+            fini_result_response<ActionT>(result_response_);
+            fini_feedback_message<ActionT>(feedback_message_);
+            return;
+        }
+
+        if (!ros_ok(rclc_executor_add_action_server(
+                &context_->executor(),
+                &action_server_,
+                1u,
+                &send_goal_request_,
+                sizeof(send_goal_request_),
+                &ActionServer::on_goal_request,
+                &ActionServer::on_cancel_request,
+                this))) {
+            (void)ros_ok(rclc_action_server_fini(&action_server_, node_));
+            fini_send_goal_request<ActionT>(send_goal_request_);
+            fini_result_response<ActionT>(result_response_);
+            fini_feedback_message<ActionT>(feedback_message_);
+            action_server_ = rclc_action_server_t{};
+            return;
+        }
+
+        if (!context_->register_action_tickable(this)) {
+            (void)ros_ok(rclc_action_server_fini(&action_server_, node_));
+            fini_send_goal_request<ActionT>(send_goal_request_);
+            fini_result_response<ActionT>(result_response_);
+            fini_feedback_message<ActionT>(feedback_message_);
+            action_server_ = rclc_action_server_t{};
+            return;
+        }
+
+        valid_ = true;
+    }
+
+    ActionServer(const ActionServer&) = delete;
+    ActionServer& operator=(const ActionServer&) = delete;
+    ActionServer(ActionServer&&) = delete;
+    ActionServer& operator=(ActionServer&&) = delete;
+
+    ~ActionServer()
+    {
+        fini();
+    }
+
+    bool valid() const noexcept { return valid_; }
+
+    /**
+     * @brief Advances the active goal and flushes terminal results when possible.
+     *
+     * The surrounding `Context` calls this after each executor spin. If an
+     * active goal is executing or canceling, the user-provided execute callback
+     * gets a chance to advance the state machine. Once the callback marks the
+     * goal terminal, the wrapper repeatedly retries `rclc_action_send_result()`
+     * until the result has been accepted by the upstream action machinery.
+     */
+    void tick() noexcept override
+    {
+        if (!valid_ || active_goal_handle_ == nullptr) {
+            return;
+        }
+
+        const GoalStatus current_status = to_goal_status(active_goal_handle_->status);
+        if (!terminal_result_pending_ &&
+            (current_status == GoalStatus::ACCEPTED ||
+             current_status == GoalStatus::EXECUTING ||
+             current_status == GoalStatus::CANCELING)) {
+            execute_callback_(goal_handle_);
+        }
+
+        if (terminal_result_pending_) {
+            flush_result();
+        }
+    }
+
+private:
+    /**
+     * @brief Handles an incoming goal request from the upstream `rclc` action server.
+     *
+     * The callback converts the generated send-goal request into the
+     * application-facing `GoalId` and `Goal` objects, enforces the single-active-goal
+     * policy, and records the accepted upstream goal handle for cooperative
+     * execution. Rejection is reported through the `goal_accepted` flag exposed
+     * by `rclc_action_goal_handle_t`.
+     *
+     * @param[in,out] goal_handle Upstream goal handle allocated by `rclc`.
+     * @param[in] args Wrapper instance passed through the executor context.
+     * @return `RCL_RET_OK` after updating the upstream acceptance flags.
+     */
+    static rcl_ret_t on_goal_request(rclc_action_goal_handle_t* goal_handle,
+                                     void* args) noexcept
+    {
+        if (goal_handle == nullptr || args == nullptr) {
+            return RCL_RET_INVALID_ARGUMENT;
+        }
+
+        auto* self = static_cast<ActionServer*>(args);
+        auto* request = static_cast<SendGoalRequest*>(goal_handle->ros_goal_request);
+        if (request == nullptr) {
+            return RCL_RET_ERROR;
+        }
+
+        const bool busy = self->active_goal_handle_ != nullptr;
+        if (busy) {
+            goal_handle->goal_accepted = false;
+            goal_handle->status = GOAL_STATE_UNKNOWN;
+            return RCL_RET_OK;
+        }
+
+        const GoalId goal_id = to_goal_id(request->goal_id);
+        const GoalResponse response = self->goal_callback_(goal_id, request->goal);
+        const bool accepted = response == GoalResponse::ACCEPT;
+        goal_handle->goal_accepted = accepted;
+        goal_handle->goal_cancelled = false;
+        goal_handle->status = accepted
+                              ? static_cast<decltype(goal_handle->status)>(GOAL_STATE_EXECUTING)
+                              : static_cast<decltype(goal_handle->status)>(GOAL_STATE_UNKNOWN);
+
+        if (!accepted) {
+            return RCL_RET_OK;
+        }
+
+        self->active_goal_handle_ = goal_handle;
+        self->active_goal_id_ = goal_id;
+        self->active_goal_ = request->goal;
+        self->terminal_status_ = GoalStatus::UNKNOWN;
+        self->terminal_result_pending_ = false;
+        self->goal_handle_.bind(goal_handle,
+                                self->active_goal_id_,
+                                &self->active_goal_,
+                                &self->feedback_message_,
+                                &self->result_response_,
+                                &self->terminal_status_,
+                                &self->terminal_result_pending_);
+        return RCL_RET_OK;
+    }
+
+    /**
+     * @brief Handles an incoming cancel request for the active goal.
+     *
+     * The server accepts cancellation only for the currently active goal.
+     * Accepted requests transition the upstream goal handle to the
+     * `CANCELING` state so the cooperative execute callback can finish the goal
+     * with `GoalHandle::cancel()`.
+     *
+     * @param[in,out] goal_handle Upstream goal handle targeted by the cancel request.
+     * @param[in] args Wrapper instance passed through the executor context.
+     * @return `true` when the cancel request is accepted; otherwise `false`.
+     */
+    static bool on_cancel_request(rclc_action_goal_handle_t* goal_handle,
+                                  void* args) noexcept
+    {
+        if (goal_handle == nullptr || args == nullptr) {
+            return false;
+        }
+
+        auto* self = static_cast<ActionServer*>(args);
+        if (self->active_goal_handle_ != goal_handle) {
+            return false;
+        }
+
+        goal_handle->status = GOAL_STATE_CANCELING;
+        return true;
+    }
+
+    /**
+     * @brief Attempts to flush a staged terminal result through upstream `rclc`.
+     *
+     * `rclc_action_send_result()` may report
+     * `RCLC_RET_ACTION_WAIT_RESULT_REQUEST` until the client has issued its
+     * result request. The wrapper preserves the staged result and retries on the
+     * next `Context::tick()`. Once the send succeeds, the active goal is
+     * released and the facade is reset for the next accepted request.
+     */
+    void flush_result() noexcept
+    {
+        if (active_goal_handle_ == nullptr) {
+            terminal_result_pending_ = false;
+            return;
+        }
+
+        if (ros_ok(rclc_action_send_result(
+                active_goal_handle_,
+                to_rcl_goal_status(terminal_status_),
+                &result_response_))) {
+            goal_handle_.unbind();
+            active_goal_handle_ = nullptr;
+            active_goal_id_ = GoalId{};
+            active_goal_ = Goal{};
+            terminal_status_ = GoalStatus::UNKNOWN;
+            terminal_result_pending_ = false;
+        }
+        // On failure the pending flag stays set for a later retry; ros_ok() has
+        // already cleared the error state.
+    }
+
+    /**
+     * @brief Releases action server resources owned by this wrapper.
+     *
+     * The wrapper unregisters itself from the context tick list and finalizes
+     * the generated message storage used by the upstream `rclc` action server.
+     * Because `rclc` does not currently expose executor removal APIs for action
+     * entities, applications should keep action wrappers alive until the owning
+     * context is torn down.
+     */
+    void fini() noexcept
+    {
+        if (context_ != nullptr) {
+            context_->unregister_action_tickable(this);
+        }
+        if (valid_) {
+            (void)ros_ok(rclc_action_server_fini(&action_server_, node_));
+        }
+        goal_handle_.unbind();
+        fini_send_goal_request<ActionT>(send_goal_request_);
+        fini_result_response<ActionT>(result_response_);
+        fini_feedback_message<ActionT>(feedback_message_);
+        action_server_ = rclc_action_server_t{};
+        active_goal_handle_ = nullptr;
+        terminal_result_pending_ = false;
+        valid_ = false;
+    }
+
+    rclc_action_server_t action_server_{};
+    rcl_node_t* node_ = nullptr;
+    Context* context_ = nullptr;
+    SendGoalRequest send_goal_request_{};
+    GetResultResponse result_response_{};
+    FeedbackMessage feedback_message_{};
+    GoalCbT goal_callback_{};
+    ExecuteCbT execute_callback_{};
+    rclc_action_goal_handle_t* active_goal_handle_ = nullptr;
+    GoalHandle<ActionT> goal_handle_{};
+    GoalId active_goal_id_{};
+    Goal active_goal_{};
+    GoalStatus terminal_status_ = GoalStatus::UNKNOWN;
+    bool terminal_result_pending_ = false;
+    bool valid_ = false;
+};
+
+template<typename ActionT, uint8_t MaxTrackedGoals = 4>
+class ActionClient final {
+public:
+    using traits = ::rosette::action_traits<ActionT>;
+    using Goal = typename traits::Goal;
+    using Result = typename traits::Result;
+    using Feedback = typename traits::Feedback;
+    using SendGoalRequest = typename traits::SendGoalRequest;
+    using GetResultResponse = typename traits::GetResultResponse;
+    using FeedbackMessage = typename traits::FeedbackMessage;
+
+    using GoalRespCb = void(*)(const GoalId&, bool, void*) noexcept;
+    using FeedbackCb = void(*)(const GoalId&, const Feedback&, void*) noexcept;
+    using ResultCb = void(*)(const GoalId&, GoalStatus, const Result&, void*) noexcept;
+
+    ActionClient() noexcept = default;
+
+    /**
+     * @brief Constructs a typed micro-ROS action client wrapper.
+     *
+     * The wrapper registers upstream action callbacks with the shared executor
+     * and tracks a fixed number of outstanding goals using the goal-handle
+     * pointers assigned by `rclc_action_send_goal_request()`.
+     *
+     * @param[in] node Initialized node that will own the action client.
+     * @param[in] context Running micro-ROS context whose executor dispatches action replies.
+     * @param[in] action_name ROS action name relative to the node namespace.
+     */
+    ActionClient(rcl_node_t* node,
+                 Context* context,
+                 const char* action_name) noexcept
+        : node_(node)
+        , context_(context)
+    {
+        static_assert(has_micro_ros_action_traits_v<ActionT>,
+                      "action_traits<ActionT>::rosidl_action_type_support() is required for micro-ROS actions");
+        static_assert(MaxTrackedGoals >= 1u, "MaxTrackedGoals must be at least 1");
+
+        if (node_ == nullptr || context_ == nullptr) {
+            return;
+        }
+
+        init_send_goal_request<ActionT>(send_goal_request_);
+        init_result_response<ActionT>(result_response_);
+        init_feedback_message<ActionT>(feedback_message_);
+
+        action_client_ = rclc_action_client_t{};
+        if (!ros_ok(rclc_action_client_init_default(
+                &action_client_,
+                node_,
+                traits::rosidl_action_type_support(),
+                action_name))) {
+            fini_send_goal_request<ActionT>(send_goal_request_);
+            fini_result_response<ActionT>(result_response_);
+            fini_feedback_message<ActionT>(feedback_message_);
+            return;
+        }
+
+        if (!ros_ok(rclc_executor_add_action_client(
+                &context_->executor(),
+                &action_client_,
+                MaxTrackedGoals,
+                &result_response_,
+                &feedback_message_,
+                &ActionClient::on_goal_response,
+                &ActionClient::on_feedback,
+                &ActionClient::on_result,
+                &ActionClient::on_cancel_response,
+                this))) {
+            (void)ros_ok(rclc_action_client_fini(&action_client_, node_));
+            fini_send_goal_request<ActionT>(send_goal_request_);
+            fini_result_response<ActionT>(result_response_);
+            fini_feedback_message<ActionT>(feedback_message_);
+            action_client_ = rclc_action_client_t{};
+            return;
+        }
+
+        valid_ = true;
+    }
+
+    ActionClient(const ActionClient&) = delete;
+    ActionClient& operator=(const ActionClient&) = delete;
+    ActionClient(ActionClient&&) = delete;
+    ActionClient& operator=(ActionClient&&) = delete;
+
+    ~ActionClient()
+    {
+        fini();
+    }
+
+    bool valid() const noexcept { return valid_; }
+
+    /**
+     * @brief Sends an action goal and registers callbacks for the goal lifecycle.
+     *
+     * The wrapper synthesizes a UUID using the micro-ROS client key plus a
+     * local monotonic sequence so callers do not need to construct goal IDs by
+     * hand on constrained targets.
+     *
+     * @param[in] goal Generated ROS action goal payload.
+     * @param[out] goal_id_out Receives the UUID used for the request.
+     * @param[in] goal_response_callback Optional callback for accept/reject notifications.
+     * @param[in] feedback_callback Optional callback for feedback samples.
+     * @param[in] result_callback Optional callback for terminal results.
+     * @param[in] user_data Opaque pointer forwarded to all callbacks.
+     * @return `true` if the goal request was accepted for transmission; otherwise `false`.
+     */
+    bool send_goal(const Goal& goal,
+                   GoalId& goal_id_out,
+                   GoalRespCb goal_response_callback = nullptr,
+                   FeedbackCb feedback_callback = nullptr,
+                   ResultCb result_callback = nullptr,
+                   void* user_data = nullptr) noexcept
+    {
+        if (!valid_) {
+            return false;
+        }
+
+        TrackedGoal* slot = reserve_slot();
+        if (slot == nullptr) {
+            return false;
+        }
+
+        const GoalId goal_id = generate_goal_id();
+        send_goal_request_.goal = goal;
+        copy_goal_id(goal_id, send_goal_request_.goal_id);
+
+        rclc_action_goal_handle_t* goal_handle = nullptr;
+        if (!ros_ok(rclc_action_send_goal_request(
+                &action_client_, &send_goal_request_, &goal_handle)) ||
+            goal_handle == nullptr) {
+            *slot = TrackedGoal{};
+            return false;
+        }
+
+        slot->goal_handle = goal_handle;
+        slot->goal_id = goal_id;
+        slot->goal_response_callback = goal_response_callback;
+        slot->feedback_callback = feedback_callback;
+        slot->result_callback = result_callback;
+        slot->user_data = user_data;
+        slot->in_use = true;
+
+        goal_id_out = goal_id;
+        return true;
+    }
+
+    /**
+     * @brief Requests goal cancellation for a previously sent goal.
+     *
+     * The wrapper looks up the tracked goal by UUID and delegates the cancel
+     * request to upstream `rclc`.
+     *
+     * @param[in] goal_id UUID returned from `send_goal()`.
+     * @return `true` if the cancel request was handed to `rclc`; otherwise `false`.
+     */
+    bool cancel_goal(const GoalId& goal_id) noexcept
+    {
+        TrackedGoal* slot = find_by_goal_id(goal_id);
+        if (slot == nullptr || slot->goal_handle == nullptr) {
+            return false;
+        }
+        return ros_ok(rclc_action_send_cancel_request(slot->goal_handle));
+    }
+
+    /**
+     * @brief Explicit result-request call site kept for symmetry with `send_goal()`.
+     *
+     * Upstream `rclc` manages action result requests internally after a goal is
+     * accepted, so no separate wire operation is needed here. The method
+     * returns whether the goal is still tracked, which keeps an explicit call
+     * site without misleading the application about the underlying transport
+     * behavior.
+     *
+     * @param[in] goal_id UUID returned from `send_goal()`.
+     * @return `true` if the goal is currently tracked; otherwise `false`.
+     */
+    bool request_result(const GoalId& goal_id) noexcept
+    {
+        return find_by_goal_id(goal_id) != nullptr;
+    }
+
+private:
+    struct TrackedGoal {
+        rclc_action_goal_handle_t* goal_handle = nullptr;
+        GoalId goal_id{};
+        GoalRespCb goal_response_callback = nullptr;
+        FeedbackCb feedback_callback = nullptr;
+        ResultCb result_callback = nullptr;
+        void* user_data = nullptr;
+        bool in_use = false;
+    };
+
+    /**
+     * @brief Handles an upstream goal response callback for a tracked goal.
+     *
+     * The callback resolves the corresponding tracked goal slot by upstream
+     * goal-handle pointer and forwards the acceptance outcome to the user
+     * callback. Rejected goals are released immediately because no further
+     * feedback or result traffic will arrive for them.
+     *
+     * @param[in] goal_handle Upstream goal handle referenced by the response.
+     * @param[in] accepted Whether the action server accepted the goal.
+     * @param[in] args Wrapper instance passed through the executor context.
+     */
+    static void on_goal_response(rclc_action_goal_handle_t* goal_handle,
+                                 bool accepted,
+                                 void* args) noexcept
+    {
+        if (goal_handle == nullptr || args == nullptr) {
+            return;
+        }
+
+        auto* self = static_cast<ActionClient*>(args);
+        TrackedGoal* slot = self->find_by_handle(goal_handle);
+        if (slot == nullptr) {
+            return;
+        }
+
+        if (slot->goal_response_callback != nullptr) {
+            slot->goal_response_callback(slot->goal_id, accepted, slot->user_data);
+        }
+
+        if (!accepted) {
+            *slot = TrackedGoal{};
+        }
+    }
+
+    /**
+     * @brief Handles an upstream feedback callback for a tracked goal.
+     *
+     * The generated feedback envelope includes both the goal UUID and the typed
+     * feedback payload. The wrapper forwards only the payload and cached UUID to
+     * the C++ callback so application code sees a tidy, backend-agnostic shape.
+     *
+     * @param[in] goal_handle Upstream goal handle referenced by the feedback.
+     * @param[in] ros_feedback Pointer to the generated feedback envelope.
+     * @param[in] args Wrapper instance passed through the executor context.
+     */
+    static void on_feedback(rclc_action_goal_handle_t* goal_handle,
+                            void* ros_feedback,
+                            void* args) noexcept
+    {
+        if (goal_handle == nullptr || ros_feedback == nullptr || args == nullptr) {
+            return;
+        }
+
+        auto* self = static_cast<ActionClient*>(args);
+        TrackedGoal* slot = self->find_by_handle(goal_handle);
+        if (slot == nullptr || slot->feedback_callback == nullptr) {
+            return;
+        }
+
+        const auto* feedback = static_cast<const FeedbackMessage*>(ros_feedback);
+        slot->feedback_callback(slot->goal_id, feedback->feedback, slot->user_data);
+    }
+
+    /**
+     * @brief Handles an upstream result callback for a tracked goal.
+     *
+     * The wrapper unwraps the generated result response into the portable
+     * `(GoalId, GoalStatus, Result)` shape used by Rosette and then releases the
+     * tracking slot because the goal lifecycle is complete from the client's
+     * perspective.
+     *
+     * @param[in] goal_handle Upstream goal handle referenced by the result.
+     * @param[in] ros_result_response Pointer to the generated result response.
+     * @param[in] args Wrapper instance passed through the executor context.
+     */
+    static void on_result(rclc_action_goal_handle_t* goal_handle,
+                          void* ros_result_response,
+                          void* args) noexcept
+    {
+        if (goal_handle == nullptr || ros_result_response == nullptr || args == nullptr) {
+            return;
+        }
+
+        auto* self = static_cast<ActionClient*>(args);
+        TrackedGoal* slot = self->find_by_handle(goal_handle);
+        if (slot == nullptr) {
+            return;
+        }
+
+        if (slot->result_callback != nullptr) {
+            const auto* response = static_cast<const GetResultResponse*>(ros_result_response);
+            slot->result_callback(slot->goal_id,
+                                  static_cast<GoalStatus>(response->status),
+                                  response->result,
+                                  slot->user_data);
+        }
+
+        *slot = TrackedGoal{};
+    }
+
+    /**
+     * @brief Handles an upstream cancel-response callback for a tracked goal.
+     *
+     * The current Rosette C++ action facade exposes cancellation through the
+     * terminal result callback rather than a dedicated cancel-response callback,
+     * so this hook intentionally keeps only the upstream state synchronized.
+     *
+     * @param[in] goal_handle Upstream goal handle referenced by the cancel response.
+     * @param[in] cancelled Whether the cancel request was accepted upstream.
+     * @param[in] args Wrapper instance passed through the executor context.
+     */
+    static void on_cancel_response(rclc_action_goal_handle_t* goal_handle,
+                                   bool cancelled,
+                                   void* args) noexcept
+    {
+        if (goal_handle == nullptr || args == nullptr) {
+            return;
+        }
+
+        auto* self = static_cast<ActionClient*>(args);
+        TrackedGoal* slot = self->find_by_handle(goal_handle);
+        if (slot == nullptr) {
+            return;
+        }
+
+        if (cancelled && slot->goal_handle != nullptr) {
+            slot->goal_handle->goal_cancelled = true;
+        }
+    }
+
+    /**
+     * @brief Reserves a free tracked-goal slot without allocating.
+     *
+     * @return Pointer to a free slot, or `nullptr` if the fixed table is full.
+     */
+    TrackedGoal* reserve_slot() noexcept
+    {
+        for (uint8_t i = 0u; i < MaxTrackedGoals; ++i) {
+            if (!tracked_goals_[i].in_use) {
+                return &tracked_goals_[i];
+            }
+        }
+        return nullptr;
+    }
+
+    /**
+     * @brief Finds a tracked goal by upstream goal-handle pointer.
+     *
+     * @param[in] goal_handle Upstream `rclc` goal-handle pointer.
+     * @return Matching tracked slot, or `nullptr` if none is active.
+     */
+    TrackedGoal* find_by_handle(rclc_action_goal_handle_t* goal_handle) noexcept
+    {
+        for (uint8_t i = 0u; i < MaxTrackedGoals; ++i) {
+            if (tracked_goals_[i].in_use && tracked_goals_[i].goal_handle == goal_handle) {
+                return &tracked_goals_[i];
+            }
+        }
+        return nullptr;
+    }
+
+    /**
+     * @brief Finds a tracked goal by UUID.
+     *
+     * @param[in] goal_id Goal UUID returned from `send_goal()`.
+     * @return Matching tracked slot, or `nullptr` if none is active.
+     */
+    TrackedGoal* find_by_goal_id(const GoalId& goal_id) noexcept
+    {
+        for (uint8_t i = 0u; i < MaxTrackedGoals; ++i) {
+            if (tracked_goals_[i].in_use && tracked_goals_[i].goal_id == goal_id) {
+                return &tracked_goals_[i];
+            }
+        }
+        return nullptr;
+    }
+
+    /**
+     * @brief Synthesizes a deterministic goal UUID for a new outbound request.
+     *
+     * The first four bytes carry the micro-ROS client key so different XRCE
+     * clients are unlikely to collide, while the trailing bytes embed a local
+     * monotonic sequence number.
+     *
+     * @return Fresh goal UUID for the next `send_goal()` call.
+     */
+    GoalId generate_goal_id() noexcept
+    {
+        GoalId goal_id{};
+        const uint32_t client_key = context_->options().client_key;
+        goal_id.uuid[0] = static_cast<uint8_t>(client_key >> 24u);
+        goal_id.uuid[1] = static_cast<uint8_t>(client_key >> 16u);
+        goal_id.uuid[2] = static_cast<uint8_t>(client_key >> 8u);
+        goal_id.uuid[3] = static_cast<uint8_t>(client_key);
+
+        const uint32_t sequence = next_goal_sequence_++;
+        goal_id.uuid[12] = static_cast<uint8_t>(sequence >> 24u);
+        goal_id.uuid[13] = static_cast<uint8_t>(sequence >> 16u);
+        goal_id.uuid[14] = static_cast<uint8_t>(sequence >> 8u);
+        goal_id.uuid[15] = static_cast<uint8_t>(sequence);
+        return goal_id;
+    }
+
+    /**
+     * @brief Releases action client resources owned by this wrapper.
+     *
+     * The tracked-goal table is cleared because callbacks can no longer arrive
+     * once the underlying action client handle is finalized.
+     */
+    void fini() noexcept
+    {
+        if (valid_) {
+            (void)ros_ok(rclc_action_client_fini(&action_client_, node_));
+        }
+        fini_send_goal_request<ActionT>(send_goal_request_);
+        fini_result_response<ActionT>(result_response_);
+        fini_feedback_message<ActionT>(feedback_message_);
+        action_client_ = rclc_action_client_t{};
+        for (uint8_t i = 0u; i < MaxTrackedGoals; ++i) {
+            tracked_goals_[i] = TrackedGoal{};
+        }
+        valid_ = false;
+    }
+
+    rclc_action_client_t action_client_{};
+    rcl_node_t* node_ = nullptr;
+    Context* context_ = nullptr;
+    SendGoalRequest send_goal_request_{};
+    GetResultResponse result_response_{};
+    FeedbackMessage feedback_message_{};
+    TrackedGoal tracked_goals_[MaxTrackedGoals] = {};
+    uint32_t next_goal_sequence_ = 1u;
+    bool valid_ = false;
+};
+
+}  // namespace rosette

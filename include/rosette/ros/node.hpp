@@ -1,200 +1,290 @@
 #pragma once
 
-#include "publisher.hpp"
-#include "service.hpp"
-#include "subscription.hpp"
-
-namespace milkros {
-
-// Forward declarations — full definitions in their respective headers.
-template<typename CallbackT>         class Timer;
-template<typename ServiceT, typename HandlerT> class Service;
-template<typename ServiceT, uint8_t MaxPending> class Client;
-template<typename ActionT, typename GoalCbT, typename ExecuteCbT> class ActionServer;
-template<typename ActionT>           class ActionClient;
-
-struct PublisherOptions;
-struct SubscriptionOptions;
-struct ServiceOptions;
-class Context;
-
-struct PublisherOptions {
-    rtps::ReliabilityKind reliability = rtps::ReliabilityKind::BEST_EFFORT;
-    rtps::DurabilityKind durability = rtps::DurabilityKind::VOLATILE;
-    rtps::TopicKind topic_kind = rtps::TopicKind::NO_KEY;
-};
-
-struct SubscriptionOptions {
-    rtps::ReliabilityKind reliability = rtps::ReliabilityKind::BEST_EFFORT;
-    rtps::DurabilityKind durability = rtps::DurabilityKind::VOLATILE;
-    rtps::TopicKind topic_kind = rtps::TopicKind::NO_KEY;
-    uint32_t heartbeat_response_ms = RTPS_HEARTBEAT_RESPONSE_DELAY_MS;
-};
-
 /**
- * @brief Lightweight ROS 2-like node facade.
+ * @file ros/node.hpp
+ * @brief Node wrapper that creates micro-ROS communication entities for Rosette.
  *
- * Analogous to `rclcpp::Node`.  A Node is a naming and factory surface over
- * a shared Context: it carries the node name and namespace and delegates all
- * entity creation to the Context.
- *
- * Lifecycle
- * ---------
- * Nodes are created via Context::create_node() and are lightweight value types
- * (just a Context reference + two fixed-size name buffers).  They may be
- * copied freely; all copies share the same Context.
- *
- * Factory methods
- * ---------------
- * Factories for Publisher and Subscription return by value (matches rclcpp API).
- * Factories for Timer, Service, Client, ActionServer, ActionClient return raw
- * pointers into the Context's pre-allocated pool.  The returned pointers are
- * stable for the Context's lifetime.  Never delete them manually.
+ * Design goal
+ * -----------
+ * `Node` is the object application code touches after a `Context` has started.
+ * It owns the `rcl_node_t` handle and exposes factory methods for publishers,
+ * subscriptions, timers, services, clients, and actions so user code can stay
+ * close to the shape of `rclcpp::Node` while staying MCU-friendly.
  *
  * Example
  * -------
- *   auto node = context.create_node("my_node", "/my_ns");
+ *   rosette::Context context;
+ *   context.start();
  *
- *   // Timer — auto-driven by context.tick_timers()
- *   auto* hb_timer = node.create_timer(500u, [&]() { pub.publish(msg); });
+ *   auto node = context.create_node("drive_controller", "/robot");
+ *   auto publisher = node.create_publisher<DriveState>("state");
+ *   auto timer = node.create_timer(10, [&]() noexcept {
+ *       DriveState state{};
+ *       publisher.publish(state);
+ *   });
  *
- *   // Service server
- *   auto* srv = node.create_service<AddTwoInts>("add_two_ints",
- *       [](const Request& req, Response& resp) {
- *           resp.sum = req.a + req.b;
- *       });
+ * Features
+ * --------
+ * - Typed factories for all primary ROS 2 communication patterns.
+ * - No dynamic ownership graph: entity wrappers own their own `rcl` handles.
+ * - Mirrors the mental model of `rclcpp::Node` while remaining MCU-friendly.
  *
- *   // Service client
- *   auto* client = node.create_client<AddTwoInts>("add_two_ints");
- *   client->async_send_request(req,
- *       [](const Response& r, void* ud) { ... }, nullptr);
- *
- *   // Action server
- *   auto* server = node.create_action_server<Fibonacci>("fibonacci",
- *       [](const GoalId& id, const Goal& g) { return GoalResponse::ACCEPT; },
- *       [](GoalHandle<Fibonacci>& h) {
- *           if (done) h.succeed(result);
- *           else      h.publish_feedback(fb);
- *       });
- *
- *   // Action client
- *   auto* ac = node.create_action_client<Fibonacci>("fibonacci");
- *   GoalId gid{};
- *   ac->send_goal(goal, gid, on_goal_resp, on_feedback, on_result, nullptr);
+ * Caveats
+ * -------
+ * - The `Context` must already be started before constructing a node.
+ * - Entity lifetimes should not outlive the node or context that created them.
  */
+
+#include "action.hpp"
+#include "context.hpp"
+#include "service.hpp"
+#include "timer.hpp"
+#include "topic.hpp"
+
+#include <optional>
+
+namespace rosette {
+
 class Node {
 public:
-    Node(Context&    context,
+    Node() noexcept = default;
+
+    /**
+     * @brief Constructs a micro-ROS node wrapper over a started context.
+     *
+     * The node is a thin owner of `rcl_node_t`. Communication entities created
+     * from it inherit the context's transport, executor, and XRCE session.
+     *
+     * @param[in] context Started micro-ROS context that owns support and executor state.
+     * @param[in] name ROS node name.
+     * @param[in] node_namespace ROS namespace for relative entity names.
+     */
+    Node(Context* context,
          const char* name,
-         const char* node_namespace,
-         int         node_index = -1) noexcept;
+         const char* node_namespace) noexcept
+        : context_(context)
+    {
+        if (context_ == nullptr || !context_->started()) {
+            return;
+        }
 
-    // ---- Topics ----
+        node_ = rcl_get_zero_initialized_node();
+        if (!ros_ok(rclc_node_init_default(
+                &node_, name, node_namespace, &context_->support()))) {
+            node_ = rcl_get_zero_initialized_node();
+            return;
+        }
 
+        valid_ = true;
+    }
+
+    Node(const Node&) = delete;
+    Node& operator=(const Node&) = delete;
+
+    Node(Node&& other) noexcept
+        : node_(other.node_)
+        , context_(other.context_)
+        , valid_(other.valid_)
+    {
+        other.node_ = rcl_get_zero_initialized_node();
+        other.context_ = nullptr;
+        other.valid_ = false;
+    }
+
+    Node& operator=(Node&& other) noexcept
+    {
+        if (this != &other) {
+            fini();
+            node_ = other.node_;
+            context_ = other.context_;
+            valid_ = other.valid_;
+            other.node_ = rcl_get_zero_initialized_node();
+            other.context_ = nullptr;
+            other.valid_ = false;
+        }
+        return *this;
+    }
+
+    ~Node()
+    {
+        fini();
+    }
+
+    bool valid() const noexcept { return valid_; }
+    rcl_node_t* native_handle() noexcept { return valid_ ? &node_ : nullptr; }
+    Context* context() noexcept { return context_; }
+
+    /**
+     * @brief Creates a typed publisher attached to this node.
+     *
+     * @param[in] topic ROS topic name relative to the node namespace.
+     * @param[in] options QoS and transport-session settings for the publisher.
+     * @return Publisher wrapper. `valid()` is false on initialization failure.
+     */
     template<typename MessageT>
     Publisher<MessageT> create_publisher(
         const char* topic,
-        const PublisherOptions& options = {}) noexcept;
+        const PublisherOptions& options = {}) noexcept
+    {
+        return Publisher<MessageT>(&node_, context_, topic, options);
+    }
 
+    /**
+     * @brief Creates a typed subscription attached to this node.
+     *
+     * @param[in] topic ROS topic name relative to the node namespace.
+     * @param[in] callback Message callback invoked from the shared executor.
+     * @param[in] options QoS settings for the subscription.
+     * @return Subscription wrapper. `valid()` is false on initialization failure.
+     */
     template<typename MessageT, typename CallbackT>
     Subscription<MessageT, CallbackT> create_subscription(
         const char* topic,
-        CallbackT   callback,
-        const SubscriptionOptions& options = {}) noexcept;
-
-
-    // ---- Timers ----
-
-    /**
-     * @brief Create a periodic timer registered with the Context.
-     *
-     * The timer fires every period_ms milliseconds, driven by the Context's
-     * tick_timers() call.  The returned pointer is stable for the Context's
-     * lifetime; never delete or move the object it points to.
-     *
-     * @param period_ms  Period in milliseconds (must be > 0).
-     * @param callback   Zero-argument callable, e.g. []() { ... }.
-     * @returns Stable pointer to the registered Timer, or nullptr if the
-     *          Context timer pool is full or the callback is too large.
-     */
-    template<typename CallbackT>
-    Timer<CallbackT>* create_timer(uint32_t period_ms, CallbackT callback) noexcept;
-
-    // ---- Services ----
+        CallbackT callback,
+        const SubscriptionOptions& options = {}) noexcept
+    {
+        return Subscription<MessageT, CallbackT>(
+            &node_, context_, topic, static_cast<CallbackT&&>(callback), options);
+    }
 
     /**
-     * @brief Create a service server.
+     * @brief Creates a periodic timer attached to the shared executor.
      *
-     * Topic names follow the ROS 2 convention:
-     *   rq/<namespace>/<service_name>Request
-     *   rr/<namespace>/<service_name>Reply
-     *
-     * @param service_name  Service name (without namespace prefix).
-     * @param handler       Callable: void(const Request&, Response&) noexcept
-     * @param options       Reliability and durability QoS settings.
-     * @returns Stable pointer to the Service, or nullptr on failure.
+     * @param[in] period_ms Timer period in milliseconds.
+     * @param[in] callback Timer callback invoked by the executor.
+     * @return Timer wrapper. `valid()` is false on initialization failure.
      */
-    template<typename ServiceT, typename HandlerT>
-    Service<ServiceT, HandlerT>* create_service(
+    template<typename F>
+    Timer create_timer(uint32_t period_ms, F&& callback) noexcept
+    {
+        return Timer(context_, period_ms, static_cast<F&&>(callback));
+    }
+
+    /**
+     * @brief Constructs a timer directly into a caller-owned slot.
+     *
+     * Modules hold their entities as `std::optional<...>` so they can be torn
+     * down and rebuilt across an Agent reconnect. This overload emplaces into
+     * that slot without a move.
+     */
+    template<typename F>
+    void create_timer(std::optional<Timer>& slot, uint32_t period_ms, F&& callback) noexcept
+    {
+        slot.emplace(context_, period_ms, static_cast<F&&>(callback));
+    }
+
+    /**
+     * @brief Creates a typed service server attached to this node.
+     *
+     * @param[in] service_name ROS service name relative to the node namespace.
+     * @param[in] handler Request handler invoked as `handler(const Request&, Response&)`.
+     * @param[in] options QoS and session-timeout settings for the service.
+     * @return Service wrapper. `valid()` is false on initialization failure.
+     */
+    template<typename ServiceT, typename F>
+    Service<ServiceT> create_service(
         const char* service_name,
-        HandlerT    handler,
-        const ServiceOptions& options = {}) noexcept;
+        F&& handler,
+        const ServiceOptions& options = {}) noexcept
+    {
+        return Service<ServiceT>(
+            &node_, context_, service_name, static_cast<F&&>(handler), options);
+    }
 
     /**
-     * @brief Create a service client.
+     * @brief Constructs a service directly into a caller-owned slot (see
+     * `create_timer(std::optional<Timer>&, ...)`).
+     */
+    template<typename ServiceT, typename F>
+    void create_service(
+        std::optional<Service<ServiceT>>& slot,
+        const char* service_name,
+        F&& handler,
+        const ServiceOptions& options = {}) noexcept
+    {
+        slot.emplace(&node_, context_, service_name, static_cast<F&&>(handler), options);
+    }
+
+    /**
+     * @brief Creates a typed async service client attached to this node.
      *
-     * @tparam MaxPending  Maximum concurrent in-flight requests (default 4).
-     * @param service_name  Service name (must match the server's service_name).
-     * @param options       Reliability and durability QoS settings.
-     * @returns Stable pointer to the Client, or nullptr on failure.
+     * @param[in] service_name ROS service name relative to the node namespace.
+     * @param[in] options QoS and session-timeout settings for the client.
+     * @return Client wrapper. `valid()` is false on initialization failure.
      */
     template<typename ServiceT, uint8_t MaxPending = 4>
-    Client<ServiceT, MaxPending>* create_client(
+    Client<ServiceT, MaxPending> create_client(
         const char* service_name,
-        const ServiceOptions& options = {}) noexcept;
-
-    // ---- Actions ----
+        const ServiceOptions& options = {}) noexcept
+    {
+        return Client<ServiceT, MaxPending>(&node_, context_, service_name, options);
+    }
 
     /**
-     * @brief Create an action server (full ROS 2 action protocol).
+     * @brief Creates a typed action server attached to this node.
      *
-     * Allocates 5 writers + 3 readers from the participant.
-     * Requires RTPS_MAX_USER_WRITERS >= 8 and RTPS_MAX_USER_READERS >= 8.
+     * The action server uses cooperative execution: the goal callback accepts
+     * or rejects the request, and the execute callback advances the active goal
+     * on each `Context::tick()`.
      *
-     * @param action_name  Action name (e.g. "fibonacci").
-     * @param goal_cb      GoalResponse(const GoalId&, const Goal&) noexcept
-     * @param execute_cb   void(GoalHandle<ActionT>&) noexcept
-     *                     Called every tick while goal is EXECUTING or CANCELING.
-     * @returns Stable pointer to ActionServer, or nullptr on failure.
+     * @param[in] action_name ROS action name relative to the node namespace.
+     * @param[in] goal_callback Goal accept/reject callback.
+     * @param[in] execute_callback Cooperative execution callback.
+     * @return Action server wrapper. `valid()` is false on initialization failure.
      */
     template<typename ActionT, typename GoalCbT, typename ExecuteCbT>
-    ActionServer<ActionT, GoalCbT, ExecuteCbT>* create_action_server(
+    ActionServer<ActionT, GoalCbT, ExecuteCbT> create_action_server(
         const char* action_name,
-        GoalCbT     goal_cb,
-        ExecuteCbT  execute_cb) noexcept;
+        GoalCbT goal_callback,
+        ExecuteCbT execute_callback) noexcept
+    {
+        return ActionServer<ActionT, GoalCbT, ExecuteCbT>(
+            &node_,
+            context_,
+            action_name,
+            static_cast<GoalCbT&&>(goal_callback),
+            static_cast<ExecuteCbT&&>(execute_callback));
+    }
 
     /**
-     * @brief Create an action client (full ROS 2 action protocol).
+     * @brief Creates a typed action client attached to this node.
      *
-     * Allocates 3 writers + 5 readers from the participant.
-     * Requires RTPS_MAX_USER_WRITERS >= 8 and RTPS_MAX_USER_READERS >= 8.
-     *
-     * @param action_name  Action name (must match the server).
-     * @returns Stable pointer to ActionClient, or nullptr on failure.
+     * @param[in] action_name ROS action name relative to the node namespace.
+     * @return Action client wrapper. `valid()` is false on initialization failure.
      */
-    template<typename ActionT>
-    ActionClient<ActionT>* create_action_client(const char* action_name) noexcept;
-
-    // ---- Accessors ----
-
-    const char* name()           const noexcept { return name_; }
-    const char* node_namespace() const noexcept { return namespace_; }
+    template<typename ActionT, uint8_t MaxTrackedGoals = 4>
+    ActionClient<ActionT, MaxTrackedGoals> create_action_client(
+        const char* action_name) noexcept
+    {
+        return ActionClient<ActionT, MaxTrackedGoals>(&node_, context_, action_name);
+    }
 
 private:
-    Context& context_;
-    char     name_[32]      = {};
-    char     namespace_[64] = {};
-    int      node_index_    = -1;  ///< Index into Context::graph_.nodes[]; -1 if untracked.
+    /**
+     * @brief Finalizes the underlying `rcl_node_t`.
+     *
+     * Child entities are expected to be destroyed before the node. Finalizing
+     * the node invalidates all relative topic, service, and action handles that
+     * were created from it.
+     */
+    void fini() noexcept
+    {
+        if (valid_) {
+            (void)ros_ok(rcl_node_fini(&node_));
+        }
+        node_ = rcl_get_zero_initialized_node();
+        valid_ = false;
+    }
+
+    rcl_node_t node_ = rcl_get_zero_initialized_node();
+    Context* context_ = nullptr;
+    bool valid_ = false;
 };
 
-} // namespace milkros
+inline Node Context::create_node(const char* name,
+                                 const char* node_namespace) noexcept
+{
+    return Node(this, name, node_namespace);
+}
+
+}  // namespace rosette

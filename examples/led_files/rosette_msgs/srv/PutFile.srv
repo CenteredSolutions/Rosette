@@ -1,0 +1,8 @@
+# Store a blob on the device file store under a key. Contents are opaque to
+# the firmware; the key charset is [A-Za-z0-9._-]. body is bounded (see the
+# colcon.meta RMW_UXRCE buffer sizes).
+string key
+string body
+---
+bool success
+string message
