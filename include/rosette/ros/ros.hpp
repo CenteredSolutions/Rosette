@@ -37,8 +37,8 @@
 
 #include "common.hpp"
 #include "context.hpp"
-#include "mdns_agent_locator.hpp"
-#include "multicast_agent_locator.hpp"
+#include "agent_locator_mdns.hpp"
+#include "agent_locator_xrce.hpp"
 #include "node.hpp"
 
 #include "app.hpp"

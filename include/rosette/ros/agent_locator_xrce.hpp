@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file ros/multicast_agent_locator.hpp
+ * @file ros/agent_locator_xrce.hpp
  * @brief Upstream-compatible Micro XRCE-DDS Agent discovery over UDP multicast.
  *
  * Design goal

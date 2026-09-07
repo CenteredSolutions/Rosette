@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file ros/mdns_agent_locator.hpp
+ * @file ros/agent_locator_mdns.hpp
  * @brief Agent discovery through multicast DNS and DNS-SD.
  *
  * Design goal
