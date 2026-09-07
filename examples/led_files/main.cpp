@@ -250,7 +250,7 @@ int main()
             std::printf("[led_files] %s\n",
                         was_connected ? "agent connected" : "agent lost, retrying");
         }
-        rosette_platform_delay_ms(app.connected() ? 5u : 200u);
+        rosette_platform_wait_for_event(app.connected() ? 5u : 200u);
     }
 }
 
