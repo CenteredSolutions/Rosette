@@ -570,6 +570,21 @@ public:
             return 0u;
         }
 
+        rosette::net::SocketAddress group{};
+        if (!rosette::net::inet::make_socket_address_v4(
+                config_.multicast_group, config_.multicast_port, group)) {
+            return 0u;
+        }
+
+        // Wiznet hardware sockets latch multicast membership into the socket
+        // mode register at OPEN time, so this must happen before bind()
+        // (which is what triggers the OPEN command), not after.
+        const auto membership = rosette::net::make_multicast_membership_v4(
+            group.ipv4(), {0u, 0u, 0u, 0u}, config_.multicast_port);
+        if (socket->joinMulticastGroup(membership) != 0) {
+            return 0u;
+        }
+
         const auto local =
             rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u);
         if (socket->bind(local) != 0) {
@@ -577,12 +592,6 @@ public:
         }
 
         if (socket->set_receive_timeout(config_.receive_timeout_ms) != 0) {
-            return 0u;
-        }
-
-        rosette::net::SocketAddress group{};
-        if (!rosette::net::inet::make_socket_address_v4(
-                config_.multicast_group, config_.multicast_port, group)) {
             return 0u;
         }
 
