@@ -17,3 +17,12 @@ target_include_directories(mdns_wire_test
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
 target_compile_options(mdns_wire_test PRIVATE -Wall -Wextra)
 add_test(NAME mdns_wire_test COMMAND mdns_wire_test)
+
+# WIZnet chip-trait SPI frame encoding (W5100S regression + W6100 / W6300).
+add_executable(wiznet_header_test wiznet_header_test.cpp)
+target_include_directories(wiznet_header_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/net)
+target_compile_definitions(wiznet_header_test PRIVATE ROSETTE_NO_FREERTOS)
+target_compile_options(wiznet_header_test PRIVATE -Wall -Wextra)
+add_test(NAME wiznet_header_test COMMAND wiznet_header_test)

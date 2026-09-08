@@ -77,7 +77,9 @@ public:
     void hardware_reset() noexcept
     {
         const auto lock = bus_.acquire();
-        write_u8(Chip::common_mode(), 0x80u);
+        // How a part is reset (and, on the W61xx/W63xx, unlocked for network
+        // config) is chip-specific; the trait issues the register writes.
+        Chip::reset([this](address_type addr, uint8_t value) { write_u8(addr, value); });
     }
 
     void set_mac_address(const std::array<uint8_t, 6>& mac) noexcept
@@ -105,11 +107,14 @@ public:
             return InvalidChipVersion{version, Chip::chip_version()};
         }
 
+        // MACRAW gives the whole buffer memory to socket 0; the other sockets
+        // are unused in this mode. Socket 0's buffer spans the region from
+        // offset 0.
         write_u8(Chip::socket_tx_buffer_size(Chip::macraw_socket()), Chip::socket_tx_buffer_kib());
         write_u8(Chip::socket_rx_buffer_size(Chip::macraw_socket()), Chip::socket_rx_buffer_kib());
-        // XXX: This assumes the macraw socket is #0, which is assumable
-        socket_rx_bases_[Chip::macraw_socket()] = Chip::rx_buffer_base();
-        socket_tx_bases_[Chip::macraw_socket()] = Chip::tx_buffer_base();
+        buffers_[Chip::macraw_socket()] = SocketBuffer{
+            0u, static_cast<uint16_t>(Chip::socket_tx_buffer_kib() * 1024u),
+            0u, static_cast<uint16_t>(Chip::socket_rx_buffer_kib() * 1024u)};
 
         set_mac_address(mac);
         write_u8(Chip::common_socket_interrupt_mask(),
@@ -134,24 +139,30 @@ public:
             return InvalidChipVersion{version, Chip::chip_version()};
         }
 
-        address_type rx_base = Chip::rx_buffer_base();
-        address_type tx_base = Chip::tx_buffer_base();
+        // Split the buffer memory evenly across the sockets. Each socket's
+        // buffer offset is the running sum of the sizes actually assigned, so
+        // the layout the driver caches always matches the layout it wrote.
+        const uint8_t tx_kib = Chip::socket_tx_buffer_kib() / Chip::socket_count();
+        const uint8_t rx_kib = Chip::socket_rx_buffer_kib() / Chip::socket_count();
+        const uint16_t tx_size = static_cast<uint16_t>(tx_kib * 1024u);
+        const uint16_t rx_size = static_cast<uint16_t>(rx_kib * 1024u);
+        uint16_t tx_offset = 0u;
+        uint16_t rx_offset = 0u;
         for (socket_type socket = 0; socket < Chip::socket_count(); ++socket) {
-            write_u8(Chip::socket_tx_buffer_size(socket), Chip::socket_tx_buffer_kib() / Chip::socket_count());
-            write_u8(Chip::socket_rx_buffer_size(socket), Chip::socket_rx_buffer_kib() / Chip::socket_count());
+            write_u8(Chip::socket_tx_buffer_size(socket), tx_kib);
+            write_u8(Chip::socket_rx_buffer_size(socket), rx_kib);
+            buffers_[socket] = SocketBuffer{tx_offset, tx_size, rx_offset, rx_size};
+            tx_offset = static_cast<uint16_t>(tx_offset + tx_size);
+            rx_offset = static_cast<uint16_t>(rx_offset + rx_size);
             write_u8(Chip::socket_interrupt_mask(socket), 0u);
-            write_u8(Chip::socket_interrupt(socket), 0xFFu);
+            clear_socket_interrupt(socket, 0xFFu);
             issue_socket_command(socket, Chip::command_close());
             send_pending_[socket] = false;
-            socket_rx_bases_[socket] = rx_base;
-            socket_tx_bases_[socket] = tx_base;
-            rx_base += static_cast<address_type>(1024 * Chip::socket_rx_buffer_kib() / Chip::socket_count());
-            tx_base += static_cast<address_type>(1024 * Chip::socket_tx_buffer_kib() / Chip::socket_count());
         }
 
         set_mac_address(mac);
         write_u8(Chip::common_socket_interrupt_mask(), 0u);
-        write_u8(Chip::common_interrupt(), 0xFFu);
+        clear_common_interrupt(0xFFu);
         mode_ = DeviceMode::socket;
         return std::monostate{};
     }
@@ -257,7 +268,7 @@ public:
                     static_cast<uint8_t>(socket_interrupt & Chip::socket_interrupt_receive());
 
                 if (receive_interrupt != 0u) {
-                    write_u8(Chip::socket_interrupt(socket), receive_interrupt);
+                    clear_socket_interrupt(socket, receive_interrupt);
                     tasks[socket] = socket_rx_tasks_[socket];
                 }
 
@@ -265,7 +276,7 @@ public:
             }
 
             if (common_ack != 0u) {
-                write_u8(Chip::common_interrupt(), common_ack);
+                clear_common_interrupt(common_ack);
             }
         }
 
@@ -361,11 +372,7 @@ public:
         wait_pending_send(socket);
 
         uint16_t pointer = socket_tx_write_pointer(socket);
-        pointer = ring_write(socket,
-                             socket_tx_buffer_base(socket),
-                             pointer,
-                             frame,
-                             required);
+        pointer = ring_write(socket, pointer, frame, required);
         set_socket_tx_write_pointer(socket, pointer);
         issue_socket_command(socket, Chip::command_send());
         send_pending_[socket] = true;
@@ -422,7 +429,7 @@ public:
         write_u8(Chip::common_socket_interrupt_mask(),
                  static_cast<uint8_t>(read_u8(Chip::common_socket_interrupt_mask()) &
                                       ~static_cast<uint8_t>(1u << socket)));
-        write_u8(Chip::socket_interrupt(socket), 0xFFu);
+        clear_socket_interrupt(socket, 0xFFu);
         issue_socket_command(socket, Chip::command_close());
     }
 
@@ -468,11 +475,7 @@ public:
         wait_pending_send(socket);
 
         uint16_t pointer = socket_tx_write_pointer(socket);
-        pointer = ring_write(socket,
-                             socket_tx_buffer_base(socket),
-                             pointer,
-                             data,
-                             required);
+        pointer = ring_write(socket, pointer, data, required);
         set_socket_tx_write_pointer(socket, pointer);
         issue_socket_command(socket, Chip::command_send());
         send_pending_[socket] = true;
@@ -537,18 +540,14 @@ public:
         return socket_rx_received_size(socket);
     }
 
-    // Sn_RXBUF_SIZE / Sn_TXBUF_SIZE are single-byte registers holding the KiB
-    // allocation. A 16-bit read here straddles into the neighbouring register
-    // (Sn_TXBUF_SIZE / Sn_TX_FSR), so the size must be read one byte at a time.
-    uint16_t socket_rx_capacity(socket_type socket) noexcept
-    {
-        return static_cast<uint16_t>(read_u8(Chip::socket_rx_buffer_size(socket)) * 1024u);
-    }
+    /// Socket RX / TX buffer capacity in bytes, as configured by the last
+    /// init_*(). Zero for a socket that has not been set up.
+    uint16_t socket_rx_capacity(socket_type socket) const noexcept { return buffers_[socket].rx_size; }
+    uint16_t socket_tx_capacity(socket_type socket) const noexcept { return buffers_[socket].tx_size; }
 
-    uint16_t socket_tx_capacity(socket_type socket) noexcept
-    {
-        return static_cast<uint16_t>(read_u8(Chip::socket_tx_buffer_size(socket)) * 1024u);
-    }
+    /// Bus address of socket's RX / TX buffer base. Valid after an init_*() call.
+    address_type rx_buffer_address(socket_type socket) const noexcept { return rx_buffer_addr(socket, 0u); }
+    address_type tx_buffer_address(socket_type socket) const noexcept { return tx_buffer_addr(socket, 0u); }
 
 private:
     static bool is_multicast_ipv4(const std::array<uint8_t, 4>& address) noexcept
@@ -663,7 +662,7 @@ private:
             }
         }
         send_pending_[socket] = false;
-        write_u8(Chip::socket_interrupt(socket), Chip::socket_interrupt_send_ok());
+        clear_socket_interrupt(socket, Chip::socket_interrupt_send_ok());
     }
 
     /**
@@ -677,10 +676,23 @@ private:
     void ack_socket_rx_interrupt(socket_type socket) noexcept
     {
 #ifdef ROSETTE_NO_FREERTOS
-        write_u8(Chip::socket_interrupt(socket), Chip::socket_interrupt_receive());
+        clear_socket_interrupt(socket, Chip::socket_interrupt_receive());
 #else
         (void)socket;
 #endif
+    }
+
+    // Sn_IR / IR are write-1-to-clear on the W5100S, but a separate write-only
+    // *CLR register on the W61xx/W63xx. `Chip::socket_interrupt_clear()` /
+    // `Chip::common_interrupt_clear()` name whichever register takes the ack.
+    void clear_socket_interrupt(socket_type socket, uint8_t bits) noexcept
+    {
+        write_u8(Chip::socket_interrupt_clear(socket), bits);
+    }
+
+    void clear_common_interrupt(uint8_t bits) noexcept
+    {
+        write_u8(Chip::common_interrupt_clear(), bits);
     }
 
     uint16_t socket_rx_received_size(socket_type socket) noexcept
@@ -713,74 +725,85 @@ private:
         write_u16(Chip::socket_tx_write_pointer(socket), pointer);
     }
 
-    constexpr uint16_t socket_tx_buffer_offset(socket_type socket)
-    {
-        return socket_tx_bases_[socket];
-    }
-
-    constexpr uint16_t socket_rx_buffer_offset(socket_type socket)
-    {
-        return socket_rx_bases_[socket];
-    }
-
-    address_type socket_tx_buffer_base(socket_type socket)
-    {
-        return static_cast<address_type>(Chip::tx_buffer_base() + socket_tx_buffer_offset(socket));
-    }
-
-    address_type socket_rx_buffer_base(socket_type socket)
-    {
-        return static_cast<address_type>(Chip::rx_buffer_base() + socket_rx_buffer_offset(socket));
-    }
-
     static address_type ring_skip(address_type pointer, uint16_t length) noexcept
     {
         return static_cast<address_type>(pointer + length);
     }
 
+    // Bus address of a byte offset within a socket's RX / TX buffer.
+    //
+    // Two hardware layouts: parts with one shared buffer region carve it into
+    // per-socket spans (`buffers_[socket].rx_offset` is where this socket's span
+    // starts, filled by init_*()); parts with `Chip::per_socket_buffer_blocks()`
+    // give each socket its own address block starting at 0.
+    address_type rx_buffer_addr(socket_type socket, uint16_t offset) const noexcept
+    {
+        if constexpr (Chip::per_socket_buffer_blocks()) {
+            return Chip::rx_buffer_block_addr(socket, offset);
+        } else {
+            return static_cast<address_type>(Chip::rx_buffer_base() + buffers_[socket].rx_offset + offset);
+        }
+    }
+
+    address_type tx_buffer_addr(socket_type socket, uint16_t offset) const noexcept
+    {
+        if constexpr (Chip::per_socket_buffer_blocks()) {
+            return Chip::tx_buffer_block_addr(socket, offset);
+        } else {
+            return static_cast<address_type>(Chip::tx_buffer_base() + buffers_[socket].tx_offset + offset);
+        }
+    }
+
+    // Reads `length` bytes from the socket's RX ring starting at `pointer`. On
+    // parts whose buffer hardware wraps on its own (`Chip::auto_wrap()`) the
+    // pointer is handed over as-is; otherwise the read is split at the
+    // buffer-size boundary here.
     address_type ring_read(socket_type socket,
                        address_type pointer,
                        uint8_t* data,
                        uint16_t length) noexcept
     {
-        const address_type base = socket_rx_buffer_offset(socket);
         const uint16_t buf_size = socket_rx_capacity(socket);
         if ((buf_size == 0u) || (data == nullptr) || (length == 0u)) {
             return pointer;
         }
 
-        const address_type offset = static_cast<address_type>(pointer % buf_size);
-        const uint16_t head = static_cast<uint16_t>(buf_size - offset);
+        if (Chip::auto_wrap()) {
+            read(rx_buffer_addr(socket, static_cast<uint16_t>(pointer)), data, length);
+            return ring_skip(pointer, length);
+        }
 
+        const uint16_t offset = static_cast<uint16_t>(pointer % buf_size);
+        const uint16_t head = static_cast<uint16_t>(buf_size - offset);
         if (length > head) {
-            read(base + offset, data, head);
-            read(base, data + head, static_cast<uint16_t>(length - head));
+            read(rx_buffer_addr(socket, offset), data, head);
+            read(rx_buffer_addr(socket, 0u), data + head, static_cast<uint16_t>(length - head));
         } else {
-            read(base + offset, data, length);
+            read(rx_buffer_addr(socket, offset), data, length);
         }
 
         return ring_skip(pointer, length);
     }
 
+    // Mirror of `ring_read` for the TX ring.
     address_type ring_write(socket_type socket,
-                        address_type base,
                         address_type pointer,
                         const uint8_t* data,
                         uint16_t length) noexcept
     {
-        address_type tx_offset = socket_tx_buffer_offset(socket);
         if (Chip::auto_wrap()) {
-            write(tx_offset + pointer, data, length);
+            write(tx_buffer_addr(socket, static_cast<uint16_t>(pointer)), data, length);
+            return ring_skip(pointer, length);
+        }
+
+        const uint16_t buffer_size = socket_tx_capacity(socket);
+        const uint16_t addr = static_cast<uint16_t>(pointer % buffer_size);
+        if (addr + length <= buffer_size) {
+            write(tx_buffer_addr(socket, addr), data, length);
         } else {
-            const uint16_t buffer_size = socket_tx_capacity(socket);
-            const uint16_t addr = pointer % buffer_size;
-            if (addr + length <= buffer_size) {
-                write(tx_offset + addr, data, length);
-            } else {
-                const uint16_t n = buffer_size - addr;
-                write(tx_offset + addr, data, n);
-                write(tx_offset, data + n, length - n);
-            }
+            const uint16_t n = static_cast<uint16_t>(buffer_size - addr);
+            write(tx_buffer_addr(socket, addr), data, n);
+            write(tx_buffer_addr(socket, 0u), data + n, static_cast<uint16_t>(length - n));
         }
 
         return ring_skip(pointer, length);
@@ -792,8 +815,20 @@ private:
     std::array<TaskHandle_t, Chip::socket_count()> socket_rx_tasks_{};
 #endif
     mode_type mode_ = DeviceMode::uninitialized;
-    std::array<address_type, Chip::socket_count()> socket_rx_bases_{};
-    std::array<address_type, Chip::socket_count()> socket_tx_bases_{};
+
+    // Per-socket buffer layout, configured once by the last init_*() and never
+    // changed by the chip on its own — so it is cached here rather than re-read
+    // over SPI on every packet. `*_offset` is the byte offset of this socket's
+    // buffer within the chip's shared buffer region (used only when
+    // `!Chip::per_socket_buffer_blocks()`); `*_size` is its capacity in bytes.
+    struct SocketBuffer {
+        uint16_t tx_offset = 0u;
+        uint16_t tx_size = 0u;
+        uint16_t rx_offset = 0u;
+        uint16_t rx_size = 0u;
+    };
+    std::array<SocketBuffer, Chip::socket_count()> buffers_{};
+
     // A SEND was issued on this socket and its Sn_IR.SENDOK has not been
     // drained yet; see wait_pending_send().
     std::array<bool, Chip::socket_count()> send_pending_{};

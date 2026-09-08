@@ -16,6 +16,8 @@
  *   2. add its `#include` below (guard with `__has_include` so boards that
  *      never select it still build without the header present)
  *   3. set `#define ROSETTE_WIZNET_CHIP WXXXX` in that board's board_config.h
+ *
+ * `w6x00.hpp` defines both `W6100` and `W6300` (they share a register map).
  */
 
 #pragma once
@@ -25,8 +27,8 @@
 #include "w5100s.hpp"
 
 #if defined(__has_include)
-#  if __has_include("w6100.hpp")
-#    include "w6100.hpp"
+#  if __has_include("w6x00.hpp")
+#    include "w6x00.hpp"
 #  endif
 #  if __has_include("w5500.hpp")
 #    include "w5500.hpp"

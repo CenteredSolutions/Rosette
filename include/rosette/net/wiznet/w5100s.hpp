@@ -38,6 +38,9 @@ struct W5100S final : ChipBase {
     static constexpr address_type socket_mode(socket_type socket) { return socket_register_base(socket) + 0x0000u; }
     static constexpr address_type socket_command(socket_type socket) { return socket_register_base(socket) + 0x0001u; }
     static constexpr address_type socket_interrupt(socket_type socket) { return socket_register_base(socket) + 0x0002u; }
+    // Sn_IR / IR are write-1-to-clear in place on the W5100S (no separate *CLR).
+    static constexpr address_type socket_interrupt_clear(socket_type socket) { return socket_interrupt(socket); }
+    static constexpr address_type common_interrupt_clear() { return common_interrupt(); }
     static constexpr address_type socket_status(socket_type socket) { return socket_register_base(socket) + 0x0003u; }
     static constexpr address_type socket_source_port(socket_type socket) { return socket_register_base(socket) + 0x0004u; }
     static constexpr address_type socket_dest_hardware(socket_type socket) { return socket_register_base(socket) + 0x0006u; }
@@ -51,6 +54,9 @@ struct W5100S final : ChipBase {
     static constexpr address_type socket_rx_read_pointer(socket_type socket) { return socket_register_base(socket) + 0x0028u; }
     static constexpr address_type socket_interrupt_mask(socket_type socket) { return socket_register_base(socket) + 0x002Cu; }
 
+    // One shared 8 KiB TX region and one shared 8 KiB RX region; init_*()
+    // carves each into per-socket spans starting at these bases.
+    static constexpr bool per_socket_buffer_blocks() { return false; }
     static constexpr address_type tx_buffer_base() { return 0x4000u; }
     static constexpr address_type rx_buffer_base() { return 0x6000u; }
     static constexpr uint16_t bytes_per_kib() { return 1024u; }
@@ -79,6 +85,13 @@ struct W5100S final : ChipBase {
 
     static constexpr uint8_t socket_status_closed() { return 0x00u; }
     static constexpr uint8_t socket_status_udp() { return 0x22u; }
+
+    /// Software reset: pulse MR.RST. `write_u8` is `void(address_type, uint8_t)`.
+    template<typename WriteU8>
+    static void reset(WriteU8&& write_u8)
+    {
+        write_u8(common_mode(), 0x80u);
+    }
 
     static constexpr uint16_t macraw_rx_header_bytes() { return 2u; }
     static constexpr uint16_t udp_rx_header_bytes() { return 8u; }
