@@ -30,6 +30,15 @@ struct W5100S final : ChipBase {
 
     static constexpr uint8_t link_up_mask() { return 0x01u; }
 
+    // IR bit 7 (IR_CONFLICT): set when an ARP reply carries our own SIPR from a
+    // different MAC. Lives in the same IR register `common_interrupt()` names,
+    // cleared the same write-1 way.
+    static constexpr uint8_t common_ip_conflict_mask() { return 0x80u; }
+
+    // The W5100S has no IPv6. `Chip::has_hw_ipv6()` gates the (future) hardware
+    // SLAAC / DAD path; see w6x00.hpp.
+    static constexpr bool has_hw_ipv6() { return false; }
+
     static constexpr address_type socket_register_base(socket_type socket)
     {
         return static_cast<address_type>(0x0400u + (static_cast<address_type>(socket) * 0x0100u));

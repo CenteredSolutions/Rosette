@@ -23,6 +23,7 @@
 
 // Set by the network bring-up layer once an address is assigned.
 static volatile uint32_t s_local_ipv4_host_order = 0u;
+static uint8_t s_local_ipv6[16] = {0};
 
 uint32_t rosette_platform_get_ms(void)
 {
@@ -51,12 +52,27 @@ uint32_t rosette_platform_get_ipv4_addr(void)
     return s_local_ipv4_host_order;
 }
 
+void rosette_platform_set_ipv6_addr(const uint8_t addr[16])
+{
+    if (addr != NULL) {
+        memcpy(s_local_ipv6, addr, 16u);
+    } else {
+        memset(s_local_ipv6, 0, 16u);
+    }
+}
+
 bool rosette_platform_get_ipv6_addr(uint8_t out[16])
 {
-    if (out != NULL) {
-        memset(out, 0, 16u);
+    int i;
+    uint8_t acc = 0u;
+    if (out == NULL) {
+        return false;
     }
-    return false;
+    memcpy(out, s_local_ipv6, 16u);
+    for (i = 0; i < 16; ++i) {
+        acc |= s_local_ipv6[i];
+    }
+    return acc != 0u;
 }
 
 // ------------------------------------------------------------

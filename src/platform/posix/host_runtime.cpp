@@ -99,6 +99,9 @@ uint32_t cached_ipv4_host() noexcept
     return value;
 }
 
+uint32_t g_forced_ipv4_host = 0u;
+uint8_t g_forced_ipv6[16] = {0};
+
 }  // namespace
 
 extern "C" uint32_t rosette_platform_get_ms(void)
@@ -111,15 +114,34 @@ extern "C" uint32_t rosette_platform_get_ms(void)
 
 extern "C" uint32_t rosette_platform_get_ipv4_addr(void)
 {
-    return cached_ipv4_host();
+    return g_forced_ipv4_host != 0u ? g_forced_ipv4_host : cached_ipv4_host();
+}
+
+extern "C" void rosette_platform_set_ipv4_addr(uint32_t addr_host_order)
+{
+    g_forced_ipv4_host = addr_host_order;
 }
 
 extern "C" bool rosette_platform_get_ipv6_addr(uint8_t out[16])
 {
-    if (out != nullptr) {
-        std::memset(out, 0, 16u);
+    if (out == nullptr) {
+        return false;
     }
-    return false;
+    std::memcpy(out, g_forced_ipv6, 16u);
+    uint8_t acc = 0u;
+    for (unsigned i = 0; i < 16u; ++i) {
+        acc |= g_forced_ipv6[i];
+    }
+    return acc != 0u;
+}
+
+extern "C" void rosette_platform_set_ipv6_addr(const uint8_t addr[16])
+{
+    if (addr != nullptr) {
+        std::memcpy(g_forced_ipv6, addr, 16u);
+    } else {
+        std::memset(g_forced_ipv6, 0, 16u);
+    }
 }
 
 extern "C" void rosette_platform_delay_ms(uint32_t ms)

@@ -55,8 +55,8 @@ struct AppOptions {
     uint8_t agent_ping_failures = 3u;         ///< Consecutive failures before declaring loss.
 
     bool sync_time_on_connect = true;         ///< Sync the epoch clock with the Agent on each connect.
-    uint32_t time_resync_period_ms = 0u;      ///< Re-sync interval while connected; 0 = only on connect.
-    int time_sync_timeout_ms = 1000;          ///< Per-sync reply timeout.
+    uint32_t time_resync_period_ms = 32u;     ///< Re-sync interval while connected; 0 = only on connect.
+    int time_sync_timeout_ms = 200;           ///< Per-sync reply timeout.
 
     uint8_t extra_executor_handles = 2u;      ///< Headroom added to the module handle sum.
 };

@@ -263,9 +263,9 @@ struct ContextOptions {
     uint64_t spin_timeout_ns = 1000000ull;  ///< 1 ms default poll window.
 
     bool auto_discover_agent = true;
-    int discovery_timeout_ms = 1000;
-    uint8_t discovery_attempts = 3u;
-    bool synchronize_epoch = false;
+    int discovery_timeout_ms = 500;
+    uint8_t discovery_attempts = 5u;
+    bool synchronize_epoch = true;
     int epoch_sync_timeout_ms = 1000;
 
     const char* udp_agent_address = nullptr;

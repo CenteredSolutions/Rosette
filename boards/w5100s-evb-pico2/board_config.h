@@ -61,6 +61,11 @@
 #define ROSETTE_IP_GW              "192.168.1.1"
 #define ROSETTE_IP_DNS             "8.8.8.8"
 
+// ── Address bring-up ───────────────────────────────────────────────────────
+// There is no addressing policy here: firmware declares its own list of
+// rosette::net::AddressProviders in main() (DHCP, static, zeroconf, …) and
+// hands it to an AddressManager. See examples/led_files/main.cpp.
+
 // ── Persistent storage region (LittleFS) ────────────────────────────────────
 // Reserved for rosette::storage. The application linker script / binary must
 // stay below this offset. The W5100S-EVB-Pico2 has 2 MiB of flash

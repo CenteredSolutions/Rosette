@@ -68,6 +68,30 @@ struct W6x00 : ChipBase {
     static constexpr address_type common_link_status() { return reg(0x3000u, common_block()); }      // PHYSR
     static constexpr uint8_t link_up_mask() { return 0x01u; }                                        // PHYSR_LNK_UP
 
+    // IR (0x2100) bit 2, IR_IPCONF: set when an ARP reply carries our own SIPR.
+    // Same register `common_interrupt()` names; acked through IRCLR (0x2108).
+    // (Socket interrupts live in the separate SIR at 0x2101 on the W61xx/W63xx —
+    // `service_socket_interrupts()` reading `common_interrupt()` for those bits
+    // is a pre-existing, hardware-unverified issue tracked in the design note.)
+    static constexpr uint8_t common_ip_conflict_mask() { return 0x04u; }  // IR_IPCONF
+
+    static constexpr bool has_hw_ipv6() { return false; }
+
+    // ── future: WIZnet hardware IPv6 (W6100/W6300) ──────────────────────────
+    // Not implemented — no W6100/W6300 EVB on hand to verify the SLAAC/DAD
+    // register semantics. Filling this block + flipping has_hw_ipv6() is all
+    // the trait work a `WiznetSlaacProvider` needs; nothing above changes.
+    //
+    //   static constexpr address_type common_slaac_control() { return reg(0x2130u, common_block()); }  // SLCR
+    //   static constexpr address_type common_slaac_status()  { return reg(0x2102u, common_block()); }  // SLIR
+    //   static constexpr address_type common_slaac_status_clear() { return reg(0x2128u, common_block()); }  // SLIRCLR
+    //   static constexpr address_type common_ip6_link_local() { return reg(0x4140u, common_block()); }  // LLAR
+    //   static constexpr address_type common_ip6_global()     { return reg(0x4150u, common_block()); }  // GUAR
+    //   static constexpr uint8_t slaac_cmd_router_solicit()   { return 0x02u; }  // SLCR_RS
+    //   static constexpr uint8_t slaac_cmd_dad()              { return 0x04u; }  // SLCR_NS
+    //   static constexpr uint8_t common_ip6_dad_fail_mask()   { return 0x04u; }  // SLIR_NS (address conflict)
+    //   static constexpr uint8_t slaac_status_ra_received()   { return 0x01u; }  // SLIR_RA
+
     // ── socket registers ────────────────────────────────────────────────────
     static constexpr address_type socket_mode(socket_type s) { return reg(0x0000u, socket_reg_block(s)); }
     static constexpr address_type socket_command(socket_type s) { return reg(0x0010u, socket_reg_block(s)); }

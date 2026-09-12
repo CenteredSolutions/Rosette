@@ -45,7 +45,11 @@
 
 #if defined(ROSETTE_BOARD_PICO)
 #include "board.h"
+#include "rosette/net/ipv4ll_provider.hpp"
+#include "rosette/net/address.hpp"
 #include "rosette/net/wiznet/board.hpp"
+#include "rosette/net/wiznet/dhcp_provider.hpp"
+#include "rosette/net/wiznet/interface.hpp"
 #include "rosette/net/wiznet/link.hpp"
 #endif
 
@@ -57,7 +61,7 @@ namespace {
 class LedModule final : public rosette::Module {
 public:
     const char* name() const noexcept override { return "led"; }
-    uint8_t executor_handles() const noexcept override { return 1u; }
+    uint8_t executor_handles() const noexcept override { return 2u; }
 
     void register_(rosette::Node& node) noexcept override
     {
@@ -67,9 +71,24 @@ public:
                 set_led(req.led, req.state);
                 resp.success = true;
             });
+
+        node.create_timer(timer_, 500, []() noexcept {
+            static bool on = false;
+            on = !on;
+            gpio_put(22, on ? 1 : 0);
+        });
+
+        gpio_init(22);
+        gpio_set_dir(22, GPIO_OUT);
+        gpio_init(23);
+        gpio_set_dir(23, GPIO_OUT);
     }
 
-    void on_disconnect() noexcept override { service_.reset(); }
+    void on_disconnect() noexcept override
+    {
+        service_.reset();
+        timer_.reset();
+    }
 
 private:
     using Request = rosette::service_traits<rosette::SetLedSrv>::Request;
@@ -88,6 +107,7 @@ private:
     }
 
     std::optional<rosette::Service<rosette::SetLedSrv>> service_;
+    std::optional<rosette::Timer> timer_;
 };
 
 // --------------------------------------------------------------------------
@@ -198,17 +218,40 @@ int main()
     board_get_mac_address(mac.data());
 
     namespace wiz = rosette::net::wiznet;
+    namespace net = rosette::net;
     auto bus = wiz::make_board_bus();
     wiz::BoardDevice device{bus};
     wiz::BoardSocketProvider sockets{device};
 
-    wiz::BoardLink link{device, sockets, mac, wiz::LinkMode::dhcp};
-    while (!link.begin()) {
-        std::printf("[led_files] waiting for network link\n");
-        rosette_platform_delay_ms(500u);
-    }
-    const auto ip = link.ipv4();
-    std::printf("[led_files] link up: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+    // Chip bring-up: verify + socket mode. Carrier is supervised by
+    // NetworkAddress from here on, so this is not retried in a loop.
+    wiz::BoardLink link{device, sockets, mac};
+    (void)link.bring_link_up();
+
+    // ── IPv4 addressing, declared right here ────────────────────────────────
+    // One NetInterface for the chip; a list of providers tried in order (first
+    // to bind wins); an AddressManager runs the list; a NetworkAddress folds it
+    // into a snapshot, publishes the address, watches carrier, and fires one
+    // on_change callback. Nothing here blocks the superloop.
+    static wiz::WiznetInterface<wiz::BoardChip, wiz::BoardBus> iface{device};
+    static wiz::DhcpAddressProvider<wiz::BoardChip, wiz::BoardBus> dhcp{
+        device, sockets, iface, wiz::dhcp_config("rosette-led-files")};
+    static net::Ipv4LinkLocalProvider zeroconf{mac, iface};   // 169.254/16 fallback
+
+    static net::AddressProvider* v4_providers[] = {&dhcp, &zeroconf};
+    static net::AddressManager v4{v4_providers};
+    static net::NetworkAddress net_addr{v4, &iface};
+
+    net_addr.on_change([](const net::AddressSnapshot& s) {
+        if (s.assigned) {
+            std::printf("[led_files] address %u.%u.%u.%u (%s)\n",
+                        s.v4.address[0], s.v4.address[1], s.v4.address[2], s.v4.address[3],
+                        s.v4.routable() ? "routable" : "link-local");
+        } else {
+            std::printf("[led_files] address lost\n");
+        }
+    });
+    net_addr.begin();
 
     rosette::storage::Volume volume;
 
@@ -225,6 +268,7 @@ int main()
     rosette::UdpSocketTransport transport(sockets, agent, local, /*receive_timeout_ms=*/50u);
 
     rosette::AppOptions options{};
+    rosette::MulticastAgentLocator agent_locator{sockets};
     configure_app(options);
     options.context.use_custom_transport = true;
     options.context.custom_transport = &transport;
@@ -232,7 +276,9 @@ int main()
     // Hand the compiled-in Agent IP to the context: the custom-transport path
     // has no auto-discovery, so without a static endpoint Context::discover_agent
     // fails with kCustomTransportRequiresEndpoint.
-    options.context.udp_agent_address = agent_ip;
+    options.context.auto_discover_agent = true;
+    options.context.agent_locator = &agent_locator;
+    //options.context.udp_agent_address = agent_ip;
 
     rosette::App app(options);
     static LedModule led;
@@ -243,14 +289,22 @@ int main()
     std::printf("[led_files] agent %s:8888\n", agent_ip);
     bool was_connected = false;
     for (;;) {
-        (void)app.spin_once(rosette_platform_get_ms());
-        link.poll();
-        if (app.connected() != was_connected) {
-            was_connected = app.connected();
-            std::printf("[led_files] %s\n",
-                        was_connected ? "agent connected" : "agent lost, retrying");
+        const uint32_t now = rosette_platform_get_ms();
+        net_addr.poll(now);
+
+        if (net_addr.has_address()) {
+            (void)app.spin_once(now);
+            if (app.connected() != was_connected) {
+                was_connected = app.connected();
+                std::printf("[led_files] agent %s\n",
+                            was_connected ? "connected" : "lost, retrying");
+            }
+        } else if (was_connected) {
+            was_connected = false;
+            std::printf("[led_files] agent lost (address gone)\n");
         }
-        rosette_platform_wait_for_event(app.connected() ? 5u : 200u);
+
+        rosette_platform_wait_for_event(app.connected() ? 5u : 100u);
     }
 }
 

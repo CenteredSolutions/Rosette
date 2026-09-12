@@ -25,11 +25,9 @@
 #include "board_config.h"
 
 #include "w5100s.hpp"
+#include "w6x00.hpp"
 
 #if defined(__has_include)
-#  if __has_include("w6x00.hpp")
-#    include "w6x00.hpp"
-#  endif
 #  if __has_include("w5500.hpp")
 #    include "w5500.hpp"
 #  endif

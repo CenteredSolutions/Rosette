@@ -1,188 +1,114 @@
 #pragma once
 
+/**
+ * @file net/address_provider.hpp
+ * @brief The one contract every address source implements, plus the small value
+ *        type it reports.
+ *
+ * An `AddressProvider` is a single way to obtain one interface address for one
+ * family — a DHCP client, a static address, RFC 3927 IPv4 link-local, IPv6
+ * SLAAC. The whole contract is three methods:
+ *
+ *   - `begin()` / `stop()` — lifecycle, both non-blocking;
+ *   - `poll(now_ms)` — a cooperative step called every superloop iteration for
+ *     the life of the provider, with the loop's millisecond timestamp. Before an
+ *     address is in hand it drives acquisition; afterwards it keeps the address
+ *     valid (DHCP renewal) and watches for a duplicate. It returns the
+ *     provider's current `AddressLease`.
+ *
+ * One `AddressManager` drives an ordered list of providers for a single family
+ * (first to bind wins); `NetworkAddress` combines a v4 and an optional v6
+ * manager and supervises the physical link.
+ *
+ * The provider is handed a `NetInterface` (`net/interface.hpp`) — the one
+ * backend hook: it writes the chosen address onto the hardware, reports
+ * duplicate-address signals, and reports carrier state.
+ */
+
+#include <array>
+#include <cstdint>
+
 #include "address_state.hpp"
 
 namespace rosette::net {
 
 /**
- * @brief Common lifecycle contract for platform-specific address providers.
+ * @brief One provider's current address contribution.
  *
- * Rosette supports multiple networking environments with different ownership
- * models. Some platforms require Rosette to run a DHCP client directly, while
- * others expose address state through callbacks or begin already configured.
- * `IAddressProvider` gives higher-level runtimes one pollable surface that
- * hides those platform details.
+ * `flags`' `duplicate` bit latches true for the single `poll()` that first
+ * observes one; the provider then recovers on its own (DHCPDECLINE +
+ * re-DISCOVER, a fresh `169.254` candidate) and, if it had to release the
+ * address to do so, moves back to `AddressPhase::acquiring`.
  */
-class IAddressProvider {
-public:
-    virtual ~IAddressProvider() {}
+struct AddressLease {
+    AddressFamily family = AddressFamily::ipv4;
+    AddressSource source = AddressSource::manual;
+    AddressPhase  state  = AddressPhase::idle;
+    AddressFlags  flags  = AddressFlags::none;    ///< provider-reported bits only
+                                                   ///< (duplicate/temporary/permanent) —
+                                                   ///< link_local/routable are derived.
+    bool          has_address = false;
+    std::array<uint8_t, 16> address{};    ///< `[0..3]` for IPv4, `[0..15]` for IPv6.
+    uint8_t       prefix_len = 0u;
+    std::array<uint8_t, 4> gateway_v4{};
+    uint32_t      lease_remaining_s = 0u;
+    std::array<std::array<uint8_t, 4>, 2> ntp_v4{};
+    uint8_t       ntp_count = 0u;
 
-    /**
-     * @brief Start the provider and begin reporting address readiness.
-     *
-     * Providers may launch background tasks, register callbacks, or simply mark
-     * a static address as active. A successful start means the provider is ready
-     * to participate in supervisor polling.
-     *
-     * @return `true` when the provider is active or was already active;
-     *         otherwise `false`.
-     */
-    virtual bool start() noexcept = 0;
+    /// A cleared lease that keeps only the family (what a provider reports while idle).
+    AddressLease empty() const noexcept {
+        AddressLease l{};
+        l.family = family;
+        return l;
+    }
 
-    /**
-     * @brief Stop the provider and return it to an inactive state.
-     *
-     * The exact stop semantics depend on the underlying network stack. Some
-     * providers may only quiesce their reporting surface while lower-level tasks
-     * continue running. Higher layers should treat the resulting snapshot as
-     * inactive regardless of the underlying platform behavior.
-     */
-    virtual void stop() noexcept = 0;
+    bool link_local() const noexcept {
+        return has_flag(classify(family, address, has_address), AddressFlags::link_local);
+    }
+    bool routable() const noexcept {
+        return has_flag(classify(family, address, has_address), AddressFlags::routable);
+    }
+    bool duplicate() const noexcept { return has_flag(flags, AddressFlags::duplicate); }
 
-    /**
-     * @brief Refresh the provider snapshot.
-     *
-     * Polling runtimes call `step()` cooperatively so callback-driven and
-     * task-driven address sources can be normalized into a single state machine.
-     *
-     * @return `true` when the visible address snapshot changed during this step.
-     */
-    virtual bool step() noexcept = 0;
-
-    /**
-     * @brief Read the latest address snapshot.
-     *
-     * @return Current platform-neutral address state.
-     */
-    virtual AddressSnapshot snapshot() const noexcept = 0;
+    /// Fold this lease into the matching family slot of a combined snapshot.
+    void fill_family(AddressSnapshot& s) const noexcept {
+        FamilyAddressSnapshot& f = (family == AddressFamily::ipv4) ? s.v4 : s.v6;
+        f.state = state;
+        f.source = source;
+        f.has_address = has_address;
+        f.address = address;
+        f.lease_remaining_s = lease_remaining_s;
+        f.flags = flags | classify(family, address, has_address);
+        if (family == AddressFamily::ipv4 && ntp_count > 0u) {
+            const uint8_t n = ntp_count > 2u ? 2u : ntp_count;
+            s.ntp_server_count = n;
+            for (uint8_t k = 0u; k < n; ++k) {
+                s.ntp_servers_v4[k] = ntp_v4[k];
+            }
+        }
+    }
 };
 
 /**
- * @brief Deterministic address provider for host tests and static deployments.
- *
- * POSIX harnesses and boards with preconfigured network stacks often do not
- * need an active DHCP client. `StaticAddressProvider` lets those environments
- * participate in the same supervisor flow as dynamic-address boards by
- * exposing a stable snapshot through the standard Rosette provider contract.
+ * @brief A single source of interface addressing for one family.
  */
-class StaticAddressProvider : public IAddressProvider {
+class AddressProvider {
 public:
-    /**
-     * @brief Construct a provider with a caller-supplied address snapshot.
-     *
-     * The configured snapshot describes the address state that should appear
-     * whenever the provider is active. `start()` and `stop()` only change the
-     * provider lifecycle fields, not the configured address contents.
-     *
-     * @param[in] configured_snapshot Address state to expose while active.
-     */
-    explicit StaticAddressProvider(
-            const AddressSnapshot& configured_snapshot = {}) noexcept
-            : configured_snapshot_(configured_snapshot) {
-        snapshot_ = configured_snapshot_;
-        normalize_for_stop();
-    }
+    virtual ~AddressProvider() = default;
+
+    /// Begin acquisition. Non-blocking kick-off; `poll()` does the work.
+    virtual void begin() noexcept = 0;
+
+    /// Return to idle. A bound address is released.
+    virtual void stop() noexcept = 0;
 
     /**
-     * @brief Replace the configured snapshot exposed while the provider is active.
+     * @brief One cooperative step: acquire, renew, and detect a conflict.
      *
-     * This is useful for host tests that need to exercise ready, degraded, and
-     * unconfigured address states without swapping the provider object itself.
-     *
-     * @param[in] configured_snapshot New configured address state.
+     * @param[in] now_ms  The superloop's monotonic millisecond timestamp.
+     * @return the provider's lease, valid until the next call on this provider.
      */
-    void setSnapshot(const AddressSnapshot& configured_snapshot) noexcept {
-        configured_snapshot_ = configured_snapshot;
-        snapshot_ = configured_snapshot_;
-        if (started_) {
-            normalize_for_start();
-        } else {
-            normalize_for_stop();
-        }
-    }
-
-    /**
-     * @brief Activate the configured snapshot.
-     *
-     * @return Always `true`.
-     */
-    bool start() noexcept override {
-        started_ = true;
-        snapshot_ = configured_snapshot_;
-        normalize_for_start();
-        return true;
-    }
-
-    /**
-     * @brief Mark the provider inactive while preserving the configured snapshot.
-     */
-    void stop() noexcept override {
-        started_ = false;
-        snapshot_ = configured_snapshot_;
-        normalize_for_stop();
-    }
-
-    /**
-     * @brief Refresh the provider snapshot.
-     *
-     * Static providers have no background state, so a polling step never changes
-     * the visible snapshot unless the caller previously updated it through
-     * `setSnapshot()`.
-     *
-     * @return Always `false`.
-     */
-    bool step() noexcept override { return false; }
-
-    /**
-     * @brief Read the current provider snapshot.
-     *
-     * @return Current active or inactive snapshot.
-     */
-    AddressSnapshot snapshot() const noexcept override { return snapshot_; }
-
-private:
-    /**
-     * @brief Normalize lifecycle fields for the active state.
-     *
-     * Static providers should behave like an already-configured network stack
-     * once started. The method ensures the supervisor sees an active provider
-     * with either `assigned` or `acquiring` status depending on whether the
-     * configured snapshot contains an address.
-     */
-    void normalize_for_start() noexcept {
-        snapshot_.active = true;
-        snapshot_.status =
-                snapshot_.assigned ? AddressStatus::assigned : AddressStatus::acquiring;
-        if (!snapshot_.assigned) {
-            snapshot_.quality = AddressQuality::none;
-            snapshot_.has_ipv4 = false;
-            snapshot_.has_ipv6 = false;
-            snapshot_.lease_remaining_s = 0u;
-            snapshot_.ntp_server_count = 0u;
-        }
-    }
-
-    /**
-     * @brief Normalize lifecycle fields for the inactive state.
-     *
-     * Inactive providers should not present stale address readiness to a
-     * supervisor. The configured snapshot is preserved separately so a later
-     * `start()` can restore it.
-     */
-    void normalize_for_stop() noexcept {
-        snapshot_.active = false;
-        snapshot_.assigned = false;
-        snapshot_.status = AddressStatus::inactive;
-        snapshot_.quality = AddressQuality::none;
-        snapshot_.has_ipv4 = false;
-        snapshot_.has_ipv6 = false;
-        snapshot_.lease_remaining_s = 0u;
-        snapshot_.ntp_server_count = 0u;
-    }
-
-    AddressSnapshot configured_snapshot_{};
-    AddressSnapshot snapshot_{};
-    bool started_ = false;
+    virtual const AddressLease& poll(uint32_t now_ms) noexcept = 0;
 };
 
 }    // namespace rosette::net

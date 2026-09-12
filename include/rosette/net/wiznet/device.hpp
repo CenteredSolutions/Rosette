@@ -8,6 +8,8 @@
 #include <type_traits>
 #include <variant>
 
+#include "rosette/platform/host_runtime.hpp"  // rosette_platform_get_ms for the bounded ARP probe
+
 #ifndef ROSETTE_NO_FREERTOS
 extern "C" {
 #include "FreeRTOS.h"
@@ -257,6 +259,12 @@ public:
             const auto lock = bus_.acquire();
             interrupt_mask = read_u8(Chip::common_interrupt());
 
+            if ((interrupt_mask & Chip::common_ip_conflict_mask()) != 0u) {
+                ip_conflict_pending_ = true;
+                common_ack = static_cast<uint8_t>(
+                    common_ack | Chip::common_ip_conflict_mask());
+            }
+
             for (socket_type socket = 0; socket < Chip::socket_count(); ++socket) {
                 const uint8_t socket_bit = static_cast<uint8_t>(1u << socket);
                 if ((interrupt_mask & socket_bit) == 0u) {
@@ -292,6 +300,47 @@ public:
     {
         const auto lock = bus_.acquire();
         return (read_u8(Chip::common_link_status()) & Chip::link_up_mask()) != 0u;
+    }
+
+    /**
+     * @brief Reads the common interrupt register once and latches the
+     * IP-conflict bit if the chip has flagged an ARP clash for our own SIPR.
+     *
+     * Costs one register read; call it from a context that already runs at a
+     * low cadence (the superloop `WiznetLink::poll()` or a DHCP-renewal tick).
+     * On the FreeRTOS build the interrupt-dispatch task
+     * (`service_socket_interrupts`) latches the same bit, so either path feeds
+     * `take_ip_conflict()`.
+     *
+     * @return `true` when a conflict was newly latched by this call.
+     */
+    bool poll_common_interrupt() noexcept
+    {
+        if (Chip::common_ip_conflict_mask() == 0u) {
+            return false;
+        }
+        const auto lock = bus_.acquire();
+        const uint8_t ir = read_u8(Chip::common_interrupt());
+        const uint8_t bit = static_cast<uint8_t>(ir & Chip::common_ip_conflict_mask());
+        if (bit != 0u) {
+            clear_common_interrupt(bit);
+            ip_conflict_pending_ = true;
+        }
+        return bit != 0u;
+    }
+
+    /**
+     * @brief Consumes the latched IP-conflict flag.
+     *
+     * @return `true` once per detected conflict; `false` afterwards until the
+     * next one.
+     */
+    bool take_ip_conflict() noexcept
+    {
+        const auto lock = bus_.acquire();
+        const bool was = ip_conflict_pending_;
+        ip_conflict_pending_ = false;
+        return was;
     }
 
     void configure_ipv4(const std::array<uint8_t, 4>& ip,
@@ -832,6 +881,11 @@ private:
     // A SEND was issued on this socket and its Sn_IR.SENDOK has not been
     // drained yet; see wait_pending_send().
     std::array<bool, Chip::socket_count()> send_pending_{};
+
+    // The chip has flagged an IPv4 address conflict (its own SIPR seen in an
+    // ARP from another MAC). Latched under the bus lock by poll_common_interrupt()
+    // or service_socket_interrupts(); consumed by take_ip_conflict().
+    bool ip_conflict_pending_ = false;
 };
 
 }  // namespace rosette::wiznet

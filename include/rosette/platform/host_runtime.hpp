@@ -87,6 +87,18 @@ void rosette_platform_wait_for_event(uint32_t max_wait_ms);
  */
 void rosette_platform_set_ipv4_addr(uint32_t addr_host_order);
 
+/**
+ * @brief Records the board's current local IPv6 address.
+ *
+ * The network bring-up layer calls this when an IPv6 address is assigned (SLAAC
+ * or link-local) or lost so `rosette_platform_get_ipv6_addr()` reflects it.
+ * On FreeRTOS+TCP builds the stack owns the endpoint and this is a no-op; the
+ * no-RTOS WIZnet path (future hardware IPv6) uses it.
+ *
+ * @param[in] addr 16-byte address, or all-zero to clear it.
+ */
+void rosette_platform_set_ipv6_addr(const uint8_t addr[16]);
+
 #ifdef __cplusplus
 }  // extern "C"
 #endif

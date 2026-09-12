@@ -3,9 +3,11 @@
  * @brief DHCPv4 client over a `WiznetSocketProvider`.
  *
  * `DhcpProtocol` is the execution-independent core: it builds and parses the
- * DISCOVER/OFFER/REQUEST/ACK wire format, runs one exchange to completion, and
- * applies the lease to the chip (`WiznetDevice::configure_ipv4`). Deadlines are
- * measured with `rosette_platform_get_ms()`, so it carries no RTOS dependency.
+ * DISCOVER/OFFER/REQUEST/ACK wire format and runs one exchange to completion.
+ * The address write goes through `apply_config()` — `WiznetDevice::configure_ipv4`
+ * by default, or a `set_apply()` callback (`DhcpAddressProvider` routes it
+ * through `NetInterface::apply()`). Deadlines are measured with
+ * `rosette_platform_get_ms()`, so it carries no RTOS dependency.
  *
  * Two thin drivers pace it:
  *   - @ref DhcpPoller — `acquire()` once, then `poll()` from the superloop.
@@ -116,8 +118,69 @@ public:
         callback_user_ = user;
     }
 
+    /// Redirect the "write the address onto the interface" step. When set, the
+    /// protocol calls this instead of `WiznetDevice::configure_ipv4()` — an
+    /// invalid `DhcpLease` means "clear". `DhcpAddressProvider` routes it through
+    /// `NetInterface::apply()`; unset, the default keeps legacy callers working.
+    using apply_callback_type = void (*)(const DhcpLease& lease, void* user);
+    void set_apply(apply_callback_type on_apply, void* user) noexcept
+    {
+        on_apply_ = on_apply;
+        apply_user_ = user;
+    }
+
 protected:
     void set_state(DhcpState state) noexcept { state_ = state; }
+
+    /// Apply @p lease to the interface (or clear it when `lease.valid` is false).
+    void apply_config(const DhcpLease& lease) noexcept
+    {
+        if (on_apply_ != nullptr) {
+            on_apply_(lease, apply_user_);
+            return;
+        }
+        const std::array<uint8_t, 4> zero{};
+        device_.configure_ipv4(lease.valid ? lease.ip : zero,
+                               lease.valid ? lease.subnet : zero,
+                               lease.valid ? lease.gateway : zero);
+    }
+
+    /**
+     * @brief Broadcasts one DHCPDECLINE for a conflicted lease (RFC 2131 §4.4.4).
+     *
+     * Called by a driver's conflict handler after the chip flags a duplicate
+     * address. Does not wait for a reply — DECLINE is unacknowledged; the
+     * caller then restarts acquisition (with a fresh xid) after the RFC's
+     * ≥10 s pause.
+     */
+    bool send_decline(const std::array<uint8_t, 4>& declined_ip,
+                      const std::array<uint8_t, 4>& server_id) noexcept
+    {
+        std::unique_ptr<Socket> socket = provider_.open();
+        if (!socket) {
+            return false;
+        }
+        if (socket->bind({.address = {0u, 0u, 0u, 0u}, .port = config_.client_port}) != 0) {
+            return false;
+        }
+
+        std::array<uint8_t, kPacketBytes> packet{};
+        const std::size_t length =
+            build_decline(packet, next_xid(), declined_ip, server_id);
+        return socket->send_to(packet.data(),
+                               length,
+                               make_socket_address_v4({255u, 255u, 255u, 255u},
+                                                      config_.server_port)) ==
+               static_cast<std::ptrdiff_t>(length);
+    }
+
+    /// Drops the stored lease so `lease()` reports invalid.
+    void clear_lease() noexcept
+    {
+        lease_lock();
+        lease_ = DhcpLease{};
+        lease_unlock();
+    }
 
     /**
      * @brief Runs one DISCOVER/OFFER/REQUEST/ACK exchange.
@@ -129,7 +192,7 @@ protected:
     bool run_exchange() noexcept
     {
         std::printf("[DHCP] resetting IPv4 configuration before exchange\n");
-        device_.configure_ipv4({}, {}, {});
+        apply_config(DhcpLease{});
 
         std::unique_ptr<Socket> socket = provider_.open();
         if (!socket) {
@@ -229,6 +292,8 @@ protected:
     assign_callback_type on_assign_ = nullptr;
     change_callback_type on_change_ = nullptr;
     void* callback_user_ = nullptr;
+    apply_callback_type on_apply_ = nullptr;
+    void* apply_user_ = nullptr;
     uint32_t xid_seed_ = 0x4d445343u;
 #ifndef ROSETTE_NO_FREERTOS
     SemaphoreHandle_t lease_mutex_ = nullptr;
@@ -263,6 +328,7 @@ private:
     static constexpr uint8_t kMessageDiscover = 1u;
     static constexpr uint8_t kMessageOffer = 2u;
     static constexpr uint8_t kMessageRequest = 3u;
+    static constexpr uint8_t kMessageDecline = 4u;
     static constexpr uint8_t kMessageAck = 5u;
     static constexpr uint8_t kMessageNak = 6u;
 
@@ -480,7 +546,7 @@ private:
         log_ipv4("gateway=", lease.gateway);
         std::printf("\n");
 
-        device_.configure_ipv4(lease.ip, lease.subnet, lease.gateway);
+        apply_config(lease);
 
         DhcpLease old{};
         lease_lock();
@@ -684,6 +750,30 @@ private:
         return option_index;
     }
 
+    std::size_t build_decline(std::array<uint8_t, kPacketBytes>& packet,
+                              uint32_t xid,
+                              const std::array<uint8_t, 4>& declined_ip,
+                              const std::array<uint8_t, 4>& server_id) const noexcept
+    {
+        // RFC 2131 §4.4.4 / table 5: DHCPDECLINE carries the requested-IP and
+        // server-identifier options; ciaddr stays 0.
+        std::size_t option_index = build_packet_header(packet, xid);
+        option_index = append_option_u8(packet, option_index, kOptionMessageType, kMessageDecline);
+        option_index = append_client_identifier(packet, option_index);
+        option_index = append_option_bytes(packet,
+                                           option_index,
+                                           kOptionRequestedIp,
+                                           declined_ip.data(),
+                                           declined_ip.size());
+        option_index = append_option_bytes(packet,
+                                           option_index,
+                                           kOptionServerIdentifier,
+                                           server_id.data(),
+                                           server_id.size());
+        packet[option_index++] = kOptionEnd;
+        return option_index;
+    }
+
     std::size_t build_packet_header(std::array<uint8_t, kPacketBytes>& packet,
                                     uint32_t xid) const noexcept
     {
@@ -852,6 +942,31 @@ public:
         this->set_state(DhcpState::failed);
         retry_at_ms_ = rosette_platform_get_ms() + this->config().retry_delay_ms;
         return false;
+    }
+
+    /**
+     * @brief React to a duplicate-address conflict on the current lease.
+     *
+     * Sends a DHCPDECLINE for the conflicted address (if a lease is held),
+     * clears the chip's IPv4 config and the stored lease, and schedules a fresh
+     * DISCOVER after the RFC 2131 §3.1 ≥10 s pause. `poll()` then drives the
+     * re-acquisition. The new exchange uses a fresh xid and no requested-IP
+     * hint, so the server is free to offer a different address.
+     */
+    void handle_conflict() noexcept
+    {
+        DhcpLease held{};
+        if (this->lease(held) && held.valid) {
+            (void)this->send_decline(held.ip, held.server_identifier);
+        }
+        this->clear_lease();
+        this->apply_config(DhcpLease{});
+        this->set_state(DhcpState::failed);
+
+        const uint32_t wait_ms = this->config().retry_delay_ms < 10000u
+                                     ? 10000u
+                                     : this->config().retry_delay_ms;
+        retry_at_ms_ = rosette_platform_get_ms() + wait_ms;
     }
 
     /// Superloop tick: renews at T1, retries after a failure.

@@ -134,6 +134,12 @@ uint32_t rosette_platform_get_ipv4_addr(void) {
 #endif
 }
 
+void rosette_platform_set_ipv6_addr(const uint8_t addr[16]) {
+    /* FreeRTOS+TCP owns the endpoint addresses; the getter reads them back from
+     * the endpoint list. Nothing to store here. */
+    (void)addr;
+}
+
 bool rosette_platform_get_ipv6_addr(uint8_t out[16]) {
     if (out == NULL) {
         return false;

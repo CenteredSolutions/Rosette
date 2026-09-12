@@ -75,18 +75,18 @@ public:
     WiznetLink& operator=(const WiznetLink&) = delete;
 
     /**
-     * @brief Verifies the chip, sizes its buffers, waits for PHY link, and
-     * assigns an address.
+     * @brief Verifies the chip, sizes its buffers, and waits for PHY link —
+     * but does NOT assign an address.
      *
-     * Idempotent once the link is up. Blocks through the PHY wait and, for
-     * DHCP, one full exchange; on DHCP failure applies the static fallback so
-     * the board still boots.
+     * This is the half of `begin()` that an `AddressManager` still needs: the
+     * chip is verified and in socket mode and the PHY is up, ready for an
+     * `AddressProvider` to take over addressing. Idempotent.
      *
-     * @return `true` when a usable IPv4 address is assigned.
+     * @return `true` when the chip is ready and the PHY link is up.
      */
-    bool begin() noexcept
+    bool bring_link_up() noexcept
     {
-        if (ready_) {
+        if (link_ready_) {
             return true;
         }
 
@@ -115,6 +115,30 @@ public:
             rosette_platform_delay_ms(100u);
         }
 
+        link_ready_ = true;
+        return true;
+    }
+
+    /**
+     * @brief Verifies the chip, sizes its buffers, waits for PHY link, and
+     * assigns an address.
+     *
+     * Idempotent once the link is up. Blocks through the PHY wait and, for
+     * DHCP, one full exchange; on DHCP failure applies the static fallback so
+     * the board still boots.
+     *
+     * @return `true` when a usable IPv4 address is assigned.
+     */
+    bool begin() noexcept
+    {
+        if (ready_) {
+            return true;
+        }
+
+        if (!bring_link_up()) {
+            return false;
+        }
+
         if (mode_ == LinkMode::static_ip) {
             device_.configure_ipv4(fallback_.ip, fallback_.netmask, fallback_.gateway);
             apply_address(fallback_.ip);
@@ -132,9 +156,15 @@ public:
         return ready_;
     }
 
-    /// Services DHCP lease renewal. Call about once per second.
+    /// Services DHCP lease renewal, and (guarded) checks the chip's IPv4
+    /// conflict flag. Call about once per second.
     void poll() noexcept
     {
+#if !defined(ROSETTE_WIZNET_IP_CONFLICT_MONITOR) || (ROSETTE_WIZNET_IP_CONFLICT_MONITOR != 0)
+        if (device_.mode() == DeviceMode::socket) {
+            (void)device_.poll_common_interrupt();
+        }
+#endif
         if (mode_ == LinkMode::dhcp) {
             dhcp_.poll();
         }
@@ -180,6 +210,7 @@ private:
     StaticAddress fallback_;
     std::array<uint8_t, 4> ip_{};
     bool chip_ready_ = false;
+    bool link_ready_ = false;
     bool ready_ = false;
 };
 

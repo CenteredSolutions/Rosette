@@ -59,7 +59,9 @@
 #define ipconfigUSE_DHCP                        1
 #define ipconfigDHCP_REGISTER_HOSTNAME          1
 #define ipconfigMAXIMUM_DISCOVER_TX_PERIOD      pdMS_TO_TICKS(5000u)
-#define ipconfigDHCP_FALL_BACK_AUTO_IP          0
+// RFC 3927 AutoIP fallback when DHCP finds no server. FreeRtosTcpAddressProvider
+// reports the resulting 169.254/16 endpoint as AddressMode::zeroconf_v4.
+#define ipconfigDHCP_FALL_BACK_AUTO_IP          1
 
 // ── DNS ───────────────────────────────────────────────────────────────────────
 #define ipconfigUSE_DNS                         1

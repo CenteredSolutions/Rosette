@@ -10,7 +10,7 @@
  * MACRAW device -- derives from it and implements the data-plane and PHY
  * status operations against real hardware.
  *
- * The interface mirrors rosette::net::IAddressProvider in style: a small set
+ * The interface mirrors rosette::net::AddressProvider in style: a small set
  * of pure virtual operations, no templates, no compile-time capability
  * probing. Consumers hold a MacDevice reference and call it directly; the
  * vtable indirection is negligible next to the SPI burst that backs every
