@@ -9,6 +9,7 @@ set(CMAKE_C_STANDARD   11)
 set(CMAKE_CXX_STANDARD 17)
 
 include(cmake/micro_ros.cmake)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(ROSETTE_BOARD_ENABLE_PICO_SDK)
     pico_sdk_init()

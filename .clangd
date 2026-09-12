@@ -1,0 +1,17 @@
+# clangd project config — https://clangd.llvm.org/config
+#
+# Database is the merged compile_commands.json at repo root
+# (tools/gen_compile_commands.py). It's a generated file, not committed — run
+# that script after adding a source file or configuring a board build.
+
+CompileFlags:
+  CompilationDatabase: .
+
+Diagnostics:
+  # Header-only, heavily templated: a header's "usage" often only shows up in
+  # a TU that isn't the one clangd picked for header context, so IWYU-style
+  # unused-include hints are more noise than signal here.
+  UnusedIncludes: None
+
+Index:
+  Background: Build
