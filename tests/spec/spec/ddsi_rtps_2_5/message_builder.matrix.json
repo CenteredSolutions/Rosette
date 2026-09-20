@@ -1,0 +1,120 @@
+{
+  "spec": {
+    "name": "OMG DDSI-RTPS",
+    "version": "2.5",
+    "document": "formal/2022-04-01"
+  },
+  "target": "lib/Rosette/include/rosette/rtps/message_builder.hpp",
+  "scope": [
+    "9.4.1",
+    "9.4.5.1",
+    "9.4.5.3",
+    "9.4.5.4",
+    "9.4.5.5",
+    "9.4.5.7",
+    "9.4.5.11",
+    "10.2"
+  ],
+  "statements": [
+    {
+      "id": "REQ-BLD-9.4.1-HEADER-MAGIC",
+      "section": "9.4.1",
+      "page": 193,
+      "normativity": "shall",
+      "statement": "Builder begin() writes an RTPS message header with RTPS protocol magic and caller GUID prefix.",
+      "status": "implemented",
+      "test_ids": ["TC-BLD-9.4.1-001"]
+    },
+    {
+      "id": "REQ-BLD-9.4.5.3-DATA-FRAME",
+      "section": "9.4.5.3",
+      "page": 204,
+      "normativity": "shall",
+      "statement": "append_data() serializes DATA fixed fields and payload and dispatches as parseable DATA submessage.",
+      "status": "implemented",
+      "test_ids": ["TC-BLD-9.4.5.3-001"]
+    },
+    {
+      "id": "REQ-BLD-10.2-ENCAP-HEADER",
+      "section": "10.2",
+      "page": 244,
+      "normativity": "shall",
+      "statement": "append_data() prepends CDR_LE encapsulation header (0x0001, 0x0000) before serialized payload.",
+      "status": "implemented",
+      "test_ids": ["TC-BLD-10.2-001"]
+    },
+    {
+      "id": "REQ-BLD-9.4.5.3-DATA-INLINEQOS-Q",
+      "section": "9.4.5.3",
+      "page": 204,
+      "normativity": "shall",
+      "statement": "append_data() sets Q flag and serializes related sample identity inline QoS when provided.",
+      "status": "implemented",
+      "test_ids": ["TC-BLD-9.4.5.3-002"]
+    },
+    {
+      "id": "REQ-BLD-9.4.5.3-PREPEND-DATA",
+      "section": "9.4.5.3",
+      "page": 204,
+      "normativity": "shall",
+      "statement": "prepend_data_message() creates a parseable DATA message over preallocated payload/headroom.",
+      "status": "implemented",
+      "test_ids": ["TC-BLD-9.4.5.3-003"]
+    },
+    {
+      "id": "REQ-BLD-9.4.5.3-PREPEND-INLINEQOS-LIMIT",
+      "section": "9.4.5.3",
+      "page": 204,
+      "normativity": "derived-invariant",
+      "statement": "prepend_data_message() currently rejects non-empty inline QoS in MVP path.",
+      "status": "implemented",
+      "test_ids": ["TC-BLD-9.4.5.3-004"]
+    },
+    {
+      "id": "REQ-BLD-9.4.5.5-HEARTBEAT-FLAGS",
+      "section": "9.4.5.5",
+      "page": 211,
+      "normativity": "shall",
+      "statement": "append_heartbeat() sets F/L flags and serializes heartbeat fields.",
+      "status": "implemented",
+      "test_ids": ["TC-BLD-9.4.5.5-001"]
+    },
+    {
+      "id": "REQ-BLD-9.4.5.7-ACKNACK-FLAG",
+      "section": "9.4.5.7",
+      "page": 216,
+      "normativity": "shall",
+      "statement": "append_acknack() serializes ACKNACK with F flag and SN state.",
+      "status": "implemented",
+      "test_ids": ["TC-BLD-9.4.5.7-001"]
+    },
+    {
+      "id": "REQ-BLD-9.4.5.11-GAP",
+      "section": "9.4.5.11",
+      "page": 224,
+      "normativity": "shall",
+      "statement": "append_gap() serializes GAP with reader/writer IDs and sequence set.",
+      "status": "implemented",
+      "test_ids": ["TC-BLD-9.4.5.11-001"]
+    },
+    {
+      "id": "REQ-BLD-9.4.5.4-DATAFRAG",
+      "section": "9.4.5.4",
+      "page": 208,
+      "normativity": "shall",
+      "statement": "append_data_frag() serializes DATA_FRAG fixed fields and fragment payload.",
+      "status": "implemented",
+      "test_ids": ["TC-BLD-9.4.5.4-001"]
+    },
+    {
+      "id": "REQ-BLD-9.4.5.1-BOUNDS-FAIL",
+      "section": "9.4.5.1",
+      "page": 200,
+      "normativity": "shall",
+      "statement": "Builder append operations fail when available buffer capacity is insufficient.",
+      "status": "implemented",
+      "test_ids": ["TC-BLD-9.4.5.1-001"]
+    }
+  ]
+}
+

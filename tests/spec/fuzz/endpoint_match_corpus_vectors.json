@@ -1,0 +1,20 @@
+{
+  "vectors": [
+    {
+      "name": "endpoint_match_add_writer_reader_pair",
+      "hex": "000102030001010102030102040506000101"
+    },
+    {
+      "name": "endpoint_match_reliability_mismatch",
+      "hex": "000a0b0c00010100020d0e0f00010101"
+    },
+    {
+      "name": "endpoint_match_remove_participant_cycle",
+      "hex": "00112233000000010411223300000000"
+    },
+    {
+      "name": "endpoint_match_mixed_operations",
+      "hex": "0301020304050101000102030405010102050607000000000506070800000000"
+    }
+  ]
+}

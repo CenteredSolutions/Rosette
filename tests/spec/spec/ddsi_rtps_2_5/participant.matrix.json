@@ -1,0 +1,93 @@
+{
+  "spec": {
+    "name": "OMG DDSI-RTPS",
+    "version": "2.5",
+    "document": "formal/2022-04-01"
+  },
+  "target": "lib/Rosette/src/rtps/participant.cpp",
+  "scope": [
+    "8.3.4",
+    "8.5.1",
+    "8.5.1.2",
+    "8.5.3.2",
+    "8.5.3.3",
+    "8.5.5.1",
+    "8.4.3",
+    "8.4.4",
+    "9.6.1"
+  ],
+  "statements": [
+    {
+      "id": "REQ-PART-8.5.1-ANNOUNCE-GATED-BY-LOCATORS",
+      "section": "8.5.1",
+      "page": 149,
+      "normativity": "shall",
+      "statement": "RTPSParticipant drives participant announcement through SPDP only after local transport locators are configured.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-001"]
+    },
+    {
+      "id": "REQ-PART-8.5.3.3-SPDP-DISPATCH-TO-SEDP",
+      "section": "8.5.3.3",
+      "page": 162,
+      "normativity": "shall",
+      "statement": "SPDP discovery of a new participant triggers SEDP endpoint announcements to the discovered participant metatraffic locator.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-002"]
+    },
+    {
+      "id": "REQ-PART-8.5.3.2-LEASE-EXPIRY-REMOVAL",
+      "section": "8.5.3.2",
+      "page": 160,
+      "normativity": "shall",
+      "statement": "When a discovered participant lease expires, participant-level state removes that participant and endpoint matches are dissolved.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-002"]
+    },
+    {
+      "id": "REQ-PART-8.5.5.1-ENDPOINT-MATCH-WIRING",
+      "section": "8.5.5.1",
+      "page": 169,
+      "normativity": "shall",
+      "statement": "SEDP-discovered compatible reader/writer endpoints are wired into local StatefulWriter/StatefulReader match tables and unwired on participant removal.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-002"]
+    },
+    {
+      "id": "REQ-PART-8.5.1.2-PARTICIPANT-GUID",
+      "section": "8.5.1.2",
+      "page": 151,
+      "normativity": "shall",
+      "statement": "RTPSParticipant initializes its own GUID with a participant EntityId and a platform-provided GuidPrefix.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-003"]
+    },
+    {
+      "id": "REQ-PART-9.6.1-ADDRESS-DRIVEN-SPDP-LOCATORS",
+      "section": "9.6.1",
+      "page": 254,
+      "normativity": "shall",
+      "statement": "Participant local address configuration updates SPDP metatraffic multicast locator selection and announce eligibility.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-003"]
+    },
+    {
+      "id": "REQ-PART-8.3.4-DATA-DISPATCH",
+      "section": "8.3.4",
+      "page": 69,
+      "normativity": "shall",
+      "statement": "parse_received dispatches DATA to user readers addressed by readerId and fans out when readerId is UNKNOWN.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.3.4-001"]
+    },
+    {
+      "id": "REQ-PART-8.3.4-ACKNACK-NACKFRAG-DISPATCH",
+      "section": "8.3.4",
+      "page": 69,
+      "normativity": "shall",
+      "statement": "parse_received dispatches ACKNACK and NACK_FRAG submessages to the addressed local writer for reliability state processing.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.3.4-002"]
+    }
+  ]
+}
