@@ -27,10 +27,33 @@ ROS 2 headers yet — this lays out the file structure and the specific
 4. **`rmw_get_node_names`** — needs a `ParticipantEntitiesInfo`-equivalent
    builtin topic; SEDP alone doesn't carry node identity. This is a small
    protocol addition, not just glue, unlike everything else here.
-5. **Fixed writer history depth** — `StatefulWriter<CacheDepth,...>` is a
-   compile-time template parameter; `rmw_qos_profile_t.depth` is runtime.
-   Every publisher is instantiated at `RMW_ROSETTE_MAX_HISTORY_DEPTH` for
-   now (see `types.hpp`).
+
+Resolved since the initial scaffold: writer history depth. `rtps::IStatefulWriter`
+now declares `write_reliable()`/`write_async()` directly (their signatures never
+depended on `CacheDepth`, only internal storage did), so `qos.hpp::create_writer_for_qos()`
+picks the smallest of a small closed set of depths (`kSupportedWriterDepths`) at
+runtime and hands back the type-erased interface — no more one fixed depth for
+every publisher. Proven working end-to-end (not just compiling) in
+`tests/loopback/rtps_loopback_smoke.cpp`, which publishes through exactly this
+`IStatefulWriter*` path.
+
+## Proof the underlying rtps core works: `tests/loopback/`
+
+`tests/loopback/rtps_loopback_smoke.cpp` is a from-scratch smoke test, independent
+of this package: two in-process `RTPSParticipant`s bridged directly to each
+other's `parse_received()` (no sockets, no ROS 2, no rosidl) that completes
+SPDP discovery, SEDP matching, and a reliable `DATA` delivery. It passes today:
+
+```
+clang++ -std=c++17 -DRTPS_NO_FREERTOS -DRTPS_LOG_LEVEL=0 \
+  -I. -Iinclude -Iinclude/rosette/rtps \
+  tests/loopback/rtps_loopback_smoke.cpp \
+  src/rtps/{buf_pool,message_parser,participant,sedp,spdp,stateful_reader}.cpp \
+  -o /tmp/rtps_loopback_smoke && /tmp/rtps_loopback_smoke
+```
+
+This is the layer `rmw_rosette` sits on top of — if this test ever regresses,
+nothing built on top of it can work either.
 
 ## Build integration (not yet wired)
 

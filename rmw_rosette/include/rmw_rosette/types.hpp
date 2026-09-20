@@ -7,22 +7,24 @@
  * rmw_create_*() and freed by rmw_destroy_*(). None of this is exposed
  * outside rmw_rosette — callers only ever see the rmw_*_t wrapper.
  *
- * CacheDepth is fixed at compile time here, not per-instance
- * -----------------------------------------------------------
+ * CacheDepth is chosen at runtime, held type-erased
+ * ---------------------------------------------------
  * rtps::RTPSParticipant::create_writer<CacheDepth, MaxReaders>() is a
- * function template — each depth is a distinct C++ type
- * (StatefulWriter<1,8> and StatefulWriter<8,8> do not share a base beyond
- * IStatefulWriter, which only exposes the participant-internal operations
- * acknack/tick/guid/matched_reader_add — not new_change()/write_reliable(),
- * which rmw_publish() needs).
+ * function template — StatefulWriter<1,8> and StatefulWriter<8,8> are
+ * distinct C++ types. rmw_qos_profile_t.depth is a runtime value, so
+ * rmw_create_publisher() can't pick a template argument from it directly.
  *
- * rmw_qos_profile_t.depth is a runtime value. Reconciling that with a
- * compile-time template parameter for every possible depth is real work
- * (a depth -> dispatch table, or a small closed set of instantiations)
- * that this scaffold defers. For now every publisher is instantiated at
- * RMW_ROSETTE_MAX_HISTORY_DEPTH and QoS requests are clamped to it; this
- * is enough to prove the shape out and is the first thing to revisit once
- * real profiles (KEEP_ALL, larger KEEP_LAST) show up.
+ * Resolved by extending rtps::IStatefulWriter (Rosette's own type-erasure
+ * base, not part of the RTPS wire contract) with write_reliable()/
+ * write_async() — their signatures never mention CacheDepth, only the
+ * writer's internal HistoryCache storage does — so every instantiation
+ * satisfies the same interface for the write path, not just the
+ * participant-internal operations it originally covered. See
+ * qos.hpp::select_writer_depth() for the runtime dispatch over a small
+ * closed set of depths this enables, and
+ * tests/loopback/rtps_loopback_smoke.cpp for a working proof (it holds
+ * the writer as IStatefulWriter*, not the concrete type, and publishes
+ * through it).
  */
 
 #pragma once
@@ -33,18 +35,15 @@
 
 #include <cstdint>
 
-#ifndef RMW_ROSETTE_MAX_HISTORY_DEPTH
-#  define RMW_ROSETTE_MAX_HISTORY_DEPTH 8
-#endif
-
 #ifndef RMW_ROSETTE_MAX_NODES
 #  define RMW_ROSETTE_MAX_NODES 4
 #endif
 
 namespace rmw_rosette {
 
-using PublisherWriter = rtps::StatefulWriter<RMW_ROSETTE_MAX_HISTORY_DEPTH,
-                                              RTPS_MAX_MATCHED_READERS>;
+/// Every publisher is held through this type-erased interface regardless
+/// of which CacheDepth qos.hpp::select_writer_depth() chose for it.
+using PublisherWriter = rtps::IStatefulWriter;
 
 /// Backing store for one rmw_context_t. Owns the single RTPSParticipant
 /// this process/firmware image presents to the ROS graph.

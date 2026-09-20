@@ -28,8 +28,10 @@ rmw_publisher_t* rmw_create_publisher(
     //      microxrcedds callbacks + type name string.
     //   3. rtps::WriterConfig cfg; fill_writer_config(cfg, *qos_policies);
     //      cfg.topicName = ...; cfg.typeName = ...;
-    //   4. node->context->participant->create_writer<RMW_ROSETTE_MAX_HISTORY_DEPTH>(cfg)
-    //      — see types.hpp for why the depth is fixed here.
+    //   4. rmw_rosette::create_writer_for_qos(*participant, cfg, *qos_policies)
+    //      — resolves the runtime depth request against a small closed
+    //      set of StatefulWriter<D,...> instantiations and hands back the
+    //      type-erased rtps::IStatefulWriter* (see qos.hpp, types.hpp).
     //   5. Allocate rmw_rosette::Publisher, allocate + fill rmw_publisher_t.
     RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_publisher not implemented");
     return nullptr;

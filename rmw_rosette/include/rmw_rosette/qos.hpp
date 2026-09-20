@@ -51,26 +51,48 @@ inline rtps::DurabilityKind to_rtps_durability(rmw_qos_durability_policy_t polic
     }
 }
 
-/// Clamps a requested KEEP_LAST depth to what the fixed-depth writer can
-/// hold. KEEP_ALL has no bounded representation here — see types.hpp;
-/// callers currently just get RMW_ROSETTE_MAX_HISTORY_DEPTH.
-inline uint8_t clamp_history_depth(const rmw_qos_profile_t& qos) noexcept {
-    if (qos.history == RMW_QOS_POLICY_HISTORY_KEEP_ALL) {
-        return RMW_ROSETTE_MAX_HISTORY_DEPTH;
+/// The closed set of CacheDepth instantiations rmw_rosette is willing to
+/// compile. Small and power-of-two-ish on purpose — each entry here is a
+/// distinct StatefulWriter<N,...> instantiation baked into the firmware
+/// image, so this list is a size/flexibility trade the application makes
+/// once, not something to open-end. KEEP_ALL maps to the largest entry;
+/// there's no bounded representation for genuinely-unbounded history.
+inline constexpr uint8_t kSupportedWriterDepths[] = {1, 4, 8, 16};
+
+/// Picks the smallest supported depth that's >= the profile's request.
+inline uint8_t select_writer_depth(const rmw_qos_profile_t& qos) noexcept {
+    constexpr uint8_t max_depth =
+        kSupportedWriterDepths[sizeof(kSupportedWriterDepths) / sizeof(uint8_t) - 1];
+    if (qos.history == RMW_QOS_POLICY_HISTORY_KEEP_ALL || qos.depth == 0) {
+        return max_depth;
     }
-    if (qos.depth == 0 || qos.depth > RMW_ROSETTE_MAX_HISTORY_DEPTH) {
-        return RMW_ROSETTE_MAX_HISTORY_DEPTH;
+    for (uint8_t d : kSupportedWriterDepths) {
+        if (qos.depth <= d) return d;
     }
-    return static_cast<uint8_t>(qos.depth);
+    return max_depth;  // Request exceeds every supported depth — clamp.
+}
+
+/// Runtime depth -> compile-time create_writer<D>() call, returned through
+/// the depth-erased IStatefulWriter interface (see types.hpp). Every arm
+/// is a real, distinct StatefulWriter<D, RTPS_MAX_MATCHED_READERS>
+/// instantiation; add a case here if kSupportedWriterDepths grows.
+inline rtps::IStatefulWriter* create_writer_for_qos(rtps::RTPSParticipant& participant,
+                                                     const rtps::WriterConfig& cfg,
+                                                     const rmw_qos_profile_t& qos) noexcept {
+    switch (select_writer_depth(qos)) {
+        case 1:  return participant.create_writer<1>(cfg);
+        case 4:  return participant.create_writer<4>(cfg);
+        case 8:  return participant.create_writer<8>(cfg);
+        case 16: return participant.create_writer<16>(cfg);
+        default: return nullptr;  // unreachable given select_writer_depth()'s range
+    }
 }
 
 inline void fill_writer_config(rtps::WriterConfig& cfg, const rmw_qos_profile_t& qos) noexcept {
     cfg.reliability = to_rtps_reliability(qos.reliability);
     cfg.durability  = to_rtps_durability(qos.durability);
-    // NOTE: cfg carries no history-depth field — depth selects which
-    // StatefulWriter<D,...> instantiation create_writer<D>() returns
-    // (a template argument, not a runtime WriterConfig member). See the
-    // rmw_publisher.cpp TODO for how that call is actually made.
+    // History depth doesn't live on WriterConfig — it's the template
+    // argument create_writer_for_qos() resolves above.
 }
 
 inline void fill_reader_config(rtps::ReaderConfig& cfg, const rmw_qos_profile_t& qos) noexcept {

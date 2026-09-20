@@ -6,6 +6,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 enable_testing()
 
+# Every target below builds src/rtps/*.cpp directly (bare #include
+# "foo.hpp" style, relative to include/rosette/rtps) alongside test code
+# that includes the same headers via "rosette/rtps/foo.hpp" (relative to
+# include/). Both forms need to resolve for a standalone
+# `cmake -S tests/spec -B build` per this directory's own README — neither
+# path was on any target's include_directories() before this fix.
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/rtps
+)
+
 add_executable(message_parser_spec_tests
     src/message_parser_spec_tests.cpp
     src/spec_test_common.cpp

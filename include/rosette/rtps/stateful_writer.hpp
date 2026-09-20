@@ -101,6 +101,36 @@ struct IStatefulWriter {
 
     /// §8.4.1.4, p. 108 — remove a matched reader.
     virtual void matched_reader_remove(const Guid& reader_guid) noexcept = 0;
+
+    // ------------------------------------------------------------------
+    // Depth-independent write path.
+    //
+    // Deliberately included here even though every other member above is
+    // an RTPSParticipant-internal operation: new_change()/write_reliable()/
+    // write_async()'s signatures never mention CacheDepth — only the
+    // writer's internal HistoryCache storage does — so callers that only
+    // hold an IStatefulWriter* (because they chose a writer's depth at
+    // runtime from a small closed set of instantiations, e.g. an rmw
+    // implementation matching an rmw_qos_profile_t.depth request) can
+    // still publish without needing the concrete StatefulWriter<D,R>
+    // type. See rmw_rosette's qos.hpp for the runtime dispatch this
+    // exists for.
+    // ------------------------------------------------------------------
+
+    /// §8.4.1.4, p. 107 — see StatefulWriter::write_reliable().
+    virtual bool write_reliable(ChangeKind       kind,
+                                const Octet*     payload_data,
+                                uint32_t         payload_size,
+                                const InlineQos& inline_qos    = InlineQos{},
+                                SequenceNumber*  out_sn        = nullptr,
+                                uint32_t         timeout_ms    = 0) noexcept = 0;
+
+    /// Non-blocking counterpart — see StatefulWriter::write_async().
+    virtual bool write_async(ChangeKind       kind,
+                             const Octet*     payload_data,
+                             uint32_t         payload_size,
+                             const InlineQos& inline_qos = InlineQos{},
+                             SequenceNumber*  out_sn      = nullptr) noexcept = 0;
 };
 
 // ============================================================
@@ -329,7 +359,7 @@ public:
                         uint32_t           payload_size,
                         const InlineQos&   inline_qos,
                         SequenceNumber*    out_sn = nullptr,
-                        uint32_t           timeout_ms = 0) noexcept
+                        uint32_t           timeout_ms = 0) noexcept override
     {
         if (!payload_data || payload_size == 0) {
             return false;
@@ -410,7 +440,7 @@ public:
                      const Octet*       payload_data,
                      uint32_t           payload_size,
                      const InlineQos&   inline_qos = InlineQos{},
-                     SequenceNumber*    out_sn = nullptr) noexcept
+                     SequenceNumber*    out_sn = nullptr) noexcept override
     {
         if (!payload_data || payload_size == 0) {
             return false;
