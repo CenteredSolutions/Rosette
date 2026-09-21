@@ -21,9 +21,22 @@
 
 namespace {
 
-/// strncpy(dst, src, cap - 1) doesn't null-terminate when src is >= cap - 1
-/// bytes long — the one sharp edge in an otherwise-standard bounded copy,
-/// so it still needs the explicit dst[cap-1] afterward.
+/**
+ * @brief Copies a NUL-terminated string into a fixed buffer, truncating
+ * rather than overflowing.
+ *
+ * `rmw_create_node()` uses this to copy rcl's `name`/`namespace_`
+ * arguments into `Node`'s fixed buffers, since the caller makes no
+ * promise those pointers stay valid past the call.
+ *
+ * `strncpy(dst, src, cap - 1)` does not NUL-terminate `dst` when `src` is
+ * `cap - 1` bytes or longer, so the explicit `dst[cap - 1] = '\0'`
+ * afterward is required, not defensive.
+ *
+ * @param[out] dst Destination buffer.
+ * @param[in] cap Capacity of `dst`, including the terminating NUL.
+ * @param[in] src Source string.
+ */
 void copy_bounded(char* dst, size_t cap, const char* src) noexcept {
     std::strncpy(dst, src, cap - 1);
     dst[cap - 1] = '\0';
@@ -41,11 +54,11 @@ rmw_rosette::Pool<NodeSlot, RMW_ROSETTE_MAX_NODES>& node_pool() {
     return pool;
 }
 
+/// `rmw_node_t` is always the first member of `NodeSlot`, so this
+/// reinterpret is well-defined (standard-layout, same address as the
+/// struct itself) — the same technique rmw_fastrtps_cpp/rmw_cyclonedds_cpp
+/// use for their own wrapper structs.
 NodeSlot* slot_from(rmw_node_t* node) noexcept {
-    // rmw_node_t is always the first member of NodeSlot, so this
-    // reinterpret is well-defined (standard-layout, same address as the
-    // struct itself) — the same trick rmw_fastrtps_cpp/rmw_cyclonedds_cpp
-    // use for their own wrapper structs.
     return reinterpret_cast<NodeSlot*>(node);
 }
 
@@ -53,6 +66,26 @@ NodeSlot* slot_from(rmw_node_t* node) noexcept {
 
 extern "C" {
 
+/**
+ * @brief Creates a node scoped to a context's RTPS participant.
+ *
+ * RTPS has no node concept of its own; this exists to satisfy rcl's node
+ * lifecycle, carry the namespace topic_naming.hpp needs when mangling
+ * topic names, and give graph-cache queries something to scope by. Every
+ * node created against one `rmw_context_t` shares that context's single
+ * `RTPSParticipant` — a participant is process-wide; nodes are a ROS
+ * concept layered on top of it.
+ *
+ * Draws a slot from node_pool(), copies `name`/`namespace_` into the
+ * slot's fixed buffers via copy_bounded(), and fills the `rmw_node_t`
+ * fields to point at those buffers.
+ *
+ * @param[in] context Context whose participant this node is scoped to.
+ * @param[in] name Node name.
+ * @param[in] namespace_ Node namespace.
+ * @return The new node, or `nullptr` if any argument is null or the node
+ *   pool is exhausted.
+ */
 rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name,
                              const char* namespace_) {
     if (!context || !context->impl || !name || !namespace_) {
@@ -80,19 +113,31 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name,
     return &slot->node;
 }
 
+/**
+ * @brief Destroys a node and returns its slot to the pool.
+ *
+ * @param[in] node Node to destroy.
+ * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `node` is null.
+ */
 rmw_ret_t rmw_destroy_node(rmw_node_t* node) {
     if (!node) return RMW_RET_INVALID_ARGUMENT;
     node_pool().release(slot_from(node));
     return RMW_RET_OK;
 }
 
+/**
+ * @brief Returns the guard condition rclcpp/rclpy wait on to be woken
+ * when this node's view of the ROS graph changes.
+ *
+ * A per-node guard condition triggered from GraphCache updates
+ * (graph_cache.hpp) would back this; no such condition is created by
+ * rmw_create_node() yet, so this always reports none available.
+ *
+ * @param[in] node Node whose graph guard condition is requested.
+ * @return `nullptr`.
+ */
 const rmw_guard_condition_t* rmw_node_get_graph_guard_condition(const rmw_node_t* node) {
     (void)node;
-    // TODO: one guard condition per node, triggered whenever GraphCache
-    // changes (endpoint match/unmatch) — this is what lets
-    // rclpy/rclcpp graph-change callbacks wake up. Depends on
-    // graph_cache.hpp's still-open question about where discovery events
-    // feed in (see that header).
     return nullptr;
 }
 

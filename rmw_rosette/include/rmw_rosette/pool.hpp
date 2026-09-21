@@ -23,8 +23,20 @@ namespace rmw_rosette {
 template <typename T, std::size_t N>
 class Pool {
 public:
-    /// Returns a pointer to a freshly value-initialized T, or nullptr if
-    /// every slot is in use.
+    /**
+     * @brief Claims and value-initializes one slot from the pool's fixed
+     * storage array.
+     *
+     * `rmw_create_*()` entry points across rmw_rosette call this in place
+     * of `new` to hand back the backing storage for one entity handle.
+     *
+     * Scans `used_` linearly for the first free slot, marks it used, and
+     * resets its storage to `T{}` before returning a pointer to it. Slot
+     * order is not preserved across acquire/release cycles.
+     *
+     * @return Pointer to a freshly value-initialized `T`, or `nullptr`
+     *   when all `N` slots are in use.
+     */
     T* acquire() noexcept {
         for (std::size_t i = 0; i < N; ++i) {
             if (!used_[i]) {
@@ -36,8 +48,19 @@ public:
         return nullptr;
     }
 
-    /// Returns `obj` to the pool. `obj` must be a pointer this pool
-    /// returned from acquire() and not already released.
+    /**
+     * @brief Returns a previously acquired slot to the pool.
+     *
+     * Called from the matching `rmw_destroy_*()` entry point once an
+     * entity's resources (writers, readers, etc.) have already been torn
+     * down.
+     *
+     * Scans `storage_` linearly for the slot at `obj`'s address, clears
+     * it back to `T{}`, and marks it free.
+     *
+     * @param[in] obj Pointer previously returned by `acquire()` on this
+     *   same pool, not already released.
+     */
     void release(T* obj) noexcept {
         for (std::size_t i = 0; i < N; ++i) {
             if (&storage_[i] == obj) {
@@ -48,6 +71,7 @@ public:
         }
     }
 
+    /// @return The fixed slot count `N` this pool was instantiated with.
     static constexpr std::size_t capacity() noexcept { return N; }
 
 private:

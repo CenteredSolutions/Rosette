@@ -13,15 +13,12 @@
  * plain byte buffer so the rest of rmw_rosette never has to touch
  * ucdrBuffer directly.
  *
- * Struct layout confirmed against upstream sources (not written from
- * memory — see the git history of this file for the correction):
- *   rosidl_runtime_c/message_type_support_struct.h  (ros2/rosidl, humble)
+ * Struct layouts are taken from the upstream headers this package
+ * depends on (package.xml: rosidl_runtime_c, rosidl_typesupport_microxrcedds_c):
+ *   rosidl_runtime_c/message_type_support_struct.h
  *   rosidl_typesupport_microxrcedds_c/message_type_support.h
- *     (micro-ROS/rosidl_typesupport_microxrcedds)
- * Both are pulled in via this package's package.xml dependencies
- * (rosidl_runtime_c, rosidl_typesupport_microxrcedds_c) at real build
- * time; nothing here is vendored, to avoid a second, possibly-diverging
- * copy of structs those packages own.
+ * Neither is vendored here, so there is exactly one copy of each struct
+ * in the build.
  */
 
 #pragma once
@@ -35,13 +32,28 @@
 
 namespace rmw_rosette {
 
-/// Walks the type support's identifier chain (a rosidl_message_type_support_t
-/// can wrap more than one typesupport family — see
-/// get_message_typesupport_handle()'s doc comment in rosidl_runtime_c) down
-/// to the microxrcedds_c one, and returns its callback struct. Returns
-/// nullptr if this type wasn't compiled with microxrcedds_c support at
-/// all — e.g. rcl was linked against a different typesupport, which is a
-/// configuration bug worth surfacing loudly rather than silently no-op'ing.
+/**
+ * @brief Resolves the microxrcedds_c serialization callbacks for a ROS
+ * message type.
+ *
+ * `rmw_create_publisher()` and `rmw_create_subscription()` call this
+ * once, at entity-creation time, to get the callback struct that
+ * serialize_message()/deserialize_message() then use on every
+ * publish/take for that entity's lifetime.
+ *
+ * A `rosidl_message_type_support_t` can wrap more than one typesupport
+ * family (see `get_message_typesupport_handle()`'s doc comment in
+ * rosidl_runtime_c); this walks that chain down to the
+ * `rosidl_typesupport_microxrcedds_c` entry specifically and returns its
+ * `data` pointer, already cast to the callbacks struct it's known to
+ * hold for that identifier.
+ *
+ * @param[in] handle Type support handle as rcl passes it to
+ *   `rmw_create_publisher()`/`rmw_create_subscription()`.
+ * @return The resolved callbacks, or `nullptr` when `handle` is null or
+ *   the type was not compiled with microxrcedds_c support (rcl linked
+ *   against a different typesupport family).
+ */
 inline const message_type_support_callbacks_t* get_message_typesupport(
     const rosidl_message_type_support_t* handle) noexcept {
     if (!handle) return nullptr;
@@ -51,12 +63,30 @@ inline const message_type_support_callbacks_t* get_message_typesupport(
     return static_cast<const message_type_support_callbacks_t*>(ts->data);
 }
 
-/// Serializes `ros_message` into `out_buf` (capacity `out_cap`) using the
-/// resolved microxrcedds callbacks. Returns the encoded length, or 0 on
-/// failure (buffer too small, or the callback itself rejected the
-/// message — ucdr_init_buffer()/cdr_serialize() both signal errors this
-/// way rather than through exceptions, matching the no-exceptions posture
-/// of the rest of rosette::rtps).
+/**
+ * @brief Encodes a ROS message into standard CDR using its resolved
+ * microxrcedds callbacks.
+ *
+ * `rmw_publish()` calls this to turn the application's message struct
+ * into the byte buffer it then hands to `IStatefulWriter::write_reliable()`.
+ * The result carries no DDS encapsulation header (see
+ * kRtpsEncapsulationHeaderSize below) — `MessageBuilder::append_data()`
+ * adds that automatically when the writer places the DATA submessage on
+ * the wire.
+ *
+ * Initializes a `ucdrBuffer` view over `out_buf` and delegates to
+ * `callbacks.cdr_serialize()`, which walks the message's fields and
+ * writes each one through Micro-CDR.
+ *
+ * @param[in] callbacks Resolved via get_message_typesupport().
+ * @param[in] ros_message Message instance to encode.
+ * @param[out] out_buf Destination buffer.
+ * @param[in] out_cap Capacity of `out_buf`.
+ * @return Encoded length in bytes, or 0 when `out_buf` was too small or
+ *   `cdr_serialize()` itself rejected the message (both signaled through
+ *   the return value rather than exceptions, matching the no-exceptions
+ *   posture of the rest of rosette::rtps).
+ */
 inline uint32_t serialize_message(const message_type_support_callbacks_t& callbacks,
                                    const void* ros_message,
                                    uint8_t* out_buf, uint32_t out_cap) noexcept {
@@ -68,21 +98,39 @@ inline uint32_t serialize_message(const message_type_support_callbacks_t& callba
     return static_cast<uint32_t>(ucdr_buffer_length(&cdr));
 }
 
-/// Bytes rtps::MessageBuilder::append_data() always prepends to a DATA
-/// submessage's payload (representation id CDR_LE + 2 zero option bytes —
-/// confirmed against tests/spec's TC-BLD-10.2-001). It does this
-/// unconditionally, regardless of what serialize_message() above produced,
-/// so every CacheChange this stack ever delivers carries it — there is no
-/// path where in_buf arrives without it.
+/// Size, in bytes, of the DDS CDR encapsulation header (representation id
+/// CDR_LE + 2 zero option bytes) that `rtps::MessageBuilder::append_data()`
+/// unconditionally prepends to every DATA submessage's payload (see
+/// `tests/spec`'s `TC-BLD-10.2-001`). Every `CacheChange::payload` this
+/// stack delivers to a reader therefore carries this header ahead of the
+/// application's CDR content — deserialize_message() below skips past it
+/// before invoking the microxrcedds callbacks, which know nothing about
+/// it and expect to start reading application fields immediately.
 constexpr uint32_t kRtpsEncapsulationHeaderSize = 4;
 
-/// Deserializes `in_buf` (length `in_len`, as delivered in a
-/// CacheChange::payload — see kRtpsEncapsulationHeaderSize) into
-/// `ros_message`, which the caller must have already allocated/
-/// initialized as an instance of the message type these callbacks belong
-/// to (same contract rcl itself relies on — rmw_rosette does not know how
-/// to default-construct an arbitrary ROS message type; that's
-/// rosidl-generated code the caller already has).
+/**
+ * @brief Decodes a `CacheChange` payload into a ROS message using its
+ * resolved microxrcedds callbacks.
+ *
+ * `rmw_take_with_info()` calls this once it has popped a buffered change
+ * for a subscription, turning the received bytes back into the
+ * application's message struct.
+ *
+ * Skips the leading kRtpsEncapsulationHeaderSize bytes (see that
+ * constant), initializes a `ucdrBuffer` view over the remainder, and
+ * delegates to `callbacks.cdr_deserialize()`.
+ *
+ * @param[in] callbacks Resolved via get_message_typesupport().
+ * @param[in] in_buf Payload bytes as delivered in a `CacheChange::payload`.
+ * @param[in] in_len Length of `in_buf`.
+ * @param[out] ros_message Message instance to decode into; the caller
+ *   must have already allocated/initialized it as an instance of the
+ *   message type `callbacks` belongs to — rmw_rosette has no way to
+ *   default-construct an arbitrary ROS message type itself, that being
+ *   rosidl-generated code the caller already has.
+ * @return `true` on success; `false` when `in_len` is smaller than the
+ *   encapsulation header or `cdr_deserialize()` itself failed.
+ */
 inline bool deserialize_message(const message_type_support_callbacks_t& callbacks,
                                  const uint8_t* in_buf, uint32_t in_len,
                                  void* ros_message) noexcept {

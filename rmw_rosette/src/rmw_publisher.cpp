@@ -30,6 +30,9 @@ rmw_rosette::Pool<PublisherSlot, RMW_ROSETTE_MAX_PUBLISHERS>& publisher_pool() {
     return pool;
 }
 
+/// `rmw_publisher_t` is always the first member of `PublisherSlot`, so
+/// this reinterpret is well-defined (standard-layout, same address as
+/// the struct itself).
 PublisherSlot* slot_from(const rmw_publisher_t* pub) noexcept {
     return reinterpret_cast<PublisherSlot*>(const_cast<rmw_publisher_t*>(pub));
 }
@@ -43,6 +46,28 @@ constexpr uint32_t kSerializeBufSize = RTPS_BUF_BLOCK_SIZE;
 
 extern "C" {
 
+/**
+ * @brief Creates a publisher backed by a runtime-depth-selected RTPS writer.
+ *
+ * Resolves the message type's microxrcedds callbacks, mangles the ROS
+ * topic name and DDS wire type name (topic_naming.hpp), builds a
+ * `WriterConfig` from `qos_policies`, and creates the writer through
+ * create_writer_for_qos() so its `CacheDepth` matches the requested
+ * history depth. The resulting `IStatefulWriter*` and callbacks are
+ * stored in a pooled `Publisher`, and the `rmw_publisher_t` returned to
+ * the caller points at it.
+ *
+ * @param[in] node Node to scope this publisher to.
+ * @param[in] type_support Message type support from rosidl-generated code.
+ * @param[in] topic_name ROS 2 topic name (unmangled).
+ * @param[in] qos_policies Requested QoS profile.
+ * @param[in] publisher_options Copied verbatim into the resulting
+ *   `rmw_publisher_t::options`.
+ * @return The new publisher, or `nullptr` if any required argument is
+ *   null, the type support has no microxrcedds_c callbacks, the
+ *   participant's writer table is full, or the publisher pool is
+ *   exhausted.
+ */
 rmw_publisher_t* rmw_create_publisher(
     const rmw_node_t* node,
     const rosidl_message_type_support_t* type_support,
@@ -108,6 +133,17 @@ rmw_publisher_t* rmw_create_publisher(
     return &slot->pub;
 }
 
+/**
+ * @brief Destroys a publisher and returns its slot to the pool.
+ *
+ * Does not remove the underlying writer from the participant's writer
+ * table; the writer's storage is reused only when the participant itself
+ * is torn down.
+ *
+ * @param[in] node Unused; kept for ABI symmetry with `rmw_create_publisher()`.
+ * @param[in] publisher Publisher to destroy.
+ * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `publisher` is null.
+ */
 rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     (void)node;
     if (!publisher) return RMW_RET_INVALID_ARGUMENT;
@@ -115,6 +151,22 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     return RMW_RET_OK;
 }
 
+/**
+ * @brief Serializes and reliably publishes a ROS message.
+ *
+ * Encodes `ros_message` via serialize_message() into a stack buffer,
+ * then hands the resulting bytes to the publisher's
+ * `IStatefulWriter::write_reliable()`, which prepends the RTPS DATA
+ * submessage's CDR encapsulation header and delivers it through the
+ * normal RTPS reliability machinery (heartbeat/acknack).
+ *
+ * @param[in] publisher Publisher to send through.
+ * @param[in] ros_message Message instance to encode and send.
+ * @param[in] allocation Unused; this path performs no loaned-message allocation.
+ * @return `RMW_RET_OK` on success; `RMW_RET_INVALID_ARGUMENT` if any
+ *   required argument is null; `RMW_RET_ERROR` if serialization or the
+ *   underlying write failed.
+ */
 rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
                        rmw_publisher_allocation_t* allocation) {
     (void)allocation;
@@ -139,6 +191,21 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     return RMW_RET_OK;
 }
 
+/**
+ * @brief Reliably publishes an already-serialized message.
+ *
+ * The same delivery path as rmw_publish(), minus the serialize step:
+ * `serialized_message`'s bytes are already CDR-encoded application
+ * content (no encapsulation header — see kRtpsEncapsulationHeaderSize in
+ * type_support.hpp), so they're handed to `write_reliable()` directly.
+ *
+ * @param[in] publisher Publisher to send through.
+ * @param[in] serialized_message Pre-serialized message bytes.
+ * @param[in] allocation Unused; this path performs no loaned-message allocation.
+ * @return `RMW_RET_OK` on success; `RMW_RET_INVALID_ARGUMENT` if any
+ *   required argument is null; `RMW_RET_ERROR` if the underlying write
+ *   failed.
+ */
 rmw_ret_t rmw_publish_serialized_message(const rmw_publisher_t* publisher,
                                           const rmw_serialized_message_t* serialized_message,
                                           rmw_publisher_allocation_t* allocation) {
@@ -157,17 +224,35 @@ rmw_ret_t rmw_publish_serialized_message(const rmw_publisher_t* publisher,
     return RMW_RET_OK;
 }
 
+/**
+ * @brief Reports how many matched subscriptions a publisher currently has.
+ *
+ * `IStatefulWriter` (stateful_writer.hpp) exposes `matched_reader_add()`/
+ * `matched_reader_remove()` but no accessor for the current count; this
+ * always reports zero and `RMW_RET_UNSUPPORTED` until one is added
+ * (directly on `IStatefulWriter`, or tracked alongside GraphCache).
+ *
+ * @param[in] publisher Unused.
+ * @param[out] subscription_count Always set to 0.
+ * @return `RMW_RET_UNSUPPORTED`, or `RMW_RET_INVALID_ARGUMENT` if
+ *   `subscription_count` is null.
+ */
 rmw_ret_t rmw_publisher_count_matched_subscriptions(const rmw_publisher_t* publisher,
                                                      size_t* subscription_count) {
     (void)publisher;
     if (!subscription_count) return RMW_RET_INVALID_ARGUMENT;
-    // TODO: IStatefulWriter has no public matched-reader count accessor
-    // today (see stateful_writer.hpp's matched_reader_add/remove) — either
-    // add one or track it alongside GraphCache.
     *subscription_count = 0;
     return RMW_RET_UNSUPPORTED;
 }
 
+/**
+ * @brief Reports a publisher's writer GUID as an rmw_gid_t.
+ *
+ * @param[in] publisher Publisher to query.
+ * @param[out] gid Receives the writer's GUID via guid_to_rmw_gid().
+ * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if any required
+ *   argument is null.
+ */
 rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t* gid) {
     if (!publisher || !publisher->data || !gid) return RMW_RET_INVALID_ARGUMENT;
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
@@ -175,12 +260,12 @@ rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t*
     return RMW_RET_OK;
 }
 
-// Deferred, not yet stubbed: rmw_publisher_assert_liveliness (no
-// LIVELINESS QoS in rtps yet), rmw_publisher_wait_for_all_acked (no
-// direct equivalent — write_reliable() already blocks internally, but
-// that's a different contract), rmw_publisher_get_actual_qos,
-// rmw_borrow_loaned_message / rmw_publish_loaned_message (loaned-message
-// support assumes a memory model this stack doesn't have),
-// rmw_publisher_get_network_flow_endpoints.
+// This file does not define rmw_publisher_assert_liveliness() (no
+// LIVELINESS QoS in the underlying rtps core), rmw_publisher_wait_for_all_acked()
+// (write_reliable() already blocks on acknowledgment internally, but under
+// a different contract than this call), rmw_publisher_get_actual_qos(),
+// rmw_borrow_loaned_message()/rmw_publish_loaned_message() (loaned-message
+// support assumes a memory model this stack doesn't provide), or
+// rmw_publisher_get_network_flow_endpoints().
 
 }  // extern "C"

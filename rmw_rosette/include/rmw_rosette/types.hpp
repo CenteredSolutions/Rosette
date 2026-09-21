@@ -140,7 +140,26 @@ struct Subscription {
     uint32_t      pending_head = 0;  ///< next slot to fill (oldest-overwrite on wrap)
     uint32_t      pending_count = 0;
 
-    /// Called from StatefulReader's OnChangeAvailable trampoline.
+    /**
+     * @brief Copies one received change's payload into the ring, evicting
+     * the oldest unread entry if the ring is full.
+     *
+     * Called from the `StatefulReader::OnChangeAvailable` trampoline
+     * (rmw_subscription.cpp), which runs from `RTPSParticipant::tick()`/
+     * `parse_received()` — a different call context than `pop_change()`,
+     * which runs from whatever thread calls `rmw_take()`.
+     *
+     * Copies up to `sizeof(PendingChange::bytes)` bytes into the slot at
+     * `pending_head`, then advances `pending_head` and grows
+     * `pending_count` up to `RMW_ROSETTE_MAX_PENDING_CHANGES`. Once the
+     * ring is full, advancing `pending_head` overwrites the oldest entry
+     * without growing `pending_count` further, so a publisher that
+     * outruns `rmw_take()` loses its oldest unread change rather than
+     * growing the buffer.
+     *
+     * @param[in] data Payload bytes, as delivered in a `CacheChange::payload`.
+     * @param[in] size Length of `data`; truncated to `sizeof(PendingChange::bytes)`.
+     */
     void push_change(const uint8_t* data, uint32_t size) noexcept {
         PendingChange& slot = pending[pending_head];
         const uint32_t n = size < sizeof(slot.bytes) ? size : sizeof(slot.bytes);
@@ -151,7 +170,20 @@ struct Subscription {
         if (pending_count < RMW_ROSETTE_MAX_PENDING_CHANGES) ++pending_count;
     }
 
-    /// Called from rmw_take(). Returns false if nothing is buffered.
+    /**
+     * @brief Pops the oldest buffered change from the ring.
+     *
+     * Called from `rmw_take_with_info()` (rmw_subscription.cpp) to
+     * retrieve the next change to deserialize.
+     *
+     * Computes the ring's tail index from `pending_head` and
+     * `pending_count`, copies that slot into `out`, marks it invalid, and
+     * decrements `pending_count`.
+     *
+     * @param[out] out Receives the popped change; left unmodified when
+     *   the ring is empty.
+     * @return `true` if a change was popped; `false` if the ring was empty.
+     */
     bool pop_change(PendingChange& out) noexcept {
         if (pending_count == 0) return false;
         const uint32_t tail =
