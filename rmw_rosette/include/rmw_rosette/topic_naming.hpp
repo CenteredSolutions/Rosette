@@ -81,16 +81,21 @@ inline void compose_service_reply_topic(char* out, size_t cap,
     detail::str_append(out, cap, pos, "Reply");
 }
 
-// TODO: type-name mangling ("<pkg>::msg::dds_::<Type>_") needs the
-// package/message name apart from the C symbol name that
-// rosidl_message_type_support_t carries. Confirm exactly what string
-// rosidl_typesupport_microxrcedds_c exposes for this (it may already be
-// the mangled DDS form, in which case this function is a passthrough) —
-// see the type_support.hpp TODO.
-inline void compose_dds_type_name(char* /*out*/, size_t /*cap*/,
-                                   const void* /*rosidl_message_type_support*/) noexcept {
-    // Deliberately unimplemented — depends on the rosidl typesupport
-    // struct layout, see type_support.hpp.
+/// Composes "<namespace>::dds_::<name>_" — confirmed against the humble
+/// branch of rosidl_typesupport_microxrcedds's codegen template
+/// (msg__type_support_c.c.em): message_namespace_ is "<pkg>::<subfolder>"
+/// (e.g. "std_msgs::msg"), message_name_ is the bare type name (e.g.
+/// "String"), so this is the same "::dds_::<Type>_" suffixing convention
+/// rmw_fastrtps_cpp uses — required for real ROS 2 nodes' SEDP matching
+/// to accept this participant's endpoints.
+inline void compose_dds_type_name(char* out, size_t cap,
+                                   const char* message_namespace,
+                                   const char* message_name) noexcept {
+    size_t pos = 0;
+    detail::str_append(out, cap, pos, message_namespace ? message_namespace : "");
+    detail::str_append(out, cap, pos, "::dds_::");
+    detail::str_append(out, cap, pos, message_name ? message_name : "");
+    detail::str_append(out, cap, pos, "_");
 }
 
 }  // namespace rmw_rosette

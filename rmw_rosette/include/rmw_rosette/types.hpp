@@ -29,14 +29,32 @@
 
 #pragma once
 
+#include "rosette/net/posix/socket.hpp"
+#include "rosette/rtps/buf_pool.hpp"
 #include "rosette/rtps/participant.hpp"
 #include "rosette/rtps/stateful_reader.hpp"
 #include "rosette/rtps/stateful_writer.hpp"
+#include "rosette/rtps/transport.hpp"
+#include "type_support.hpp"
+
+#include <rmw/init.h>
 
 #include <cstdint>
+#include <new>
 
 #ifndef RMW_ROSETTE_MAX_NODES
 #  define RMW_ROSETTE_MAX_NODES 4
+#endif
+
+#ifndef RMW_ROSETTE_MAX_CONTEXTS
+#  define RMW_ROSETTE_MAX_CONTEXTS 1
+#endif
+
+#ifndef RMW_ROSETTE_MAX_PENDING_CHANGES
+/// Per-subscription buffer between StatefulReader::OnChangeAvailable
+/// (fired from tick()/parse_received()) and rmw_take() (called from
+/// application/executor context) — see PendingChanges below.
+#  define RMW_ROSETTE_MAX_PENDING_CHANGES 4
 #endif
 
 namespace rmw_rosette {
@@ -46,46 +64,104 @@ namespace rmw_rosette {
 using PublisherWriter = rtps::IStatefulWriter;
 
 /// Backing store for one rmw_context_t. Owns the single RTPSParticipant
-/// this process/firmware image presents to the ROS graph.
+/// this process/firmware image presents to the ROS graph, plus the
+/// transport it talks through.
+///
+/// RTPSParticipant and SocketUdpTransport both have non-default,
+/// non-copyable constructors (they need domain/participant id and ports
+/// known at construction time), so they can't live as plain default-
+/// constructed members the way Pool<T,N> expects. They're placement-new'd
+/// into aligned storage instead — the same technique
+/// RTPSParticipant::create_writer<>() itself already uses for its writer
+/// table (see participant.hpp) — so this stays a single static
+/// allocation per context slot, constructed once at rmw_init() and torn
+/// down once at rmw_context_fini(), not per-message.
 struct Context {
-    rtps::RTPSParticipant* participant = nullptr;
-    uint8_t                domain_id   = 0;
+    alignas(rtps::SocketUdpTransport) unsigned char transport_storage[sizeof(rtps::SocketUdpTransport)];
+    alignas(rtps::RTPSParticipant) unsigned char participant_storage[sizeof(rtps::RTPSParticipant)];
 
-    // TODO: transport ownership. RTPSParticipant takes an ITransport& by
-    // reference (see rtps/participant.hpp); this struct needs to own or
-    // reference the concrete rosette::net socket backend selected for the
-    // target (POSIX / FreeRTOS+TCP / WIZnet), matching how rosette::App
-    // wires transports today for the micro-ROS path.
+    rosette::net::posix::PosixSocketProvider provider{};
+    rtps::SocketUdpTransport* transport   = nullptr;  ///< placement-new'd into transport_storage
+    rtps::RTPSParticipant*    participant = nullptr;  ///< placement-new'd into participant_storage
+    uint8_t domain_id = 0;
+    bool constructed = false;
 };
+
+#ifndef RMW_ROSETTE_MAX_NAME_LEN
+#  define RMW_ROSETTE_MAX_NAME_LEN 64
+#endif
 
 /// Backing store for one rmw_node_t. RTPS has no first-class "node"
 /// concept — this exists to satisfy rcl's node lifecycle and namespacing,
 /// and to scope graph-cache queries (rmw_get_*_names_and_types) by node.
+///
+/// name/namespace are copied into fixed buffers rather than storing rcl's
+/// pointer: rmw_create_node()'s caller makes no promise that its `name`/
+/// `namespace_` arguments outlive the call, and the rmw_node_t this
+/// backs must keep reporting them for its whole lifetime.
 struct Node {
-    Context*    context   = nullptr;
-    const char* name      = nullptr;
-    const char* namespace_ = nullptr;
+    Context* context = nullptr;
+    char     name[RMW_ROSETTE_MAX_NAME_LEN] = {};
+    char     namespace_[RMW_ROSETTE_MAX_NAME_LEN] = {};
 };
 
 /// Backing store for one rmw_publisher_t.
 struct Publisher {
     Node*             node   = nullptr;
     PublisherWriter*  writer = nullptr;
-    const void*       type_support = nullptr;  ///< rosidl_message_type_support_t*
+    const message_type_support_callbacks_t* type_support = nullptr;
     char              mangled_topic_name[RTPS_MAX_TOPIC_NAME_LEN] = {};
 };
 
-/// Backing store for one rmw_subscription_t.
+/// One buffered CacheChange payload, copied out of the pool-backed
+/// BufRef the moment StatefulReader::OnChangeAvailable fires (that
+/// callback's CacheChange is only valid for the duration of the call —
+/// see stateful_reader.hpp), and held here until rmw_take() drains it.
+struct PendingChange {
+    uint8_t  bytes[RTPS_BUF_BLOCK_SIZE] = {};
+    uint32_t size = 0;
+    bool     valid = false;
+};
+
+/// Backing store for one rmw_subscription_t. Bridges
+/// StatefulReader::OnChangeAvailable (fired from tick()/parse_received())
+/// to rmw_take() (called from application/executor context) via a small
+/// fixed-capacity ring — no heap, bounded by
+/// RMW_ROSETTE_MAX_PENDING_CHANGES regardless of publish rate; a
+/// publisher that outruns rmw_take() drops the oldest unread change
+/// rather than growing unbounded.
 struct Subscription {
     Node*                node   = nullptr;
     rtps::StatefulReader* reader = nullptr;
-    const void*          type_support = nullptr; ///< rosidl_message_type_support_t*
+    const message_type_support_callbacks_t* type_support = nullptr;
     char                 mangled_topic_name[RTPS_MAX_TOPIC_NAME_LEN] = {};
 
-    // TODO: a small ring of "change available" flags/queue populated by
-    // StatefulReader::OnChangeAvailable, drained by rmw_take(). The reader
-    // callback runs from RTPSParticipant::tick()/parse_received() context,
-    // not from rmw_take() itself, so something has to buffer between them.
+    PendingChange pending[RMW_ROSETTE_MAX_PENDING_CHANGES] = {};
+    uint32_t      pending_head = 0;  ///< next slot to fill (oldest-overwrite on wrap)
+    uint32_t      pending_count = 0;
+
+    /// Called from StatefulReader's OnChangeAvailable trampoline.
+    void push_change(const uint8_t* data, uint32_t size) noexcept {
+        PendingChange& slot = pending[pending_head];
+        const uint32_t n = size < sizeof(slot.bytes) ? size : sizeof(slot.bytes);
+        for (uint32_t i = 0; i < n; ++i) slot.bytes[i] = data[i];
+        slot.size = n;
+        slot.valid = true;
+        pending_head = (pending_head + 1) % RMW_ROSETTE_MAX_PENDING_CHANGES;
+        if (pending_count < RMW_ROSETTE_MAX_PENDING_CHANGES) ++pending_count;
+    }
+
+    /// Called from rmw_take(). Returns false if nothing is buffered.
+    bool pop_change(PendingChange& out) noexcept {
+        if (pending_count == 0) return false;
+        const uint32_t tail =
+            (pending_head + RMW_ROSETTE_MAX_PENDING_CHANGES - pending_count) %
+            RMW_ROSETTE_MAX_PENDING_CHANGES;
+        out = pending[tail];
+        pending[tail].valid = false;
+        --pending_count;
+        return true;
+    }
 };
 
 /// Service = a reader (requests) + a writer (replies), correlated via the
@@ -112,3 +188,13 @@ struct GuardCondition {
 };
 
 }  // namespace rmw_rosette
+
+/// Opaque per-context state rmw/init.h expects each vendor to define
+/// (rmw/init.h only forward-declares `struct rmw_context_impl_s` as
+/// `rmw_context_impl_t`). Defined here, not in rmw_init.cpp, because
+/// every TU that reaches from an rmw_context_t into the participant
+/// (rmw_node.cpp, rmw_wait_set.cpp, ...) needs the complete type, not
+/// just the forward declaration.
+struct rmw_context_impl_s {
+    rmw_rosette::Context rosette_context;
+};

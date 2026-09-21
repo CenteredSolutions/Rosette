@@ -28,7 +28,12 @@ inline rtps::ReliabilityKind to_rtps_reliability(rmw_qos_reliability_policy_t po
             return rtps::ReliabilityKind::BEST_EFFORT;
         case RMW_QOS_POLICY_RELIABILITY_RELIABLE:
         case RMW_QOS_POLICY_RELIABILITY_SYSTEM_DEFAULT:
+#ifdef RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE
+        // Added in a later rmw than this project's default target distro
+        // (humble) — guarded so this still compiles there without falling
+        // behind on a newer one.
         case RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE:
+#endif
         case RMW_QOS_POLICY_RELIABILITY_UNKNOWN:
         default:
             // Default to RELIABLE, matching rmw_microxrcedds_c's default
@@ -44,7 +49,9 @@ inline rtps::DurabilityKind to_rtps_durability(rmw_qos_durability_policy_t polic
             return rtps::DurabilityKind::TRANSIENT_LOCAL;
         case RMW_QOS_POLICY_DURABILITY_VOLATILE:
         case RMW_QOS_POLICY_DURABILITY_SYSTEM_DEFAULT:
+#ifdef RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE
         case RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE:
+#endif
         case RMW_QOS_POLICY_DURABILITY_UNKNOWN:
         default:
             return rtps::DurabilityKind::VOLATILE;
@@ -57,7 +64,14 @@ inline rtps::DurabilityKind to_rtps_durability(rmw_qos_durability_policy_t polic
 /// image, so this list is a size/flexibility trade the application makes
 /// once, not something to open-end. KEEP_ALL maps to the largest entry;
 /// there's no bounded representation for genuinely-unbounded history.
-inline constexpr uint8_t kSupportedWriterDepths[] = {1, 4, 8, 16};
+///
+/// Capped at 8, not higher: RTPSParticipant's writer storage table sizes
+/// each slot to fit its default RTPS_PARTICIPANT_MAX_WRITER_BYTES, which
+/// is itself sized for StatefulWriter<8, RTPS_MAX_MATCHED_READERS> (see
+/// participant.hpp) — create_writer<16>() would trip that class's
+/// static_assert unless a board config raises the byte budget to match.
+/// Going past 8 is a real option, just not a default one.
+inline constexpr uint8_t kSupportedWriterDepths[] = {1, 4, 8};
 
 /// Picks the smallest supported depth that's >= the profile's request.
 inline uint8_t select_writer_depth(const rmw_qos_profile_t& qos) noexcept {
@@ -83,7 +97,6 @@ inline rtps::IStatefulWriter* create_writer_for_qos(rtps::RTPSParticipant& parti
         case 1:  return participant.create_writer<1>(cfg);
         case 4:  return participant.create_writer<4>(cfg);
         case 8:  return participant.create_writer<8>(cfg);
-        case 16: return participant.create_writer<16>(cfg);
         default: return nullptr;  // unreachable given select_writer_depth()'s range
     }
 }
