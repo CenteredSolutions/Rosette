@@ -28,29 +28,54 @@ Not implemented: services/clients (`rmw_service.cpp`/`rmw_client.cpp`),
 `rmw_serialize.cpp`), graph introspection (`rmw_graph.cpp`), and guard
 conditions (accepted by `rmw_wait` but always reported not-ready).
 
-## Known gaps, ranked by size
+## Known gaps, in the order stock `rcl` needs them
 
-1. **`rmw_get_node_names`** — needs a `ParticipantEntitiesInfo`-equivalent
-   builtin topic; SEDP alone doesn't carry node identity. This is a small
-   protocol addition, not just glue, unlike everything else here.
-2. **Services/clients** — `rmw_service.cpp`/`rmw_client.cpp` are still
-   stubs. The correlation machinery they need (`SampleIdentity`/
-   `InlineQos`) already exists in `rtps/types.hpp`; this is wiring, same
-   shape as `rmw_publisher.cpp`/`rmw_subscription.cpp`.
-3. **`rmw_serialize`/`rmw_deserialize` header asymmetry** — see the
-   caution comment at the top of `rmw_serialize.cpp`. `type_support.hpp`'s
-   `serialize_message()`/`deserialize_message()` work at the field level
-   (no encapsulation header — the writer adds that); a standalone
-   `rmw_serialize()` has no writer downstream to do that for it and needs
-   to prepend the header itself.
-4. **Graph introspection / guard conditions** — `rmw_graph.cpp`'s
-   `GraphCache` has no feed yet (see that header's open question about
-   where discovery events hook in); guard conditions have no producer.
-5. **Multi-backend transport selection** — `rmw_init.cpp` hardcodes
+The order follows what a stock ROS 2 application (`rclcpp`/`rclpy` talker,
+`tests/ros2/rmw_interop_probe.py`) exercises first, so each item unblocks the
+next observable failure.
+
+1. **Desktop type support.** `type_support.hpp` resolves only the
+   `rosidl_typesupport_microxrcedds_c` entry. Micro-ROS firmware builds
+   provide it; a stock ROS 2 desktop install does not (`std_msgs` there ships
+   `rosidl_typesupport_introspection_c`/`_cpp` and `rosidl_typesupport_fastrtps_c`/`_cpp`),
+   so `rmw_create_publisher` rejects every stock message. `rmw_cyclonedds_cpp`
+   is the prior art: it serializes CDR by walking
+   `rosidl_typesupport_introspection_c`/`_cpp` members, which is available for
+   every generated message. Resolve introspection when the microxrcedds entry
+   is absent.
+2. **Guard conditions.** `rmw_create_guard_condition` is a stub, and
+   `rclcpp`/`rclpy` executors create one to interrupt `rmw_wait`, so executor
+   construction fails before any RTPS traffic. `rmw_wait` must also report a
+   triggered guard condition as ready.
+3. **Remaining entry points rcl calls during setup** — publisher/subscription
+   GIDs, matched-endpoint counts, QoS event handles
+   (`rmw_publisher_event_init` may return `RMW_RET_UNSUPPORTED`; rcl tolerates
+   that), and `rmw_get_*_names_and_types*`. Run the interop harness and take
+   the next failing symbol from the error.
+4. **Services/clients** — `rmw_service.cpp`/`rmw_client.cpp` are stubs. The
+   correlation machinery they need (`SampleIdentity`/`InlineQos`) exists in
+   `rtps/types.hpp`; this is wiring, same shape as
+   `rmw_publisher.cpp`/`rmw_subscription.cpp`.
+5. **`rmw_serialize`/`rmw_deserialize` header asymmetry** — see the caution
+   comment at the top of `rmw_serialize.cpp`. `type_support.hpp`'s
+   `serialize_message()`/`deserialize_message()` work at the field level (no
+   encapsulation header — the writer adds that); a standalone
+   `rmw_serialize()` has no writer downstream and prepends the header itself.
+6. **Graph introspection** — `rmw_graph.cpp`'s `GraphCache` needs a feed from
+   SEDP discovery events, and `rmw_get_node_names` needs the
+   `ros_discovery_info` topic (`rmw_dds_common::msg::ParticipantEntitiesInfo`)
+   that stock RMWs publish, since SEDP alone does not carry node identity.
+7. **Multi-backend transport selection** — `rmw_init.cpp` uses
    `rtps::SocketUdpTransport` over `rosette::net::posix::PosixSocketProvider`.
-   Real board targets (FreeRTOS+TCP, WIZnet) need this to come from board
-   config the way `rosette::App` already resolves it for the micro-ROS
-   path — same seam, not yet threaded through to `rmw_init()`.
+   Board targets (FreeRTOS+TCP, WIZnet) take the transport from board config
+   the way `rosette::App` resolves it for the micro-ROS path.
+
+## Interop proof: `tests/ros2/`
+
+`tests/ros2/run_rmw_interop_loopback.sh` runs the same stock `rclpy` probe on
+`rmw_rosette` and on `rmw_fastrtps_cpp` in one DDS domain and passes only when
+each side receives the other's samples. It is the acceptance test for every
+gap above; see `tests/ros2/README.md`.
 
 Resolved since the initial scaffold:
 

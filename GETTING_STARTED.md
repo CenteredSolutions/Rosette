@@ -325,39 +325,16 @@ cmake --build build/tests-spec --target stateful_reader_spec_report
 cmake --build build/tests-spec --target participant_spec_report
 ```
 
-### ROS 2 POSIX Smoke
+### ROS 2 Interop
 
-Build the POSIX chatter smoke:
-
-```bash
-cmake -S tests/ros2 -B build/tests-ros2
-cmake --build build/tests-ros2 -j
-```
-
-Run the publisher directly:
+`tests/ros2/` proves `rmw_rosette` against stock ROS 2 middleware. With a
+sourced ROS 2 environment and a colcon overlay containing `rmw_rosette`:
 
 ```bash
-build/tests-ros2/ros2_posix_chatter_smoke \
-  --domain 0 \
-  --participant 1 \
-  --duration-ms 15000 \
-  --publish-ms 500 \
-  --topic chatter
+tests/ros2/run_rmw_interop_loopback.sh
 ```
 
-Run the Docker-backed ROS 2 smoke script when Docker is available:
-
-```bash
-tests/ros2/run_ros2_docker_smoke.sh build/tests-ros2/ros2_posix_chatter_smoke
-```
-
-Set `ROSETTE_LOCAL_IP` if the host smoke chooses loopback and you need a
-routable interface:
-
-```bash
-ROSETTE_LOCAL_IP=192.168.1.25 \
-tests/ros2/run_ros2_docker_smoke.sh build/tests-ros2/ros2_posix_chatter_smoke
-```
+See `tests/ros2/README.md` for two-host sessions and packet capture.
 
 ## 6. Common Build Patterns
 

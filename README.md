@@ -11,8 +11,13 @@ test and interop tooling. The repository contains:
 - `net/`: socket abstraction layers for POSIX, FreeRTOS+TCP, and WIZnet MACRAW.
 - `boards/`: board definitions selected with `-DRTPS_BOARD=<name>`.
 - `examples/`: firmware and smoke examples.
+- `rmw_rosette/`: ROS 2 middleware (rmw) implementation over the RTPS stack, used
+  by stock `rcl`/`rclc`/`rclcpp`/`rclpy` via `RMW_IMPLEMENTATION=rmw_rosette`.
 - `tests/spec/`: host-side DDSI-RTPS conformance tests.
-- `tests/ros2/`: host-side ROS 2 interoperability smoke tests.
+- `tests/loopback/`: two in-process RTPS participants completing discovery and
+  reliable delivery with no sockets.
+- `tests/ros2/`: rmw interop harness proving `rmw_rosette` against stock ROS 2
+  middleware.
 
 ## Supported Boards
 
@@ -93,23 +98,25 @@ cmake --build build/tests-spec -j
 ctest --test-dir build/tests-spec --output-on-failure
 ```
 
-Build the host ROS 2 interop smoke publisher:
+Run the in-process RTPS loopback proof:
 
 ```bash
-cmake -S tests/ros2 -B build/tests-ros2
-cmake --build build/tests-ros2 -j
+cmake -S tests/loopback -B build/tests-loopback
+cmake --build build/tests-loopback -j
+ctest --test-dir build/tests-loopback --output-on-failure
 ```
 
-Run the Docker-backed ROS 2 smoke check from `tests/ros2` when Docker is
-available:
+Prove `rmw_rosette` against a stock ROS 2 middleware (requires a sourced ROS 2
+environment and a colcon overlay containing `rmw_rosette`):
 
 ```bash
-tests/ros2/run_ros2_docker_smoke.sh build/tests-ros2/ros2_posix_chatter_smoke
+tests/ros2/run_rmw_interop_loopback.sh
 ```
 
 ## Further Reading
 
 - `GETTING_STARTED.md`: practical build, board, project, and test workflow.
 - `tests/spec/README.md`: conformance coverage and fuzzing commands.
-- `tests/ros2/README.md`: ROS 2 POSIX chatter smoke details.
+- `tests/ros2/README.md`: rmw interop harness details.
+- `rmw_rosette/README.md`: rmw implementation status and known gaps.
 - `ros/micro_ros/README.md`: micro-ROS wrapper details.

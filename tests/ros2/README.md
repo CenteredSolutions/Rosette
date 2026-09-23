@@ -1,218 +1,83 @@
-# ROS 2 POSIX Interop Smoke
+# rmw Interop Harness
 
-This directory provides a host-side smoke publisher for validating Rosette
-interop against a stock ROS 2 Docker node.
+This directory proves that `rmw_rosette` interoperates with stock ROS 2
+middleware. Nothing here is Rosette-specific code: the same stock `rclpy` node
+runs on both sides of a session, and only `RMW_IMPLEMENTATION` differs. If a
+session passes, a stock ROS 2 application on `rmw_fastrtps_cpp` or
+`rmw_cyclonedds_cpp` can talk to one on `rmw_rosette`.
 
-The smoke target generates `std_msgs__String.h` at build time via
-`tools/msg_gen/msg_gen.py` and uses the generated type directly.
+| File | Role |
+| --- | --- |
+| `rmw_interop_probe.py` | Bidirectional `rclpy` node. Role `alpha` publishes `/<session>/alpha_to_beta` and subscribes `/<session>/beta_to_alpha`; `beta` mirrors it. Exits 0 only if it loaded the expected RMW and received `--expect-rx` samples. |
+| `rtps_packet_capture.py` | Optional `tcpdump` capture of one DDS domain's RTPS port block (DDSI-RTPS 2.5 §9.6.1.1). |
+| `run_rmw_interop_loopback.sh` | Runs `alpha` on the RMW under test and `beta` on a stock RMW on one host. |
 
-## Build
+## What a pass proves
 
-```bash
-cmake -S tests/ros2 -B /tmp/rosette-ros2-build
-cmake --build /tmp/rosette-ros2-build -j
-```
+Both probes use RELIABLE + VOLATILE QoS, so a pass requires, in both directions:
 
-## Run publisher directly
+1. SPDP participant discovery (DDSI-RTPS 2.5 §8.5.3).
+2. SEDP endpoint matching, including topic-name and type-name mangling that
+   matches stock ROS 2 (`rt/` prefix, `std_msgs::msg::dds_::String_`).
+3. Reliable delivery: DATA, HEARTBEAT, and ACKNACK exchange (§8.4.7, §8.4.12).
+4. CDR payload compatibility for `std_msgs/msg/String`.
 
-```bash
-/tmp/rosette-ros2-build/ros2_posix_chatter_smoke \
-  --domain 0 \
-  --participant 1 \
-  --duration-ms 15000 \
-  --publish-ms 500 \
-  --topic chatter
-```
+Each probe checks `rclpy.get_rmw_implementation_identifier()` against
+`RMW_IMPLEMENTATION`, so a misconfigured environment fails instead of
+silently testing a stock RMW against itself.
 
-If auto-detection picks loopback, set a routable IPv4 explicitly:
+## Prerequisites
 
-```bash
-ROSETTE_LOCAL_IP=172.18.0.10 /tmp/rosette-ros2-build/ros2_posix_chatter_smoke
-```
+- A ROS 2 installation (Humble is the project's default distro), sourced.
+- `rmw_rosette` built in a colcon workspace and that overlay sourced:
 
-## Packet-capture probe project
+  ```bash
+  mkdir -p ~/rosette_ws/src && ln -s "$PWD/rmw_rosette" ~/rosette_ws/src/
+  cd ~/rosette_ws && colcon build --packages-select rmw_rosette
+  source install/setup.bash
+  ```
 
-This directory also contains a tiny bidirectional probe pair for diagnosing
-Rosette discovery and transport issues:
-
-- `ros2_posix_packet_probe`: Rosette-side POSIX node built from this repo
-- `ros2_packet_probe_peer.py`: stock ROS 2 peer using `rclpy`
-- `run_ros2_packet_capture.sh`: convenience runner that starts both nodes and a
-  `tcpdump` capture filtered to the selected DDS domain's RTPS port block
-
-Why this exists:
-
-- Discovery failures often show up before user-data ever flows.
-- One-way publish tests are useful, but they do not exercise the full
-  reliable writer/reader handshake.
-- A symmetric probe gives you SPDP, SEDP, HEARTBEAT, ACKNACK, and payload
-  traffic in one repeatable capture.
-
-### Build the probe
+## Single-host session
 
 ```bash
-cmake -S tests/ros2 -B /tmp/rosette-ros2-build
-cmake --build /tmp/rosette-ros2-build -j --target ros2_posix_packet_probe
+tests/ros2/run_rmw_interop_loopback.sh
 ```
 
-### Run the Rosette probe by hand
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `ROSETTE_RMW` | `rmw_rosette` | RMW under test (role `alpha`) |
+| `ROSETTE_PEER_RMW` | `rmw_fastrtps_cpp` | Stock reference RMW (role `beta`) |
+| `ROSETTE_DOMAIN` | `42` | DDS domain id |
+| `ROSETTE_DURATION_SEC` | `20` | Session length |
+| `ROSETTE_EXPECT_RX` | `3` | Minimum samples each side must receive |
+| `ROSETTE_CAPTURE` | `0` | `1` records a pcap from `alpha` (needs `tcpdump` privileges) |
+| `ROSETTE_CAPTURE_IFACE` | `any` on Linux | Capture interface |
+
+Validate the harness itself first by running two stock middlewares against each
+other; this must pass before a Rosette failure means anything:
 
 ```bash
-/tmp/rosette-ros2-build/ros2_posix_packet_probe \
-  --domain 0 \
-  --participant 31 \
-  --duration-ms 20000 \
-  --publish-ms 1000 \
-  --tx-topic rosette_probe_tx \
-  --rx-topic rosette_probe_rx \
-  --expect-rx 1
+ROSETTE_RMW=rmw_cyclonedds_cpp tests/ros2/run_rmw_interop_loopback.sh
 ```
 
-### Run the stock ROS 2 peer by hand
+## Two-host session
 
-Source your ROS 2 environment first, then run:
+To put a real network between the peers, run one role per host with the same
+`--session` and `--domain`:
 
 ```bash
-ROS_DOMAIN_ID=0 python3 tests/ros2/ros2_packet_probe_peer.py \
-  --domain 0 \
-  --duration-sec 20 \
-  --publish-period-sec 1.0 \
-  --tx-topic /rosette_probe_rx \
-  --rx-topic /rosette_probe_tx \
-  --expect-rx 1
+# host A (RMW under test)
+RMW_IMPLEMENTATION=rmw_rosette python3 tests/ros2/rmw_interop_probe.py \
+  --role alpha --domain 42 --session lab1 --capture
+
+# host B (stock reference)
+RMW_IMPLEMENTATION=rmw_fastrtps_cpp python3 tests/ros2/rmw_interop_probe.py \
+  --role beta --domain 42 --session lab1
 ```
 
-### Capture packets automatically
+## Reading a capture
 
-This is the easiest local workflow when `tcpdump` is available and your ROS 2
-Python environment is already sourced:
-
-```bash
-ROSETTE_ROS2_CAPTURE_IFACE=en0 \
-tests/ros2/run_ros2_packet_capture.sh /tmp/rosette-ros2-build/ros2_posix_packet_probe
-```
-
-Useful environment overrides:
-
-- `ROSETTE_ROS2_DOMAIN` (default: `0`)
-- `ROSETTE_ROS2_PARTICIPANT` (default: `31`)
-- `ROSETTE_ROS2_TX_TOPIC` (default: `/rosette_probe_tx`)
-- `ROSETTE_ROS2_RX_TOPIC` (default: `/rosette_probe_rx`)
-- `ROSETTE_ROS2_DURATION_MS` (default: `20000`)
-- `ROSETTE_ROS2_PUBLISH_MS` (default: `1000`)
-- `ROSETTE_ROS2_EXPECT_RX` (default: `1`)
-- `ROSETTE_ROS2_CAPTURE_IFACE` (recommended on macOS)
-- `ROSETTE_ROS2_PCAP_FILE` (default: `/tmp/rosette-rtps-domain<id>-<timestamp>.pcap`)
-- `ROSETTE_LOCAL_IP` (optional Rosette-side IPv4 override)
-
-### Two-machine use
-
-If you want a cleaner network capture, run the Rosette probe on one machine and
-the Python peer on another machine on the same L2 segment:
-
-1. Start `tcpdump` on one or both machines with a domain-specific RTPS filter.
-2. Launch `ros2_packet_probe_peer.py` on the stock ROS 2 host.
-3. Launch `ros2_posix_packet_probe` on the Rosette host.
-4. Stop capture after both sides report at least one RX sample.
-
-For domain `N`, the probe runner captures `udp portrange PB-(PB+99)` where
-`PB = 7400 + 250 * N`. That is intentionally wider than the exact participant
-ports so you catch discovery multicast, metatraffic unicast, and user traffic
-even when the peer's participant ID is not known ahead of time.
-
-## Native ROS 2 baseline script
-
-If your goal is to validate the network and DDS layer without Rosette in the
-loop yet, use [`native_ros2_packet_probe.py`](./native_ros2_packet_probe.py) on
-two native ROS 2 machines. This is the simplest "are these two hosts actually
-talking?" tool in the folder.
-
-Run on host A:
-
-```bash
-ROS_DOMAIN_ID=0 python3 tests/ros2/native_ros2_packet_probe.py \
-  --role alpha \
-  --domain 0 \
-  --session rosette_baseline \
-  --duration-sec 20 \
-  --publish-period-sec 1.0 \
-  --expect-rx 1 \
-  --capture \
-  --capture-iface en0
-```
-
-Run on host B:
-
-```bash
-ROS_DOMAIN_ID=0 python3 tests/ros2/native_ros2_packet_probe.py \
-  --role beta \
-  --domain 0 \
-  --session rosette_baseline \
-  --duration-sec 20 \
-  --publish-period-sec 1.0 \
-  --expect-rx 1 \
-  --capture \
-  --capture-iface en0
-```
-
-Notes:
-
-- Use the same `--domain` and `--session` on both machines.
-- Swap only the `--role` value: one side must be `alpha`, the other `beta`.
-- `--capture` is optional, but very handy. If `tcpdump` needs privileges on
-  your machine, run the script with the appropriate elevation.
-- The script uses RELIABLE + VOLATILE QoS so you capture not just discovery,
-  but also the HEARTBEAT/ACKNACK traffic that helps explain communication
-  stalls.
-
-## Native ROS 2 smoke script (recommended on macOS)
-
-Runs `ros2 topic echo --once` on the host and publishes from
-`ros2_posix_chatter_smoke`.
-
-```bash
-tests/ros2/run_ros2_native_smoke.sh /tmp/rosette-ros2-build/ros2_posix_chatter_smoke
-```
-
-## Docker interop smoke script (recommended on Linux)
-
-```bash
-tests/ros2/run_ros2_docker_smoke.sh /tmp/rosette-ros2-build/ros2_posix_chatter_smoke
-```
-
-## Auto smoke script (best default for CI and local)
-
-Chooses native mode on macOS and Docker mode on Linux when available:
-
-```bash
-tests/ros2/run_ros2_smoke_auto.sh /tmp/rosette-ros2-build/ros2_posix_chatter_smoke
-```
-
-Optional environment:
-
-- `ROSETTE_ROS2_IMAGE` (default: `osrf/ros:humble-desktop`)
-- `ROSETTE_ROS2_TOPIC` (default: `/chatter`)
-- `ROSETTE_ROS2_DOMAIN` (default: `0`)
-- `ROSETTE_ROS2_SMOKE_MODE` (`auto|native|docker`, default: `auto`)
-- `ROSETTE_LOCAL_IP` (optional override used by the Rosette publisher)
-
-## Platform shims
-
-POSIX platform hooks used by this smoke target live in:
-
-- `platform/posix/rtps_posix_platform.cpp`
-- `platform/posix/rtps_posix_log.cpp`
-
-## CTest integration (optional)
-
-```bash
-cmake -S tests/ros2 -B /tmp/rosette-ros2-build -DROSETTE_ENABLE_ROS2_SMOKE_TESTS=ON
-cmake --build /tmp/rosette-ros2-build -j
-ctest --test-dir /tmp/rosette-ros2-build --output-on-failure
-```
-
-## Discovery/logging troubleshooting
-
-- Ensure `RTPS_LOG_LEVEL` is at least `3` (`INFO`) for discovery events.
-- In this test CMake, smoke builds use `RTPS_LOG_LEVEL=4` (`DEBUG`) by default.
-- If auto-detection picks loopback, set `ROSETTE_LOCAL_IP` to a routable interface.
+Open the pcap in Wireshark; its RTPS dissector decodes SPDP/SEDP, DATA,
+HEARTBEAT, and ACKNACK. For domain `N` the capture spans UDP ports
+`7400 + 250*N` through `7400 + 250*N + 99`: discovery multicast, user
+multicast, and unicast ports for participant ids 0 through 44.
