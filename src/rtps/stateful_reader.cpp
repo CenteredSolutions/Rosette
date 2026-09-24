@@ -358,18 +358,8 @@ void StatefulReader::on_gap(const ParseContext& ctx,
     const Guid writer_guid{ ctx.senderGuidPrefix, msg.writerId };
 
     // Discard any partial assemblies for SNs declared irrelevant.
-    // Contiguous range [gapStart .. bitmapBase - 1].
-    if (!msg.gapList.empty()) {
-        for (SequenceNumber sn = msg.gapStart;
-             sn < msg.gapList.bitmapBase;
-             sn += 1)
-        {
-            assembler_.discard(writer_guid, sn);
-        }
-    } else {
-        assembler_.discard(writer_guid, msg.gapStart);
-    }
-    // Individual SNs in the bitmap.
+    assembler_.discard_range(writer_guid, msg.gapStart,
+                             gap_run_end(msg.gapStart, msg.gapList));
     msg.gapList.for_each([&](const SequenceNumber& sn) noexcept {
         assembler_.discard(writer_guid, sn);
     });

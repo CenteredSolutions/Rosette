@@ -418,6 +418,27 @@ public:
         if (slot) slot->clear();
     }
 
+    /**
+     * @brief Drops every assembly from `writer_guid` whose SN is in [first, end).
+     *
+     * A GAP's contiguous run may span thousands of sequence numbers, so the
+     * slots are scanned instead of the range.
+     *
+     * @param[in] writer_guid Writer the GAP came from.
+     * @param[in] first       First irrelevant sequence number.
+     * @param[in] end         One past the last irrelevant sequence number.
+     */
+    void discard_range(const Guid&           writer_guid,
+                       const SequenceNumber& first,
+                       const SequenceNumber& end) noexcept
+    {
+        for (uint8_t i = 0; i < MaxSamples; ++i) {
+            if (slots_[i].is_active() && slots_[i].writerGuid == writer_guid &&
+                !(slots_[i].sequenceNumber < first) && slots_[i].sequenceNumber < end)
+                slots_[i].clear();
+        }
+    }
+
     // ----------------------------------------------------------
     // discard_writer()
     //

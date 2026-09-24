@@ -396,6 +396,7 @@ static bool tc_srr_8_4_7_003(std::string& err) {
     gap.readerId = reader_guid.entityId;
     gap.writerId = writer_guid.entityId;
     gap.gapStart = SequenceNumber::from_int64(2);
+    gap.gapList.bitmapBase = SequenceNumber::from_int64(3);
     ParseContext ctx{};
     ctx.senderGuidPrefix = writer_guid.prefix;
     r.on_gap(ctx, gap);

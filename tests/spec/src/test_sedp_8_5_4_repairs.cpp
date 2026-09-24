@@ -140,6 +140,7 @@ static bool tc_sedp_8_5_4_011(std::string& err) {
     gap.writerId = entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER;
     gap.readerId = entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR;
     gap.gapStart = SequenceNumber::from_int64(2);
+    gap.gapList.bitmapBase = SequenceNumber::from_int64(3);
     reader.on_gap(ctx, gap);
     CHECK(tx.sent.size() == 3u && parse_acknack(tx.sent.back(), ack),
           "a GAP for the requested SN requests the next hole");
@@ -157,6 +158,41 @@ static bool tc_sedp_8_5_4_011(std::string& err) {
     return true;
 }
 
+// §8.3.7.4.5: a GAP run with an empty bitmap resolves every announcement in
+// it, whether the run starts at the window base or inside the window.
+static bool tc_sedp_8_5_4_012(std::string& err) {
+    SnReceiveWindow w{};
+    w.resolve_range(SequenceNumber::from_int64(1), SequenceNumber::from_int64(4));
+    CHECK(w.base() == SequenceNumber::from_int64(4), "run 1-3 at the base advances it");
+    w.resolve_range(SequenceNumber::from_int64(6), SequenceNumber::from_int64(8));
+    CHECK(w.base() == SequenceNumber::from_int64(4) && w.is_missing(SequenceNumber::from_int64(5)) &&
+          !w.is_missing(SequenceNumber::from_int64(6)) && !w.is_missing(SequenceNumber::from_int64(7)),
+          "run 6-7 inside the window leaves 4-5 missing");
+    w.resolve_range(SequenceNumber::from_int64(4), SequenceNumber::from_int64(100000));
+    CHECK(w.base() == SequenceNumber::from_int64(100000), "a long run from the base jumps it");
+
+    const GuidPrefix local = make_prefix(0x03u);
+    const GuidPrefix remote = make_prefix(0x04u);
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = remote;
+    LimitedTransport tx{};
+    EndpointMatchTable table(nullptr, nullptr, nullptr);
+    SedpReader reader(local, tx, table);
+    reader.on_publication_data(remote, nullptr, 0u, SequenceNumber::from_int64(4));
+    ParsedGap gap{};
+    gap.writerId = entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER;
+    gap.readerId = entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR;
+    gap.gapStart = SequenceNumber::from_int64(1);
+    gap.gapList.bitmapBase = SequenceNumber::from_int64(4);
+    reader.on_gap(ctx, gap);
+    reader.on_heartbeat(ctx, pub_heartbeat(1, 4, 1), make_udpv4_locator(0xC0A80103u, 7410u));
+    ParsedAckNack ack{};
+    CHECK(!tx.sent.empty() && parse_acknack(tx.sent.back(), ack), "HEARTBEAT is answered");
+    CHECK(ack.readerSNState.empty() && ack.readerSNState.bitmapBase == SequenceNumber::from_int64(5),
+          "GAP {1, base 4} resolved 1-3: pure ACK of 1-4");
+    return true;
+}
+
 void append_sedp_tests_8_5_4_repairs(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-8.5.4-010",
                      "§8.4.12.1: SnReceiveWindow reports each SN new once, tracks holes in any order, honors HEARTBEAT firstSN, and NACKs from the lowest hole.",
@@ -164,6 +200,9 @@ void append_sedp_tests_8_5_4_repairs(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-8.5.4-011",
                      "§8.4.12.1/§8.3.7.4: SEDP readers request lost announcements until DATA or GAP resolves them; on a datagram-limited link one per ACKNACK, the next requested as each repair lands.",
                      tc_sedp_8_5_4_011});
+    tests.push_back({"TC-SEDP-8.5.4-012",
+                     "§8.3.7.4.5: a GAP run with an empty bitmap resolves every announcement in [gapStart, bitmapBase).",
+                     tc_sedp_8_5_4_012});
 }
 
 }  // namespace spec_test

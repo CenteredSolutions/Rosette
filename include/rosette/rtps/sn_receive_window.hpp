@@ -76,6 +76,32 @@ public:
         }
     }
 
+    /**
+     * @brief Resolves every sequence number in [first, end).
+     *
+     * Applies a GAP's contiguous run. A run starting at or below base()
+     * advances base() to `end` at once; otherwise only the part inside the
+     * window is recorded, since nothing beyond it is tracked.
+     *
+     * @param[in] first The GAP's gapStart.
+     * @param[in] end   One past the run's last sequence number (gap_run_end()).
+     *
+     * Verification:
+     * - Correct means: after the call no sequence number in [first, end)
+     *   inside the window is missing, and none outside it changed state.
+     * - Covered by: TC-SEDP-8.5.4-012.
+     */
+    void resolve_range(const SequenceNumber& first, const SequenceNumber& end) noexcept {
+        if (!(base_ < first)) {
+            resolve_below(end);
+            return;
+        }
+        for (SequenceNumber sn = first; sn < end && (sn - base_) < static_cast<int64_t>(kWindow);
+             sn += 1) {
+            (void)resolve(sn);
+        }
+    }
+
     /// @brief True when `sn` is at or above base() and has not been resolved.
     bool is_missing(const SequenceNumber& sn) const noexcept {
         if (sn < base_) return false;

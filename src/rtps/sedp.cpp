@@ -4,6 +4,8 @@
  */
 
 #include "sedp.hpp"
+
+#include "gap_encoding.hpp"
 #include "log.hpp"
 #include "stateful_writer.hpp"   // ITransport
 #include <string.h>
@@ -769,11 +771,7 @@ void SedpReader::on_gap(const ParseContext& ctx, const ParsedGap& msg) noexcept
     if (!state) return;
     SedpWriterState& writer = is_pub ? state->pub : state->sub;
 
-    const SequenceNumber range_end =
-        msg.gapList.empty() ? msg.gapStart + 1 : msg.gapList.bitmapBase;
-    for (SequenceNumber sn = msg.gapStart; sn < range_end; sn += 1) {
-        writer.window.resolve(sn);
-    }
+    writer.window.resolve_range(msg.gapStart, gap_run_end(msg.gapStart, msg.gapList));
     msg.gapList.for_each([&](const SequenceNumber& sn) noexcept {
         writer.window.resolve(sn);
     });

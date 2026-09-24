@@ -61,6 +61,7 @@
 
 #pragma once
 
+#include "gap_encoding.hpp"
 #include "types.hpp"
 #include <string.h>
 
@@ -310,50 +311,61 @@ public:
         }
     }
 
-    // ----------------------------------------------------------
-    // on_gap()
-    //
-    // Processes a GAP submessage.
-    //
-    // "The GAP Submessage indicates that a range of sequence numbers
-    //  is no longer relevant.  The Reader shall set the status of
-    //  those SNs to LOST."
-    //  — §9.4.5.11, p. 258; §8.4.9, p. 145
-    //
-    // "Irrelevant" SNs are those the writer will never send:
-    //   [gap_start .. gap_list.bitmapBase - 1]
-    //   ∪ { gap_list.bitmapBase + i : gap_list.bitmap[i] == 1 }
-    //
-    // @param gap_start  First irrelevant SN.
-    // @param gap_list   Bitmap of additional irrelevant SNs.
-    // ----------------------------------------------------------
+    /**
+     * @brief Records the changes a GAP declares irrelevant as LOST.
+     *
+     * A reliable writer sends GAP for changes it will never deliver to
+     * this reader: changes written before a VOLATILE reader matched, or
+     * evicted from its history. Each becomes LOST, so the reader stops
+     * requesting it and delivers what follows.
+     *
+     * The contiguous run [gap_start, gap_list.bitmapBase) may span
+     * thousands of changes, so it is applied by tracked state: tracked
+     * changes inside it become LOST, and a run reaching past the receive
+     * frontier moves the frontier to its end (changes between the old
+     * frontier and the run's start are recorded MISSING first). Bitmap
+     * entries, at most 256, are applied one by one in ascending order.
+     *
+     * @param[in] gap_start First sequence number of the contiguous run.
+     * @param[in] gap_list  bitmapBase ends the run; each set bit names one
+     *   more irrelevant change.
+     *
+     * Verification:
+     * - Correct means: every change named by the GAP ends up LOST or
+     *   RECEIVED (never MISSING), no change outside it changes status, and
+     *   later DATA for a named change is not delivered.
+     * - Covered by: TC-SRR-8.4.9-003, TC-SRR-8.4.9-004.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.7.4.5, §8.4.12.2 (irrelevant_change_set)
+     */
     void on_gap(const SequenceNumber& gap_start,
                 const SequenceNumberSet& gap_list) noexcept {
-        // Mark contiguous range [gap_start .. bitmapBase - 1] as LOST.
-        SequenceNumber range_end = gap_list.empty()
-            ? gap_start
-            : (gap_list.bitmapBase - 1);
-
-        for (SequenceNumber sn = gap_start; sn <= range_end; sn += 1) {
-            mark_lost(sn);
-        }
-
-        // Mark individual SNs flagged in the bitmap.
-        gap_list.for_each([&](const SequenceNumber& sn) noexcept {
-            mark_lost(sn);
-        });
-
-        // Advance highestSNReceived to cover the gap so missing_changes_update
-        // does not later re-insert these as MISSING.
-        if (!gap_list.empty()) {
-            SequenceNumber gap_end = gap_list.bitmapBase +
-                                    static_cast<int64_t>(gap_list.numBits - 1);
-            if (gap_end > highestSNReceived) {
-                highestSNReceived = gap_end;
+        const SequenceNumber run_end = gap_run_end(gap_start, gap_list);
+        if (gap_start < run_end) {
+            for (uint8_t i = 0; i < N; ++i) {
+                if (changes_[i].is_valid() &&
+                    changes_[i].status != ChangeFromWriterStatus::RECEIVED &&
+                    !(changes_[i].sequenceNumber < gap_start) &&
+                    changes_[i].sequenceNumber < run_end) {
+                    changes_[i].status = ChangeFromWriterStatus::LOST;
+                }
             }
-        } else if (range_end > highestSNReceived) {
-            highestSNReceived = range_end;
+            if (run_end - 1 > highestSNReceived) {
+                missing_changes_update(gap_start - 1);
+                highestSNReceived = run_end - 1;
+            }
         }
+        gap_list.for_each([&](const SequenceNumber& sn) noexcept {
+            if (sn > highestSNReceived) {
+                missing_changes_update(sn - 1);
+                highestSNReceived = sn;
+                mark_lost(sn);
+            } else if (ChangeFromWriter* slot = find_slot(sn);
+                       slot && slot->status != ChangeFromWriterStatus::RECEIVED) {
+                slot->status = ChangeFromWriterStatus::LOST;
+            }
+        });
     }
 
     // ----------------------------------------------------------

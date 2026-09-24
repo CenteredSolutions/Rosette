@@ -220,6 +220,24 @@ public:
         return true;
     }
 
+    /**
+     * @brief True when this proxy tracks a ChangeForReader for `sn`.
+     *
+     * The writer adds a ChangeForReader for each change written after the
+     * reader matched (and, for TRANSIENT_LOCAL, each cached change replayed
+     * at matching). A NACKed change it does not track is irrelevant to this
+     * reader, and the writer answers it with GAP.
+     *
+     * @param[in] sn Sequence number the reader requested.
+     * @return `true` when the change is tracked in any status.
+     */
+    bool tracks(const SequenceNumber& sn) const noexcept {
+        for (uint8_t i = 0; i < N; ++i) {
+            if (changes_[i].is_valid() && changes_[i].sequenceNumber == sn) return true;
+        }
+        return false;
+    }
+
     // ----------------------------------------------------------
     // remove_change()
     //

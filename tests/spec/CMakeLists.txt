@@ -218,6 +218,7 @@ add_executable(stateful_writer_spec_tests
     src/test_stateful_writer_8_4_1_4.cpp
     src/test_stateful_writer_8_4_2_2.cpp
     src/test_stateful_writer_8_4_3_8_4_4.cpp
+    src/test_stateful_writer_8_4_9_irrelevant_gap.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
 )
@@ -246,6 +247,7 @@ add_executable(stateful_reader_spec_tests
     src/test_stateful_reader_clock_stub.cpp
     src/test_stateful_reader_8_4_7_4.cpp
     src/test_stateful_reader_8_4_8_8_4_9.cpp
+    src/test_stateful_reader_8_4_9_gap_ranges.cpp
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp

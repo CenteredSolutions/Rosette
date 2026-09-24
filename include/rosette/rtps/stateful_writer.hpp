@@ -57,6 +57,7 @@
 #include "reader_proxy.hpp"
 #include "message_builder.hpp"
 #include "message_parser.hpp"
+#include "gap_encoding.hpp"
 #include "transport.hpp"
 #include "log.hpp"
 #include <string.h>
@@ -596,8 +597,10 @@ public:
                    ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
                    ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
 
-        // NACKed SNs: arm the nackResponseDelay timer.
+        // NACKed SNs: arm the nackResponseDelay timer. NACKed SNs this reader
+        // never had a ChangeForReader for are irrelevant to it: GAP them now.
         proxy->requested_changes_set(msg.readerSNState, rosette::platform::monotonic_ms());
+        send_irrelevant_gap(*proxy, msg.readerSNState);
 
         // An ACKNACK that requests nothing yet acknowledges less than this
         // writer has written is a reader announcing itself (Fast DDS and
@@ -665,22 +668,10 @@ public:
                     send_data_to(*ch, proxy);
                     any_sent = true;
                 } else {
-                    // Change evicted from cache — send a GAP.
-                    // §9.4.5.11, p. 258.
-                    const Locator& dest = proxy.best_locator();
-                    if (dest != LOCATOR_INVALID &&
-                        builder_.begin(guid_.prefix)) {
-                        SequenceNumberSet gl{};
-                        gl.bitmapBase = req->sequenceNumber;
-                        bool ok = builder_.append_gap(
-                            proxy.remoteReaderGuid.entityId,
-                            guid_.entityId, req->sequenceNumber, gl);
-                        if (ok) {
-                            BufRef buf = builder_.finish();
-                            transport_.send_unicast(buf, dest);
-                            buf.reset();
-                        } else { builder_.abort(); }
-                    }
+                    // Change evicted from the history: it is irrelevant now.
+                    SequenceNumberSet evicted{};
+                    evicted.add(req->sequenceNumber);
+                    send_gap(proxy, evicted);
                     proxy.acked_changes_set(req->sequenceNumber);
                 }
             }
@@ -813,6 +804,68 @@ public:
     }
 
 private:
+
+    /**
+     * @brief Sends `proxy` a GAP declaring the sequence numbers in `irrelevant` irrelevant.
+     *
+     * @param[in] proxy      Reader to address (its best unicast locator).
+     * @param[in] irrelevant Sequence numbers the writer will not send it.
+     *
+     * Verification:
+     * - Correct means: the GAP decodes (run plus bitmap) to exactly
+     *   `irrelevant`, addressed to the proxy's readerId.
+     * - Covered by: TC-SWR-8.4.9-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.7.4, §8.4.9.2.12
+     */
+    void send_gap(const Proxy& proxy, const SequenceNumberSet& irrelevant) noexcept {
+        SequenceNumber gap_start{};
+        SequenceNumberSet gap_list{};
+        if (!encode_gap(irrelevant, gap_start, gap_list)) return;
+        const Locator& dest = proxy.best_locator();
+        if (dest == LOCATOR_INVALID || !builder_.begin(guid_.prefix)) return;
+        if (builder_.append_gap(proxy.remoteReaderGuid.entityId, guid_.entityId,
+                                gap_start, gap_list)) {
+            BufRef buf = builder_.finish();
+            transport_.send_unicast(buf, dest);
+            buf.reset();
+        } else {
+            builder_.abort();
+        }
+    }
+
+    /**
+     * @brief Answers the NACKed changes that are irrelevant to `proxy` with one GAP.
+     *
+     * A VOLATILE writer's HEARTBEAT advertises its whole history, so a
+     * reader that matched mid-stream NACKs changes written before it
+     * matched. Those changes have no ChangeForReader in its proxy and are
+     * never sent to it; without a GAP the reader requests them until
+     * HEARTBEAT firstSN passes them and then reports them as lost samples
+     * (Fast DDS raises SAMPLE_LOST, which rclpy prints as "A message was
+     * lost"). Sequence numbers not yet written are ignored.
+     *
+     * @param[in] proxy     Reader that sent the ACKNACK.
+     * @param[in] requested The ACKNACK's readerSNState.
+     *
+     * Verification:
+     * - Correct means: every requested SN below the next SN to be written
+     *   that the proxy does not track is named in one GAP; tracked SNs are
+     *   left to the nackResponseDelay repair path.
+     * - Covered by: TC-SWR-8.4.9-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.9.2.12 (irrelevant changes are sent as GAP),
+     *   §8.7.2.2.1 (VOLATILE durability)
+     */
+    void send_irrelevant_gap(const Proxy& proxy, const SequenceNumberSet& requested) noexcept {
+        SequenceNumberSet irrelevant{};
+        requested.for_each([&](const SequenceNumber& sn) noexcept {
+            if (sn < nextSN_ && !proxy.tracks(sn)) (void)irrelevant.add(sn);
+        });
+        send_gap(proxy, irrelevant);
+    }
 
     // ── Internal helpers ──────────────────────────────────────
 
