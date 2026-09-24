@@ -1,28 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
 project(rmw_rosette CXX C)
 
-# ------------------------------------------------------------
-# NOTE — build-integration status
+# rmw_rosette: an rmw implementation over Rosette's DDSI-RTPS stack.
 #
-# This CMakeLists.txt scaffolds an ament_cmake package structure so the
-# file layout matches what `micro_ros_setup` / colcon expect from an rmw
-# implementation. It has NOT been exercised against a real colcon
-# workspace yet. Before this builds for real, expect to:
+# The RTPS core (include/rosette/rtps, src/rtps) and its POSIX platform and
+# socket glue are compiled directly into librmw_rosette, so the package has no
+# build dependency on the rest of the Rosette tree and the shared library is
+# self-contained when rmw_implementation dlopens it.
 #
-#   1. Point ROSETTE_RTPS_DIR at the repo root's include/rosette/rtps +
-#      src/rtps (currently built as the `rtps_stack` target in the
-#      top-level CMakeLists.txt) — either via a relative path for
-#      in-tree builds, or a proper find_package/vendor step for the
-#      standalone colcon build micro_ros_setup performs.
-#   2. Confirm the ament_index resource registration below against
-#      whatever `rmw_implementation_cmake` currently expects — the
-#      `register_rmw_implementation()`-equivalent macro name/args may
-#      have moved between ROS 2 distros.
-#   3. Fill in the full rmw C ABI surface (see src/CMakeLists sources
-#      list below) — only the functions scoped in the gap analysis are
-#      stubbed so far; anything rcl/rclc calls that isn't listed here
-#      will fail to link.
-# ------------------------------------------------------------
+# Message serialization uses rosidl_typesupport_introspection_c, which every
+# ROS 2 installation provides. When rosidl_typesupport_microxrcedds_c is also
+# available (micro-ROS firmware workspaces), its generated callbacks are
+# compiled in and preferred; see include/rmw_rosette/message_codec.hpp.
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -33,16 +22,33 @@ find_package(ament_cmake REQUIRED)
 find_package(rcutils REQUIRED)
 find_package(rmw REQUIRED)
 find_package(rosidl_runtime_c REQUIRED)
-find_package(rosidl_typesupport_microxrcedds_c REQUIRED)
+find_package(rosidl_typesupport_introspection_c REQUIRED)
+find_package(rosidl_typesupport_microxrcedds_c QUIET)
 
-# rosette::rtps — the embedded RTPS core (participant, discovery, stateful
-# reader/writer, history cache). Built in-tree today via the top-level
-# CMakeLists.txt's `rtps_stack` target; referenced here by relative path
-# until it's packaged for standalone colcon consumption.
-set(ROSETTE_RTPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH
-    "Path to the rosette repo root (provides include/rosette/rtps, src/rtps)")
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmw_rosette_capacity.cmake)
 
-add_library(rmw_rosette
+# Root of the Rosette repository, which provides the RTPS core and platform glue.
+set(ROSETTE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH
+    "Rosette repository root (provides include/rosette/rtps and src/rtps)")
+get_filename_component(ROSETTE_ROOT "${ROSETTE_ROOT}" REALPATH)
+
+set(ROSETTE_RTPS_SOURCES
+  ${ROSETTE_ROOT}/src/rtps/buf_pool.cpp
+  ${ROSETTE_ROOT}/src/rtps/message_parser.cpp
+  ${ROSETTE_ROOT}/src/rtps/participant.cpp
+  ${ROSETTE_ROOT}/src/rtps/sedp.cpp
+  ${ROSETTE_ROOT}/src/rtps/spdp.cpp
+  ${ROSETTE_ROOT}/src/rtps/stateful_reader.cpp
+  ${ROSETTE_ROOT}/src/rtps/transport.cpp
+  ${ROSETTE_ROOT}/src/platform/posix/host_runtime.cpp
+  ${ROSETTE_ROOT}/src/platform/posix/rtps_posix_log.cpp
+  ${ROSETTE_ROOT}/src/platform/posix/rtps_posix_platform.cpp
+  ${ROSETTE_ROOT}/src/net/posix/socket.cpp
+)
+
+add_library(rmw_rosette SHARED
+  src/introspection_c_codec.cpp
+  src/message_codec.cpp
   src/rmw_init.cpp
   src/rmw_node.cpp
   src/rmw_publisher.cpp
@@ -52,31 +58,50 @@ add_library(rmw_rosette
   src/rmw_guard_condition.cpp
   src/rmw_wait_set.cpp
   src/rmw_graph.cpp
-  src/rmw_serialize.cpp
+  src/rmw_implementation_info.cpp
+  src/rmw_loaned_message.cpp
   src/rmw_qos.cpp
+  src/rmw_qos_event.cpp
+  src/rmw_serialize.cpp
+  src/service_endpoints.cpp
+  ${ROSETTE_RTPS_SOURCES}
 )
 
-target_include_directories(rmw_rosette PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-  ${ROSETTE_RTPS_DIR}/include
+target_include_directories(rmw_rosette
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  PRIVATE
+    ${ROSETTE_ROOT}/include
+    ${ROSETTE_ROOT}/include/rosette/rtps
 )
+
+# RTPS_NO_FREERTOS selects the hosted build of the RTPS core (no FreeRTOS
+# task notifications). RTPS log levels (rosette/rtps/log.hpp): 0 none,
+# 1 error, 2 warning, 3 info, 4 debug, 5 trace; output goes to stderr.
+set(RMW_ROSETTE_RTPS_LOG_LEVEL 2 CACHE STRING "rosette::rtps log level (0-5)")
+target_compile_definitions(rmw_rosette PRIVATE
+  RTPS_NO_FREERTOS
+  RTPS_LOG_LEVEL=${RMW_ROSETTE_RTPS_LOG_LEVEL}
+)
+
+rmw_rosette_apply_capacity(rmw_rosette)
 
 target_link_libraries(rmw_rosette PUBLIC
   rcutils::rcutils
   rmw::rmw
   rosidl_runtime_c::rosidl_runtime_c
-  rosidl_typesupport_microxrcedds_c::rosidl_typesupport_microxrcedds_c
+  rosidl_typesupport_introspection_c::rosidl_typesupport_introspection_c
 )
 
-# TODO: link the actual rtps_stack sources/target once the vendoring path
-# above is resolved (see NOTE at top of file).
+if(rosidl_typesupport_microxrcedds_c_FOUND)
+  target_compile_definitions(rmw_rosette PRIVATE RMW_ROSETTE_HAVE_MICROXRCEDDS_TYPESUPPORT)
+  target_link_libraries(rmw_rosette PUBLIC
+    rosidl_typesupport_microxrcedds_c::rosidl_typesupport_microxrcedds_c)
+endif()
 
-# ------------------------------------------------------------
-# ament_index registration — what makes `RMW_IMPLEMENTATION=rmw_rosette`
-# resolvable at rcl init time. Verify this against the current
-# rmw_implementation_cmake macro before relying on it.
-# ------------------------------------------------------------
+# Registers the package in the ament index so RMW_IMPLEMENTATION=rmw_rosette
+# resolves; rmw_implementation then loads librmw_rosette.so by name.
 ament_index_register_resource("rmw_implementation" CONTENT_FILE
   "${CMAKE_CURRENT_SOURCE_DIR}/resource/rmw_rosette")
 
@@ -94,13 +119,26 @@ install(
 )
 
 ament_export_targets(export_rmw_rosette HAS_LIBRARY_TARGET)
-ament_export_dependencies(rcutils rmw rosidl_runtime_c rosidl_typesupport_microxrcedds_c)
+ament_export_dependencies(rcutils rmw rosidl_runtime_c rosidl_typesupport_introspection_c)
 ament_export_include_directories(include)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  ament_add_gtest(test_pub_sub_loopback test/test_pub_sub_loopback.cpp)
-  target_link_libraries(test_pub_sub_loopback rmw_rosette)
+  find_package(geometry_msgs REQUIRED)
+  find_package(sensor_msgs REQUIRED)
+  find_package(std_msgs REQUIRED)
+
+  # Each test binary links librmw_rosette directly, so it exercises this
+  # implementation without going through rmw_implementation's loader.
+  foreach(test_name test_introspection_c_codec test_guard_condition test_pub_sub_loopback)
+    ament_add_gtest(${test_name} test/${test_name}.cpp TIMEOUT 60)
+    target_link_libraries(${test_name} rmw_rosette)
+    # Tests include rmw_rosette headers whose layouts depend on the capacity model.
+    rmw_rosette_apply_capacity(${test_name})
+    target_include_directories(${test_name} PRIVATE ${ROSETTE_ROOT}/include)
+    target_compile_definitions(${test_name} PRIVATE RTPS_NO_FREERTOS)
+    ament_target_dependencies(${test_name} geometry_msgs sensor_msgs std_msgs)
+  endforeach()
 endif()
 
 ament_package()

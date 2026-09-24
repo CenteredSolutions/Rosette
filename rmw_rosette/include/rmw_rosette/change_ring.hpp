@@ -1,0 +1,106 @@
+/**
+ * @file rmw_rosette/change_ring.hpp
+ * @brief Fixed-capacity buffer between RTPS reader callbacks and rmw takes.
+ *
+ * `rtps::StatefulReader::OnChangeAvailable` hands over a CacheChange that is
+ * valid only during the callback, and it fires from inside rmw_wait()'s
+ * participant pump, while rmw_take*() runs later from the executor. Each
+ * subscription, service, and client therefore copies received changes into a
+ * ChangeRing: payload bytes plus the metadata a take needs (the writer GUID
+ * and sequence number that identify a service request, and the related sample
+ * identity that correlates a service reply).
+ *
+ * The ring never allocates. When it is full, the oldest unread change is
+ * overwritten, the KEEP_LAST behavior a DDS reader history has, so a writer
+ * that outruns the application loses its oldest samples rather than growing
+ * memory.
+ */
+
+#pragma once
+
+#include "rosette/rtps/buf_pool.hpp"
+#include "rosette/rtps/history_cache.hpp"
+#include "rosette/rtps/types.hpp"
+
+#include <cstdint>
+
+#ifndef RMW_ROSETTE_MAX_PENDING_CHANGES
+/// Changes buffered per subscription, service, or client between rmw takes.
+#  define RMW_ROSETTE_MAX_PENDING_CHANGES 4
+#endif
+
+namespace rmw_rosette {
+
+/// One received change, copied out of the reader callback.
+struct PendingChange {
+    uint8_t              bytes[RTPS_BUF_BLOCK_SIZE] = {};  ///< Serialized payload, header included.
+    uint32_t             size = 0;
+    rtps::Guid           writer_guid = rtps::GUID_UNKNOWN;
+    rtps::SequenceNumber sequence_number = rtps::SEQUENCENUMBER_UNKNOWN;
+    rtps::Timestamp      source_timestamp = rtps::TIME_ZERO;
+    bool                 has_related_sample_identity = false;
+    rtps::SampleIdentity related_sample_identity = {};
+};
+
+/**
+ * @brief KEEP_LAST ring of received changes for one rmw entity.
+ */
+class ChangeRing {
+public:
+    /**
+     * @brief Copies one received change into the ring.
+     *
+     * Called from the reader's OnChangeAvailable trampoline. When the ring
+     * is full the oldest unread change is overwritten.
+     *
+     * @param[in] change Change delivered by the RTPS reader; only read
+     *   during this call. Payloads longer than RTPS_BUF_BLOCK_SIZE are
+     *   dropped, since a truncated sample could not be decoded.
+     * @return `true` when the change was stored.
+     *
+     * Verification:
+     * - Correct means: after N pushes into a ring of capacity C, pop()
+     *   returns the last min(N, C) changes in arrival order.
+     */
+    bool push(const rtps::CacheChange& change) noexcept {
+        if (!change.payload.valid() || change.payload.size > sizeof(PendingChange::bytes)) {
+            return false;
+        }
+        PendingChange& slot = slots_[head_];
+        for (uint32_t i = 0; i < change.payload.size; ++i) slot.bytes[i] = change.payload.data[i];
+        slot.size = change.payload.size;
+        slot.writer_guid = change.writerGuid;
+        slot.sequence_number = change.sequenceNumber;
+        slot.source_timestamp = change.sourceTimestamp;
+        slot.has_related_sample_identity = change.inlineQos.hasRelatedSampleIdentity;
+        slot.related_sample_identity = change.inlineQos.relatedSampleIdentity;
+        head_ = (head_ + 1u) % RMW_ROSETTE_MAX_PENDING_CHANGES;
+        if (count_ < RMW_ROSETTE_MAX_PENDING_CHANGES) ++count_;
+        return true;
+    }
+
+    /**
+     * @brief Removes the oldest buffered change.
+     *
+     * @param[out] out Receives the change; untouched when the ring is empty.
+     * @return `true` when a change was removed.
+     */
+    bool pop(PendingChange& out) noexcept {
+        if (count_ == 0u) return false;
+        const uint32_t tail =
+            (head_ + RMW_ROSETTE_MAX_PENDING_CHANGES - count_) % RMW_ROSETTE_MAX_PENDING_CHANGES;
+        out = slots_[tail];
+        --count_;
+        return true;
+    }
+
+    /// @brief True when at least one change is waiting; rmw_wait() readiness.
+    bool ready() const noexcept { return count_ != 0u; }
+
+private:
+    PendingChange slots_[RMW_ROSETTE_MAX_PENDING_CHANGES] = {};
+    uint32_t      head_ = 0;   ///< Next slot to fill.
+    uint32_t      count_ = 0;  ///< Unread changes.
+};
+
+}  // namespace rmw_rosette

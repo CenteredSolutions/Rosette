@@ -5,16 +5,21 @@
  * An rmw implementation owns the mapping between ROS 2 topic/service
  * names and the RTPS topic names actually placed on the wire — the same
  * convention rmw_fastrtps_cpp and rmw_cyclonedds_cpp apply internally.
- * All composition here is bounded-buffer, no heap, no std::string,
- * matching the rest of rosette::rtps.
+ * rcl expands and validates names before calling rmw, so every name that
+ * reaches these helpers is fully qualified (it starts with `/` and already
+ * contains the node namespace and any remapping). Mangling is therefore a
+ * pure prefix/suffix operation:
  *
- *   User topics:        rt/<namespace>/<topic>
- *   Service request:    rq/<namespace>/<service>Request
- *   Service response:   rr/<namespace>/<service>Reply
+ *   User topics:        rt<fully-qualified topic>              rt/ns/chatter
+ *   Service request:    rq<fully-qualified service>Request     rq/ns/add_twoRequest
+ *   Service response:   rr<fully-qualified service>Reply       rr/ns/add_twoReply
  *
- * Type names follow the DDS-XTypes convention rmw_fastrtps_cpp uses so
- * real ROS 2 nodes' SEDP matching accepts this participant's endpoints:
+ * Type names follow the convention rmw_fastrtps_cpp uses so real ROS 2
+ * nodes' SEDP matching accepts this participant's endpoints:
  *   <pkg>::msg::dds_::<Type>_
+ *
+ * All composition is bounded-buffer, no heap, no std::string, matching the
+ * rest of rosette::rtps.
  */
 
 #pragma once
@@ -28,26 +33,29 @@ namespace rmw_rosette {
 
 namespace detail {
 
+/// @brief Appends `src` at `pos`, truncating to keep `dst` NUL-terminated within `cap`.
 inline void str_append(char* dst, size_t cap, size_t& pos, const char* src) noexcept {
     if (!dst || !src || cap == 0) return;
     while (*src && pos + 1 < cap) { dst[pos++] = *src++; }
     dst[pos] = '\0';
 }
 
-inline void ensure_slash(char* dst, size_t cap, size_t& pos) noexcept {
-    if (pos > 0 && dst[pos - 1] != '/' && pos + 1 < cap) {
-        dst[pos++] = '/';
-        dst[pos] = '\0';
-    }
-}
-
-/// Appends `ns` (with trailing slash), skipping empty or root ("/") namespaces.
-inline void append_namespace(char* dst, size_t cap, size_t& pos, const char* ns) noexcept {
-    if (!ns || ns[0] == '\0' || (ns[0] == '/' && ns[1] == '\0')) return;
-    const char* p = ns;
-    while (*p == '/') ++p;
-    str_append(dst, cap, pos, p);
-    ensure_slash(dst, cap, pos);
+/**
+ * @brief Writes `prefix + fqn + suffix`, the shape of every ROS 2 DDS topic name.
+ *
+ * @param[out] out    Destination buffer.
+ * @param[in]  cap    Capacity of `out`, including the terminating NUL.
+ * @param[in]  prefix Two-letter mangling prefix without a slash (`"rt"`, `"rq"`, `"rr"`).
+ * @param[in]  fqn    Fully-qualified ROS name; its leading `/` becomes the separator.
+ * @param[in]  suffix Appended verbatim (`""`, `"Request"`, `"Reply"`).
+ */
+inline void compose_mangled(char* out, size_t cap, const char* prefix, const char* fqn,
+                            const char* suffix) noexcept {
+    size_t pos = 0;
+    str_append(out, cap, pos, prefix);
+    if (!fqn || fqn[0] != '/') str_append(out, cap, pos, "/");
+    str_append(out, cap, pos, fqn ? fqn : "");
+    str_append(out, cap, pos, suffix);
 }
 
 }  // namespace detail
@@ -55,69 +63,61 @@ inline void append_namespace(char* dst, size_t cap, size_t& pos, const char* ns)
 /**
  * @brief Composes the RTPS topic name for a ROS 2 user topic.
  *
- * `rmw_create_publisher()`/`rmw_create_subscription()` call this to turn
- * the ROS-level topic name and node namespace they receive into the
- * actual RTPS `topicName` a `WriterConfig`/`ReaderConfig` carries, so
- * real ROS 2 nodes' SEDP endpoint discovery recognizes this participant.
+ * `rmw_create_publisher()`/`rmw_create_subscription()` place the result in
+ * `WriterConfig::topicName`/`ReaderConfig::topicName`, which SEDP announces.
  *
- * Writes `"rt/" + <namespace, with leading/trailing slashes normalized> +
- * <topic>` into `out`, truncating at `cap` rather than overflowing.
+ * @param[out] out   Destination buffer; truncated rather than overflowed.
+ * @param[in]  cap   Capacity of `out`, including the terminating NUL.
+ * @param[in]  topic Fully-qualified ROS 2 topic name as rcl passes it
+ *   (for example `/chatter` or `/robot1/cmd_vel`).
  *
- * @param[out] out Destination buffer.
- * @param[in] cap Capacity of `out`, including the terminating NUL.
- * @param[in] ns Node namespace; `nullptr`, `""`, and `"/"` are all
- *   treated as no namespace.
- * @param[in] topic ROS 2 topic name.
+ * Verification:
+ * - Correct means: `/chatter` maps to `rt/chatter` and `/ns/chatter` to
+ *   `rt/ns/chatter`, matching the names rmw_fastrtps_cpp announces.
+ * - Covered by: tests/ros2/run_rmw_interop_loopback.sh (endpoint matching
+ *   against rmw_fastrtps_cpp).
+ *
+ * References:
+ * - ROS 2 design, "Topic and Service name mapping to DDS"
+ *   (design.ros2.org/articles/topic_and_service_names.html), "ROS Specific
+ *   Namespace Prefix"
  */
-inline void compose_topic_name(char* out, size_t cap,
-                                const char* ns, const char* topic) noexcept {
-    size_t pos = 0;
-    detail::str_append(out, cap, pos, "rt/");
-    detail::append_namespace(out, cap, pos, ns);
-    detail::str_append(out, cap, pos, topic ? topic : "");
+inline void compose_topic_name(char* out, size_t cap, const char* topic) noexcept {
+    detail::compose_mangled(out, cap, "rt", topic, "");
 }
 
 /**
  * @brief Composes the RTPS topic name for a service's request channel.
  *
- * Mirrors compose_topic_name(), producing `"rq/" + <namespace> +
- * <service> + "Request"` for the reader/writer pair a service uses to
- * receive incoming calls.
+ * @param[out] out     Destination buffer; truncated rather than overflowed.
+ * @param[in]  cap     Capacity of `out`, including the terminating NUL.
+ * @param[in]  service Fully-qualified ROS 2 service name.
  *
- * @param[out] out Destination buffer.
- * @param[in] cap Capacity of `out`, including the terminating NUL.
- * @param[in] ns Node namespace; `nullptr`, `""`, and `"/"` are all
- *   treated as no namespace.
- * @param[in] service ROS 2 service name.
+ * Verification:
+ * - Correct means: `/add_two` maps to `rq/add_twoRequest`.
+ *
+ * References:
+ * - ROS 2 design, "Topic and Service name mapping to DDS"
  */
-inline void compose_service_request_topic(char* out, size_t cap,
-                                           const char* ns, const char* service) noexcept {
-    size_t pos = 0;
-    detail::str_append(out, cap, pos, "rq/");
-    detail::append_namespace(out, cap, pos, ns);
-    detail::str_append(out, cap, pos, service ? service : "");
-    detail::str_append(out, cap, pos, "Request");
+inline void compose_service_request_topic(char* out, size_t cap, const char* service) noexcept {
+    detail::compose_mangled(out, cap, "rq", service, "Request");
 }
 
 /**
  * @brief Composes the RTPS topic name for a service's reply channel.
  *
- * The mirror image of compose_service_request_topic(): `"rr/" +
- * <namespace> + <service> + "Reply"`.
+ * @param[out] out     Destination buffer; truncated rather than overflowed.
+ * @param[in]  cap     Capacity of `out`, including the terminating NUL.
+ * @param[in]  service Fully-qualified ROS 2 service name.
  *
- * @param[out] out Destination buffer.
- * @param[in] cap Capacity of `out`, including the terminating NUL.
- * @param[in] ns Node namespace; `nullptr`, `""`, and `"/"` are all
- *   treated as no namespace.
- * @param[in] service ROS 2 service name.
+ * Verification:
+ * - Correct means: `/add_two` maps to `rr/add_twoReply`.
+ *
+ * References:
+ * - ROS 2 design, "Topic and Service name mapping to DDS"
  */
-inline void compose_service_reply_topic(char* out, size_t cap,
-                                         const char* ns, const char* service) noexcept {
-    size_t pos = 0;
-    detail::str_append(out, cap, pos, "rr/");
-    detail::append_namespace(out, cap, pos, ns);
-    detail::str_append(out, cap, pos, service ? service : "");
-    detail::str_append(out, cap, pos, "Reply");
+inline void compose_service_reply_topic(char* out, size_t cap, const char* service) noexcept {
+    detail::compose_mangled(out, cap, "rr", service, "Reply");
 }
 
 /**
@@ -128,23 +128,37 @@ inline void compose_service_reply_topic(char* out, size_t cap,
  * announces to the graph; a real ROS 2 node's rmw only matches an
  * endpoint whose type name follows this exact convention.
  *
- * Writes `<message_namespace> + "::dds_::" + <message_name> + "_"`. The
- * two inputs come straight from a `message_type_support_callbacks_t`
- * (type_support.hpp): `message_namespace_` is `"<pkg>::<subfolder>"`
- * (e.g. `"std_msgs::msg"`) and `message_name_` is the bare type name
- * (e.g. `"String"`), per rosidl_typesupport_microxrcedds's codegen
- * template.
+ * Writes `<message_namespace> + "::dds_::" + <message_name> + "_"`, with
+ * every `"__"` in the namespace rewritten to `"::"`. Introspection metadata
+ * spells the namespace `"std_msgs__msg"` while microxrcedds callbacks spell
+ * it `"std_msgs::msg"`; both produce `"std_msgs::msg::dds_::String_"`.
  *
  * @param[out] out Destination buffer.
  * @param[in] cap Capacity of `out`, including the terminating NUL.
- * @param[in] message_namespace `message_type_support_callbacks_t::message_namespace_`.
- * @param[in] message_name `message_type_support_callbacks_t::message_name_`.
+ * @param[in] message_namespace Package and subfolder, `"__"`- or `"::"`-separated.
+ * @param[in] message_name Bare message type name.
+ *
+ * Verification:
+ * - Correct means: output equals the type name rmw_fastrtps_cpp announces.
+ * - Covered by: rmw_rosette/test/test_introspection_c_codec.cpp
+ *   (ComposesDdsTypeName).
+ *
+ * References:
+ * - ROS 2 design, "Topic and Service name mapping to DDS"
  */
 inline void compose_dds_type_name(char* out, size_t cap,
                                    const char* message_namespace,
                                    const char* message_name) noexcept {
     size_t pos = 0;
-    detail::str_append(out, cap, pos, message_namespace ? message_namespace : "");
+    for (const char* p = message_namespace ? message_namespace : ""; *p; ++p) {
+        if (p[0] == '_' && p[1] == '_') {
+            detail::str_append(out, cap, pos, "::");
+            ++p;
+        } else {
+            const char c[2] = {*p, '\0'};
+            detail::str_append(out, cap, pos, c);
+        }
+    }
     detail::str_append(out, cap, pos, "::dds_::");
     detail::str_append(out, cap, pos, message_name ? message_name : "");
     detail::str_append(out, cap, pos, "_");

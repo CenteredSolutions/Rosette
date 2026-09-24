@@ -50,4 +50,45 @@ inline void guid_to_rmw_gid(const rtps::Guid& guid, rmw_gid_t& out) noexcept {
         guid.entityId.entityKind;
 }
 
+/**
+ * @brief Writes an RTPS GUID as the 16-octet form rmw_request_id_t uses.
+ *
+ * Service request IDs name the request's writer by GUID; stock RMWs store
+ * the 12-octet prefix followed by the 4-octet EntityId, and so does this.
+ *
+ * @param[in]  guid RTPS GUID.
+ * @param[out] out  Destination `rmw_request_id_t::writer_guid`.
+ */
+inline void guid_to_request_writer(const rtps::Guid& guid, int8_t out[16]) noexcept {
+    std::memcpy(out, guid.prefix.value, 12);
+    std::memcpy(out + 12, guid.entityId.entityKey, 3);
+    out[15] = static_cast<int8_t>(guid.entityId.entityKind);
+}
+
+/**
+ * @brief Reads the 16-octet request-writer form back into an RTPS GUID.
+ *
+ * @param[in] in `rmw_request_id_t::writer_guid`.
+ * @return The GUID written by guid_to_request_writer().
+ */
+inline rtps::Guid guid_from_request_writer(const int8_t in[16]) noexcept {
+    rtps::Guid g{};
+    std::memcpy(g.prefix.value, in, 12);
+    std::memcpy(g.entityId.entityKey, in + 12, 3);
+    g.entityId.entityKind = static_cast<rtps::Octet>(in[15]);
+    return g;
+}
+
+/**
+ * @brief Converts an RTPS Timestamp (seconds + 2^-32 fractions) to nanoseconds.
+ *
+ * @param[in] t RTPS time, as carried by INFO_TS (§9.3.2, Time_t).
+ * @return Nanoseconds since the Unix epoch, or 0 for TIME_ZERO.
+ */
+inline int64_t timestamp_to_ns(const rtps::Timestamp& t) noexcept {
+    const int64_t frac_ns =
+        static_cast<int64_t>((static_cast<uint64_t>(t.fraction) * 1000000000ull) >> 32);
+    return static_cast<int64_t>(t.seconds) * 1000000000ll + frac_ns;
+}
+
 }  // namespace rmw_rosette

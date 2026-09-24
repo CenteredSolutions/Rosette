@@ -70,15 +70,16 @@ extern "C" {
  * @brief Creates a node scoped to a context's RTPS participant.
  *
  * RTPS has no node concept of its own; this exists to satisfy rcl's node
- * lifecycle, carry the namespace topic_naming.hpp needs when mangling
- * topic names, and give graph-cache queries something to scope by. Every
+ * lifecycle, own the graph guard condition rcl_node_init() requires, and
+ * give graph-cache queries something to scope by. Every
  * node created against one `rmw_context_t` shares that context's single
  * `RTPSParticipant` — a participant is process-wide; nodes are a ROS
  * concept layered on top of it.
  *
  * Draws a slot from node_pool(), copies `name`/`namespace_` into the
  * slot's fixed buffers via copy_bounded(), and fills the `rmw_node_t`
- * fields to point at those buffers.
+ * fields to point at those buffers. The node's graph guard condition lives
+ * in the same slot, so it shares the node's lifetime.
  *
  * @param[in] context Context whose participant this node is scoped to.
  * @param[in] name Node name.
@@ -110,6 +111,10 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name,
     slot->node.namespace_ = slot->impl.namespace_;
     slot->node.context = context;
 
+    slot->impl.graph_guard_handle.implementation_identifier = rmw_rosette_identifier;
+    slot->impl.graph_guard_handle.data = &slot->impl.graph_guard;
+    slot->impl.graph_guard_handle.context = context;
+
     return &slot->node;
 }
 
@@ -126,19 +131,29 @@ rmw_ret_t rmw_destroy_node(rmw_node_t* node) {
 }
 
 /**
- * @brief Returns the guard condition rclcpp/rclpy wait on to be woken
- * when this node's view of the ROS graph changes.
+ * @brief Returns the guard condition rcl waits on for graph changes.
  *
- * A per-node guard condition triggered from GraphCache updates
- * (graph_cache.hpp) would back this; no such condition is created by
- * rmw_create_node() yet, so this always reports none available.
+ * rcl_node_init() fails when this returns null, and rcl's graph helpers
+ * (`rcl_wait_for_publishers`, `rclpy` `wait_for_service`) add it to their
+ * wait sets. The condition is embedded in the node's pool slot; it is
+ * triggered when discovery changes the graph this node observes.
  *
  * @param[in] node Node whose graph guard condition is requested.
- * @return `nullptr`.
+ * @return The node's guard condition, valid until rmw_destroy_node();
+ *   `nullptr` only if `node` or its data is null.
+ *
+ * Verification:
+ * - Correct means: rcl_node_init() succeeds, and the returned handle is
+ *   stable for the node's lifetime.
+ * - Covered by: rmw_rosette/test/test_guard_condition.cpp.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_node_get_graph_guard_condition`
+ * - rcl/src/rcl/node.c (Humble), `rcl_node_init`
  */
 const rmw_guard_condition_t* rmw_node_get_graph_guard_condition(const rmw_node_t* node) {
-    (void)node;
-    return nullptr;
+    if (!node || !node->data) return nullptr;
+    return &static_cast<rmw_rosette::Node*>(node->data)->graph_guard_handle;
 }
 
 }  // extern "C"

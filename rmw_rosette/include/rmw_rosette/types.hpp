@@ -35,27 +35,22 @@
 #include "rosette/rtps/stateful_reader.hpp"
 #include "rosette/rtps/stateful_writer.hpp"
 #include "rosette/rtps/transport.hpp"
-#include "type_support.hpp"
+#include "capacity.hpp"
+#include "change_ring.hpp"
+#include "message_codec.hpp"
 
 #include <rmw/init.h>
+#include <rmw/types.h>
 
+#include <atomic>
 #include <cstdint>
 #include <new>
 
-#ifndef RMW_ROSETTE_MAX_NODES
-#  define RMW_ROSETTE_MAX_NODES 4
-#endif
 
 #ifndef RMW_ROSETTE_MAX_CONTEXTS
 #  define RMW_ROSETTE_MAX_CONTEXTS 1
 #endif
 
-#ifndef RMW_ROSETTE_MAX_PENDING_CHANGES
-/// Per-subscription buffer between StatefulReader::OnChangeAvailable
-/// (fired from tick()/parse_received()) and rmw_take() (called from
-/// application/executor context) — see PendingChanges below.
-#  define RMW_ROSETTE_MAX_PENDING_CHANGES 4
-#endif
 
 namespace rmw_rosette {
 
@@ -85,6 +80,28 @@ struct Context {
     rtps::RTPSParticipant*    participant = nullptr;  ///< placement-new'd into participant_storage
     uint8_t domain_id = 0;
     bool constructed = false;
+    /// Receive buffer rmw_wait() drains sockets into; one full datagram.
+    uint8_t rx_buffer[RMW_ROSETTE_MAX_DATAGRAM_SIZE] = {};
+};
+
+/**
+ * @brief Backing store for one rmw_guard_condition_t.
+ *
+ * Guard conditions have no RTPS analogue; they are the wait-set signal rcl
+ * uses to wake an executor from another thread (interrupts, SIGINT, graph
+ * changes). `triggered` is atomic because rmw_trigger_guard_condition() may
+ * run on any thread while rmw_wait() polls it on the executor's thread.
+ * Copy assignment exists only so Pool<T,N> can reset slots.
+ */
+struct GuardCondition {
+    std::atomic<bool> triggered{false};
+
+    GuardCondition() = default;
+    GuardCondition(const GuardCondition& other) noexcept : triggered(other.triggered.load()) {}
+    GuardCondition& operator=(const GuardCondition& other) noexcept {
+        triggered.store(other.triggered.load());
+        return *this;
+    }
 };
 
 #ifndef RMW_ROSETTE_MAX_NAME_LEN
@@ -101,6 +118,10 @@ struct Context {
 /// backs must keep reporting them for its whole lifetime.
 struct Node {
     Context* context = nullptr;
+    /// Signaled when this node's view of the ROS graph changes; returned by
+    /// rmw_node_get_graph_guard_condition(), which rcl_node_init() requires.
+    GuardCondition        graph_guard;
+    rmw_guard_condition_t graph_guard_handle{};
     char     name[RMW_ROSETTE_MAX_NAME_LEN] = {};
     char     namespace_[RMW_ROSETTE_MAX_NAME_LEN] = {};
 };
@@ -109,114 +130,48 @@ struct Node {
 struct Publisher {
     Node*             node   = nullptr;
     PublisherWriter*  writer = nullptr;
-    const message_type_support_callbacks_t* type_support = nullptr;
+    MessageCodec      codec;
+    rmw_qos_profile_t qos{};  ///< Profile in effect, reported by rmw_publisher_get_actual_qos().
     char              mangled_topic_name[RTPS_MAX_TOPIC_NAME_LEN] = {};
 };
 
-/// One buffered CacheChange payload, copied out of the pool-backed
-/// BufRef the moment StatefulReader::OnChangeAvailable fires (that
-/// callback's CacheChange is only valid for the duration of the call —
-/// see stateful_reader.hpp), and held here until rmw_take() drains it.
-struct PendingChange {
-    uint8_t  bytes[RTPS_BUF_BLOCK_SIZE] = {};
-    uint32_t size = 0;
-    bool     valid = false;
-};
-
-/// Backing store for one rmw_subscription_t. Bridges
-/// StatefulReader::OnChangeAvailable (fired from tick()/parse_received())
-/// to rmw_take() (called from application/executor context) via a small
-/// fixed-capacity ring — no heap, bounded by
-/// RMW_ROSETTE_MAX_PENDING_CHANGES regardless of publish rate; a
-/// publisher that outruns rmw_take() drops the oldest unread change
-/// rather than growing unbounded.
+/// Backing store for one rmw_subscription_t: an RTPS reader whose
+/// changes are buffered in `received` until rmw_take() decodes them.
 struct Subscription {
-    Node*                node   = nullptr;
+    Node*                 node   = nullptr;
     rtps::StatefulReader* reader = nullptr;
-    const message_type_support_callbacks_t* type_support = nullptr;
-    char                 mangled_topic_name[RTPS_MAX_TOPIC_NAME_LEN] = {};
-
-    PendingChange pending[RMW_ROSETTE_MAX_PENDING_CHANGES] = {};
-    uint32_t      pending_head = 0;  ///< next slot to fill (oldest-overwrite on wrap)
-    uint32_t      pending_count = 0;
-
-    /**
-     * @brief Copies one received change's payload into the ring, evicting
-     * the oldest unread entry if the ring is full.
-     *
-     * Called from the `StatefulReader::OnChangeAvailable` trampoline
-     * (rmw_subscription.cpp), which runs from `RTPSParticipant::tick()`/
-     * `parse_received()` — a different call context than `pop_change()`,
-     * which runs from whatever thread calls `rmw_take()`.
-     *
-     * Copies up to `sizeof(PendingChange::bytes)` bytes into the slot at
-     * `pending_head`, then advances `pending_head` and grows
-     * `pending_count` up to `RMW_ROSETTE_MAX_PENDING_CHANGES`. Once the
-     * ring is full, advancing `pending_head` overwrites the oldest entry
-     * without growing `pending_count` further, so a publisher that
-     * outruns `rmw_take()` loses its oldest unread change rather than
-     * growing the buffer.
-     *
-     * @param[in] data Payload bytes, as delivered in a `CacheChange::payload`.
-     * @param[in] size Length of `data`; truncated to `sizeof(PendingChange::bytes)`.
-     */
-    void push_change(const uint8_t* data, uint32_t size) noexcept {
-        PendingChange& slot = pending[pending_head];
-        const uint32_t n = size < sizeof(slot.bytes) ? size : sizeof(slot.bytes);
-        for (uint32_t i = 0; i < n; ++i) slot.bytes[i] = data[i];
-        slot.size = n;
-        slot.valid = true;
-        pending_head = (pending_head + 1) % RMW_ROSETTE_MAX_PENDING_CHANGES;
-        if (pending_count < RMW_ROSETTE_MAX_PENDING_CHANGES) ++pending_count;
-    }
-
-    /**
-     * @brief Pops the oldest buffered change from the ring.
-     *
-     * Called from `rmw_take_with_info()` (rmw_subscription.cpp) to
-     * retrieve the next change to deserialize.
-     *
-     * Computes the ring's tail index from `pending_head` and
-     * `pending_count`, copies that slot into `out`, marks it invalid, and
-     * decrements `pending_count`.
-     *
-     * @param[out] out Receives the popped change; left unmodified when
-     *   the ring is empty.
-     * @return `true` if a change was popped; `false` if the ring was empty.
-     */
-    bool pop_change(PendingChange& out) noexcept {
-        if (pending_count == 0) return false;
-        const uint32_t tail =
-            (pending_head + RMW_ROSETTE_MAX_PENDING_CHANGES - pending_count) %
-            RMW_ROSETTE_MAX_PENDING_CHANGES;
-        out = pending[tail];
-        pending[tail].valid = false;
-        --pending_count;
-        return true;
-    }
+    MessageCodec          codec;
+    rmw_qos_profile_t     qos{};  ///< Profile in effect, reported by rmw_subscription_get_actual_qos().
+    char                  mangled_topic_name[RTPS_MAX_TOPIC_NAME_LEN] = {};
+    ChangeRing            received;
 };
 
-/// Service = a reader (requests) + a writer (replies), correlated via the
-/// SampleIdentity/InlineQos machinery already present in rtps/types.hpp.
+/// Backing store for one rmw_service_t: a reader on the request topic and a
+/// writer on the reply topic. Replies carry PID_RELATED_SAMPLE_IDENTITY =
+/// {request writer GUID, request SN} so the client can correlate them.
 struct Service {
-    Node*                node          = nullptr;
+    Node*                 node           = nullptr;
     rtps::StatefulReader* request_reader = nullptr;
     PublisherWriter*      reply_writer   = nullptr;
-    const void*           type_support   = nullptr; ///< rosidl_service_type_support_t*
+    MessageCodec          request_codec;
+    MessageCodec          response_codec;
+    rmw_qos_profile_t     qos{};  ///< Requested profile, applied to both endpoints.
+    char                  service_name[RTPS_MAX_TOPIC_NAME_LEN] = {};
+    ChangeRing            requests;
 };
 
-/// Client = the mirror image of Service.
+/// Backing store for one rmw_client_t: the mirror image of Service. Requests
+/// carry PID_RELATED_SAMPLE_IDENTITY naming this client's reply reader, and
+/// only replies correlated with this client's request writer are accepted.
 struct Client {
-    Node*                node           = nullptr;
+    Node*                 node           = nullptr;
     PublisherWriter*      request_writer = nullptr;
     rtps::StatefulReader* reply_reader   = nullptr;
-    const void*           type_support   = nullptr;
-};
-
-/// Guard conditions have no RTPS analogue; they're a pure rmw_wait_set
-/// signaling primitive (used by rcl for e.g. "wake the executor now").
-struct GuardCondition {
-    bool triggered = false;
+    MessageCodec          request_codec;
+    MessageCodec          response_codec;
+    rmw_qos_profile_t     qos{};  ///< Requested profile, applied to both endpoints.
+    char                  service_name[RTPS_MAX_TOPIC_NAME_LEN] = {};
+    ChangeRing            replies;
 };
 
 }  // namespace rmw_rosette

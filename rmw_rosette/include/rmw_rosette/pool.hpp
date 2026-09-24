@@ -17,6 +17,7 @@
 #pragma once
 
 #include <cstddef>
+#include <new>
 
 namespace rmw_rosette {
 
@@ -41,7 +42,7 @@ public:
         for (std::size_t i = 0; i < N; ++i) {
             if (!used_[i]) {
                 used_[i] = true;
-                storage_[i] = T{};
+                reset_in_place(storage_[i]);
                 return &storage_[i];
             }
         }
@@ -64,7 +65,7 @@ public:
     void release(T* obj) noexcept {
         for (std::size_t i = 0; i < N; ++i) {
             if (&storage_[i] == obj) {
-                storage_[i] = T{};
+                reset_in_place(storage_[i]);
                 used_[i] = false;
                 return;
             }
@@ -75,6 +76,14 @@ public:
     static constexpr std::size_t capacity() noexcept { return N; }
 
 private:
+    /// Returns a slot to its value-initialized state without building a
+    /// temporary: some entities (the context, with its participant and
+    /// receive buffer) are far larger than a stack frame should hold.
+    static void reset_in_place(T& slot) noexcept {
+        slot.~T();
+        new (&slot) T{};
+    }
+
     T storage_[N] = {};
     bool used_[N] = {};
 };

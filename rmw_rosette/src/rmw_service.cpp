@@ -2,76 +2,247 @@
  * @file rmw_service.cpp
  * @brief rmw_create_service / rmw_take_request / rmw_send_response.
  *
- * A ROS 2 service is two RTPS endpoints: a reader on "rq/.../<Srv>Request"
- * and a writer on "rr/.../<Srv>Reply", correlated by SampleIdentity in the
- * DATA submessage's inline QoS — already implemented in rtps/types.hpp
- * (SampleIdentity, InlineQos, inline_qos_pid::RELATED_SAMPLE_IDENTITY) and
- * carried by write_reliable()'s InlineQos parameter (see
- * stateful_writer.hpp). This file is mostly wiring two endpoints together
- * plus that correlation, not new protocol work.
+ * A service is a reader on the request topic and a writer on the reply topic
+ * (service_endpoints.hpp). A request's identity is the GUID of the writer that
+ * sent it plus that DATA's sequence number; rmw_take_request() reports it as
+ * the rmw_request_id_t, rcl hands it back to rmw_send_response(), and the
+ * reply carries it as PID_RELATED_SAMPLE_IDENTITY so the calling client, and
+ * only that client, accepts the reply. This is the wire contract
+ * rmw_fastrtps_cpp uses, so stock clients call rosette services directly.
  */
 
+#include "rmw_rosette/guid.hpp"
 #include "rmw_rosette/identifier.h"
+#include "rmw_rosette/message_codec.hpp"
+#include "rmw_rosette/pool.hpp"
+#include "rmw_rosette/qos.hpp"
+#include "rmw_rosette/service_endpoints.hpp"
 #include "rmw_rosette/types.hpp"
 
-#include <rmw/rmw.h>
 #include <rmw/error_handling.h>
+#include <rmw/rmw.h>
+
+#include <cstring>
+
+namespace {
+
+struct ServiceSlot {
+    rmw_service_t handle{};
+    rmw_rosette::Service impl{};
+};
+
+rmw_rosette::Pool<ServiceSlot, rmw_rosette::kServiceCapacity>& service_pool() {
+    static rmw_rosette::Pool<ServiceSlot, rmw_rosette::kServiceCapacity> pool;
+    return pool;
+}
+
+/// `rmw_service_t` is the first member of `ServiceSlot` (standard layout).
+ServiceSlot* slot_from(rmw_service_t* service) noexcept {
+    return reinterpret_cast<ServiceSlot*>(service);
+}
+
+/// Request-reader callback: buffers the request with its writer GUID and SN.
+void on_request(const rtps::CacheChange& change, void* user_data) noexcept {
+    static_cast<rmw_rosette::Service*>(user_data)->requests.push(change);
+}
+
+/// Serialization buffer for a reply; one RTPS datagram without fragmentation.
+constexpr uint32_t kReplyBufSize = RTPS_BUF_BLOCK_SIZE;
+
+}  // namespace
 
 extern "C" {
 
+/**
+ * @brief Creates a service server backed by a request reader and a reply writer.
+ *
+ * @param[in] node         Node the service belongs to.
+ * @param[in] type_support Service type support from rosidl-generated code.
+ * @param[in] service_name Fully-qualified service name, as rcl passes it.
+ * @param[in] qos_policies QoS for both endpoints (rcl defaults to
+ *   rmw_qos_profile_services_default: RELIABLE, VOLATILE, KEEP_LAST(10)).
+ * @return The new service, or `nullptr` when an argument is null, the type
+ *   resolves to no codec, the service pool (kServiceCapacity) is exhausted,
+ *   or the participant tables are full.
+ *
+ * Verification:
+ * - Correct means: a stock rclpy/rclcpp client on rmw_fastrtps_cpp calls the
+ *   service and receives exactly its own replies.
+ * - Covered by: tests/ros2 service interop.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_create_service`
+ */
 rmw_service_t* rmw_create_service(const rmw_node_t* node,
-                                   const rosidl_service_type_support_t* type_support,
-                                   const char* service_name,
-                                   const rmw_qos_profile_t* qos_policies) {
-    (void)node; (void)type_support; (void)service_name; (void)qos_policies;
-    // TODO: compose_service_request_topic() / compose_service_reply_topic(),
-    // create_reader() for the request side, create_writer<>() for the
-    // reply side. request_type_support/response_type_support come from
-    // rosidl_service_type_support_t (a pair of message type supports).
-    RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_service not implemented");
-    return nullptr;
+                                  const rosidl_service_type_support_t* type_support,
+                                  const char* service_name,
+                                  const rmw_qos_profile_t* qos_policies) {
+    if (!node || !node->data || !type_support || !service_name || !qos_policies) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_service: null argument");
+        return nullptr;
+    }
+    auto* node_impl = static_cast<rmw_rosette::Node*>(node->data);
+
+    ServiceSlot* slot = service_pool().acquire();
+    if (!slot) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_service: service pool exhausted "
+                          "(RMW_ROSETTE_MAX_SERVICES + parameter services per node)");
+        return nullptr;
+    }
+    rmw_rosette::Service& impl = slot->impl;
+    if (!rmw_rosette::resolve_service_codecs(type_support, impl.request_codec,
+                                             impl.response_codec)) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_service: unsupported type support");
+        service_pool().release(slot);
+        return nullptr;
+    }
+    if (!rmw_rosette::create_service_endpoints(
+            *node_impl, rmw_rosette::ServiceRole::Server, service_name, *qos_policies,
+            impl.request_codec, impl.response_codec, on_request, &impl, impl.reply_writer,
+            impl.request_reader)) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_service: participant endpoint tables full");
+        service_pool().release(slot);
+        return nullptr;
+    }
+    impl.node = node_impl;
+    impl.qos = *qos_policies;
+    std::strncpy(impl.service_name, service_name, sizeof(impl.service_name) - 1);
+
+    slot->handle.implementation_identifier = rmw_rosette_identifier;
+    slot->handle.data = &impl;
+    slot->handle.service_name = impl.service_name;
+    return &slot->handle;
 }
 
+/**
+ * @brief Destroys a service, withdrawing both endpoints from discovery.
+ *
+ * @param[in] node    Unused; kept for ABI symmetry.
+ * @param[in] service Service to destroy.
+ * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `service` is null.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_destroy_service`
+ */
 rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
-    (void)node; (void)service;
-    RMW_SET_ERROR_MSG("rmw_rosette: rmw_destroy_service not implemented");
-    return RMW_RET_UNSUPPORTED;
+    (void)node;
+    if (!service || !service->data) return RMW_RET_INVALID_ARGUMENT;
+    auto* impl = static_cast<rmw_rosette::Service*>(service->data);
+    if (impl->node) {
+        rmw_rosette::destroy_service_endpoints(*impl->node, impl->reply_writer,
+                                               impl->request_reader);
+    }
+    service_pool().release(slot_from(service));
+    return RMW_RET_OK;
 }
 
+/**
+ * @brief Takes the oldest buffered request and reports its identity.
+ *
+ * @param[in]  service        Service to take from.
+ * @param[out] request_header Receives the request writer's GUID and the
+ *   request's SN (`request_id`) and its source timestamp.
+ * @param[out] ros_request    Initialized request message to decode into.
+ * @param[out] taken          `true` when a request was taken.
+ * @return `RMW_RET_OK` (including when nothing was waiting);
+ *   `RMW_RET_INVALID_ARGUMENT` for null arguments; `RMW_RET_ERROR` when the
+ *   request fails to decode.
+ *
+ * Verification:
+ * - Correct means: `request_id` equals the {writer GUID, SN} of the DATA
+ *   that carried the request, the identity a stock client correlates on.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_take_request`
+ */
 rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* request_header,
-                            void* ros_request, bool* taken) {
-    (void)service; (void)ros_request;
-    if (!taken) return RMW_RET_INVALID_ARGUMENT;
+                           void* ros_request, bool* taken) {
+    if (!service || !service->data || !request_header || !ros_request || !taken) {
+        return RMW_RET_INVALID_ARGUMENT;
+    }
     *taken = false;
-    // TODO: pop from the request reader's buffered changes, deserialize,
-    // and stash the incoming SampleIdentity (writerGuid + sequenceNumber)
-    // in request_header->request_id so rmw_send_response() can echo it
-    // back as relatedSampleIdentity.
-    (void)request_header;
-    RMW_SET_ERROR_MSG("rmw_rosette: rmw_take_request not implemented");
-    return RMW_RET_UNSUPPORTED;
+    auto* impl = static_cast<rmw_rosette::Service*>(service->data);
+    rmw_rosette::PendingChange change;
+    if (!impl->requests.pop(change)) return RMW_RET_OK;
+
+    if (!rmw_rosette::deserialize_message(impl->request_codec, change.bytes, change.size,
+                                          ros_request)) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_take_request: malformed request");
+        return RMW_RET_ERROR;
+    }
+    rmw_rosette::guid_to_request_writer(change.writer_guid,
+                                        request_header->request_id.writer_guid);
+    request_header->request_id.sequence_number = change.sequence_number.to_int64();
+    request_header->source_timestamp = rmw_rosette::timestamp_to_ns(change.source_timestamp);
+    request_header->received_timestamp = 0;
+    *taken = true;
+    return RMW_RET_OK;
 }
 
+/**
+ * @brief Sends a reply correlated with the request identified by `request_header`.
+ *
+ * The reply goes to every matched client reader; each client keeps only
+ * replies whose related sample identity names its own request writer.
+ *
+ * @param[in] service        Service replying.
+ * @param[in] request_header The `request_id` rmw_take_request() reported.
+ * @param[in] ros_response   Response message to encode.
+ * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` for null arguments;
+ *   `RMW_RET_ERROR` when encoding or the write fails.
+ *
+ * Verification:
+ * - Correct means: the reply's PID_RELATED_SAMPLE_IDENTITY equals
+ *   `request_header`, so the stock client that sent the request accepts it.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_send_response`
+ * - OMG DDS-RPC 1.0 §7.8.2 (related sample identity)
+ */
 rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* request_header,
-                             void* ros_response) {
-    (void)service; (void)ros_response;
-    if (!request_header) return RMW_RET_INVALID_ARGUMENT;
-    // TODO: serialize ros_response, build an InlineQos with
-    // hasRelatedSampleIdentity=true set from request_header, and call
-    // reply_writer->write_reliable(ChangeKind::ALIVE, buf, len, qos, ...).
-    RMW_SET_ERROR_MSG("rmw_rosette: rmw_send_response not implemented");
-    return RMW_RET_UNSUPPORTED;
+                            void* ros_response) {
+    if (!service || !service->data || !request_header || !ros_response) {
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+    auto* impl = static_cast<rmw_rosette::Service*>(service->data);
+
+    uint8_t buf[kReplyBufSize];
+    const uint32_t len =
+        rmw_rosette::serialize_message(impl->response_codec, ros_response, buf, sizeof(buf));
+    if (len == 0) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_send_response: serialization failed");
+        return RMW_RET_ERROR;
+    }
+
+    rtps::InlineQos qos{};
+    qos.hasRelatedSampleIdentity = true;
+    qos.relatedSampleIdentity.writerGuid =
+        rmw_rosette::guid_from_request_writer(request_header->writer_guid);
+    qos.relatedSampleIdentity.sequenceNumber =
+        rtps::SequenceNumber::from_int64(request_header->sequence_number);
+    if (!impl->reply_writer->write_async(rtps::ChangeKind::ALIVE, buf, len, qos)) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_send_response: write failed");
+        return RMW_RET_ERROR;
+    }
+    return RMW_RET_OK;
 }
 
-rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_client_t* client,
-                                           bool* is_available) {
-    (void)node; (void)client;
-    if (!is_available) return RMW_RET_INVALID_ARGUMENT;
-    // TODO: true once the client's request-writer has at least one
-    // matched reader (GraphCache or a matched-count accessor — same gap
-    // noted in rmw_publisher_count_matched_subscriptions).
-    *is_available = false;
-    return RMW_RET_UNSUPPORTED;
+/// @brief Reports the effective QoS of the request reader.
+rmw_ret_t rmw_service_request_subscription_get_actual_qos(const rmw_service_t* service,
+                                                          rmw_qos_profile_t* qos) {
+    if (!service || !service->data || !qos) return RMW_RET_INVALID_ARGUMENT;
+    *qos = rmw_rosette::effective_qos(static_cast<const rmw_rosette::Service*>(service->data)->qos,
+                                      false, RMW_ROSETTE_MAX_PENDING_CHANGES);
+    return RMW_RET_OK;
+}
+
+/// @brief Reports the effective QoS of the reply writer.
+rmw_ret_t rmw_service_response_publisher_get_actual_qos(const rmw_service_t* service,
+                                                        rmw_qos_profile_t* qos) {
+    if (!service || !service->data || !qos) return RMW_RET_INVALID_ARGUMENT;
+    *qos = rmw_rosette::effective_qos(static_cast<const rmw_rosette::Service*>(service->data)->qos,
+                                      true, 0);
+    return RMW_RET_OK;
 }
 
 }  // extern "C"

@@ -224,4 +224,56 @@ inline bool qos_profiles_compatible(const rmw_qos_profile_t& publisher,
     return true;
 }
 
+/**
+ * @brief Resolves a requested QoS profile to the one an endpoint actually runs.
+ *
+ * Backs `rmw_publisher_get_actual_qos()` and
+ * `rmw_subscription_get_actual_qos()`. rclcpp and rclpy report these values
+ * to users and use them for QoS-compatibility warnings, so they must
+ * describe the RTPS endpoint, not echo the request: `SYSTEM_DEFAULT` and
+ * `UNKNOWN` policies are replaced by what to_rtps_reliability() and
+ * to_rtps_durability() chose, history is always `KEEP_LAST`, and a
+ * writer's depth is the one select_writer_depth() picked.
+ *
+ * @param[in] requested Profile passed to `rmw_create_publisher()` or
+ *   `rmw_create_subscription()`.
+ * @param[in] is_writer `true` for a publisher, which resolves depth through
+ *   select_writer_depth(); `false` for a subscription, whose depth is bounded
+ *   by `reader_depth`.
+ * @param[in] reader_depth Capacity of the subscription's pending-change ring.
+ * @return The effective profile. Deadline, lifespan, and liveliness fields
+ *   are copied unchanged.
+ *
+ * Verification:
+ * - Correct means: a round trip through this function is idempotent, and
+ *   reliability/durability agree with the RTPS endpoint's configuration.
+ *
+ * References:
+ * - rmw/types.h (Humble), `rmw_qos_profile_t`
+ * - OMG DDS 1.4 §2.2.3 (QoS policies)
+ */
+inline rmw_qos_profile_t effective_qos(const rmw_qos_profile_t& requested, bool is_writer,
+                                       uint32_t reader_depth) noexcept {
+    rmw_qos_profile_t qos = requested;
+    qos.reliability = to_rtps_reliability(requested.reliability) == rtps::ReliabilityKind::RELIABLE
+                          ? RMW_QOS_POLICY_RELIABILITY_RELIABLE
+                          : RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+    switch (to_rtps_durability(requested.durability)) {
+        case rtps::DurabilityKind::VOLATILE:
+            qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
+            break;
+        default:
+            qos.durability = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL;
+            break;
+    }
+    qos.history = RMW_QOS_POLICY_HISTORY_KEEP_LAST;
+    if (is_writer) {
+        qos.depth = select_writer_depth(requested);
+    } else if (qos.depth == 0 || qos.depth > reader_depth ||
+               requested.history == RMW_QOS_POLICY_HISTORY_KEEP_ALL) {
+        qos.depth = reader_depth;
+    }
+    return qos;
+}
+
 }  // namespace rmw_rosette

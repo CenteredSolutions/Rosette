@@ -1,28 +1,23 @@
 /**
  * @file test_pub_sub_loopback.cpp
  * @brief One rmw_rosette context, publish -> wait -> take over real UDP
- *        loopback, using a real rosidl-generated message type.
+ *        loopback, using the generated std_msgs/String type support.
  *
- * The logic below is verified working: it was run (compiled directly
- * against real rmw/rcutils/rosidl_runtime_c/rosidl_typesupport_microxrcedds_c
- * sources, humble-pinned, rather than through ament_cmake_gtest) with a
- * hand-written stand-in message type support, and it passed — see
- * rmw_rosette/README.md's "Status" section for what that verification
- * covered and what it didn't (services, graph introspection, etc.).
+ * Exercises the rmw entry points on the data path end to end inside one
+ * participant: init, node, publisher, subscription, a discovery pump through
+ * rmw_wait(), publish, wait for readiness, and take. Cross-vendor delivery is
+ * covered by tests/ros2 against a stock RMW.
  *
- * What's not yet true: this specific file has not been built through
- * ament_cmake_gtest against a real colcon workspace, and it references
- * std_msgs/msg/String's generated type support rather than a hand-written
- * stand-in — that header only exists once this package is built inside a
- * real ROS 2 workspace with std_msgs available. Do that build before
- * trusting this file's gtest wiring specifically, as opposed to the
- * rmw_rosette logic it exercises.
+ * Verification:
+ * - Correct means: the taken message equals the published one, and the
+ *   subscription is reported ready by rmw_wait() before the take.
  */
 
 #include <gtest/gtest.h>
 
 #include <rmw/rmw.h>
 
+#include <rosidl_runtime_c/string_functions.h>
 #include <std_msgs/msg/string.h>
 
 TEST(RmwRosetteLoopback, PublishAndTake) {
@@ -44,12 +39,12 @@ TEST(RmwRosetteLoopback, PublishAndTake) {
         ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String);
 
     rmw_publisher_options_t pub_options = rmw_get_default_publisher_options();
-    rmw_publisher_t* pub = rmw_create_publisher(node, ts, "loopback_topic", &qos, &pub_options);
+    rmw_publisher_t* pub = rmw_create_publisher(node, ts, "/loopback_topic", &qos, &pub_options);
     ASSERT_NE(pub, nullptr);
 
     rmw_subscription_options_t sub_options = rmw_get_default_subscription_options();
     rmw_subscription_t* sub =
-        rmw_create_subscription(node, ts, "loopback_topic", &qos, &sub_options);
+        rmw_create_subscription(node, ts, "/loopback_topic", &qos, &sub_options);
     ASSERT_NE(sub, nullptr);
 
     rmw_wait_set_t* wait_set = rmw_create_wait_set(&context, 4);

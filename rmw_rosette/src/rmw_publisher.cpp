@@ -8,15 +8,12 @@
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/qos.hpp"
 #include "rmw_rosette/topic_naming.hpp"
-#include "rmw_rosette/type_support.hpp"
+#include "rmw_rosette/message_codec.hpp"
 #include "rmw_rosette/types.hpp"
 
 #include <rmw/rmw.h>
 #include <rmw/error_handling.h>
-
-#ifndef RMW_ROSETTE_MAX_PUBLISHERS
-#  define RMW_ROSETTE_MAX_PUBLISHERS 8
-#endif
+#include <rmw/get_network_flow_endpoints.h>
 
 namespace {
 
@@ -25,8 +22,8 @@ struct PublisherSlot {
     rmw_rosette::Publisher impl{};
 };
 
-rmw_rosette::Pool<PublisherSlot, RMW_ROSETTE_MAX_PUBLISHERS>& publisher_pool() {
-    static rmw_rosette::Pool<PublisherSlot, RMW_ROSETTE_MAX_PUBLISHERS> pool;
+rmw_rosette::Pool<PublisherSlot, rmw_rosette::kPublisherCapacity>& publisher_pool() {
+    static rmw_rosette::Pool<PublisherSlot, rmw_rosette::kPublisherCapacity> pool;
     return pool;
 }
 
@@ -49,22 +46,22 @@ extern "C" {
 /**
  * @brief Creates a publisher backed by a runtime-depth-selected RTPS writer.
  *
- * Resolves the message type's microxrcedds callbacks, mangles the ROS
- * topic name and DDS wire type name (topic_naming.hpp), builds a
+ * Resolves the message type's serializer (message_codec.hpp), mangles the
+ * fully-qualified ROS topic name and DDS wire type name (topic_naming.hpp), builds a
  * `WriterConfig` from `qos_policies`, and creates the writer through
  * create_writer_for_qos() so its `CacheDepth` matches the requested
- * history depth. The resulting `IStatefulWriter*` and callbacks are
+ * history depth. The resulting `IStatefulWriter*` and codec are
  * stored in a pooled `Publisher`, and the `rmw_publisher_t` returned to
  * the caller points at it.
  *
  * @param[in] node Node to scope this publisher to.
  * @param[in] type_support Message type support from rosidl-generated code.
- * @param[in] topic_name ROS 2 topic name (unmangled).
+ * @param[in] topic_name Fully-qualified ROS 2 topic name, as rcl passes it.
  * @param[in] qos_policies Requested QoS profile.
  * @param[in] publisher_options Copied verbatim into the resulting
  *   `rmw_publisher_t::options`.
  * @return The new publisher, or `nullptr` if any required argument is
- *   null, the type support has no microxrcedds_c callbacks, the
+ *   null, the type support offers no supported typesupport family, the
  *   participant's writer table is full, or the publisher pool is
  *   exhausted.
  */
@@ -79,10 +76,10 @@ rmw_publisher_t* rmw_create_publisher(
         return nullptr;
     }
 
-    const auto* callbacks = rmw_rosette::get_message_typesupport(type_support);
-    if (!callbacks) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_publisher: type was not compiled "
-                          "with rosidl_typesupport_microxrcedds_c support");
+    rmw_rosette::MessageCodec codec;
+    if (!rmw_rosette::resolve_message_codec(type_support, codec)) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_publisher: type support offers neither "
+                          "introspection_c nor microxrcedds_c");
         return nullptr;
     }
 
@@ -92,23 +89,12 @@ rmw_publisher_t* rmw_create_publisher(
     rmw_rosette::fill_writer_config(cfg, *qos_policies);
 
     char mangled_topic[RTPS_MAX_TOPIC_NAME_LEN];
-    rmw_rosette::compose_topic_name(mangled_topic, sizeof(mangled_topic),
-                                     node_impl->namespace_, topic_name);
+    rmw_rosette::compose_topic_name(mangled_topic, sizeof(mangled_topic), topic_name);
     cfg.topicName.assign(mangled_topic);
 
     char type_name[RTPS_MAX_TOPIC_NAME_LEN];
-    rmw_rosette::compose_dds_type_name(type_name, sizeof(type_name),
-                                        callbacks->message_namespace_,
-                                        callbacks->message_name_);
+    rmw_rosette::compose_codec_type_name(codec, type_name, sizeof(type_name));
     cfg.typeName.assign(type_name);
-
-    auto* writer = rmw_rosette::create_writer_for_qos(
-        *node_impl->context->participant, cfg, *qos_policies);
-    if (!writer) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_publisher: create_writer failed "
-                          "(participant writer table full?)");
-        return nullptr;
-    }
 
     PublisherSlot* slot = publisher_pool().acquire();
     if (!slot) {
@@ -117,9 +103,19 @@ rmw_publisher_t* rmw_create_publisher(
         return nullptr;
     }
 
+    auto* writer = rmw_rosette::create_writer_for_qos(
+        *node_impl->context->participant, cfg, *qos_policies);
+    if (!writer) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_publisher: create_writer failed "
+                          "(participant writer table full)");
+        publisher_pool().release(slot);
+        return nullptr;
+    }
+
     slot->impl.node = node_impl;
     slot->impl.writer = writer;
-    slot->impl.type_support = callbacks;
+    slot->impl.codec = codec;
+    slot->impl.qos = rmw_rosette::effective_qos(*qos_policies, true, 0);
     for (uint32_t i = 0; i < sizeof(mangled_topic); ++i) {
         slot->impl.mangled_topic_name[i] = mangled_topic[i];
     }
@@ -134,31 +130,44 @@ rmw_publisher_t* rmw_create_publisher(
 }
 
 /**
- * @brief Destroys a publisher and returns its slot to the pool.
+ * @brief Destroys a publisher, its RTPS writer, and its pool slot.
  *
- * Does not remove the underlying writer from the participant's writer
- * table; the writer's storage is reused only when the participant itself
- * is torn down.
+ * Deleting the writer through the participant withdraws it from SEDP, so
+ * remote subscriptions unmatch it promptly instead of at lease expiry, and
+ * frees its writer-table slot for reuse.
  *
  * @param[in] node Unused; kept for ABI symmetry with `rmw_create_publisher()`.
  * @param[in] publisher Publisher to destroy.
  * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `publisher` is null.
+ *
+ * Verification:
+ * - Correct means: after destruction a stock subscriber's matched count
+ *   drops, and a new publisher can reuse the writer slot.
+ * - Covered by: TC-PART-8.5.1-005 (participant side).
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_destroy_publisher`
  */
 rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     (void)node;
-    if (!publisher) return RMW_RET_INVALID_ARGUMENT;
+    if (!publisher || !publisher->data) return RMW_RET_INVALID_ARGUMENT;
+    auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
+    if (impl->node && impl->writer) {
+        impl->node->context->participant->delete_writer(impl->writer);
+    }
     publisher_pool().release(slot_from(publisher));
     return RMW_RET_OK;
 }
 
 /**
- * @brief Serializes and reliably publishes a ROS message.
+ * @brief Serializes and publishes a ROS message.
  *
- * Encodes `ros_message` via serialize_message() into a stack buffer,
- * then hands the resulting bytes to the publisher's
- * `IStatefulWriter::write_reliable()`, which prepends the RTPS DATA
- * submessage's CDR encapsulation header and delivers it through the
- * normal RTPS reliability machinery (heartbeat/acknack).
+ * Encodes `ros_message` via serialize_message() into a stack buffer, then
+ * hands the bytes to the publisher's `IStatefulWriter::write_async()`,
+ * which adds the change to the writer history, prepends the CDR
+ * encapsulation header, and sends it to every matched reader. The call does
+ * not wait for acknowledgments: RELIABLE delivery is completed by
+ * HEARTBEAT/ACKNACK repair while rmw_wait() drives the participant.
  *
  * @param[in] publisher Publisher to send through.
  * @param[in] ros_message Message instance to encode and send.
@@ -175,7 +184,7 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
 
     uint8_t buf[kSerializeBufSize];
-    const uint32_t len = rmw_rosette::serialize_message(*impl->type_support, ros_message,
+    const uint32_t len = rmw_rosette::serialize_message(impl->codec, ros_message,
                                                           buf, sizeof(buf));
     if (len == 0) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_publish: serialization failed "
@@ -183,9 +192,12 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
         return RMW_RET_ERROR;
     }
 
-    const bool ok = impl->writer->write_reliable(rtps::ChangeKind::ALIVE, buf, len);
+    // write_async(): a DDS write with KEEP_LAST history does not wait for
+    // acknowledgments; reliability comes from the history plus
+    // HEARTBEAT/ACKNACK repair driven by rmw_wait().
+    const bool ok = impl->writer->write_async(rtps::ChangeKind::ALIVE, buf, len);
     if (!ok) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_publish: write_reliable failed");
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_publish: write_async failed");
         return RMW_RET_ERROR;
     }
     return RMW_RET_OK;
@@ -194,17 +206,27 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
 /**
  * @brief Reliably publishes an already-serialized message.
  *
- * The same delivery path as rmw_publish(), minus the serialize step:
- * `serialized_message`'s bytes are already CDR-encoded application
- * content (no encapsulation header — see kRtpsEncapsulationHeaderSize in
- * type_support.hpp), so they're handed to `write_reliable()` directly.
+ * The same delivery path as rmw_publish(), minus the encode step. Per the
+ * rmw contract `serialized_message` holds a complete payload, header
+ * included (see rmw_serialize.cpp). The RTPS writer always prepends its own
+ * CDR_LE header, so this checks that the caller's header is CDR_LE and
+ * hands the writer only the body; forwarding the whole buffer would put two
+ * headers on the wire.
  *
  * @param[in] publisher Publisher to send through.
- * @param[in] serialized_message Pre-serialized message bytes.
+ * @param[in] serialized_message Complete serialized payload, header included.
  * @param[in] allocation Unused; this path performs no loaned-message allocation.
  * @return `RMW_RET_OK` on success; `RMW_RET_INVALID_ARGUMENT` if any
- *   required argument is null; `RMW_RET_ERROR` if the underlying write
- *   failed.
+ *   required argument is null or the payload is not CDR_LE; `RMW_RET_ERROR`
+ *   if the underlying write failed.
+ *
+ * Verification:
+ * - Correct means: a buffer from rmw_serialize() arrives at a stock
+ *   subscriber as the original message, with exactly one encapsulation header.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_publish_serialized_message`
+ * - OMG DDSI-RTPS 2.5 §10.2
  */
 rmw_ret_t rmw_publish_serialized_message(const rmw_publisher_t* publisher,
                                           const rmw_serialized_message_t* serialized_message,
@@ -212,37 +234,41 @@ rmw_ret_t rmw_publish_serialized_message(const rmw_publisher_t* publisher,
     (void)allocation;
     if (!publisher || !publisher->data || !serialized_message) return RMW_RET_INVALID_ARGUMENT;
 
+    constexpr size_t hdr = rmw_rosette::kRtpsEncapsulationHeaderSize;
+    const uint8_t* buf = serialized_message->buffer;
+    if (serialized_message->buffer_length < hdr || buf[0] != 0x00 || buf[1] != 0x01) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_publish_serialized_message: payload is not CDR_LE");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
-    const bool ok = impl->writer->write_reliable(
+    const bool ok = impl->writer->write_async(
         rtps::ChangeKind::ALIVE,
-        reinterpret_cast<const rtps::Octet*>(serialized_message->buffer),
-        static_cast<uint32_t>(serialized_message->buffer_length));
+        reinterpret_cast<const rtps::Octet*>(buf + hdr),
+        static_cast<uint32_t>(serialized_message->buffer_length - hdr));
     if (!ok) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_publish_serialized_message: write_reliable failed");
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_publish_serialized_message: write_async failed");
         return RMW_RET_ERROR;
     }
     return RMW_RET_OK;
 }
 
 /**
- * @brief Reports how many matched subscriptions a publisher currently has.
+ * @brief Reports how many remote subscriptions the publisher's writer is matched with.
  *
- * `IStatefulWriter` (stateful_writer.hpp) exposes `matched_reader_add()`/
- * `matched_reader_remove()` but no accessor for the current count; this
- * always reports zero and `RMW_RET_UNSUPPORTED` until one is added
- * (directly on `IStatefulWriter`, or tracked alongside GraphCache).
+ * @param[in]  publisher Publisher to query.
+ * @param[out] subscription_count Receives the matched reader count.
+ * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` for null arguments.
  *
- * @param[in] publisher Unused.
- * @param[out] subscription_count Always set to 0.
- * @return `RMW_RET_UNSUPPORTED`, or `RMW_RET_INVALID_ARGUMENT` if
- *   `subscription_count` is null.
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_publisher_count_matched_subscriptions`
  */
 rmw_ret_t rmw_publisher_count_matched_subscriptions(const rmw_publisher_t* publisher,
                                                      size_t* subscription_count) {
-    (void)publisher;
-    if (!subscription_count) return RMW_RET_INVALID_ARGUMENT;
-    *subscription_count = 0;
-    return RMW_RET_UNSUPPORTED;
+    if (!publisher || !publisher->data || !subscription_count) return RMW_RET_INVALID_ARGUMENT;
+    const auto* impl = static_cast<const rmw_rosette::Publisher*>(publisher->data);
+    *subscription_count = impl->writer ? impl->writer->matched_reader_count() : 0u;
+    return RMW_RET_OK;
 }
 
 /**
@@ -260,12 +286,79 @@ rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t*
     return RMW_RET_OK;
 }
 
-// This file does not define rmw_publisher_assert_liveliness() (no
-// LIVELINESS QoS in the underlying rtps core), rmw_publisher_wait_for_all_acked()
-// (write_reliable() already blocks on acknowledgment internally, but under
-// a different contract than this call), rmw_publisher_get_actual_qos(),
-// rmw_borrow_loaned_message()/rmw_publish_loaned_message() (loaned-message
-// support assumes a memory model this stack doesn't provide), or
-// rmw_publisher_get_network_flow_endpoints().
+/**
+ * @brief Reports the QoS profile the publisher's RTPS writer runs with.
+ *
+ * @param[in]  publisher Publisher to query.
+ * @param[out] qos       Receives the effective profile (qos.hpp, effective_qos()).
+ * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` for null arguments.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_publisher_get_actual_qos`
+ */
+rmw_ret_t rmw_publisher_get_actual_qos(const rmw_publisher_t* publisher, rmw_qos_profile_t* qos) {
+    if (!publisher || !publisher->data || !qos) return RMW_RET_INVALID_ARGUMENT;
+    *qos = static_cast<const rmw_rosette::Publisher*>(publisher->data)->qos;
+    return RMW_RET_OK;
+}
+
+/**
+ * @brief Asserts liveliness for a MANUAL_BY_TOPIC publisher.
+ *
+ * The RTPS writer announces liveliness implicitly through its heartbeats,
+ * which satisfies the AUTOMATIC liveliness kind stock subscribers default
+ * to, so there is nothing further to send.
+ *
+ * @param[in] publisher Publisher asserting liveliness.
+ * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if null.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_publisher_assert_liveliness`
+ * - OMG DDSI-RTPS 2.5 §8.4.13 (writer liveliness)
+ */
+rmw_ret_t rmw_publisher_assert_liveliness(const rmw_publisher_t* publisher) {
+    if (!publisher || !publisher->data) return RMW_RET_INVALID_ARGUMENT;
+    return RMW_RET_OK;
+}
+
+/**
+ * @brief Waits until every matched reader acknowledged all samples.
+ *
+ * `IStatefulWriter` exposes no acknowledgment query, so this cannot be
+ * answered truthfully and reports `RMW_RET_UNSUPPORTED`.
+ *
+ * @return `RMW_RET_UNSUPPORTED`, or `RMW_RET_INVALID_ARGUMENT` if null.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_publisher_wait_for_all_acked`
+ */
+rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher,
+                                           rmw_time_t wait_timeout) {
+    (void)wait_timeout;
+    if (!publisher || !publisher->data) return RMW_RET_INVALID_ARGUMENT;
+    return RMW_RET_UNSUPPORTED;
+}
+
+/// @brief Preallocated publish buffers are not offered; rmw_publish() uses a stack buffer.
+rmw_ret_t rmw_init_publisher_allocation(const rosidl_message_type_support_t* type_support,
+                                        const rosidl_runtime_c__Sequence__bound* message_bounds,
+                                        rmw_publisher_allocation_t* allocation) {
+    (void)type_support; (void)message_bounds; (void)allocation;
+    return RMW_RET_UNSUPPORTED;
+}
+
+/// @brief Counterpart of rmw_init_publisher_allocation(); unsupported.
+rmw_ret_t rmw_fini_publisher_allocation(rmw_publisher_allocation_t* allocation) {
+    (void)allocation;
+    return RMW_RET_UNSUPPORTED;
+}
+
+/// @brief Network flow endpoints (unique-network-flow QoS) are not offered.
+rmw_ret_t rmw_publisher_get_network_flow_endpoints(
+    const rmw_publisher_t* publisher, rcutils_allocator_t* allocator,
+    rmw_network_flow_endpoint_array_t* network_flow_endpoint_array) {
+    (void)publisher; (void)allocator; (void)network_flow_endpoint_array;
+    return RMW_RET_UNSUPPORTED;
+}
 
 }  // extern "C"

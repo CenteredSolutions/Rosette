@@ -2,15 +2,12 @@
  * @file rmw_wait_set.cpp
  * @brief rmw_create_wait_set / rmw_wait — the executor's blocking entry point.
  *
- * rmw_wait() here evaluates readiness for subscriptions only. Guard
- * conditions, services, clients, and events are accepted (their arrays
- * may be non-null per the ABI) but are always reported not-ready:
- * services/clients have no `rmw_create_service()`/`rmw_create_client()`
- * implementation yet (rmw_service.cpp/rmw_client.cpp), and guard
- * conditions have no producer wired to them yet
- * (rmw_guard_condition.cpp). Extending readiness evaluation to those kinds
- * does not change this loop's shape — poll, check readiness, sleep,
- * repeat — only what it checks.
+ * rmw_wait() evaluates readiness for subscriptions, services, clients, and
+ * guard conditions: an entity is ready when its ChangeRing holds a change
+ * (a sample, request, or correlated reply) or its guard condition is
+ * triggered. QoS events are accepted, as the ABI requires, and always
+ * reported not-ready, since event initialization is unsupported
+ * (rmw_qos_event.cpp).
  */
 
 #include "rmw_rosette/identifier.h"
@@ -28,6 +25,86 @@
 #endif
 
 namespace {
+
+/**
+ * @brief Reports whether any listed subscription or guard condition is ready.
+ *
+ * Read-only: guard-condition flags are consumed later, by finalize_ready(),
+ * so a condition seen here is still reported when the wait returns.
+ */
+bool any_ready(const rmw_subscriptions_t* subscriptions,
+               const rmw_guard_conditions_t* guard_conditions,
+               const rmw_services_t* services, const rmw_clients_t* clients) noexcept {
+    if (subscriptions) {
+        for (size_t i = 0; i < subscriptions->subscriber_count; ++i) {
+            const auto* sub = static_cast<const rmw_rosette::Subscription*>(
+                subscriptions->subscribers[i]);
+            if (sub && sub->received.ready()) return true;
+        }
+    }
+    if (services) {
+        for (size_t i = 0; i < services->service_count; ++i) {
+            const auto* srv = static_cast<const rmw_rosette::Service*>(services->services[i]);
+            if (srv && srv->requests.ready()) return true;
+        }
+    }
+    if (clients) {
+        for (size_t i = 0; i < clients->client_count; ++i) {
+            const auto* cli = static_cast<const rmw_rosette::Client*>(clients->clients[i]);
+            if (cli && cli->replies.ready()) return true;
+        }
+    }
+    if (guard_conditions) {
+        for (size_t i = 0; i < guard_conditions->guard_condition_count; ++i) {
+            const auto* gc = static_cast<const rmw_rosette::GuardCondition*>(
+                guard_conditions->guard_conditions[i]);
+            if (gc && gc->triggered.load()) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * @brief Applies rmw_wait()'s output contract: nulls every entry not ready.
+ *
+ * Triggered guard conditions are consumed (flag cleared) as they are
+ * reported, so each trigger wakes exactly one wait. Events are always
+ * nulled (see the file comment).
+ */
+void finalize_ready(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* guard_conditions,
+                    rmw_services_t* services, rmw_clients_t* clients,
+                    rmw_events_t* events) noexcept {
+    if (subscriptions) {
+        for (size_t i = 0; i < subscriptions->subscriber_count; ++i) {
+            const auto* sub = static_cast<const rmw_rosette::Subscription*>(
+                subscriptions->subscribers[i]);
+            if (!sub || !sub->received.ready()) subscriptions->subscribers[i] = nullptr;
+        }
+    }
+    if (guard_conditions) {
+        for (size_t i = 0; i < guard_conditions->guard_condition_count; ++i) {
+            auto* gc = static_cast<rmw_rosette::GuardCondition*>(
+                guard_conditions->guard_conditions[i]);
+            if (!gc || !gc->triggered.exchange(false)) guard_conditions->guard_conditions[i] = nullptr;
+        }
+    }
+    if (services) {
+        for (size_t i = 0; i < services->service_count; ++i) {
+            const auto* srv = static_cast<const rmw_rosette::Service*>(services->services[i]);
+            if (!srv || !srv->requests.ready()) services->services[i] = nullptr;
+        }
+    }
+    if (clients) {
+        for (size_t i = 0; i < clients->client_count; ++i) {
+            const auto* cli = static_cast<const rmw_rosette::Client*>(clients->clients[i]);
+            if (!cli || !cli->replies.ready()) clients->clients[i] = nullptr;
+        }
+    }
+    if (events) {
+        for (size_t i = 0; i < events->event_count; ++i) events->events[i] = nullptr;
+    }
+}
+
 
 struct WaitSetSlot {
     rmw_wait_set_t ws{};
@@ -105,9 +182,10 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
  * Per `rmw_wait()`'s contract (rmw/rmw.h), every entry in each input
  * array starts non-null and this function nulls out entries that are
  * *not* ready by the time it returns, leaving ready ones untouched.
- * Guard conditions, services, clients, and events are always reported
- * not-ready (see the file comment); only subscriptions are evaluated,
- * via each one's `Subscription::pending_count`.
+ * Subscriptions, services, and clients are ready when their ChangeRing
+ * holds a change; guard conditions when triggered (the trigger is consumed
+ * as it is reported). Events are always reported not-ready (see the file
+ * comment).
  *
  * The deadline follows `wait_timeout`'s documented contract: `nullptr`
  * blocks indefinitely, `{0, 0}` checks once without sleeping, and any
@@ -116,9 +194,12 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
  *
  * @param[in,out] subscriptions Subscriptions to wait on; entries not
  *   ready are set to `nullptr`. May be `nullptr`.
- * @param[in,out] guard_conditions Always fully nulled out (not evaluated).
- * @param[in,out] services Always fully nulled out (not evaluated).
- * @param[in,out] clients Always fully nulled out (not evaluated).
+ * @param[in,out] guard_conditions Guard conditions to wait on; entries not
+ *   triggered are set to `nullptr`. May be `nullptr`.
+ * @param[in,out] services Services to wait on; entries without a pending
+ *   request are set to `nullptr`. May be `nullptr`.
+ * @param[in,out] clients Clients to wait on; entries without a pending
+ *   reply are set to `nullptr`. May be `nullptr`.
  * @param[in,out] events Always fully nulled out (not evaluated).
  * @param[in] wait_set Wait set providing the context to poll.
  * @param[in] wait_timeout Maximum time to wait; see above for `nullptr`/
@@ -127,6 +208,16 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
  *   `nullptr` and one eventually did); `RMW_RET_TIMEOUT` if the deadline
  *   passed with nothing ready; `RMW_RET_INVALID_ARGUMENT` if `wait_set`
  *   or its `data` is null.
+ *
+ * Verification:
+ * - Correct means: returns as soon as a subscription has data or a guard
+ *   condition is triggered, reports exactly those entries, and never
+ *   returns RMW_RET_TIMEOUT with a ready entry left unreported.
+ * - Covered by: rmw_rosette/test/test_guard_condition.cpp,
+ *   rmw_rosette/test/test_pub_sub_loopback.cpp.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_wait`
  */
 rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* guard_conditions,
                    rmw_services_t* services, rmw_clients_t* clients, rmw_events_t* events,
@@ -135,21 +226,6 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
 
     auto* impl = static_cast<rmw_rosette::WaitSet*>(wait_set->data);
     rmw_rosette::Context& ctx = *impl->context;
-
-    if (guard_conditions) {
-        for (size_t i = 0; i < guard_conditions->guard_condition_count; ++i) {
-            guard_conditions->guard_conditions[i] = nullptr;
-        }
-    }
-    if (services) {
-        for (size_t i = 0; i < services->service_count; ++i) services->services[i] = nullptr;
-    }
-    if (clients) {
-        for (size_t i = 0; i < clients->client_count; ++i) clients->clients[i] = nullptr;
-    }
-    if (events) {
-        for (size_t i = 0; i < events->event_count; ++i) events->events[i] = nullptr;
-    }
 
     // rmw_wait()'s contract (rmw/rmw.h): NULL wait_timeout means block
     // indefinitely; {0,0} means check once and return immediately;
@@ -169,32 +245,22 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
     const uint32_t start_ms = rtps_platform_get_ms();
 
     rtps::SocketTransportRuntime runtime(*ctx.transport);
-    uint8_t rx_buffer[RTPS_BUF_BLOCK_SIZE];
 
     for (;;) {
-        runtime.spin_some(rx_buffer, sizeof(rx_buffer), *ctx.participant);
+        runtime.spin_some(ctx.rx_buffer, sizeof(ctx.rx_buffer), *ctx.participant);
         const uint32_t now_ms = rtps_platform_get_ms();
         ctx.participant->tick(now_ms);
 
-        bool any_ready = false;
-        if (subscriptions) {
-            for (size_t i = 0; i < subscriptions->subscriber_count; ++i) {
-                auto* sub_impl =
-                    static_cast<rmw_rosette::Subscription*>(subscriptions->subscribers[i]);
-                if (sub_impl->pending_count > 0) {
-                    any_ready = true;
-                } else {
-                    subscriptions->subscribers[i] = nullptr;
-                }
-            }
+        if (any_ready(subscriptions, guard_conditions, services, clients)) {
+            finalize_ready(subscriptions, guard_conditions, services, clients, events);
+            return RMW_RET_OK;
         }
-
-        if (any_ready) return RMW_RET_OK;
         // Unsigned subtraction wraps correctly across the ~49.7-day
         // rollover of rtps_platform_get_ms() as long as the actual
         // elapsed time never exceeds that span, same assumption the rest
         // of rosette::rtps already makes for its own deadlines.
         if (has_deadline && (now_ms - start_ms) >= timeout_ms) {
+            finalize_ready(subscriptions, guard_conditions, services, clients, events);
             return RMW_RET_TIMEOUT;  // Covers timeout_ms == 0 (check-once) too.
         }
 
