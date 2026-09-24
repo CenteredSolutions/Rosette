@@ -231,6 +231,40 @@ static bool tc_srr_8_4_9_002(std::string& err) {
     return true;
 }
 
+// §8.4.7.1 heartbeatResponseDelay: a reader reports exactly how long the
+// participant may sleep before the pending ACKNACK is due, and nothing
+// once it is sent.
+static bool tc_srr_8_4_7_001(std::string& err) {
+    CaptureTransport tx{};
+    const Guid reader_guid = make_guid(0x71u, 0x72u, 0x73u, make_entity(5u, 5u, 5u, 0x04u));
+    const Guid writer_guid = make_guid(0x81u, 0x82u, 0x83u, make_entity(6u, 6u, 6u, 0x03u));
+    const Locator loc = make_udpv4_locator(0xC0A80144u, 7411u);
+    StatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 200u);
+    CHECK(r.ms_until_next_timer(0u) == UINT32_MAX, "an unmatched reader has no timer");
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+    CHECK(r.ms_until_next_timer(0u) == UINT32_MAX, "no ACKNACK is pending before a HEARTBEAT");
+
+    ParsedHeartbeat hb{};
+    hb.readerId = reader_guid.entityId;
+    hb.writerId = writer_guid.entityId;
+    hb.firstSN = SequenceNumber::from_int64(1);
+    hb.lastSN = SequenceNumber::from_int64(2);
+    hb.count = 1;
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+    g_stateful_reader_test_now_ms = 100u;
+    r.on_heartbeat(ctx, hb);
+
+    CHECK(r.ms_until_next_timer(100u) == 200u, "full heartbeatResponseDelay remains right after the HEARTBEAT");
+    CHECK(r.ms_until_next_timer(250u) == 50u, "the remaining delay shrinks with time");
+    CHECK(r.ms_until_next_timer(400u) == 0u, "an overdue ACKNACK reports zero");
+    const size_t before = tx.unicast_msgs.size();
+    r.tick(400u);
+    CHECK(tx.unicast_msgs.size() == before + 1u, "tick sends the due ACKNACK");
+    CHECK(r.ms_until_next_timer(400u) == UINT32_MAX, "no timer remains once the ACKNACK is sent");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.8-001",
                      "§8.4.8: on_data accepts new DATA as CacheChange and ignores duplicates whose writerSN is not newer than highestSNReceived.",
@@ -241,6 +275,9 @@ void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.9-002",
                      "§8.3.7.4/§8.4.12: on_heartbeat_frag computes missing fragment numbers and sends NACK_FRAG for incomplete DATA_FRAG samples.",
                      tc_srr_8_4_9_002});
+    tests.push_back({"TC-SRR-8.4.7-001",
+                     "§8.4.7.1: ms_until_next_timer() reports the remaining heartbeatResponseDelay of a pending ACKNACK, zero when due, and no timer when none is pending.",
+                     tc_srr_8_4_7_001});
 }
 
 } // namespace spec_test

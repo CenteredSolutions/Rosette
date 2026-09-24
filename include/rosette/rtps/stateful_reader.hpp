@@ -51,11 +51,6 @@
 #include "message_builder.hpp"
 #include "message_parser.hpp"
 
-#ifndef RTPS_NO_FREERTOS
-#  include "FreeRTOS.h"
-#  include "task.h"
-#  include "semphr.h"
-#endif
 
 namespace rtps {
 
@@ -240,6 +235,17 @@ public:
 
     uint8_t matched_writer_count() const noexcept;
 
+    // ----------------------------------------------------------
+    // ms_until_next_timer()
+    //
+    // How long tick() can be deferred: the time left on the earliest
+    // pending heartbeatResponseDelay (§8.4.7.1), or UINT32_MAX when no
+    // ACKNACK is pending. The participant driver sleeps no longer than this.
+    //
+    // Verification: TC-SRR-8.4.7-001.
+    // ----------------------------------------------------------
+    uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept;
+
 private:
 
     DefaultWriterProxy* find_proxy(const Guid& guid) noexcept;
@@ -268,10 +274,6 @@ private:
 
     uint32_t       hb_response_ms_;
     MessageBuilder builder_;
-
-#ifndef RTPS_NO_FREERTOS
-    SemaphoreHandle_t mutex_ = nullptr;
-#endif
 };
 
 } // namespace rtps

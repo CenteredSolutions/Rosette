@@ -1,4 +1,12 @@
-#include "rosette/rtps/types.hpp"
+/**
+ * @file test_participant_platform_stub.cpp
+ * @brief Test chip layer for participant tests: a clock the tests set explicitly.
+ *
+ * Replaces src/platform/chip/host/chip_host.cpp in this test binary, so
+ * platform::monotonic_ms() returns g_participant_test_now_ms and timer behavior is deterministic.
+ */
+
+#include "rosette/platform/platform.hpp"
 
 #include <stdint.h>
 
@@ -6,26 +14,20 @@ namespace spec_test {
 uint32_t g_participant_test_now_ms = 0u;
 }
 
-extern "C" uint32_t rtps_platform_get_ms(void) {
-    return spec_test::g_participant_test_now_ms;
+namespace rosette::platform {
+
+uint64_t monotonic_us() noexcept {
+    return static_cast<uint64_t>(spec_test::g_participant_test_now_ms) * 1000u;
 }
 
-extern "C" rtps::GuidPrefix rtps_platform_make_guid_prefix(uint8_t participant_id) noexcept {
-    rtps::GuidPrefix gp{};
-    gp.value[0] = 0xA1u;
-    gp.value[1] = 0xB2u;
-    gp.value[2] = 0xC3u;
-    gp.value[11] = participant_id;
-    return gp;
+void device_unique_id(uint8_t out[8]) noexcept {
+    static const uint8_t id[8] = {0xA1u, 0xB2u, 0xC3u, 0x04u, 0x05u, 0x06u, 0x07u, 0x08u};
+    for (int i = 0; i < 8; ++i) out[i] = id[i];
 }
 
-extern "C" uint32_t rtps_platform_get_ipv4_addr(void) noexcept {
-    return 0xC0A8010Au;
-}
-
-extern "C" bool rtps_platform_get_ipv6_addr(uint8_t out[16]) noexcept {
-    if (out != nullptr) {
-        for (int i = 0; i < 16; ++i) out[i] = 0u;
-    }
+bool realtime_hint_us(int64_t& unix_us) noexcept {
+    (void)unix_us;
     return false;
 }
+
+}  // namespace rosette::platform

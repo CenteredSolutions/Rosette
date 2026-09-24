@@ -8,29 +8,8 @@
 #include "log.hpp"
 #include <string.h>
 
-#ifndef RTPS_NO_FREERTOS
-#  include "FreeRTOS.h"
-#  include "task.h"
-#  include "semphr.h"
-#endif
 
 namespace rtps {
-
-// ============================================================
-// RAII mutex guard
-// ============================================================
-
-#ifndef RTPS_NO_FREERTOS
-struct ReaderMutexGuard {
-    SemaphoreHandle_t h;
-    explicit ReaderMutexGuard(SemaphoreHandle_t m) noexcept : h(m) {
-        xSemaphoreTake(h, portMAX_DELAY);
-    }
-    ~ReaderMutexGuard() noexcept { xSemaphoreGive(h); }
-};
-#else
-struct ReaderMutexGuard { explicit ReaderMutexGuard(void*) noexcept {} };
-#endif
 
 // ============================================================
 // Constructor / Destructor
@@ -49,17 +28,11 @@ StatefulReader::StatefulReader(const Guid&       guid,
     , user_data_(user_data)
     , hb_response_ms_(hb_response_ms)
 {
-#ifndef RTPS_NO_FREERTOS
-    mutex_ = xSemaphoreCreateMutex();
-#endif
 }
 
 StatefulReader::~StatefulReader() noexcept {
     // assembler_ destructor clears all FragmentedChange slots and
     // releases their pool buffers — no explicit call needed here.
-#ifndef RTPS_NO_FREERTOS
-    if (mutex_) vSemaphoreDelete(mutex_);
-#endif
 }
 
 // ============================================================
@@ -269,7 +242,7 @@ void StatefulReader::on_heartbeat(const ParseContext&    ctx,
     if (msg.readerId != entity_id::UNKNOWN &&
         msg.readerId != guid_.entityId) return;
 
-    const uint32_t now_ms = RTPS_GET_MS();
+    const uint32_t now_ms = rosette::platform::monotonic_ms();
     const bool needs_acknack = proxy->on_heartbeat(
         msg.firstSN, msg.lastSN, msg.count,
         msg.finalFlag, now_ms, hb_response_ms_);
@@ -449,9 +422,6 @@ void StatefulReader::send_acknack(DefaultWriterProxy& proxy,
 // ============================================================
 
 void StatefulReader::tick(uint32_t now_ms) noexcept {
-#ifndef RTPS_NO_FREERTOS
-    ReaderMutexGuard guard(mutex_);
-#endif
     for (uint8_t i = 0; i < RTPS_MAX_MATCHED_WRITERS; ++i) {
         DefaultWriterProxy& proxy = proxies_[i];
         if (!proxy.is_matched()) continue;
@@ -468,6 +438,19 @@ void StatefulReader::tick(uint32_t now_ms) noexcept {
 // ============================================================
 // Internal helpers
 // ============================================================
+
+uint32_t StatefulReader::ms_until_next_timer(uint32_t now_ms) const noexcept {
+    uint32_t next = UINT32_MAX;
+    for (uint8_t i = 0; i < RTPS_MAX_MATCHED_WRITERS; ++i) {
+        const DefaultWriterProxy& proxy = proxies_[i];
+        if (!proxy.is_matched() || !proxy.acknackPending) continue;
+        // Wrap-safe "is the deadline in the past" test, as in acknack_response_due().
+        const uint32_t left = proxy.heartbeatResponseDeadlineMs - now_ms;
+        const uint32_t wait = (left > 0x80000000u) ? 0u : left;
+        if (wait < next) next = wait;
+    }
+    return next;
+}
 
 uint8_t StatefulReader::matched_writer_count() const noexcept {
     uint8_t n = 0;

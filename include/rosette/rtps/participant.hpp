@@ -20,7 +20,7 @@
  * — the only operations the participant needs without knowing the depth.
  *
  * The concrete StatefulWriter<D,R>* is what the application holds and uses
- * for new_change() / add_change() / write_reliable() / cache().
+ * for new_change() / add_change() / write_async() / cache().
  *
  * Storage model
  * -------------
@@ -54,30 +54,32 @@
 namespace rtps {
 
 // ============================================================
-// Platform hook
+// GUID prefix
 // ============================================================
 /**
- * @brief Creates the RTPS GUID prefix for a participant instance.
+ * @brief Builds the GUID prefix of a local participant.
  *
- * The participant constructor uses this hook to obtain the stable GUID prefix
- * that identifies the local RTPS participant across all builtin and user
- * endpoints. Platform code owns the policy for deriving this prefix from board
- * identity, MAC address material, serial numbers, or other hardware-specific
- * entropy while preserving RTPS GUID layout semantics.
+ * Layout (§9.3.1.5 recommends the vendor ID in the first two octets):
+ *   0-1   VENDORID_THIS_IMPL
+ *   2-9   platform::device_unique_id(): unique per device, and per process
+ *         on a host
+ *   10    instance counter: differs for each participant this process
+ *         creates, so a participant recreated after shutdown is never
+ *         mistaken for its predecessor by peers still holding its lease
+ *   11    participant_id
  *
- * Implementations return a complete 12-octet GuidPrefix value. The participant
- * combines that prefix with the standard participant entity id to form the
- * local participant GUID defined by the RTPS specification.
+ * @param[in] participant_id Participant ID from the port mapping (§9.6.1.1).
+ * @return The 12-octet prefix; participant and endpoint GUIDs share it.
  *
- * @param[in] participant_id Small application-level participant selector used
- *     to distinguish multiple local participants when the platform supports it.
- * @return The 12-octet RTPS GuidPrefix for the local participant.
+ * Verification:
+ * - Correct means: distinct across devices, processes, and successive
+ *   participants of one process; octet 11 equals `participant_id`.
+ * - Covered by: TC-PART-8.5.1-003.
  *
  * References:
- * - OMG DDSI-RTPS Version 2.5, Section 8.3.4.5 "GUID_t"
- * - OMG DDSI-RTPS Version 2.5, Section 8.5.1.2 "Participant GUID"
+ * - OMG DDSI-RTPS 2.5 §8.2.4.2 (GuidPrefix_t), §9.3.1.5 (vendor ID octets)
  */
-extern "C" GuidPrefix rtps_platform_make_guid_prefix(uint8_t participant_id) noexcept;
+GuidPrefix make_participant_guid_prefix(uint8_t participant_id) noexcept;
 
 // ============================================================
 // Configuration
@@ -232,6 +234,23 @@ public:
     // tick() — drives SPDP, lease expiry, writer/reader maintenance.
     // ----------------------------------------------------------
     void tick(uint32_t now_ms) noexcept;
+
+    // ----------------------------------------------------------
+    // ms_until_next_timer()
+    //
+    // How long tick() can be deferred: the soonest of the SPDP
+    // announcement, any peer lease expiry, and every builtin and user
+    // writer's and reader's pending timer. A driver that sleeps between
+    // ticks waits no longer than this, so no heartbeat, repair, or lease
+    // expiry is late.
+    //
+    // Verification: TC-PART-8.5.1-006.
+    //
+    // @param now_ms  Current platform::monotonic_ms().
+    // @returns Milliseconds until the next timed action; 0 when one is due;
+    //          UINT32_MAX when nothing is scheduled (no addresses yet).
+    // ----------------------------------------------------------
+    uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept;
 
     // ----------------------------------------------------------
     // announce() — force immediate SPDP send.

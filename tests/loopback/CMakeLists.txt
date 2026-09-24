@@ -14,6 +14,8 @@ add_executable(rtps_loopback_smoke
     ../../src/rtps/sedp.cpp
     ../../src/rtps/spdp.cpp
     ../../src/rtps/stateful_reader.cpp
+    ../../src/platform/wall_clock.cpp
+    ../../src/platform/chip/host/chip_host.cpp
 )
 
 target_include_directories(rtps_loopback_smoke PRIVATE
@@ -23,7 +25,8 @@ target_include_directories(rtps_loopback_smoke PRIVATE
 )
 
 target_compile_definitions(rtps_loopback_smoke PRIVATE
-    RTPS_NO_FREERTOS
+    ROSETTE_OS_POSIX
+    ROSETTE_CHIP_HOST
     RTPS_LOG_LEVEL=0
 )
 

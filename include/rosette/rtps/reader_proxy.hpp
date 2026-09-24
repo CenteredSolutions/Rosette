@@ -281,7 +281,7 @@ public:
     // ACKNACK's readerSNState bitmap.
     //
     // @param sn_set          Bitmap of SNs being NACKed.
-    // @param now_ms          Current RTPS_GET_MS() value.
+    // @param now_ms          Current rosette::platform::monotonic_ms() value.
     // ----------------------------------------------------------
     void requested_changes_set(const SequenceNumberSet& sn_set,
                                uint32_t now_ms) noexcept {
@@ -464,7 +464,7 @@ public:
     //   "nackResponseDelay: the duration of time that the Writer will
     //    wait for an ACKNACK response before retransmitting."
     //
-    // @param now_ms         Current RTPS_GET_MS().
+    // @param now_ms         Current rosette::platform::monotonic_ms().
     // @param delay_ms       Configured nackResponseDelay in milliseconds.
     // ----------------------------------------------------------
     bool nack_delay_elapsed(uint32_t now_ms, uint32_t delay_ms) const noexcept {

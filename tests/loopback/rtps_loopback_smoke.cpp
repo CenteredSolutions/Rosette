@@ -139,13 +139,13 @@ int main() {
     }
 
     const char payload_text[] = "hello from rosette rtps";
-    const bool sent = writer->write_reliable(
+    const bool sent = writer->write_async(
         rtps::ChangeKind::ALIVE,
         reinterpret_cast<const rtps::Octet*>(payload_text),
         static_cast<uint32_t>(sizeof(payload_text)));
 
     if (!sent) {
-        std::fprintf(stderr, "FAIL: write_reliable() returned false\n");
+        std::fprintf(stderr, "FAIL: write_async() returned false\n");
         return 1;
     }
 

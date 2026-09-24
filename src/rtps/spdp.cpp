@@ -480,6 +480,18 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
 // §8.5.3.2, p. 160 — lease expiry enforcement.
 // ----------------------------------------------------------
 
+uint32_t SpdpReader::ms_until_next_expiry(uint32_t now_ms) const noexcept {
+    uint32_t next = UINT32_MAX;
+    for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
+        if (!peers_[i].alive) continue;
+        // Same wrap-safe "already past" test tick() applies.
+        const uint32_t left = peers_[i].leaseExpiryMs - now_ms;
+        const uint32_t wait = (left > 0x80000000u) ? 0u : left;
+        if (wait < next) next = wait;
+    }
+    return next;
+}
+
 bool SpdpReader::remove_peer(const GuidPrefix& prefix) noexcept {
     for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
         if (!peers_[i].alive || peers_[i].data.guidPrefix != prefix) continue;

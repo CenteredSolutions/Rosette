@@ -61,11 +61,6 @@
 #include "log.hpp"
 #include <string.h>
 
-#ifndef RTPS_NO_FREERTOS
-#  include "FreeRTOS.h"
-#  include "task.h"
-#  include "semphr.h"
-#endif
 
 namespace rtps {
 
@@ -109,8 +104,8 @@ struct IStatefulWriter {
     // Depth-independent write path.
     //
     // Deliberately included here even though every other member above is
-    // an RTPSParticipant-internal operation: new_change()/write_reliable()/
-    // write_async()'s signatures never mention CacheDepth — only the
+    // an RTPSParticipant-internal operation: new_change()/write_async()'s
+    // signatures never mention CacheDepth — only the
     // writer's internal HistoryCache storage does — so callers that only
     // hold an IStatefulWriter* (because they chose a writer's depth at
     // runtime from a small closed set of instantiations, e.g. an rmw
@@ -120,20 +115,21 @@ struct IStatefulWriter {
     // exists for.
     // ------------------------------------------------------------------
 
-    /// §8.4.1.4, p. 107 — see StatefulWriter::write_reliable().
-    virtual bool write_reliable(ChangeKind       kind,
-                                const Octet*     payload_data,
-                                uint32_t         payload_size,
-                                const InlineQos& inline_qos    = InlineQos{},
-                                SequenceNumber*  out_sn        = nullptr,
-                                uint32_t         timeout_ms    = 0) noexcept = 0;
-
-    /// Non-blocking counterpart — see StatefulWriter::write_async().
+    /// §8.4.1.4, p. 107 — add a change and send it; see StatefulWriter::write_async().
     virtual bool write_async(ChangeKind       kind,
                              const Octet*     payload_data,
                              uint32_t         payload_size,
                              const InlineQos& inline_qos = InlineQos{},
                              SequenceNumber*  out_sn      = nullptr) noexcept = 0;
+
+    /// True when every change in the history is acknowledged by every
+    /// matched reader (§8.4.7.1 unacked_changes empty for all proxies).
+    /// Backs DDS wait_for_acknowledgments / rmw_publisher_wait_for_all_acked.
+    virtual bool acknowledged_by_all() const noexcept = 0;
+
+    /// Milliseconds until this writer's next timed action (heartbeat or a
+    /// deferred NACK repair) is due at `now_ms`; 0 when overdue.
+    virtual uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept = 0;
 };
 
 // ============================================================
@@ -142,9 +138,6 @@ struct IStatefulWriter {
 
 #ifndef RTPS_MAX_MATCHED_READERS
 #  define RTPS_MAX_MATCHED_READERS 8
-#endif
-#ifndef RTPS_RELIABLE_SEND_TIMEOUT_MS
-#  define RTPS_RELIABLE_SEND_TIMEOUT_MS 5000u
 #endif
 
 // ============================================================
@@ -199,17 +192,9 @@ public:
         , transport_(transport)
         , nack_delay_ms_(nack_delay_ms)
         , hb_period_ms_(hb_period_ms)
-    {
-#ifndef RTPS_NO_FREERTOS
-        mutex_ = xSemaphoreCreateMutex();
-#endif
-    }
+    {}
 
-    ~StatefulWriter() noexcept override {
-#ifndef RTPS_NO_FREERTOS
-        if (mutex_) vSemaphoreDelete(mutex_);
-#endif
-    }
+    ~StatefulWriter() noexcept override = default;
 
     StatefulWriter(const StatefulWriter&)            = delete;
     StatefulWriter& operator=(const StatefulWriter&) = delete;
@@ -273,7 +258,7 @@ public:
     // @returns true on success.
     // ----------------------------------------------------------
     bool add_change(CacheChange&& change) noexcept {
-        lock();
+
         change.sequenceNumber = nextSN_;
         ++nextSN_;
 
@@ -294,7 +279,7 @@ public:
             RTPS_LOG_E("writer", "cache add_change failed (SN=%ld:%lu)",
                        change.sequenceNumber.high,
                        (unsigned long)change.sequenceNumber.low);
-            unlock();
+
             return false;
         }
 
@@ -309,7 +294,7 @@ public:
             if (proxies_[i].is_matched())
                 proxies_[i].add_change(inserted->sequenceNumber);
 
-        unlock();
+
         return true;
     }
 
@@ -322,109 +307,12 @@ public:
     // @param sn  SequenceNumber to remove.
     // ----------------------------------------------------------
     void remove_change(const SequenceNumber& sn) noexcept {
-        lock();
+
         writer_cache_.remove_change(sn);
         for (uint8_t i = 0; i < MaxReaders; ++i)
             if (proxies_[i].is_matched())
                 proxies_[i].remove_change(sn);
-        unlock();
-    }
 
-    // ----------------------------------------------------------
-    // write_reliable()
-    //
-    // High-level blocking write for RELIABLE writers.
-    // Calls new_change() + add_change(), sends to all readers, then
-    // blocks on a FreeRTOS task notification until the specific SN
-    // written here is acknowledged by all readers or the timeout
-    // expires.
-    //
-    // With CacheDepth > 1 multiple writes can be in flight; each
-    // write_reliable() waits only for its own SN.
-    //
-    // @param kind         ChangeKind.
-    // @param payload_data CDR bytes to send.
-    // @param payload_size Byte count.
-    // @param timeout_ms   0 = use RTPS_RELIABLE_SEND_TIMEOUT_MS.
-    // @returns true if all readers acknowledged within the timeout.
-    // ----------------------------------------------------------
-    bool write_reliable(ChangeKind   kind,
-                        const Octet* payload_data,
-                        uint32_t     payload_size,
-                        uint32_t     timeout_ms = 0) noexcept
-    {
-        return write_reliable(kind, payload_data, payload_size, InlineQos{}, nullptr,
-                              timeout_ms);
-    }
-
-    bool write_reliable(ChangeKind         kind,
-                        const Octet*       payload_data,
-                        uint32_t           payload_size,
-                        const InlineQos&   inline_qos,
-                        SequenceNumber*    out_sn = nullptr,
-                        uint32_t           timeout_ms = 0) noexcept override
-    {
-        if (!payload_data || payload_size == 0) {
-            return false;
-        }
-
-        BufRef payload_buf;
-        CacheChange* ch = new_change(kind, payload_buf, payload_size);
-        if (!ch) {
-            RTPS_LOG_E("writer", "write_reliable: new_change failed");
-            return false;
-        }
-
-        const uint32_t sz = (payload_size < payload_buf.capacity())
-                            ? payload_size : payload_buf.capacity();
-        memcpy(payload_buf.data, payload_data, sz);
-        payload_buf.size = sz;
-        ch->payload.size = sz;
-        ch->inlineQos    = inline_qos;
-
-#ifndef RTPS_NO_FREERTOS
-        lock();
-        writeTask_ = xTaskGetCurrentTaskHandle();
-        unlock();
-#endif
-
-        if (!add_change(static_cast<CacheChange&&>(*ch))) {
-            payload_buf.reset();
-            return false;
-        }
-
-        // Capture the SN that add_change() assigned (nextSN_ - 1).
-        const SequenceNumber my_sn = nextSN_ - 1;
-        if (out_sn) *out_sn = my_sn;
-
-        send_unsent_changes();
-
-        if (reliability_ == ReliabilityKind::BEST_EFFORT ||
-            matched_reader_count() == 0) {
-            return true;
-        }
-
-        const uint32_t to = timeout_ms ? timeout_ms
-                                       : RTPS_RELIABLE_SEND_TIMEOUT_MS;
-
-#ifndef RTPS_NO_FREERTOS
-        const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(to);
-        while (!all_readers_acked(my_sn)) {
-            const TickType_t now = xTaskGetTickCount();
-            if (now >= deadline) {
-                RTPS_LOG_W("writer", "write_reliable timeout after %lums SN=%ld:%lu",
-                           (unsigned long)to,
-                           my_sn.high, (unsigned long)my_sn.low);
-                lock(); writeTask_ = nullptr; unlock();
-                return false;
-            }
-            ulTaskNotifyTake(pdTRUE, deadline - now);
-        }
-        lock(); writeTask_ = nullptr; unlock();
-#else
-        (void)my_sn; (void)to;
-#endif
-        return true;
     }
 
     // ----------------------------------------------------------
@@ -549,12 +437,12 @@ public:
                             uint8_t        locator_count,
                             bool           expects_inline_qos = false) noexcept override
     {
-        lock();
-        if (find_proxy(reader_guid)) { unlock(); return false; }
+
+        if (find_proxy(reader_guid)) { return false; }
         Proxy* slot = find_free_slot();
         if (!slot) {
             RTPS_LOG_W("writer", "reader proxy table full (max=%d)", MaxReaders);
-            unlock();
+
             return false;
         }
 
@@ -576,15 +464,15 @@ public:
                 });
             send_unsent_changes();
         }
-        unlock();
+
         return true;
     }
 
     void matched_reader_remove(const Guid& reader_guid) noexcept override {
-        lock();
+
         Proxy* p = find_proxy(reader_guid);
         if (p) p->clear();
-        unlock();
+
     }
 
     Proxy* matched_reader_lookup(const Guid& reader_guid) noexcept {
@@ -643,19 +531,19 @@ public:
     void on_acknack(const ParseContext&  ctx,
                     const ParsedAckNack& msg) noexcept override
     {
-        lock();
+
         Guid sg{ ctx.senderGuidPrefix, msg.readerId };
         Proxy* proxy = find_proxy(sg);
         if (!proxy) {
             RTPS_LOG_T("writer", "ACKNACK from unknown reader %02x%02x%02x%02x, ignored",
                        ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
                        ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
-            unlock();
+
             return;
         }
 
         // Discard duplicate / reordered ACKNACKs.
-        if (msg.count <= proxy->lastAcknackCount) { unlock(); return; }
+        if (msg.count <= proxy->lastAcknackCount) { return; }
         proxy->lastAcknackCount = msg.count;
 
         // Cumulative ACK: all SNs below bitmapBase are acknowledged.
@@ -670,7 +558,7 @@ public:
                    ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
 
         // NACKed SNs: arm the nackResponseDelay timer.
-        proxy->requested_changes_set(msg.readerSNState, RTPS_GET_MS());
+        proxy->requested_changes_set(msg.readerSNState, rosette::platform::monotonic_ms());
 
         // An ACKNACK that requests nothing yet acknowledges less than this
         // writer has written is a reader announcing itself (Fast DDS and
@@ -682,14 +570,7 @@ public:
             send_heartbeat(false, sg);
         }
 
-        // Unblock write_reliable() if all readers are now satisfied.
-        const SequenceNumber lsn = writer_cache_.get_seq_num_max();
-        if (lsn != SEQUENCENUMBER_UNKNOWN && all_readers_acked(lsn)) {
-#ifndef RTPS_NO_FREERTOS
-            if (writeTask_) xTaskNotifyGive(writeTask_);
-#endif
-        }
-        unlock();
+
     }
 
     // ----------------------------------------------------------
@@ -698,12 +579,12 @@ public:
     void on_nack_frag(const ParseContext&   ctx,
                       const ParsedNackFrag& msg) noexcept override
     {
-        lock();
+
         Guid sg{ ctx.senderGuidPrefix, msg.readerId };
         Proxy* proxy = find_proxy(sg);
-        if (!proxy) { unlock(); return; }
+        if (!proxy) { return; }
 
-        const uint32_t now_ms = RTPS_GET_MS();
+        const uint32_t now_ms = rosette::platform::monotonic_ms();
         if (!proxy->nackPending) {
             proxy->nackPending        = true;
             proxy->nackPendingSinceMs = now_ms;
@@ -714,7 +595,7 @@ public:
         sn_set.numBits    = 1;
         sn_set.bitmap[0]  = 0x80000000u;   // bit 0 = bitmapBase itself.
         proxy->requested_changes_set(sn_set, now_ms);
-        unlock();
+
     }
 
     // ----------------------------------------------------------
@@ -726,7 +607,7 @@ public:
     // §8.4.2.2, p. 113  heartbeatPeriod   — periodic HEARTBEAT.
     // ----------------------------------------------------------
     void tick(uint32_t now_ms) noexcept override {
-        lock();
+
 
         // ── Phase 1: NACK retransmit ──────────────────────────
         for (uint8_t i = 0; i < MaxReaders; ++i) {
@@ -816,7 +697,7 @@ public:
                 } else { builder_.abort(); }
             }
         }
-        unlock();
+
     }
 
     // ----------------------------------------------------------
@@ -836,6 +717,55 @@ public:
     uint32_t heartbeat_period()               const noexcept { return hb_period_ms_; }
     void     heartbeat_period(uint32_t ms)          noexcept { hb_period_ms_ = ms; }
 
+    // ----------------------------------------------------------
+    // acknowledged_by_all()
+    //
+    // §8.4.7.1: a reliable writer knows, per ReaderProxy, which changes are
+    // acknowledged. This reports whether the newest change in the history
+    // (and therefore every older one, acknowledgments being cumulative) is
+    // acknowledged by every matched reader. A BEST_EFFORT writer never
+    // waits, so it always reports true.
+    //
+    // Verification: TC-SWR-8.4.7-001.
+    // ----------------------------------------------------------
+    bool acknowledged_by_all() const noexcept override {
+        if (reliability_ != ReliabilityKind::RELIABLE) return true;
+        const SequenceNumber lsn = writer_cache_.get_seq_num_max();
+        if (lsn == SEQUENCENUMBER_UNKNOWN) return true;
+        return all_readers_acked(lsn);
+    }
+
+    // ----------------------------------------------------------
+    // ms_until_next_timer()
+    //
+    // How long tick() can be deferred: the sooner of the next periodic
+    // HEARTBEAT (only while a reader is matched, since heartbeats go to
+    // matched readers) and the end of any pending nackResponseDelay
+    // (§8.4.7.1). The participant driver sleeps no longer than this.
+    //
+    // Verification: TC-SWR-8.4.7-002.
+    // ----------------------------------------------------------
+    uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept override {
+        uint32_t next = UINT32_MAX;
+        bool any_matched = false;
+        for (uint8_t i = 0; i < MaxReaders; ++i) {
+            const Proxy& proxy = proxies_[i];
+            if (!proxy.is_matched()) continue;
+            any_matched = true;
+            if (proxy.nackPending) {
+                const uint32_t elapsed = now_ms - proxy.nackPendingSinceMs;
+                const uint32_t left = elapsed >= nack_delay_ms_ ? 0u : nack_delay_ms_ - elapsed;
+                if (left < next) next = left;
+            }
+        }
+        if (any_matched) {
+            const uint32_t elapsed = now_ms - lastHbSentMs_;
+            const uint32_t left = elapsed >= hb_period_ms_ ? 0u : hb_period_ms_ - elapsed;
+            if (left < next) next = left;
+        }
+        return next;
+    }
+
     uint8_t matched_reader_count() const noexcept override {
         uint8_t n = 0;
         for (uint8_t i = 0; i < MaxReaders; ++i)
@@ -844,15 +774,6 @@ public:
     }
 
 private:
-
-    // ── Mutex helpers ─────────────────────────────────────────
-#ifndef RTPS_NO_FREERTOS
-    void lock()   noexcept { if (mutex_) xSemaphoreTake(mutex_, portMAX_DELAY); }
-    void unlock() noexcept { if (mutex_) xSemaphoreGive(mutex_); }
-#else
-    void lock()   noexcept {}
-    void unlock() noexcept {}
-#endif
 
     // ── Internal helpers ──────────────────────────────────────
 
@@ -998,11 +919,6 @@ private:
     uint32_t       hb_period_ms_;
     uint32_t       lastHbSentMs_   = 0;
     MessageBuilder builder_;
-
-#ifndef RTPS_NO_FREERTOS
-    SemaphoreHandle_t mutex_     = nullptr;
-    TaskHandle_t      writeTask_ = nullptr;
-#endif
 };
 
 // ============================================================

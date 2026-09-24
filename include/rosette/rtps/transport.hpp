@@ -132,6 +132,22 @@ public:
                        uint32_t& src_addr,
                        uint16_t& src_port) noexcept;
 
+    /**
+     * @brief Sleeps until a datagram is readable on any of this transport's
+     * sockets, `wake` is signaled, or `timeout_ms` passes.
+     *
+     * Delegates to SocketProvider::wait_readable(); callers drain with
+     * poll_meta()/poll_user() afterwards whatever the reason for waking.
+     *
+     * @param[in] wake       Event that ends the wait early.
+     * @param[in] timeout_ms Longest wait; platform::kWaitForever blocks.
+     */
+    void wait_readable(rosette::platform::Event& wake, uint32_t timeout_ms) noexcept {
+        rosette::net::Socket* const sockets[3] = {
+            meta_socket_.get(), spdp_socket_.get(), user_socket_.get()};
+        provider_.wait_readable(sockets, 3u, wake, timeout_ms);
+    }
+
     bool send_unicast(const BufRef& buf,
                       const Locator& dest) noexcept override;
     bool send_multicast(const BufRef& buf,

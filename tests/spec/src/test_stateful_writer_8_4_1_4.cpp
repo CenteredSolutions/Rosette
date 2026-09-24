@@ -82,10 +82,10 @@ static bool tc_swr_8_4_1_4_002(std::string& err) {
           "matched_reader_add should succeed for first reader");
 
     const Octet data[3] = {0xAAu, 0xBBu, 0xCCu};
-    CHECK(w.write_reliable(ChangeKind::ALIVE, data, 3u),
-          "write_reliable should succeed and dispatch data");
+    CHECK(w.write_async(ChangeKind::ALIVE, data, 3u),
+          "write_async should succeed and dispatch data");
 
-    CHECK(tx.unicast_msgs.size() == 1u, "write_reliable should emit one DATA packet");
+    CHECK(tx.unicast_msgs.size() == 1u, "write_async should emit one DATA packet");
     CHECK(tx.unicast_dests.size() == 1u && tx.unicast_dests[0] == loc,
           "writer should send to matched reader best locator");
 
@@ -152,7 +152,7 @@ void append_stateful_writer_tests_8_4_1_4(std::vector<TestCase>& tests) {
                      "§8.4.1.4/§8.3.3: add_change assigns monotonically increasing sequence numbers and respects KEEP_LAST cache eviction.",
                      tc_swr_8_4_1_4_001});
     tests.push_back({"TC-SWR-8.4.1.4-002",
-                     "§8.4.1.4: matched_reader_add plus write_reliable sends DATA to the matched reader locator with writer-assigned SN.",
+                     "§8.4.1.4: matched_reader_add plus write_async sends DATA to the matched reader locator with writer-assigned SN.",
                      tc_swr_8_4_1_4_002});
     tests.push_back({"TC-SWR-8.4.1.4-003",
                      "§8.7.2.2: a TRANSIENT_LOCAL writer replays its cached changes to a newly matched reader immediately.",

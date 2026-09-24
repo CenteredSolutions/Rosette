@@ -74,9 +74,6 @@
 
 namespace rtps {
 
-extern "C" uint32_t rtps_platform_get_ipv4_addr(void) noexcept;
-extern "C" bool rtps_platform_get_ipv6_addr(uint8_t out[16]) noexcept;
-
 struct ITransport;   // Forward — declared in stateful_writer.hpp.
 
 // ============================================================
@@ -169,7 +166,7 @@ inline bool plcdr_write_sentinel(Octet* buf, uint32_t cap, uint32_t& off) noexce
 
 struct PeerEntry {
     SPDPdiscoveredParticipantData data;         ///< Received participant data.
-    uint32_t                      leaseExpiryMs = 0; ///< RTPS_GET_MS() at expiry.
+    uint32_t                      leaseExpiryMs = 0; ///< rosette::platform::monotonic_ms() at expiry.
     bool                          alive         = false;
     bool                          sedp_announced = false; ///< SEDP sent for this peer.
 };
@@ -218,17 +215,6 @@ inline Locator spdp_multicast_locator_v6(uint8_t domain_id) noexcept {
                                         spdp_multicast_port(domain_id)));
 }
 
-inline bool spdp_ipv6_discovery_available() noexcept
-{
-    uint8_t ipv6[16] = {};
-    return rtps_platform_get_ipv6_addr(ipv6);
-}
-
-inline Locator spdp_multicast_locator(uint8_t domain_id) noexcept {
-    return spdp_ipv6_discovery_available()
-        ? spdp_multicast_locator_v6(domain_id)
-        : spdp_multicast_locator_v4(domain_id);
-}
 
 // ============================================================
 // SpdpWriter
@@ -323,7 +309,7 @@ public:
     // Verification: TC-SPDP-8.5.3-005 (tests/spec) checks that the
     // first tick announces and the next announce waits one period.
     //
-    // @param now_ms  Current RTPS_GET_MS().
+    // @param now_ms  Current rosette::platform::monotonic_ms().
     // ----------------------------------------------------------
     void tick(uint32_t now_ms) noexcept {
         if (!announced_once_ || (now_ms - last_sent_ms_) >= resend_ms_) {
@@ -331,6 +317,14 @@ public:
             last_sent_ms_ = now_ms;
             announced_once_ = true;
         }
+    }
+
+    // Milliseconds until tick() next announces; 0 when due (including before
+    // the first announcement).
+    uint32_t ms_until_next_announce(uint32_t now_ms) const noexcept {
+        if (!announced_once_) return 0u;
+        const uint32_t elapsed = now_ms - last_sent_ms_;
+        return elapsed >= resend_ms_ ? 0u : resend_ms_ - elapsed;
     }
 
     void set_dest(const Locator& l) noexcept { dest_ = l; }
@@ -366,7 +360,7 @@ private:
 //   "If the Writer does not refresh its data within leaseDuration
 //    the participant is considered inactive and its state is removed."
 //   — §8.5.3.2, Table 8.73.
-//   Enforced in tick() by comparing RTPS_GET_MS() against leaseExpiryMs.
+//   Enforced in tick() by comparing rosette::platform::monotonic_ms() against leaseExpiryMs.
 //
 // on_new_peer callback: fired once per newly discovered participant.
 // on_peer_removed callback: fired when a participant's lease expires.
@@ -411,7 +405,7 @@ public:
     // @param sender_prefix  GUID prefix from the RTPS message header.
     // @param payload        Pointer to the PL_CDR serialized payload.
     // @param payload_len    Byte count.
-    // @param now_ms         Current RTPS_GET_MS().
+    // @param now_ms         Current rosette::platform::monotonic_ms().
     // @returns true if the payload was successfully parsed.
     // ----------------------------------------------------------
     bool on_data(const GuidPrefix& sender_prefix,
@@ -428,7 +422,7 @@ public:
     //   "If a participant does not receive a refresh within
     //    leaseDuration, it removes the remote participant entry."
     //
-    // @param now_ms  Current RTPS_GET_MS().
+    // @param now_ms  Current rosette::platform::monotonic_ms().
     // ----------------------------------------------------------
     void tick(uint32_t now_ms) noexcept;
 
@@ -446,6 +440,15 @@ public:
     // @returns true when the peer was known; fires on_peer_removed first.
     // ----------------------------------------------------------
     bool remove_peer(const GuidPrefix& prefix) noexcept;
+
+    // ----------------------------------------------------------
+    // ms_until_next_expiry()
+    //
+    // Milliseconds until the earliest live peer's lease runs out, so a
+    // sleeping driver wakes in time for tick() to expire it (§8.5.3.2).
+    // UINT32_MAX when no peer is known.
+    // ----------------------------------------------------------
+    uint32_t ms_until_next_expiry(uint32_t now_ms) const noexcept;
 
     // ----------------------------------------------------------
     // mark_sedp_announced()

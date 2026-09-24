@@ -12,6 +12,24 @@ enable_testing()
 # include/). Both forms need to resolve for a standalone
 # `cmake -S tests/spec -B build` per this directory's own README — neither
 # path was on any target's include_directories() before this fix.
+# Spec tests run on the POSIX platform port (include/rosette/platform/platform.hpp).
+# Tests that control time link a test chip layer (src/*_clock_stub.cpp,
+# src/test_participant_platform_stub.cpp) instead of the host chip layer;
+# see rosette_spec_use_platform() below.
+add_compile_definitions(ROSETTE_OS_POSIX ROSETTE_CHIP_HOST)
+set(ROSETTE_SPEC_PLATFORM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform)
+
+# Links a spec target against the platform: WallClock always, plus the real
+# host chip layer unless the target supplies its own test chip layer.
+function(rosette_spec_use_platform target)
+    target_sources(${target} PRIVATE ${ROSETTE_SPEC_PLATFORM_DIR}/wall_clock.cpp)
+    get_target_property(_srcs ${target} SOURCES)
+    list(FILTER _srcs INCLUDE REGEX "(_clock_stub|_platform_stub)\\.cpp$")
+    if(NOT _srcs)
+        target_sources(${target} PRIVATE ${ROSETTE_SPEC_PLATFORM_DIR}/chip/host/chip_host.cpp)
+    endif()
+endfunction()
+
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/rtps
@@ -39,7 +57,6 @@ target_include_directories(message_parser_spec_tests PRIVATE
 )
 
 target_compile_definitions(message_parser_spec_tests PRIVATE
-    RTPS_NO_FREERTOS
     RTPS_LOG_LEVEL=0
 )
 
@@ -69,7 +86,6 @@ target_include_directories(message_builder_spec_tests PRIVATE
 )
 
 target_compile_definitions(message_builder_spec_tests PRIVATE
-    RTPS_NO_FREERTOS
     RTPS_LOG_LEVEL=0
 )
 
@@ -97,7 +113,6 @@ target_include_directories(fragment_assembler_spec_tests PRIVATE
 )
 
 target_compile_definitions(fragment_assembler_spec_tests PRIVATE
-    RTPS_NO_FREERTOS
     RTPS_LOG_LEVEL=0
 )
 
@@ -127,7 +142,6 @@ target_include_directories(spdp_spec_tests PRIVATE
 )
 
 target_compile_definitions(spdp_spec_tests PRIVATE
-    RTPS_NO_FREERTOS
     RTPS_LOG_LEVEL=0
 )
 
@@ -158,7 +172,6 @@ target_include_directories(sedp_spec_tests PRIVATE
 )
 
 target_compile_definitions(sedp_spec_tests PRIVATE
-    RTPS_NO_FREERTOS
     RTPS_LOG_LEVEL=0
 )
 
@@ -184,7 +197,6 @@ target_include_directories(history_cache_spec_tests PRIVATE
 )
 
 target_compile_definitions(history_cache_spec_tests PRIVATE
-    RTPS_NO_FREERTOS
     RTPS_LOG_LEVEL=0
 )
 
@@ -215,7 +227,6 @@ target_include_directories(stateful_writer_spec_tests PRIVATE
 )
 
 target_compile_definitions(stateful_writer_spec_tests PRIVATE
-    RTPS_NO_FREERTOS
     RTPS_LOG_LEVEL=0
 )
 
@@ -245,7 +256,6 @@ target_include_directories(stateful_reader_spec_tests PRIVATE
 )
 
 target_compile_definitions(stateful_reader_spec_tests PRIVATE
-    RTPS_NO_FREERTOS
     RTPS_LOG_LEVEL=0
 )
 
@@ -277,7 +287,6 @@ target_include_directories(participant_spec_tests PRIVATE
 )
 
 target_compile_definitions(participant_spec_tests PRIVATE
-    RTPS_NO_FREERTOS
     RTPS_LOG_LEVEL=0
 )
 
@@ -393,7 +402,6 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         ${CMAKE_CURRENT_SOURCE_DIR}/../..
     )
     target_compile_definitions(message_parser_fuzz_replay PRIVATE
-        RTPS_NO_FREERTOS
         RTPS_LOG_LEVEL=0
     )
 
@@ -405,7 +413,6 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         ${CMAKE_CURRENT_SOURCE_DIR}/../..
     )
     target_compile_definitions(fragment_assembler_fuzz_replay PRIVATE
-        RTPS_NO_FREERTOS
         RTPS_LOG_LEVEL=0
     )
 
@@ -418,7 +425,6 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         ${CMAKE_CURRENT_SOURCE_DIR}/../..
     )
     target_compile_definitions(spdp_fuzz_replay PRIVATE
-        RTPS_NO_FREERTOS
         RTPS_LOG_LEVEL=0
     )
 
@@ -431,7 +437,6 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         ${CMAKE_CURRENT_SOURCE_DIR}/../..
     )
     target_compile_definitions(sedp_fuzz_replay PRIVATE
-        RTPS_NO_FREERTOS
         RTPS_LOG_LEVEL=0
     )
 
@@ -442,7 +447,6 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         ${CMAKE_CURRENT_SOURCE_DIR}/../..
     )
     target_compile_definitions(endpoint_match_fuzz_replay PRIVATE
-        RTPS_NO_FREERTOS
         RTPS_LOG_LEVEL=0
     )
 
@@ -542,7 +546,6 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
             ${CMAKE_CURRENT_SOURCE_DIR}/../..
         )
         target_compile_definitions(message_parser_fuzz PRIVATE
-            RTPS_NO_FREERTOS
             RTPS_LOG_LEVEL=0
         )
         target_compile_options(message_parser_fuzz PRIVATE
@@ -562,7 +565,6 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
             ${CMAKE_CURRENT_SOURCE_DIR}/../..
         )
         target_compile_definitions(fragment_assembler_fuzz PRIVATE
-            RTPS_NO_FREERTOS
             RTPS_LOG_LEVEL=0
         )
         target_compile_options(fragment_assembler_fuzz PRIVATE
@@ -583,7 +585,6 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
             ${CMAKE_CURRENT_SOURCE_DIR}/../..
         )
         target_compile_definitions(spdp_fuzz PRIVATE
-            RTPS_NO_FREERTOS
             RTPS_LOG_LEVEL=0
         )
         target_compile_options(spdp_fuzz PRIVATE
@@ -604,7 +605,6 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
             ${CMAKE_CURRENT_SOURCE_DIR}/../..
         )
         target_compile_definitions(sedp_fuzz PRIVATE
-            RTPS_NO_FREERTOS
             RTPS_LOG_LEVEL=0
         )
         target_compile_options(sedp_fuzz PRIVATE
@@ -623,7 +623,6 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
             ${CMAKE_CURRENT_SOURCE_DIR}/../..
         )
         target_compile_definitions(endpoint_match_fuzz PRIVATE
-            RTPS_NO_FREERTOS
             RTPS_LOG_LEVEL=0
         )
         target_compile_options(endpoint_match_fuzz PRIVATE
@@ -638,3 +637,10 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         message(WARNING "ROSETTE_SPEC_ENABLE_FUZZ is ON, but compiler is not Clang; libFuzzer targets skipped. Use *_fuzz_replay/*_fuzz_smoke targets.")
     endif()
 endif()
+
+# Every spec and fuzz target runs on the platform port.
+foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
+    if(TARGET ${_t})
+        rosette_spec_use_platform(${_t})
+    endif()
+endforeach()

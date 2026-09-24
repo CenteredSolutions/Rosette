@@ -23,12 +23,8 @@
 #include <string.h>   // memcmp, memcpy, memset
 #include <stdbool.h>
 
-#ifndef RTPS_GET_MS
-/// Override this macro to provide your platform's monotonic tick.
-/// Must return uint32_t milliseconds.
-extern "C" uint32_t rtps_platform_get_ms(void);
-#define RTPS_GET_MS() rtps_platform_get_ms()
-#endif
+#include "rosette/platform/platform.hpp"
+#include "rosette/platform/wall_clock.hpp"
 
 namespace rtps {
 
@@ -593,10 +589,14 @@ struct Timestamp {
         return seconds == o.seconds && fraction == o.fraction;
     }
 
+    /// Current wall-clock time as an RTPS Time_t (§9.3.2: seconds and
+    /// 2^-32 fractions since the Unix epoch), from the single platform clock.
     static Timestamp now() noexcept {
-        uint32_t ms = RTPS_GET_MS();
-        return { static_cast<Long>(ms / 1000u),
-                 static_cast<ULong>((ms % 1000u) * (0xFFFFFFFFu / 1000u)) };
+        const int64_t us = rosette::platform::WallClock::now_us();
+        const int64_t sec = us / 1000000;
+        const uint64_t rem_us = static_cast<uint64_t>(us - sec * 1000000);
+        return { static_cast<Long>(sec),
+                 static_cast<ULong>((rem_us << 32) / 1000000u) };
     }
 
     static bool read_from(Timestamp& self,

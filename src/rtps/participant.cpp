@@ -4,6 +4,8 @@
  */
 
 #include "participant.hpp"
+
+#include <atomic>
 #include "log.hpp"
 #include <new>
 #include <string.h>
@@ -122,6 +124,22 @@ uint8_t copy_locators(Locator* out,
 // ============================================================
 // Constructor
 // ============================================================
+// make_participant_guid_prefix()  — §8.2.4.2, §9.3.1.5
+// ============================================================
+
+GuidPrefix make_participant_guid_prefix(uint8_t participant_id) noexcept
+{
+    static std::atomic<uint8_t> instance{0};
+    GuidPrefix prefix{};
+    prefix.value[0] = VENDORID_THIS_IMPL.vendorId[0];
+    prefix.value[1] = VENDORID_THIS_IMPL.vendorId[1];
+    rosette::platform::device_unique_id(&prefix.value[2]);
+    prefix.value[10] = instance.fetch_add(1u);
+    prefix.value[11] = participant_id;
+    return prefix;
+}
+
+// ============================================================
 
 RTPSParticipant::RTPSParticipant(uint8_t     domain_id,
                                  uint8_t     participant_id,
@@ -130,7 +148,7 @@ RTPSParticipant::RTPSParticipant(uint8_t     domain_id,
     : domain_id_(domain_id)
     , participant_id_(participant_id)
     , transport_(transport)
-    , participant_guid_{rtps_platform_make_guid_prefix(participant_id),
+    , participant_guid_{make_participant_guid_prefix(participant_id),
                         entity_id::PARTICIPANT}
     , spdp_multicast_locator_(LOCATOR_INVALID)
     , match_table_(on_endpoint_match, on_endpoint_unmatch, this)
@@ -341,6 +359,24 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
             reinterpret_cast<StatefulReader*>(reader_storage_[i])->tick(now_ms);
 }
 
+uint32_t RTPSParticipant::ms_until_next_timer(uint32_t now_ms) const noexcept {
+    if (!has_addresses()) return UINT32_MAX;
+    uint32_t next = spdp_writer_.ms_until_next_announce(now_ms);
+    auto consider = [&next](uint32_t candidate) noexcept {
+        if (candidate < next) next = candidate;
+    };
+    consider(spdp_reader_.ms_until_next_expiry(now_ms));
+    consider(sedp_writer_.ms_until_next_timer(now_ms));
+    for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
+        if (writer_alive_[i] && writer_iface_[i])
+            consider(writer_iface_[i]->ms_until_next_timer(now_ms));
+    for (int i = 0; i < RTPS_MAX_USER_READERS; ++i)
+        if (reader_alive_[i])
+            consider(reinterpret_cast<const StatefulReader*>(reader_storage_[i])
+                         ->ms_until_next_timer(now_ms));
+    return next;
+}
+
 void RTPSParticipant::announce() noexcept {
     if (!has_addresses()) {
         return;
@@ -529,7 +565,7 @@ void RTPSParticipant::dispatch_data(const ParseContext& ctx,
                                     const ParsedData&   msg) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(ctx.user_data);
-    const uint32_t now_ms = RTPS_GET_MS();
+    const uint32_t now_ms = rosette::platform::monotonic_ms();
 
     if (msg.writerId == entity_id::SPDP_BUILTIN_PARTICIPANT_WRITER) {
         // Ignore our own SPDP announcements (multicast loopback on host sockets).

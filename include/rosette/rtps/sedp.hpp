@@ -221,6 +221,13 @@ public:
     // Drive builtin writer periodic maintenance.
     void tick(uint32_t now_ms) noexcept;
 
+    // Soonest timed action of the two builtin writers (heartbeat or repair).
+    uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept {
+        const uint32_t a = publications_writer_.ms_until_next_timer(now_ms);
+        const uint32_t b = subscriptions_writer_.ms_until_next_timer(now_ms);
+        return a < b ? a : b;
+    }
+
 private:
 
     BuiltinWriter publications_writer_;

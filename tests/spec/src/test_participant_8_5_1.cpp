@@ -597,7 +597,7 @@ static bool tc_part_8_3_4_002(std::string& err) {
           "matched_reader_add should succeed");
 
     const Octet user_payload[1] = {0x42u};
-    CHECK(w->write_reliable(ChangeKind::ALIVE, user_payload, 1u), "write_reliable should succeed");
+    CHECK(w->write_async(ChangeKind::ALIVE, user_payload, 1u), "write_async should succeed");
     tx.packets.clear();
 
     SequenceNumberSet sn_state{};
@@ -623,7 +623,7 @@ static bool tc_part_8_3_4_002(std::string& err) {
           "ACKNACK should be routed to local writer and update highestAckedSN");
 
     const Octet user_payload2[1] = {0x43u};
-    CHECK(w->write_reliable(ChangeKind::ALIVE, user_payload2, 1u),
+    CHECK(w->write_async(ChangeKind::ALIVE, user_payload2, 1u),
           "second reliable write should succeed");
     tx.packets.clear();
 
@@ -839,6 +839,38 @@ static bool tc_part_8_5_1_005(std::string& err) {
     return true;
 }
 
+// §8.5.3.2/§8.5.3.3: the participant's next timer is the soonest of its
+// SPDP announcement, peer leases, and endpoint timers, so a driver that
+// sleeps until then misses none of them.
+static bool tc_part_8_5_1_006(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.ms_until_next_timer(0u) == UINT32_MAX,
+          "without addresses the participant schedules nothing");
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "add_ipv4_address should succeed");
+    CHECK(p.ms_until_next_timer(0u) == 0u, "the first SPDP announcement is due at once");
+
+    g_participant_test_now_ms = 0u;
+    p.tick(0u);
+    const uint32_t idle = p.ms_until_next_timer(0u);
+    CHECK(idle > 0u && idle <= RTPS_SPDP_RESEND_PERIOD_MS,
+          "after announcing, the next timer is at most the SPDP resend period");
+
+    const GuidPrefix remote_prefix = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    std::vector<Octet> spdp_payload{};
+    CHECK(build_spdp_payload(remote_prefix, 1u, make_udpv4_locator(0xC0A80171u, 7410u),
+                             spdp_payload),
+          "SPDP payload build failed");
+    g_participant_test_now_ms = 100u;
+    CHECK(p.spdp_reader().on_data(remote_prefix, spdp_payload.data(),
+                                  static_cast<uint32_t>(spdp_payload.size()), 100u),
+          "peer discovery should succeed");
+    const uint32_t with_peer = p.ms_until_next_timer(100u);
+    CHECK(with_peer <= 1000u, "a 1 s peer lease pulls the next timer in to its expiry");
+    CHECK(p.ms_until_next_timer(1100u) == 0u, "the lease expiry is due at 1100 ms");
+    return true;
+}
+
 void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-001",
                      "§8.5.1/§8.5.3.3: participant announce path is gated on configured local locators and sends SPDP DATA to the well-known multicast locator.",
@@ -864,6 +896,9 @@ void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-005",
                      "§8.5.1/§8.5.4.1: delete_writer() frees the slot for reuse, rejects a second delete, and sends matched peers an SEDP disposal keyed by the writer GUID.",
                      tc_part_8_5_1_005});
+    tests.push_back({"TC-PART-8.5.1-006",
+                     "§8.5.3.2/§8.5.3.3: ms_until_next_timer() is unbounded without addresses, zero before the first SPDP announcement, and bounded by the SPDP period and peer lease expiry.",
+                     tc_part_8_5_1_006});
 }
 
 } // namespace spec_test

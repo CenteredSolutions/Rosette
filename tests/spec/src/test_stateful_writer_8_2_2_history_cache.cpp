@@ -154,7 +154,7 @@ static bool tc_swr_8_2_2_003(std::string& err) {
           "matched_reader_add should succeed");
 
     const Octet payload[2] = {0xCAu, 0xFEu};
-    CHECK(w.write_reliable(ChangeKind::ALIVE, payload, 2u),
+    CHECK(w.write_async(ChangeKind::ALIVE, payload, 2u),
           "initial reliable write should succeed");
     tx.unicast_msgs.clear();
 

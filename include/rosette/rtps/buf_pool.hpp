@@ -20,8 +20,10 @@
  *  - O(N) alloc where N is the number of size classes (≤ 8 in practice).
  *  - Atomic reference counting (memory_order_release/acquire) so TX and
  *    RX tasks may retain/release the same block concurrently.
- *  - Free-list protected by a FreeRTOS critical section (portENTER/EXIT
- *    _CRITICAL) — safe from tasks and from ISRs on Cortex-M.
+ *  - Free lists guarded by one pool-wide platform Mutex (buf_pool_mutex()),
+ *    so threads, tasks, and both cores of a dual-core MCU may allocate and
+ *    release concurrently. Interrupt handlers must not allocate or release
+ *    (platform.hpp concurrency rule).
  *  - BufRef stays 12 bytes on ARM32 (block* + data* + size).
  *    The size class index lives inside BufBlock, not in BufRef.
  *  - BufRef::capacity() returns the actual usable bytes of the block,
@@ -64,12 +66,18 @@
 #include <cstdint>
 #include <string.h>
 
-#ifndef portENTER_CRITICAL
-#  define portENTER_CRITICAL()  do {} while (0)
-#  define portEXIT_CRITICAL()   do {} while (0)
-#endif
+#include "rosette/platform/platform.hpp"
 
 namespace rtps {
+
+/// Guards every size class's free list and the debug counters. The critical
+/// sections are a few pointer moves long, so one lock for all classes costs
+/// nothing measurable and keeps lock ordering trivial.
+inline rosette::platform::Mutex& buf_pool_mutex() noexcept {
+    static rosette::platform::Mutex mutex;
+    return mutex;
+}
+
 
 // ============================================================
 // Size-class configuration
@@ -382,37 +390,37 @@ public:
         }
     }
 
-    /// Pop one block.  Returns nullptr on exhaustion.  ISR-safe.
+    /// Pop one block.  Returns nullptr on exhaustion.  Thread-safe; not for ISRs.
     BufBlock* alloc() noexcept {
         BufBlock* b = nullptr;
-        portENTER_CRITICAL();
+        buf_pool_mutex().lock();
         if (free_head_) {
             b            = free_head_;
             free_head_   = b->next_free;
             b->next_free = nullptr;
         }
-        portEXIT_CRITICAL();
+        buf_pool_mutex().unlock();
         if (b) {
             b->refcount = 1;
         }
         return b;
     }
 
-    /// Push a block back onto the free list.  ISR-safe.
+    /// Push a block back onto the free list.  Thread-safe; not for ISRs.
     void free_block(BufBlock* b) noexcept {
         std::atomic_thread_fence(std::memory_order_acquire);
-        portENTER_CRITICAL();
+        buf_pool_mutex().lock();
         b->next_free = free_head_;
         free_head_   = b;
-        portEXIT_CRITICAL();
+        buf_pool_mutex().unlock();
     }
 
     /// Snapshot of free-block count (diagnostic only; not locked during walk).
     uint8_t available() const noexcept {
         BufBlock* head;
-        portENTER_CRITICAL();
+        buf_pool_mutex().lock();
         head = free_head_;
-        portEXIT_CRITICAL();
+        buf_pool_mutex().unlock();
         uint8_t n = 0;
         for (BufBlock* b = head; b; b = b->next_free) ++n;
         return n;
@@ -562,12 +570,12 @@ public:
 
     void debug_mark_retain(BufBlock* b, int prev, uintptr_t caller_pc) noexcept {
         if (!b || b->size_class >= kPoolClassCount) return;
-        portENTER_CRITICAL();
+        buf_pool_mutex().lock();
         BufPoolDebugClassStats& s = dbg_stats_[b->size_class];
         ++s.retain_calls;
         b->dbg_last_touch_pc = caller_pc;
         debug_record_event(BufPoolDebugOp::Retain, b, b->block_cap, prev, prev + 1, caller_pc);
-        portEXIT_CRITICAL();
+        buf_pool_mutex().unlock();
     }
 #endif
 
@@ -644,7 +652,7 @@ private:
 #ifdef RTPS_BUFPOOL_DEBUG
     void debug_on_alloc(BufBlock* b, uint32_t min_size, uintptr_t caller_pc) noexcept {
         if (!b || b->size_class >= kPoolClassCount) return;
-        portENTER_CRITICAL();
+        buf_pool_mutex().lock();
         BufPoolDebugClassStats& s = dbg_stats_[b->size_class];
         ++s.alloc_ok;
         ++s.live;
@@ -653,21 +661,21 @@ private:
         b->dbg_last_touch_pc = caller_pc;
         b->dbg_alloc_seq = dbg_event_seq_ + 1u;
         debug_record_event(BufPoolDebugOp::Alloc, b, min_size, 0, 1, caller_pc);
-        portEXIT_CRITICAL();
+        buf_pool_mutex().unlock();
     }
 
     void debug_on_alloc_fail(uint32_t min_size, uintptr_t caller_pc) noexcept {
-        portENTER_CRITICAL();
+        buf_pool_mutex().lock();
         for (uint8_t c = 0; c < kPoolClassCount; ++c) {
             if (class_sizes_[c] >= min_size) ++dbg_stats_[c].alloc_fail;
         }
         debug_record_event(BufPoolDebugOp::AllocFail, nullptr, min_size, 0, 0, caller_pc);
-        portEXIT_CRITICAL();
+        buf_pool_mutex().unlock();
     }
 
     void debug_on_release(BufBlock* b, int prev) noexcept {
         if (!b || b->size_class >= kPoolClassCount) return;
-        portENTER_CRITICAL();
+        buf_pool_mutex().lock();
         BufPoolDebugClassStats& s = dbg_stats_[b->size_class];
         ++s.release_calls;
         const int after = prev - 1;
@@ -678,7 +686,7 @@ private:
             ++s.frees;
             debug_record_event(BufPoolDebugOp::Free, b, b->block_cap, 1, 0, b->dbg_last_touch_pc);
         }
-        portEXIT_CRITICAL();
+        buf_pool_mutex().unlock();
     }
 
     void debug_record_event(BufPoolDebugOp op,
@@ -693,7 +701,7 @@ private:
         const uint32_t seq = ++dbg_event_seq_;
         const uint32_t slot = (seq - 1u) % ring_cap;
         BufPoolDebugEvent& e = dbg_events_[slot];
-        e.tick_ms = RTPS_GET_MS();
+        e.tick_ms = rosette::platform::monotonic_ms();
         e.seq = seq;
         e.block = static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(b));
         e.caller_pc = caller_pc;

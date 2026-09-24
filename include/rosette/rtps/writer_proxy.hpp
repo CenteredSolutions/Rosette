@@ -351,7 +351,7 @@ public:
     // @param last_sn         lastSN from the HEARTBEAT.
     // @param hb_count        count from the HEARTBEAT.
     // @param final_flag      true when the F-flag is set.
-    // @param now_ms          Current RTPS_GET_MS().
+    // @param now_ms          Current rosette::platform::monotonic_ms().
     // @param response_delay_ms  heartbeatResponseDelay in milliseconds.
     //
     // @returns  true  if an ACKNACK should be sent (after the deadline).
@@ -441,7 +441,7 @@ public:
     //
     // — §8.4.7.1 heartbeatResponseDelay, p. 135.
     //
-    // @param now_ms  Current RTPS_GET_MS().
+    // @param now_ms  Current rosette::platform::monotonic_ms().
     // ----------------------------------------------------------
     bool acknack_response_due(uint32_t now_ms) const noexcept {
         if (!acknackPending) return false;
