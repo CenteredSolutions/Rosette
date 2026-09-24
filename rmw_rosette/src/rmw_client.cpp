@@ -58,8 +58,6 @@ void on_reply(const rtps::CacheChange& change, void* user_data) noexcept {
     impl->replies.push(change);
 }
 
-/// Serialization buffer for a request; one RTPS datagram without fragmentation.
-constexpr uint32_t kRequestBufSize = RTPS_BUF_BLOCK_SIZE;
 
 }  // namespace
 
@@ -175,10 +173,8 @@ rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request,
     auto* impl = static_cast<rmw_rosette::Client*>(client->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
 
-    uint8_t buf[kRequestBufSize];
-    const uint32_t len =
-        rmw_rosette::serialize_message(impl->request_codec, ros_request, buf, sizeof(buf));
-    if (len == 0) {
+    rtps::BufRef payload = rmw_rosette::serialize_to_pool(impl->request_codec, ros_request);
+    if (!payload.valid()) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_send_request: serialization failed");
         return RMW_RET_ERROR;
     }
@@ -191,7 +187,8 @@ rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request,
     qos.relatedSampleIdentity.sequenceNumber = rtps::SEQUENCENUMBER_UNKNOWN;
 
     rtps::SequenceNumber sn = rtps::SEQUENCENUMBER_UNKNOWN;
-    if (!impl->request_writer->write_async(rtps::ChangeKind::ALIVE, buf, len, qos, &sn)) {
+    if (!impl->request_writer->write_async_owned(rtps::ChangeKind::ALIVE,
+                                                 static_cast<rtps::BufRef&&>(payload), qos, &sn)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_send_request: write failed");
         return RMW_RET_ERROR;
     }
@@ -226,7 +223,7 @@ rmw_ret_t rmw_take_response(const rmw_client_t* client, rmw_service_info_t* requ
     rmw_rosette::PendingChange change;
     if (!impl->replies.pop(change)) return RMW_RET_OK;
 
-    if (!rmw_rosette::deserialize_message(impl->response_codec, change.bytes, change.size,
+    if (!rmw_rosette::deserialize_message(impl->response_codec, change.payload.data, change.payload.size,
                                           ros_response)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_take_response: malformed reply");
         return RMW_RET_ERROR;

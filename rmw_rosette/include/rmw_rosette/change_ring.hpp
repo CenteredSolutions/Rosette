@@ -5,13 +5,15 @@
  * `rtps::StatefulReader::OnChangeAvailable` hands over a CacheChange that is
  * valid only during the callback, and it fires from inside rmw_wait()'s
  * participant pump, while rmw_take*() runs later from the executor. Each
- * subscription, service, and client therefore copies received changes into a
- * ChangeRing: payload bytes plus the metadata a take needs (the writer GUID
- * and sequence number that identify a service request, and the related sample
- * identity that correlates a service reply).
+ * subscription, service, and client therefore keeps received changes in a
+ * ChangeRing: a retained reference to the change's pool buffer (no copy, so a
+ * reassembled 64 KiB sample costs no more than a small one) plus the metadata
+ * a take needs (the writer GUID and sequence number that identify a service
+ * request, and the related sample identity that correlates a service reply).
  *
- * The ring never allocates. When it is full, the oldest unread change is
- * overwritten, the KEEP_LAST behavior a DDS reader history has, so a writer
+ * The ring never allocates; payload memory is the RTPS buffer pool's. When
+ * the ring is full, the oldest unread change is overwritten and its buffer
+ * released, the KEEP_LAST behavior a DDS reader history has, so a writer
  * that outruns the application loses its oldest samples rather than growing
  * memory.
  */
@@ -31,10 +33,9 @@
 
 namespace rmw_rosette {
 
-/// One received change, copied out of the reader callback.
+/// One received change, held until an rmw take.
 struct PendingChange {
-    uint8_t              bytes[RTPS_BUF_BLOCK_SIZE] = {};  ///< Serialized payload, header included.
-    uint32_t             size = 0;
+    rtps::BufRef         payload;  ///< Retained serializedPayload, header included.
     rtps::Guid           writer_guid = rtps::GUID_UNKNOWN;
     rtps::SequenceNumber sequence_number = rtps::SEQUENCENUMBER_UNKNOWN;
     rtps::Timestamp      source_timestamp = rtps::TIME_ZERO;
@@ -53,9 +54,8 @@ public:
      * Called from the reader's OnChangeAvailable trampoline. When the ring
      * is full the oldest unread change is overwritten.
      *
-     * @param[in] change Change delivered by the RTPS reader; only read
-     *   during this call. Payloads longer than RTPS_BUF_BLOCK_SIZE are
-     *   dropped, since a truncated sample could not be decoded.
+     * @param[in] change Change delivered by the RTPS reader; its payload
+     *   buffer is retained, the rest is copied.
      * @return `true` when the change was stored.
      *
      * Verification:
@@ -63,12 +63,16 @@ public:
      *   returns the last min(N, C) changes in arrival order.
      */
     bool push(const rtps::CacheChange& change) noexcept {
-        if (!change.payload.valid() || change.payload.size > sizeof(PendingChange::bytes)) {
-            return false;
-        }
+        if (!change.payload.valid() || change.payload.size == 0) return false;
         PendingChange& slot = slots_[head_];
-        for (uint32_t i = 0; i < change.payload.size; ++i) slot.bytes[i] = change.payload.data[i];
-        slot.size = change.payload.size;
+        // Share the reader's pool buffer: a new reference, released when the
+        // slot is taken or overwritten.
+        rtps::BufRef ref{};
+        ref.block = change.payload.block;
+        ref.data = change.payload.data;
+        ref.size = change.payload.size;
+        ref.retain();
+        slot.payload = static_cast<rtps::BufRef&&>(ref);
         slot.writer_guid = change.writerGuid;
         slot.sequence_number = change.sequenceNumber;
         slot.source_timestamp = change.sourceTimestamp;
@@ -89,7 +93,12 @@ public:
         if (count_ == 0u) return false;
         const uint32_t tail =
             (head_ + RMW_ROSETTE_MAX_PENDING_CHANGES - count_) % RMW_ROSETTE_MAX_PENDING_CHANGES;
-        out = slots_[tail];
+        out.payload = static_cast<rtps::BufRef&&>(slots_[tail].payload);
+        out.writer_guid = slots_[tail].writer_guid;
+        out.sequence_number = slots_[tail].sequence_number;
+        out.source_timestamp = slots_[tail].source_timestamp;
+        out.has_related_sample_identity = slots_[tail].has_related_sample_identity;
+        out.related_sample_identity = slots_[tail].related_sample_identity;
         --count_;
         return true;
     }

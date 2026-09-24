@@ -18,6 +18,7 @@ Verified against stock ROS 2 Humble (`rmw_fastrtps_cpp`) on one host:
 | Endpoints created after discovery are announced; destroyed ones are withdrawn | TC-SEDP-8.5.4-007/008/009, TC-PART-8.5.1-005, live check against Fast DDS |
 | CDR for any installed message type, byte-compatible with Fast DDS | `tests/ros2/rmw_serialization_parity.py`, `test/test_introspection_c_codec.cpp` |
 | Guard conditions, wait sets, matched counts, actual QoS | `test/test_guard_condition.cpp`, `test/test_pub_sub_loopback.cpp` |
+| Messages up to 64 KB through a 1472-octet datagram limit (DATA_FRAG both ways, fragmented service replies), no datagram over the limit | `tests/ros2/run_rmw_frag_loopback.sh` |
 
 ### Serialization
 
@@ -39,12 +40,25 @@ server's reply writer is TRANSIENT_LOCAL so a reply written before the calling
 client's reader has matched still arrives; clients keep only replies that name
 their request writer or reply reader.
 
+### Large messages and small links
+
+Samples are serialized once into a buffer-pool block and never copied
+again. A sample whose DATA would exceed the transport's datagram limit
+(`RMW_ROSETTE_MAX_DATAGRAM_SIZE`, lowered at runtime by the environment
+variable of the same name) goes out as DATA_FRAG, one fragment per datagram,
+with inline QoS in every fragment. Received fragments reassemble into a pool
+block. On a link without IP fragmentation (WIZnet hardware UDP: 1472 octets),
+peers must cap their datagrams to the same size, e.g. Fast DDS
+`maxMessageSize`; `RMW_ROSETTE_TRANSPORT_STATS=1` prints the datagram
+counters (largest sent/received, oversize, truncated) at shutdown.
+
 ### Capacity
 
 Nothing is allocated at runtime. `cmake/rmw_rosette_capacity.cmake` derives
 every pool, RTPS table, SEDP history, and buffer-pool size from a few limits
 (`RMW_ROSETTE_MAX_NODES`, `_PUBLISHERS`, `_SUBSCRIPTIONS`, `_SERVICES`,
-`_CLIENTS`, `_REMOTE_PARTICIPANTS`, `_REMOTE_ENDPOINTS`, `_MAX_DATAGRAM_SIZE`)
+`_CLIENTS`, `_REMOTE_PARTICIPANTS`, `_REMOTE_ENDPOINTS`, `_MAX_DATAGRAM_SIZE`,
+`_MAX_SAMPLE_SIZE`, `_LARGE_BUFFERS`)
 plus the entities client libraries create per node
 (`RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE`, default 6; set 0 for `rclc`
 without a parameter server). `include/rmw_rosette/capacity.hpp` static_asserts
@@ -52,24 +66,17 @@ the same relationships.
 
 ## Known gaps
 
-1. **Concurrency and platform layer.** `rmw_wait()` drives the participant,
-   and `rmw_publish()` from another thread (`rclcpp` `MultiThreadedExecutor`,
-   a second core) races it. This lands with the build-time platform ports
-   (one contract header; OS layer bare-metal/FreeRTOS/POSIX; chip layer
-   RP2xxx/host), which also provide the mutex and the single monotonic clock
-   that RTPS timers and time sync share.
-2. **Large messages.** Publishing serializes into one `RTPS_BUF_BLOCK_SIZE`
-   (2 KiB) buffer, so larger messages (images, point clouds) fail to publish;
-   sending needs DATA_FRAG, and received payloads larger than one block need
-   `fragment_assembler.hpp` wired into the reader path.
-3. **Graph introspection.** `rmw_count_*`, `rmw_get_*_names_and_types*`, and
+1. **Storage.** Flash access still lives in the Pico runtime files; it
+   becomes a `storage::BlockDevice` (host file, RP2 flash via
+   `flash_safe_execute()`) that LittleFS takes by reference.
+2. **Graph introspection.** `rmw_count_*`, `rmw_get_*_names_and_types*`, and
    `rmw_get_node_names*` need a `GraphCache` fed by SEDP and the
    `ros_discovery_info` topic (`rmw_dds_common/msg/ParticipantEntitiesInfo`)
    that carries node identity; `ros2 node list` and `count_publishers()` on a
    rosette node report unsupported until then.
-4. **QoS events and listeners.** Event initialization reports
+3. **QoS events and listeners.** Event initialization reports
    `RMW_RET_UNSUPPORTED`, which both client libraries accept.
-5. **Board transports.** `rmw_init.cpp` uses POSIX sockets; FreeRTOS+TCP and
+4. **Board transports.** `rmw_init.cpp` uses POSIX sockets; FreeRTOS+TCP and
    WIZnet targets take the socket provider from board configuration.
 
 ## Verification
@@ -103,4 +110,4 @@ The package compiles the RTPS core and its POSIX platform glue from the
 repository root (`ROSETTE_ROOT`, defaulting to `..`), so `librmw_rosette.so` is
 self-contained. For micro-ROS firmware, add this package to the workspace
 `.repos` alongside `rcl`/`rclc` and select it as the RMW; the board supplies its
-socket provider (gap 5), and the capacity limits are set for the board.
+socket provider (gap 4), and the capacity limits are set for the board.

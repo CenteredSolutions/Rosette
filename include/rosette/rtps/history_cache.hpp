@@ -66,6 +66,10 @@ struct CacheChange {
     Timestamp      sourceTimestamp = TIME_ZERO;
     InlineQos      inlineQos      = {};
     BufRef         payload        = {};     ///< Pool-backed serialized data.
+    /// True when `payload` is a complete serializedPayload (encapsulation
+    /// header included, as SEDP's PL_CDR parameter lists are); false when
+    /// it is the CDR body and the sender prepends the CDR_LE header.
+    bool           preframed      = false;
 
     /// @returns true when this slot contains a valid, live change.
     bool is_valid() const noexcept {

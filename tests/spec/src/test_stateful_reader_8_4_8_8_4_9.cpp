@@ -88,6 +88,44 @@ static bool tc_srr_8_4_8_001(std::string& err) {
     return true;
 }
 
+// §8.4.12.2: a reliable reader delivers a retransmitted change that fills a
+// gap (tracked MISSING), even though a later SN already arrived, and drops
+// true duplicates.
+static bool tc_srr_8_4_8_002(std::string& err) {
+    CaptureTransport tx{};
+    ChangeCapture cap{};
+    const Guid reader_guid = make_guid(0x35u, 0x36u, 0x37u, make_entity(1u, 1u, 1u, 0x04u));
+    const Guid writer_guid = make_guid(0x45u, 0x46u, 0x47u, make_entity(2u, 2u, 2u, 0x03u));
+    const Locator loc = make_udpv4_locator(0xC0A80123u, 7411u);
+    StatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, on_change_capture, &cap);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+
+    const Octet wire_payload[5] = {0x00u, 0x01u, 0x00u, 0x00u, 0x77u};
+    ParsedData data{};
+    data.readerId = reader_guid.entityId;
+    data.writerId = writer_guid.entityId;
+    data.dataFlag = true;
+    data.serializedPayload = wire_payload;
+    data.serializedPayloadSize = sizeof(wire_payload);
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+
+    auto deliver = [&](int64_t sn) {
+        data.writerSN = SequenceNumber::from_int64(sn);
+        r.on_data(ctx, data);
+    };
+    deliver(1);
+    deliver(3);                        // SN 2 lost in transit
+    CHECK(cap.calls == 2, "SN 1 and SN 3 are delivered");
+    deliver(2);                        // repair retransmission
+    CHECK(cap.calls == 3 && cap.last_sn.to_int64() == 2,
+          "a retransmitted SN filling a gap must be delivered");
+    deliver(2);
+    deliver(3);
+    CHECK(cap.calls == 3, "repeats of delivered SNs must be dropped");
+    return true;
+}
+
 static bool tc_srr_8_4_9_001(std::string& err) {
     CaptureTransport tx{};
     const Guid reader_guid = make_guid(0x51u, 0x52u, 0x53u, make_entity(3u, 3u, 3u, 0xC7u));
@@ -269,6 +307,9 @@ void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.8-001",
                      "§8.4.8: on_data accepts new DATA as CacheChange and ignores duplicates whose writerSN is not newer than highestSNReceived.",
                      tc_srr_8_4_8_001});
+    tests.push_back({"TC-SRR-8.4.8-002",
+                     "§8.4.12.2: a retransmitted change filling a gap below the highest received SN is delivered; repeats of delivered SNs are dropped.",
+                     tc_srr_8_4_8_002});
     tests.push_back({"TC-SRR-8.4.9-001",
                      "§8.3.7.5/§8.4.9: on_heartbeat schedules ACKNACK when missing changes exist; with heartbeatResponseDelay=0 it is sent immediately.",
                      tc_srr_8_4_9_001});

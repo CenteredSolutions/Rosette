@@ -103,8 +103,8 @@ void StatefulReader::on_data(const ParseContext& ctx,
         return;
     }
 
-    // Duplicate check — §8.4.8, p. 142.
-    if (proxy && msg.writerSN <= proxy->highestSNReceived) {
+    // Duplicate check — §8.4.8, p. 142: deliver new SNs and gap repairs.
+    if (proxy && !proxy->is_new_change(msg.writerSN)) {
         RTPS_LOG_T("reader", "duplicate DATA SN=%d:%lu from %02x%02x%02x%02x, dropped",
                    msg.writerSN.high, (unsigned long)msg.writerSN.low,
                    ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
@@ -183,6 +183,13 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
         return;
     }
 
+    // A fragment of a sample already delivered (the writer resends whole
+    // samples on NACK_FRAG) must not assemble and deliver it again.
+    if (proxy && !proxy->is_new_change(msg.writerSN)) {
+        assembler_.discard(writer_guid, msg.writerSN);
+        return;
+    }
+
     RTPS_LOG_T("reader", "DATA_FRAG SN=%d:%lu frag=%lu/%lu size=%lu",
                msg.writerSN.high, (unsigned long)msg.writerSN.low,
                (unsigned long)msg.fragmentStartingNum,
@@ -203,7 +210,8 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
         msg.fragmentPayload,
         msg.fragmentPayloadSize,
         ctx.sourceTimestamp,
-        out_change);
+        out_change,
+        msg.inlineQosPresent ? &msg.inlineQos : nullptr);
 
     if (!complete) return;
 
@@ -482,11 +490,16 @@ DefaultWriterProxy* StatefulReader::find_free_slot() noexcept {
 void StatefulReader::accept_change(CacheChange&&       change,
                                    DefaultWriterProxy& /*proxy*/) noexcept
 {
-    // Fire callback before moving into cache: the application sees
-    // the payload while the BufRef is still in the caller's hand.
-    // If the application needs the data beyond the callback it must
-    // call change.payload.retain() before returning.
-    if (on_change_avail_) on_change_avail_(change, user_data_);
+    // With a callback the change is handed over: the application sees the
+    // payload during the call and retains the buffer if it needs it longer
+    // (rmw_rosette's take rings do). Keeping it in the reader history as
+    // well would pin one pool block per delivered sample for nothing, which
+    // starves the pool under large (fragmented) samples. Without a callback
+    // the history is the only consumer interface, so the change is kept.
+    if (on_change_avail_) {
+        on_change_avail_(change, user_data_);
+        return;
+    }
     reader_cache_.add_change(static_cast<CacheChange&&>(change));
 }
 

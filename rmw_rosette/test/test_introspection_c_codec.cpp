@@ -16,6 +16,7 @@
 #include <rosidl_runtime_c/string_functions.h>
 
 #include <geometry_msgs/msg/pose_stamped.h>
+#include <sensor_msgs/msg/image.h>
 #include <sensor_msgs/msg/joint_state.h>
 #include <std_msgs/msg/string.h>
 
@@ -163,4 +164,35 @@ TEST(MessageCodec, RmwSerializeRoundTrip) {
     EXPECT_EQ(rmw_serialized_message_fini(&serialized), RMW_RET_OK);
     std_msgs__msg__String__fini(&in);
     std_msgs__msg__String__fini(&out);
+}
+
+TEST(MessageCodec, SerializeToPoolFitsLargeMessages) {
+    rmw_rosette::MessageCodec codec;
+    ASSERT_TRUE(rmw_rosette::resolve_message_codec(
+        ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Image), codec));
+
+    for (size_t size : {size_t{8}, size_t{1500}, size_t{20000}, size_t{60000}}) {
+        sensor_msgs__msg__Image img;
+        sensor_msgs__msg__Image__init(&img);
+        rosidl_runtime_c__uint8__Sequence__init(&img.data, size);
+        for (size_t i = 0; i < size; ++i) img.data.data[i] = static_cast<uint8_t>(i * 13u);
+
+        std::vector<uint8_t> reference(size + 256u);
+        const uint32_t ref_len = rmw_rosette::serialize_message(
+            codec, &img, reference.data(), static_cast<uint32_t>(reference.size()));
+        ASSERT_GT(ref_len, 0u);
+
+        rtps::BufRef pooled = rmw_rosette::serialize_to_pool(codec, &img);
+        ASSERT_TRUE(pooled.valid()) << "size " << size;
+        ASSERT_EQ(pooled.size, ref_len);
+        EXPECT_EQ(std::memcmp(pooled.data, reference.data(), ref_len), 0);
+        // The message lands in the smallest pool class that holds it.
+        uint32_t smallest_fit = 0;
+        for (uint32_t cls : {RTPS_POOL_CLASS0_SIZE, RTPS_POOL_CLASS1_SIZE, RTPS_POOL_CLASS2_SIZE,
+                             RTPS_POOL_CLASS3_SIZE, RTPS_POOL_CLASS4_SIZE}) {
+            if (cls >= ref_len) { smallest_fit = cls; break; }
+        }
+        EXPECT_EQ(pooled.capacity(), smallest_fit) << "size " << size;
+        sensor_msgs__msg__Image__fini(&img);
+    }
 }

@@ -223,6 +223,8 @@ public:
 
     const Guid&              guid()        const noexcept { return guid_; }
     ReliabilityKind          reliability() const noexcept { return reliability_; }
+    /// Received changes, kept only for readers without an OnChangeAvailable
+    /// callback (pull consumers); a callback receives each change instead.
     const ReaderHistoryCache& cache()      const noexcept { return reader_cache_; }
 
     uint32_t heartbeat_response_delay()            const noexcept { return hb_response_ms_; }

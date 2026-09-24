@@ -48,6 +48,7 @@
 
 #pragma once
 
+#include "log.hpp"
 #include "types.hpp"
 #include "buf_pool.hpp"
 #include "submessage.hpp"   // FragmentNumberSet
@@ -84,6 +85,11 @@ struct FragmentedChange {
     // ── Implementation fields ────────────────────────────────
     BufRef   buffer;        ///< Pool block into which fragments are written.
     uint32_t totalFragments = 0;  ///< ceil(dataSize / fragmentSize).
+    /// Inline QoS carried by the sample's fragments (key hash, status info,
+    /// related sample identity). A writer may send it with any or every
+    /// fragment; the first fragment that carries it is kept, so a completed
+    /// service reply keeps the identity that routes it to its client.
+    InlineQos inlineQos{};
 
     /// Received-fragment bitmap.  Bit position = (fragNum - 1).
     /// Word 0 bit 31 (MSB) = fragment 1.
@@ -98,6 +104,7 @@ struct FragmentedChange {
     void clear() noexcept {
         writerGuid     = GUID_UNKNOWN;
         sequenceNumber = SEQUENCENUMBER_UNKNOWN;
+        inlineQos      = {};
         fragmentSize   = 0;
         dataSize       = 0;
         totalFragments = 0;
@@ -234,6 +241,7 @@ struct FragmentedChange {
         ch.writerGuid      = writerGuid;
         ch.sequenceNumber  = sequenceNumber;
         ch.sourceTimestamp = source_ts;
+        ch.inlineQos       = inlineQos;
         ch.payload.size    = dataSize;
         // Move the buffer into the CacheChange.
         ch.payload = static_cast<BufRef&&>(buffer);
@@ -244,6 +252,7 @@ struct FragmentedChange {
         fragmentSize   = 0;
         dataSize       = 0;
         totalFragments = 0;
+        inlineQos      = {};
         memset(receivedBitmap, 0, sizeof(receivedBitmap));
         return ch;
     }
@@ -302,6 +311,8 @@ public:
     // @param source_ts           Source timestamp (from INFO_TS or invalid).
     // @param out_change          Set to the completed CacheChange on return
     //                            of true; untouched otherwise.
+    // @param inline_qos          This fragment's inline QoS, or null when it
+    //                            carried none; kept for the completed change.
     // @returns true when the sample is complete and out_change is valid.
     // ----------------------------------------------------------
     bool on_data_frag(const Guid&           writer_guid,
@@ -313,7 +324,8 @@ public:
                       const Octet*          payload,
                       uint32_t              payload_len,
                       const Timestamp&      source_ts,
-                      CacheChange&          out_change) noexcept
+                      CacheChange&          out_change,
+                      const InlineQos*      inline_qos = nullptr) noexcept
     {
         if (frag_start == 0 || frag_size == 0 || data_size == 0) return false;
 
@@ -350,7 +362,11 @@ public:
             const uint32_t src_off = i * static_cast<uint32_t>(frag_size);
             if (src_off + frag_byte_len > payload_len) break;
 
-            slot->write_fragment(frag_num, payload + src_off, frag_byte_len);
+            // Only a fragment actually stored counts toward completion.
+            if (!slot->write_fragment(frag_num, payload + src_off, frag_byte_len)) break;
+            if (inline_qos && !inline_qos->empty() && slot->inlineQos.empty()) {
+                slot->inlineQos = *inline_qos;
+            }
             slot->mark_received(frag_num);
         }
 
@@ -496,15 +512,22 @@ private:
 
         if (!candidate) return nullptr;
 
-        // Allocate pool buffer.
-        BufRef buf = buf_alloc();
-        if (!buf.valid()) return nullptr;
+        // Allocate a pool buffer that holds the whole sample. A sample larger
+        // than the largest pool class cannot be reassembled and is refused
+        // here rather than delivered short.
+        BufRef buf = buf_alloc(data_size);
+        if (!buf.valid() || buf.capacity() < data_size) {
+            RTPS_LOG_W("frag", "no pool block for a %lu-octet fragmented sample",
+                       (unsigned long)data_size);
+            return nullptr;
+        }
 
         candidate->writerGuid     = wg;
         candidate->sequenceNumber = sn;
         candidate->fragmentSize   = frag_size;
         candidate->dataSize       = data_size;
         candidate->totalFragments = total_frags;
+        candidate->inlineQos      = {};
         candidate->buffer         = static_cast<BufRef&&>(buf);
         memset(candidate->receivedBitmap, 0, sizeof(candidate->receivedBitmap));
         return candidate;

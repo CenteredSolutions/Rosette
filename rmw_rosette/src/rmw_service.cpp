@@ -46,8 +46,6 @@ void on_request(const rtps::CacheChange& change, void* user_data) noexcept {
     static_cast<rmw_rosette::Service*>(user_data)->requests.push(change);
 }
 
-/// Serialization buffer for a reply; one RTPS datagram without fragmentation.
-constexpr uint32_t kReplyBufSize = RTPS_BUF_BLOCK_SIZE;
 
 }  // namespace
 
@@ -168,7 +166,7 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
     rmw_rosette::PendingChange change;
     if (!impl->requests.pop(change)) return RMW_RET_OK;
 
-    if (!rmw_rosette::deserialize_message(impl->request_codec, change.bytes, change.size,
+    if (!rmw_rosette::deserialize_message(impl->request_codec, change.payload.data, change.payload.size,
                                           ros_request)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_take_request: malformed request");
         return RMW_RET_ERROR;
@@ -210,10 +208,8 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
     auto* impl = static_cast<rmw_rosette::Service*>(service->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
 
-    uint8_t buf[kReplyBufSize];
-    const uint32_t len =
-        rmw_rosette::serialize_message(impl->response_codec, ros_response, buf, sizeof(buf));
-    if (len == 0) {
+    rtps::BufRef payload = rmw_rosette::serialize_to_pool(impl->response_codec, ros_response);
+    if (!payload.valid()) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_send_response: serialization failed");
         return RMW_RET_ERROR;
     }
@@ -224,7 +220,8 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
         rmw_rosette::guid_from_request_writer(request_header->writer_guid);
     qos.relatedSampleIdentity.sequenceNumber =
         rtps::SequenceNumber::from_int64(request_header->sequence_number);
-    if (!impl->reply_writer->write_async(rtps::ChangeKind::ALIVE, buf, len, qos)) {
+    if (!impl->reply_writer->write_async_owned(rtps::ChangeKind::ALIVE,
+                                               static_cast<rtps::BufRef&&>(payload), qos)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_send_response: write failed");
         return RMW_RET_ERROR;
     }

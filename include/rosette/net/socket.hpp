@@ -147,6 +147,10 @@ public:
     virtual std::ptrdiff_t send_to(const void* data,
                                    std::size_t length,
                                    const SocketAddress& remote) noexcept = 0;
+    /// Receives one datagram into `data`. Returns its length, or -1 with
+    /// last_error() set. Backends that can report it return the datagram's
+    /// real length, so a return above `capacity` means it was truncated to
+    /// `capacity` bytes; backends that cannot never return above `capacity`.
     virtual std::ptrdiff_t recv_from(void* data,
                                      std::size_t capacity,
                                      SocketAddress* remote) noexcept = 0;

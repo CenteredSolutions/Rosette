@@ -2,6 +2,8 @@
 
 #include "rosette/rtps/fragment_assembler.hpp"
 
+#include <vector>
+
 namespace spec_test {
 
 #define CHECK(COND, MSG) do { if (!(COND)) { err = (MSG); return false; } } while (0)
@@ -124,6 +126,76 @@ static bool tc_fas_8_4_14_005(std::string& err) {
     return true;
 }
 
+// §8.4.14: reassembly of a sample larger than the smallest pool block
+// restores every octet (the assembly buffer must be sized to dataSize).
+static bool tc_fas_8_4_14_006(std::string& err) {
+    FragmentAssembler<1> assembler{};
+    const Guid writer = make_writer_guid(0xB1u, 0xB2u, 0xB3u, 0x03u);
+    const SequenceNumber sn = SequenceNumber::from_int64(5);
+    std::vector<Octet> sample(1000u);
+    for (size_t i = 0; i < sample.size(); ++i) sample[i] = static_cast<Octet>(i ^ 0x5Au);
+    const uint16_t frag_size = 300u;
+    CacheChange out{};
+    bool complete = false;
+    // Out of order: 4, 1, 3, 2.
+    for (uint32_t k : {4u, 1u, 3u, 2u}) {
+        const uint32_t off = (k - 1u) * frag_size;
+        const uint32_t len = (k == 4u) ? 100u : frag_size;
+        complete = assembler.on_data_frag(writer, sn, k, 1u, frag_size, 1000u,
+                                          sample.data() + off, len, TIME_ZERO, out);
+        CHECK(complete == (k == 2u), "the sample completes only with its last missing fragment");
+    }
+    CHECK(out.payload.valid() && out.payload.size == 1000u, "completed payload has dataSize octets");
+    bool same = true;
+    for (size_t i = 0; i < sample.size(); ++i) same = same && out.payload.data[i] == sample[i];
+    CHECK(same, "every reassembled octet must match the original sample");
+    out.clear();
+    return true;
+}
+
+// §8.4.14: a sample larger than any pool block cannot be reassembled and must
+// be refused, never delivered short or with stale buffer contents.
+static bool tc_fas_8_4_14_007(std::string& err) {
+    FragmentAssembler<1> assembler{};
+    const Guid writer = make_writer_guid(0xC1u, 0xC2u, 0xC3u, 0x03u);
+    const uint32_t too_big = kPoolMaxBlockSize + 1u;
+    const Octet frag[64] = {};
+    CacheChange out{};
+    const bool complete = assembler.on_data_frag(writer, SequenceNumber::from_int64(1), 1u, 1u,
+                                                 64u, too_big, frag, 64u, TIME_ZERO, out);
+    CHECK(!complete, "an unassemblable sample must not complete");
+    CHECK(!out.payload.valid(), "no payload may be produced for it");
+    return true;
+}
+
+// §8.4.14: each reassembled sample carries its own inline QoS; a slot
+// reused for the writer's next sample must not keep the previous sample's
+// (for service replies, a stale related sample identity misroutes the reply).
+static bool tc_fas_8_4_14_008(std::string& err) {
+    FragmentAssembler<1> assembler{};
+    const Guid writer = make_writer_guid(0xD1u, 0xD2u, 0xD3u, 0x03u);
+    const Octet frag[300] = {};
+    for (int64_t sn = 1; sn <= 2; ++sn) {
+        InlineQos qos{};
+        qos.hasRelatedSampleIdentity = true;
+        qos.relatedSampleIdentity.sequenceNumber = SequenceNumber::from_int64(100 + sn);
+        CacheChange out{};
+        bool complete = false;
+        for (uint32_t k = 1; k <= 2; ++k) {
+            // Inline QoS on the first fragment only, as Fast DDS sends it.
+            complete = assembler.on_data_frag(writer, SequenceNumber::from_int64(sn), k, 1u, 300u,
+                                              600u, frag, 300u, TIME_ZERO, out,
+                                              k == 1u ? &qos : nullptr);
+        }
+        CHECK(complete, "each two-fragment sample completes");
+        CHECK(out.inlineQos.hasRelatedSampleIdentity &&
+                  out.inlineQos.relatedSampleIdentity.sequenceNumber.to_int64() == 100 + sn,
+              "each sample must carry its own related sample identity");
+        out.clear();
+    }
+    return true;
+}
+
 void append_fragment_tests_8_4_14(std::vector<TestCase>& tests) {
     tests.push_back({"TC-FAS-8.4.14-001",
                      "§8.4.14: once all fragments are received, FragmentedChange becomes a complete CacheChange.",
@@ -140,6 +212,15 @@ void append_fragment_tests_8_4_14(std::vector<TestCase>& tests) {
     tests.push_back({"TC-FAS-8.4.14-005",
                      "§8.4.14 lifecycle: discard(writer,sn) and discard_writer(writer) release partial fragment assembly state.",
                      tc_fas_8_4_14_005});
+    tests.push_back({"TC-FAS-8.4.14-006",
+                     "§8.4.14: out-of-order fragments of a sample larger than the smallest pool block reassemble to every original octet.",
+                     tc_fas_8_4_14_006});
+    tests.push_back({"TC-FAS-8.4.14-007",
+                     "§8.4.14: a sample larger than any pool block is refused, never delivered short or with stale contents.",
+                     tc_fas_8_4_14_007});
+    tests.push_back({"TC-FAS-8.4.14-008",
+                     "§8.4.14: a reassembly slot reused for the next sample does not carry over the previous sample's inline QoS.",
+                     tc_fas_8_4_14_008});
 }
 
 } // namespace spec_test

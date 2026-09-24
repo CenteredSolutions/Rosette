@@ -54,7 +54,15 @@ public:
     // @param pool_size    Size of the buffer to allocate from the pool.
     // @returns false if the pool is exhausted.
     // ----------------------------------------------------------
-    bool begin(const GuidPrefix& guid_prefix, uint32_t pool_size = kPoolMaxBlockSize) noexcept {
+    /// Default capacity for begin(): control messages (HEARTBEAT, GAP,
+    /// ACKNACK, NACK_FRAG, INFO_DST) stay under ~100 octets even with a full
+    /// 256-bit set, so they never borrow a large sample block. Data paths
+    /// pass the exact message size.
+    static constexpr uint32_t kControlMessageCapacity = 256u;
+    static_assert(RTPS_POOL_CLASS0_SIZE >= 128u, "control messages need 128-octet blocks");
+
+    bool begin(const GuidPrefix& guid_prefix,
+               uint32_t pool_size = kControlMessageCapacity) noexcept {
         buf_ = buf_alloc(pool_size);
         if (!buf_.valid()) return false;
         cursor_ = 0;
@@ -375,6 +383,56 @@ public:
         fixed.dataSize              = data_size;
         if (!write_bytes(&fixed, sizeof(fixed))) return false;
         return write_bytes(frag_data, frag_data_len);
+    }
+
+    // ----------------------------------------------------------
+    // append_data_frag_parts()
+    //
+    // Serialises one DATA_FRAG submessage carrying a single fragment, with
+    // optional inline QoS, whose bytes are the concatenation of `prefix`
+    // and `body`. A writer fragmenting a sample whose stored bytes lack the
+    // CDR encapsulation header passes that header as the prefix of
+    // fragment 1, so the reassembled serializedPayload is complete.
+    //
+    // §9.4.5.4, Table 9.16, p. 208: fragmentStartingNum is 1-based;
+    // dataSize is the whole serializedPayload, header included.
+    //
+    // Verification: TC-SWR-8.4.14-001 (build → parse → reassemble).
+    // ----------------------------------------------------------
+    bool append_data_frag_parts(const EntityId&       reader_id,
+                                const EntityId&       writer_id,
+                                const SequenceNumber& writer_sn,
+                                uint32_t              fragment_num,
+                                uint16_t              fragment_size,
+                                uint32_t              data_size,
+                                const Octet*          prefix,
+                                uint16_t              prefix_len,
+                                const Octet*          body,
+                                uint16_t              body_len,
+                                const InlineQos&      inline_qos = {}) noexcept
+    {
+        const uint16_t iq = inline_qos_serialized_size(inline_qos);
+        const uint32_t body_total = sizeof(DataFragSubmessageFixed) + iq + prefix_len + body_len;
+        if (body_total > 0xFFFFu) return false;
+
+        SubmessageHeader smhdr{};
+        smhdr.submessageId     = SubmessageKind::DATA_FRAG;
+        smhdr.flags            = static_cast<Octet>(FLAG_E | (iq ? data_frag_flags::Q : 0u));
+        smhdr.submessageLength = static_cast<uint16_t>(body_total);
+        if (!write_submessage_header(&smhdr)) return false;
+
+        DataFragSubmessageFixed fixed{};
+        fixed.readerId              = reader_id;
+        fixed.writerId              = writer_id;
+        fixed.writerSN              = writer_sn;
+        fixed.fragmentStartingNum   = fragment_num;
+        fixed.fragmentsInSubmessage = 1u;
+        fixed.fragmentSize          = fragment_size;
+        fixed.dataSize              = data_size;
+        if (!write_bytes(&fixed, sizeof(fixed))) return false;
+        if (iq && !write_inline_qos(inline_qos)) return false;
+        if (prefix_len && !write_bytes(prefix, prefix_len)) return false;
+        return body_len == 0u || write_bytes(body, body_len);
     }
 
     // ----------------------------------------------------------

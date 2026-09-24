@@ -45,10 +45,15 @@
 #endif
 
 #ifndef RMW_ROSETTE_MAX_DATAGRAM_SIZE
-/// Largest UDP datagram rmw_wait() receives intact. Stock DDS implementations
-/// pack many submessages into one datagram up to 64 KiB; a smaller buffer
-/// truncates them, and anything cut off is lost on every retransmission.
-#  define RMW_ROSETTE_MAX_DATAGRAM_SIZE 65536
+/// Largest UDP datagram sent or received. Writers fragment (DATA_FRAG) any
+/// sample that would exceed it, and the receive buffer holds exactly one.
+/// Peers must cap their datagrams to it as well (Fast DDS: maxMessageSize),
+/// or their larger datagrams are truncated (counted in TransportStats).
+#  define RMW_ROSETTE_MAX_DATAGRAM_SIZE 65507
+#endif
+#ifndef RMW_ROSETTE_MAX_SAMPLE_SIZE
+/// Largest serialized message; the largest buffer-pool class.
+#  define RMW_ROSETTE_MAX_SAMPLE_SIZE 65532
 #endif
 
 namespace rmw_rosette {
@@ -80,6 +85,10 @@ constexpr uint32_t kRtpsReaderCapacity =
 
 // The participant tables are sized by the build (rmw_rosette_capacity.cmake);
 // these checks run wherever an RTPS header has been included first.
+#ifdef RTPS_POOL_CLASS4_SIZE
+static_assert(RTPS_POOL_CLASS4_SIZE >= RMW_ROSETTE_MAX_SAMPLE_SIZE,
+              "the largest buffer-pool class must hold RMW_ROSETTE_MAX_SAMPLE_SIZE");
+#endif
 #ifdef RTPS_MAX_USER_WRITERS
 static_assert(RTPS_MAX_USER_WRITERS >= rmw_rosette::kRtpsWriterCapacity,
               "RTPS_MAX_USER_WRITERS cannot hold every publisher, service and client writer");

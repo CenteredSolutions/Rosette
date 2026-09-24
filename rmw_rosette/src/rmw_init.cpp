@@ -9,6 +9,8 @@
 
 #include "rosette/platform/host_runtime.hpp"  // rosette_platform_get_ipv4_addr
 
+#include <cstdio>
+#include <cstdlib>
 #include <rmw/init.h>
 #include <rmw/init_options.h>
 #include <rmw/rmw.h>
@@ -138,6 +140,44 @@ bool open_transport_on_free_ports(rmw_rosette::Context& ctx, uint8_t& participan
     return false;
 }
 
+/**
+ * @brief The datagram limit for this context.
+ *
+ * RMW_ROSETTE_MAX_DATAGRAM_SIZE from the build, lowered by the environment
+ * variable of the same name when set to a smaller valid value (at least 512).
+ *
+ * @return Largest UDP datagram to send, in octets.
+ */
+uint32_t effective_max_datagram_size() noexcept {
+    uint32_t limit = RMW_ROSETTE_MAX_DATAGRAM_SIZE;
+    if (const char* env = std::getenv("RMW_ROSETTE_MAX_DATAGRAM_SIZE")) {
+        const unsigned long requested = std::strtoul(env, nullptr, 10);
+        if (requested >= 512u && requested < limit) limit = static_cast<uint32_t>(requested);
+    }
+    return limit;
+}
+
+/**
+ * @brief Prints the transport's datagram counters when requested.
+ *
+ * With RMW_ROSETTE_TRANSPORT_STATS set in the environment, one line goes to
+ * stderr as the context is finalized. tests/ros2/run_rmw_frag_loopback.sh
+ * parses it to prove that no datagram exceeded the configured limit in
+ * either direction and that none was truncated.
+ *
+ * @param[in] transport Transport being torn down.
+ */
+void report_transport_stats(const rtps::SocketUdpTransport& transport) noexcept {
+    if (std::getenv("RMW_ROSETTE_TRANSPORT_STATS") == nullptr) return;
+    const rtps::TransportStats& st = transport.stats();
+    std::fprintf(stderr,
+                 "rmw_rosette transport: limit=%u tx=%u rx=%u max_tx=%u max_rx=%u "
+                 "oversize_tx=%u oversize_rx=%u truncated_rx=%u\n",
+                 static_cast<unsigned>(transport.max_datagram_size()), st.tx_datagrams,
+                 st.rx_datagrams, st.max_tx_datagram, st.max_rx_datagram, st.oversize_tx,
+                 st.oversize_rx, st.truncated_rx);
+}
+
 }  // namespace
 
 extern "C" {
@@ -258,6 +298,10 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     ctx.participant = new (ctx.participant_storage) rtps::RTPSParticipant(
         ctx.domain_id, participant_id, *ctx.transport);
 
+    // Writers fragment against this limit; peers must respect it too. The
+    // environment may lower it (never raise it) for a link with a smaller
+    // MTU, e.g. to rehearse a WIZnet link's 1472 on a host.
+    ctx.transport->set_max_datagram_size(effective_max_datagram_size());
     ctx.participant->add_ipv4_address(rosette_platform_get_ipv4_addr());
     ctx.driver = new (ctx.driver_storage) rtps::ParticipantDriver(
         *ctx.participant, *ctx.transport, ctx.provider, ctx.rx_buffer, sizeof(ctx.rx_buffer));
@@ -302,6 +346,7 @@ rmw_ret_t rmw_context_fini(rmw_context_t* context) {
     rmw_context_impl_s* impl = context->impl;
     rmw_rosette::Context& ctx = impl->rosette_context;
     if (ctx.constructed) {
+        report_transport_stats(*ctx.transport);
         ctx.driver->~ParticipantDriver();
         ctx.participant->~RTPSParticipant();
         ctx.transport->~SocketUdpTransport();

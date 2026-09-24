@@ -30,6 +30,8 @@
 #include <rosidl_runtime_c/message_type_support_struct.h>
 #include <rosidl_runtime_c/service_type_support_struct.h>
 
+#include "rosette/rtps/buf_pool.hpp"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -152,6 +154,28 @@ void compose_codec_type_name(const MessageCodec& codec, char* out, size_t cap) n
  */
 uint32_t serialize_message(const MessageCodec& codec, const void* ros_message,
                            uint8_t* out_buf, uint32_t out_cap) noexcept;
+
+/**
+ * @brief Encodes a ROS message into a pool buffer sized to fit it.
+ *
+ * rmw_publish(), rmw_send_request() and rmw_send_response() call this and
+ * hand the buffer to IStatefulWriter::write_async_owned(), so a sample is
+ * serialized once and never copied again, and no stack buffer bounds its
+ * size. The smallest pool class is tried first, doubling until the message
+ * fits, so small messages hold small blocks.
+ *
+ * @param[in] codec       Resolved codec for the message's type.
+ * @param[in] ros_message Message instance to encode.
+ * @return A buffer holding the CDR body (payload.size set), or an invalid
+ *   buffer when the message does not fit the largest pool block
+ *   (RMW_ROSETTE_MAX_SAMPLE_SIZE) or the pool is exhausted.
+ *
+ * Verification:
+ * - Correct means: equals serialize_message() into a large enough buffer.
+ * - Covered by: rmw_rosette/test/test_introspection_c_codec.cpp
+ *   (SerializeToPoolFitsLargeMessages).
+ */
+rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* ros_message) noexcept;
 
 /**
  * @brief Decodes an RTPS serialized payload into a ROS message.

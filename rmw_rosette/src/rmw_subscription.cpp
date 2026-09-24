@@ -11,7 +11,10 @@
 #include "rmw_rosette/message_codec.hpp"
 #include "rmw_rosette/types.hpp"
 
+#include <rcutils/types/uint8_array.h>
 #include <rmw/rmw.h>
+
+#include <cstring>
 #include <rmw/error_handling.h>
 #include <rmw/get_network_flow_endpoints.h>
 
@@ -203,7 +206,7 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
         return RMW_RET_OK;  // Nothing buffered — not an error, per rmw_take()'s contract.
     }
 
-    if (!rmw_rosette::deserialize_message(impl->codec, change.bytes, change.size,
+    if (!rmw_rosette::deserialize_message(impl->codec, change.payload.data, change.payload.size,
                                           ros_message)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_take_with_info: deserialize failed");
         return RMW_RET_ERROR;
@@ -245,8 +248,8 @@ rmw_ret_t rmw_take(const rmw_subscription_t* subscription, void* ros_message, bo
  * @param[in] allocation Unused; this path performs no loaned-message allocation.
  * @return `RMW_RET_OK` on success (including the nothing-buffered case);
  *   `RMW_RET_INVALID_ARGUMENT` if any required argument is null;
- *   `RMW_RET_ERROR` if `serialized_message`'s buffer was too small to
- *   hold the change.
+ *   `RMW_RET_BAD_ALLOC` if `serialized_message` could not be grown (with
+ *   its own allocator) to hold the change.
  */
 rmw_ret_t rmw_take_serialized_message_with_info(
     const rmw_subscription_t* subscription, rmw_serialized_message_t* serialized_message,
@@ -264,13 +267,15 @@ rmw_ret_t rmw_take_serialized_message_with_info(
         return RMW_RET_OK;
     }
 
-    if (serialized_message->buffer_capacity < change.size) {
+    const uint32_t size = change.payload.size;
+    if (serialized_message->buffer_capacity < size &&
+        rcutils_uint8_array_resize(serialized_message, size) != RCUTILS_RET_OK) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_take_serialized_message_with_info: "
-                          "serialized_message buffer too small");
-        return RMW_RET_ERROR;
+                          "could not grow serialized_message");
+        return RMW_RET_BAD_ALLOC;
     }
-    for (uint32_t i = 0; i < change.size; ++i) serialized_message->buffer[i] = change.bytes[i];
-    serialized_message->buffer_length = change.size;
+    std::memcpy(serialized_message->buffer, change.payload.data, size);
+    serialized_message->buffer_length = size;
 
     if (message_info) {
         *message_info = rmw_get_zero_initialized_message_info();

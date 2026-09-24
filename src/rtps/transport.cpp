@@ -160,6 +160,21 @@ uint32_t SocketUdpTransport::receive_from(rosette::net::Socket* socket,
     if (received <= 0) {
         return 0u;
     }
+    ++stats_.rx_datagrams;
+    if (static_cast<uint32_t>(received) > stats_.max_rx_datagram) {
+        stats_.max_rx_datagram = static_cast<uint32_t>(received);
+    }
+    if (static_cast<uint32_t>(received) > max_datagram_) {
+        ++stats_.oversize_rx;
+    }
+    if (static_cast<std::size_t>(received) > buf_size) {
+        // The datagram did not fit. The complete submessages at its start
+        // are still parsed; the rest is lost, so count it for diagnosis.
+        ++stats_.truncated_rx;
+        RTPS_LOG_W("transport", "datagram of %ld octets truncated to %lu",
+                   (long)received, (unsigned long)buf_size);
+        return buf_size;
+    }
 
     if (remote.is_ipv4()) {
         src_addr = (static_cast<uint32_t>(remote.address[0]) << 24u) |
@@ -218,6 +233,13 @@ bool SocketUdpTransport::send_unicast(const BufRef& buf,
     }
 
     const auto address = locator_to_socket_address(dest);
+    ++stats_.tx_datagrams;
+    if (buf.size > stats_.max_tx_datagram) stats_.max_tx_datagram = buf.size;
+    if (buf.size > max_datagram_) {
+        ++stats_.oversize_tx;
+        RTPS_LOG_W("transport", "datagram of %lu octets exceeds the %lu-octet limit",
+                   (unsigned long)buf.size, (unsigned long)max_datagram_);
+    }
     const std::ptrdiff_t sent = socket->send_to(buf.data, buf.size, address);
     if (sent != static_cast<std::ptrdiff_t>(buf.size)) {
         RTPS_LOG_W("transport", "send_to failed: kind=%ld dst=%u.%u.%u.%u:%u len=%lu sent=%ld err=%d",

@@ -35,10 +35,6 @@ PublisherSlot* slot_from(const rmw_publisher_t* pub) noexcept {
     return reinterpret_cast<PublisherSlot*>(const_cast<rmw_publisher_t*>(pub));
 }
 
-/// Publish-side wire buffer. Sized for the max fragment-free datagram
-/// this stack targets — see RTPS_BUF_BLOCK_SIZE (buf_pool.hpp), which the
-/// reader side already budgets against for the same reason.
-constexpr uint32_t kSerializeBufSize = RTPS_BUF_BLOCK_SIZE;
 
 }  // namespace
 
@@ -165,10 +161,11 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
 /**
  * @brief Serializes and publishes a ROS message.
  *
- * Encodes `ros_message` via serialize_message() into a stack buffer, then
- * hands the bytes to the publisher's `IStatefulWriter::write_async()`,
- * which adds the change to the writer history, prepends the CDR
- * encapsulation header, and sends it to every matched reader. The call does
+ * Encodes `ros_message` into a pool buffer (serialize_to_pool()) and hands
+ * it to the publisher's `IStatefulWriter::write_async_owned()`, which adds
+ * the change to the writer history, prepends the CDR encapsulation header,
+ * and sends it to every matched reader, as DATA_FRAG when it exceeds the
+ * transport's datagram limit. The call does
  * not wait for acknowledgments: RELIABLE delivery is completed by
  * HEARTBEAT/ACKNACK repair while rmw_wait() drives the participant.
  *
@@ -187,21 +184,20 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
 
-    uint8_t buf[kSerializeBufSize];
-    const uint32_t len = rmw_rosette::serialize_message(impl->codec, ros_message,
-                                                          buf, sizeof(buf));
-    if (len == 0) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_publish: serialization failed "
-                          "(message too large for the wire buffer?)");
+    rtps::BufRef payload = rmw_rosette::serialize_to_pool(impl->codec, ros_message);
+    if (!payload.valid()) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_publish: serialization failed (message larger "
+                          "than RMW_ROSETTE_MAX_SAMPLE_SIZE, or buffer pool exhausted)");
         return RMW_RET_ERROR;
     }
 
-    // write_async(): a DDS write with KEEP_LAST history does not wait for
-    // acknowledgments; reliability comes from the history plus
-    // HEARTBEAT/ACKNACK repair driven by rmw_wait().
-    const bool ok = impl->writer->write_async(rtps::ChangeKind::ALIVE, buf, len);
+    // A DDS write with KEEP_LAST history does not wait for acknowledgments;
+    // reliability comes from the history plus HEARTBEAT/ACKNACK repair driven
+    // by rmw_wait(). Samples over the datagram limit go out as DATA_FRAG.
+    const bool ok = impl->writer->write_async_owned(rtps::ChangeKind::ALIVE,
+                                                    static_cast<rtps::BufRef&&>(payload));
     if (!ok) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_publish: write_async failed");
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_publish: write failed");
         return RMW_RET_ERROR;
     }
     return RMW_RET_OK;

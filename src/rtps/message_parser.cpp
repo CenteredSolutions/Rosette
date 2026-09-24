@@ -379,8 +379,8 @@ static bool parse_data_frag(Reader& r, Octet flags, bool need_swap,
     }
 
     if (flags & data_frag_flags::Q) {
-        InlineQos ignored{};
-        if (!parse_inline_qos(r, need_swap, ignored)) return false;
+        out.inlineQosPresent = true;
+        if (!parse_inline_qos(r, need_swap, out.inlineQos)) return false;
     }
 
     out.fragmentPayload     = r.peek();

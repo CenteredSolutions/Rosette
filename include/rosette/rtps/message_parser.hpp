@@ -120,6 +120,9 @@ struct ParsedDataFrag {
     uint16_t        fragmentsInSubmessage;
     uint16_t        fragmentSize;           ///< Bytes per fragment (except last).
     uint32_t        dataSize;              ///< Total serialized sample size.
+    bool            inlineQosPresent;       ///< Q-flag: inlineQos follows.
+    InlineQos       inlineQos;              ///< Decoded inline QoS (key hash,
+                                            ///< status info, related identity).
     const Octet*    fragmentPayload;        ///< Pointer into receive buffer.
     uint32_t        fragmentPayloadSize;
 };

@@ -222,6 +222,32 @@ public:
     }
 
     // ----------------------------------------------------------
+    // is_new_change()
+    //
+    // True when a change with this SN should be delivered: it is beyond
+    // everything received so far, or it fills a gap still tracked as
+    // MISSING (a repair retransmission). Anything else was already
+    // received, or was given up as LOST/irrelevant, and is a duplicate.
+    //
+    // Comparing against highestSNReceived alone is wrong under loss or
+    // reordering: after SN 6 arrives ahead of a lost SN 5, the
+    // retransmitted SN 5 is below the frontier yet still needed, and
+    // dropping it leaves a hole the reader NACKs forever.
+    //
+    // §8.4.10.4 (ChangeFromWriter status), §8.4.12.2 (reliable reader).
+    // Verification: TC-SRR-8.4.8-002.
+    // ----------------------------------------------------------
+    bool is_new_change(const SequenceNumber& sn) const noexcept {
+        if (sn > highestSNReceived) return true;
+        for (uint8_t i = 0; i < N; ++i) {
+            if (changes_[i].is_valid() && changes_[i].sequenceNumber == sn) {
+                return changes_[i].status == ChangeFromWriterStatus::MISSING;
+            }
+        }
+        return false;
+    }
+
+    // ----------------------------------------------------------
     // missing_changes_update()
     //
     // Ensures that all SNs in [highestSNReceived+1 .. last_available_sn]

@@ -29,6 +29,13 @@ struct ITransport {
                               const Locator& dest) noexcept = 0;
     virtual bool send_multicast(const BufRef& buf,
                                 const Locator& dest) noexcept = 0;
+    // Largest RTPS message (one UDP datagram payload) this transport may
+    // send. Writers split larger samples into DATA_FRAG submessages so no
+    // datagram exceeds it, which keeps traffic free of IP fragmentation on
+    // links and stacks that cannot reassemble (WIZnet hardware UDP,
+    // FreeRTOS+TCP). 65507 is the IPv4 UDP maximum.
+    virtual uint32_t max_datagram_size() const noexcept { return 65507u; }
+
     // Local ports used for SPDP/SEDP/user-data locator advertisement.
     // Return 0 to indicate "unknown" and let callers apply defaults.
     virtual uint16_t local_metatraffic_unicast_port() const noexcept { return 0u; }
@@ -65,6 +72,25 @@ struct ITransportRuntime {
  * RTPS code does not know whether packets travel through POSIX sockets,
  * FreeRTOS+TCP, or a WIZnet offload path.
  */
+/**
+ * @brief Datagram counters for verifying fragmentation behavior.
+ *
+ * A link without IP fragmentation must never see a datagram above the
+ * configured maximum in either direction, and a receive buffer sized to that
+ * maximum must never truncate. These counters make that checkable on the
+ * host and on hardware.
+ */
+struct TransportStats {
+    uint32_t tx_datagrams = 0;
+    uint32_t rx_datagrams = 0;
+    uint32_t max_tx_datagram = 0;   ///< Largest datagram sent, in octets.
+    uint32_t max_rx_datagram = 0;   ///< Largest datagram received (real size).
+    uint32_t oversize_tx = 0;       ///< Datagrams sent above max_datagram_size().
+    uint32_t oversize_rx = 0;       ///< Datagrams received above max_datagram_size()
+                                    ///< (a peer not capped to this link's limit).
+    uint32_t truncated_rx = 0;      ///< Datagrams larger than the receive buffer.
+};
+
 class SocketUdpTransport : public ITransport {
 public:
     /**
@@ -155,9 +181,26 @@ public:
     uint16_t local_metatraffic_unicast_port() const noexcept override { return meta_port_; }
     uint16_t local_default_unicast_port() const noexcept override { return user_port_; }
 
+    /// @brief Largest datagram writers may send; see ITransport.
+    uint32_t max_datagram_size() const noexcept override { return max_datagram_; }
+
+    /**
+     * @brief Sets the datagram limit, typically the link MTU minus IP and
+     * UDP headers (1472 for Ethernet) on a stack without IP fragmentation.
+     *
+     * @param[in] octets Largest UDP payload to send; values above 65507 and
+     *   below 512 are clamped into that range.
+     */
+    void set_max_datagram_size(uint32_t octets) noexcept {
+        max_datagram_ = octets > 65507u ? 65507u : (octets < 512u ? 512u : octets);
+    }
+
+    /// @brief Datagram counters since open().
+    const TransportStats& stats() const noexcept { return stats_; }
+
 private:
     rosette::net::Socket* socket_for(const Locator& dest) const noexcept;
-    static uint32_t receive_from(rosette::net::Socket* socket,
+    uint32_t receive_from(rosette::net::Socket* socket,
                                  Octet*    buf,
                                  uint32_t  buf_size,
                                  uint32_t& src_addr,
@@ -178,6 +221,8 @@ private:
     std::unique_ptr<rosette::net::Socket> user_socket_;
     bool meta_open_ = false;
     bool user_open_ = false;
+    uint32_t max_datagram_ = 65507u;
+    TransportStats stats_{};
 };
 
 class SocketTransportRuntime : public ITransportRuntime {

@@ -1,5 +1,8 @@
 #include "spec_test_common.hpp"
 
+#include <cstdio>
+
+#include "rosette/rtps/fragment_assembler.hpp"
 #include "rosette/rtps/stateful_writer.hpp"
 
 namespace spec_test {
@@ -276,6 +279,94 @@ static bool tc_swr_8_4_7_002(std::string& err) {
     return true;
 }
 
+// A transport with a small datagram limit that records what is sent.
+struct SmallMtuTransport : ITransport {
+    uint32_t limit = 600u;
+    std::vector<std::vector<Octet>> sent{};
+    bool send_unicast(const BufRef& buf, const Locator&) noexcept override {
+        sent.emplace_back(buf.data, buf.data + buf.size);
+        return true;
+    }
+    bool send_multicast(const BufRef&, const Locator&) noexcept override { return true; }
+    uint32_t max_datagram_size() const noexcept override { return limit; }
+};
+
+// §8.4.14.1 / §9.4.5.4: a sample larger than the datagram limit is sent as
+// DATA_FRAG submessages, every datagram within the limit, and reassembles to
+// the complete serializedPayload (CDR_LE header + data) with its inline QoS.
+static bool tc_swr_8_4_14_001(std::string& err) {
+    SmallMtuTransport tx{};
+    const Guid writer_guid = make_guid(0xE1u, 0xE2u, 0xE3u, make_entity(1u, 1u, 1u, 0x03u));
+    const Guid reader_guid = make_guid(0xF1u, 0xF2u, 0xF3u, make_entity(2u, 2u, 2u, 0x04u));
+    const Locator loc = make_udpv4_locator(0xC0A80148u, 7411u);
+    StatefulWriter<1, 1> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx);
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+
+    std::vector<Octet> payload(1800u);
+    for (size_t i = 0; i < payload.size(); ++i) payload[i] = static_cast<Octet>(i * 7u + 3u);
+    InlineQos qos{};
+    qos.hasRelatedSampleIdentity = true;
+    qos.relatedSampleIdentity.writerGuid = reader_guid;
+    qos.relatedSampleIdentity.sequenceNumber = SequenceNumber::from_int64(9);
+    CHECK(w.write_async(ChangeKind::ALIVE, payload.data(), static_cast<uint32_t>(payload.size()), qos),
+          "write_async should succeed");
+
+    CHECK(tx.sent.size() > 1u, "a sample over the limit must be split into several datagrams");
+    struct Collect {
+        FragmentAssembler<1> assembler{};
+        CacheChange complete{};
+        int fragments = 0;
+        bool done = false;
+        bool qos_everywhere = true;
+    } c{};
+    ParseOps ops{};
+    ops.on_data_frag = [](const ParseContext& ctx, const ParsedDataFrag& f) noexcept {
+        auto* col = static_cast<Collect*>(ctx.user_data);
+        ++col->fragments;
+        col->qos_everywhere = col->qos_everywhere && f.inlineQosPresent &&
+                              f.inlineQos.hasRelatedSampleIdentity;
+        const Guid wg{ctx.senderGuidPrefix, f.writerId};
+        if (col->assembler.on_data_frag(wg, f.writerSN, f.fragmentStartingNum,
+                                        f.fragmentsInSubmessage, f.fragmentSize, f.dataSize,
+                                        f.fragmentPayload, f.fragmentPayloadSize, TIME_ZERO,
+                                        col->complete, f.inlineQosPresent ? &f.inlineQos : nullptr)) {
+            col->done = true;
+        }
+    };
+    for (const auto& msg : tx.sent) {
+        CHECK(msg.size() <= tx.limit, "no datagram may exceed the transport's datagram limit");
+        CHECK(parse_message(msg.data(), static_cast<uint32_t>(msg.size()), GuidPrefix{}, ops, &c) ==
+                  ParseResult::OK,
+              "every fragment datagram must parse");
+    }
+    CHECK(c.fragments == static_cast<int>(tx.sent.size()), "one DATA_FRAG per datagram");
+    CHECK(c.qos_everywhere, "inline QoS must ride in every fragment");
+    CHECK(c.done, "the fragments must reassemble into a complete sample");
+    CHECK(c.complete.payload.size == payload.size() + 4u,
+          "the serializedPayload is the CDR header plus the data");
+    if (!(c.complete.payload.data[0] == 0x00u && c.complete.payload.data[1] == 0x01u)) {
+        char b[96];
+        std::snprintf(b, sizeof(b), "fragment 1 must carry the CDR_LE header; got %02x %02x %02x %02x %02x %02x",
+                      c.complete.payload.data[0], c.complete.payload.data[1], c.complete.payload.data[2],
+                      c.complete.payload.data[3], c.complete.payload.data[4], c.complete.payload.data[5]);
+        err = b;
+        return false;
+    }
+    bool same = true;
+    for (size_t i = 0; i < payload.size(); ++i) same = same && c.complete.payload.data[4 + i] == payload[i];
+    CHECK(same, "reassembled data must equal the written sample");
+    CHECK(c.complete.inlineQos.hasRelatedSampleIdentity &&
+              c.complete.inlineQos.relatedSampleIdentity == qos.relatedSampleIdentity,
+          "the completed change keeps the sample's related sample identity");
+
+    // A sample that fits is still sent as one DATA.
+    tx.sent.clear();
+    const Octet small[16] = {};
+    CHECK(w.write_async(ChangeKind::ALIVE, small, sizeof(small)), "small write should succeed");
+    CHECK(tx.sent.size() == 1u, "a sample within the limit stays a single DATA datagram");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_3_8_4_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.3-001",
                      "§8.4.3: ACKNACK cumulative ACK updates ReaderProxy acknowledgment state; duplicate ACKNACK counts are ignored.",
@@ -289,6 +380,9 @@ void append_stateful_writer_tests_8_4_3_8_4_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.7-002",
                      "§8.4.7.1: ms_until_next_timer() is unbounded without readers, the heartbeat remainder with readers, and the nackResponseDelay remainder after a NACK.",
                      tc_swr_8_4_7_002});
+    tests.push_back({"TC-SWR-8.4.14-001",
+                     "§8.4.14.1/§9.4.5.4: samples over the datagram limit go out as DATA_FRAG, every datagram within the limit, reassembling to the CDR header plus data with inline QoS in every fragment and in the result.",
+                     tc_swr_8_4_14_001});
     tests.push_back({"TC-SWR-8.4.4-001",
                      "§8.4.4/§8.4.1.1: NACK_FRAG requests arm nackResponseDelay and trigger deferred retransmit plus directed final HEARTBEAT.",
                      tc_swr_8_4_4_001});

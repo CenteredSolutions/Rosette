@@ -181,6 +181,26 @@ public:
         return rcl_publisher_wait_for_all_acked(&publisher_, timeout_ns) == RCL_RET_OK;
     }
 
+    /**
+     * @brief Reports, without sleeping, whether every sample published so far
+     * has been acknowledged by every matched subscription.
+     *
+     * The polling counterpart of wait_for_all_acked() for superloops and
+     * state machines: a zero timeout makes the middleware do one pass and
+     * return. Under rmw_rosette that pass also receives and processes any
+     * acknowledgments already waiting, so polling makes progress on its own.
+     *
+     * @return `true` when all samples are acknowledged; `false` otherwise or
+     *   when the middleware does not support acknowledgment queries.
+     *
+     * References:
+     * - rcl/publisher.h (Humble), `rcl_publisher_wait_for_all_acked` (timeout 0)
+     */
+    bool all_acked() noexcept
+    {
+        return wait_for_all_acked(0u);
+    }
+
 private:
     /**
      * @brief Finalizes the underlying `rcl_publisher_t`.

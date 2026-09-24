@@ -135,6 +135,23 @@ uint32_t serialize_message(const MessageCodec& codec, const void* ros_message,
     }
 }
 
+rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* ros_message) noexcept {
+    uint32_t request = 256u;
+    for (;;) {
+        rtps::BufRef buf = rtps::buf_alloc(request);
+        if (!buf.valid()) return {};
+        const uint32_t len = serialize_message(codec, ros_message, buf.data, buf.capacity());
+        if (len > 0u) {
+            buf.size = len;
+            return buf;
+        }
+        // Did not fit (or failed to encode): retry one pool class up, until
+        // the largest class has been tried.
+        if (buf.capacity() >= rtps::kPoolMaxBlockSize) return {};
+        request = buf.capacity() + 1u;
+    }
+}
+
 bool deserialize_message(const MessageCodec& codec, const uint8_t* in_buf, uint32_t in_len,
                          void* ros_message) noexcept {
     if (in_len < kRtpsEncapsulationHeaderSize) return false;

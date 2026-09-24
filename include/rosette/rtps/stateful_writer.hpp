@@ -122,6 +122,14 @@ struct IStatefulWriter {
                              const InlineQos& inline_qos = InlineQos{},
                              SequenceNumber*  out_sn      = nullptr) noexcept = 0;
 
+    /// §8.4.1.4 — like write_async(), but takes ownership of a pool buffer
+    /// the caller already filled (payload.size set), avoiding a copy. The
+    /// payload is the CDR body; the writer adds the encapsulation header.
+    virtual bool write_async_owned(ChangeKind       kind,
+                                   BufRef&&         payload,
+                                   const InlineQos& inline_qos = InlineQos{},
+                                   SequenceNumber*  out_sn     = nullptr) noexcept = 0;
+
     /// True when every change in the history is acknowledged by every
     /// matched reader (§8.4.7.1 unacked_changes empty for all proxies).
     /// Backs DDS wait_for_acknowledgments / rmw_publisher_wait_for_all_acked.
@@ -233,6 +241,7 @@ public:
         staging_.writerGuid     = guid_;
         staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN; // Assigned in add_change.
         staging_.inlineQos      = {};
+        staging_.preframed      = false;
         staging_.payload.block  = out_payload.block;
         staging_.payload.data   = out_payload.data;
         staging_.payload.size   = out_payload.size;
@@ -364,6 +373,35 @@ public:
     }
 
     // ----------------------------------------------------------
+    // write_async_owned()
+    //
+    // Zero-copy variant of write_async(): the change takes over `payload`,
+    // a pool buffer the caller serialized into, so large samples are not
+    // copied a second time. Samples above the transport's datagram limit
+    // are sent as DATA_FRAG like any other change.
+    //
+    // @returns false when `payload` is empty or the history rejects it.
+    // ----------------------------------------------------------
+    bool write_async_owned(ChangeKind       kind,
+                           BufRef&&         payload,
+                           const InlineQos& inline_qos = InlineQos{},
+                           SequenceNumber*  out_sn     = nullptr) noexcept override
+    {
+        if (!payload.valid() || payload.size == 0) return false;
+        if (staging_.payload.valid()) staging_.payload.reset();
+        staging_.kind           = kind;
+        staging_.writerGuid     = guid_;
+        staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
+        staging_.inlineQos      = inline_qos;
+        staging_.preframed      = false;
+        staging_.payload        = static_cast<BufRef&&>(payload);
+        if (!add_change(static_cast<CacheChange&&>(staging_))) return false;
+        if (out_sn) *out_sn = nextSN_ - 1;
+        send_unsent_changes();
+        return true;
+    }
+
+    // ----------------------------------------------------------
     // write_preframed_async()
     //
     // Non-blocking write for payloads that are already encoded as
@@ -404,6 +442,7 @@ public:
         staging_.writerGuid     = guid_;
         staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
         staging_.inlineQos      = inline_qos;
+        staging_.preframed      = true;
         staging_.payload.block  = payload_buf.block;
         staging_.payload.data   = payload_buf.data;
         staging_.payload.size   = payload_buf.size;
@@ -793,6 +832,15 @@ private:
         const Locator& dest = proxy.best_locator();
         if (dest == LOCATOR_INVALID) return false;
 
+        // A sample whose DATA message would exceed the transport's datagram
+        // limit goes out as DATA_FRAG submessages instead (§8.4.14.1).
+        const uint32_t data_datagram = sizeof(RTPSMessageHeader) + sizeof(SubmessageHeader) +
+            sizeof(DataSubmessageFixed) + inline_qos_serialized_size(ch.inlineQos) +
+            (ch.preframed ? 0u : kEncapsulationSize) + ch.payload.size;
+        if (data_datagram > transport_.max_datagram_size()) {
+            return send_fragments_to(ch, proxy, dest);
+        }
+
         // ----------------------------------------------------------
         // Zero-copy TX path (§9.4.5.3, p. 204)
         //
@@ -868,7 +916,7 @@ private:
         // ----------------------------------------------------------
         // Copy path — payload has no headroom; use MessageBuilder.
         // ----------------------------------------------------------
-        if (!builder_.begin(guid_.prefix)) return false;
+        if (!builder_.begin(guid_.prefix, data_datagram)) return false;
         bool ok = builder_.append_data(
             proxy.remoteReaderGuid.entityId, guid_.entityId,
             ch.sequenceNumber, ch.payload,
@@ -880,6 +928,72 @@ private:
         if (sent) proxy.mark_sent(ch.sequenceNumber);
         return sent;
     }
+    /// Octets of the CDR encapsulation header (§10.2) prepended to samples
+    /// that are not preframed.
+    static constexpr uint16_t kEncapsulationSize = 4u;
+
+    // ----------------------------------------------------------
+    // send_fragments_to()
+    //
+    // §8.4.14.1 (sending fragmented data), §9.4.5.4 (DATA_FRAG): splits the
+    // sample's serializedPayload into fragments so that each RTPS message,
+    // one DATA_FRAG per datagram, fits transport_.max_datagram_size(). The
+    // serializedPayload is the stored payload, preceded by the CDR_LE
+    // header when the change is not preframed; fragment 1 carries that
+    // header. Inline QoS rides in every fragment, so a reader holding any
+    // fragment knows the sample's key and related sample identity.
+    // Fragment sizes are multiples of 4 octets.
+    //
+    // A NACK_FRAG or NACK for the SN resends every fragment.
+    //
+    // Verification: TC-SWR-8.4.14-001 (every datagram within the limit;
+    // reassembly restores the payload), and on-wire checks in
+    // tests/ros2/run_rmw_frag_loopback.sh.
+    // ----------------------------------------------------------
+    bool send_fragments_to(const CacheChange& ch, Proxy& proxy, const Locator& dest) noexcept {
+        static constexpr Octet kCdrLe[kEncapsulationSize] = {0x00u, 0x01u, 0x00u, 0x00u};
+        const uint16_t prefix_len = ch.preframed ? 0u : kEncapsulationSize;
+        const uint32_t data_size = prefix_len + ch.payload.size;
+        const uint32_t overhead = sizeof(RTPSMessageHeader) + sizeof(SubmessageHeader) +
+            sizeof(DataFragSubmessageFixed) + inline_qos_serialized_size(ch.inlineQos);
+        const uint32_t limit = transport_.max_datagram_size();
+        if (limit < overhead + 64u) {
+            RTPS_LOG_E("writer", "datagram limit %lu leaves no room for fragments",
+                       (unsigned long)limit);
+            return false;
+        }
+        uint32_t frag_size = (limit - overhead) & ~3u;
+        if (frag_size > 0xFFFCu) frag_size = 0xFFFCu;
+        const uint32_t frag_count = (data_size + frag_size - 1u) / frag_size;
+
+        bool all_sent = true;
+        for (uint32_t k = 1u; k <= frag_count; ++k) {
+            const uint32_t offset = (k - 1u) * frag_size;
+            const uint32_t len = (data_size - offset < frag_size) ? data_size - offset : frag_size;
+            uint16_t pre_len = 0u;
+            const Octet* pre = nullptr;
+            if (offset < prefix_len) {
+                pre = kCdrLe + offset;
+                pre_len = static_cast<uint16_t>(
+                    (prefix_len - offset < len) ? prefix_len - offset : len);
+            }
+            const uint32_t body_offset = (offset + pre_len) - prefix_len;
+            const uint16_t body_len = static_cast<uint16_t>(len - pre_len);
+
+            if (!builder_.begin(guid_.prefix, overhead + len)) { all_sent = false; break; }
+            const bool ok = builder_.append_data_frag_parts(
+                proxy.remoteReaderGuid.entityId, guid_.entityId, ch.sequenceNumber, k,
+                static_cast<uint16_t>(frag_size), data_size, pre, pre_len,
+                ch.payload.data + body_offset, body_len, ch.inlineQos);
+            if (!ok) { builder_.abort(); all_sent = false; break; }
+            BufRef buf = builder_.finish();
+            all_sent = transport_.send_unicast(buf, dest) && all_sent;
+            buf.reset();
+        }
+        if (all_sent) proxy.mark_sent(ch.sequenceNumber);
+        return all_sent;
+    }
+
     void send_unsent_changes() noexcept {
         for (uint8_t i = 0; i < MaxReaders; ++i) {
             Proxy& proxy = proxies_[i];

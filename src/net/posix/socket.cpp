@@ -395,8 +395,10 @@ public:
      * @param[out] data     Buffer for the datagram payload.
      * @param[in]  capacity Size of @p data; a larger datagram is truncated.
      * @param[out] remote    Source address of the datagram, when not null.
-     * @return Bytes received, or -1 with `last_error()` set (`timed_out` when
-     *     nothing arrived before the deadline).
+     * @return The datagram's length, or -1 with `last_error()` set
+     *     (`timed_out` when nothing arrived before the deadline). On Linux
+     *     the length is the datagram's real size (MSG_TRUNC), so a value
+     *     above @p capacity reports that only @p capacity bytes were stored.
      */
     std::ptrdiff_t recv_from(void* data,
                              const std::size_t capacity,
@@ -414,7 +416,14 @@ public:
         for (;;) {
             sockaddr_storage from{};
             socklen_t from_len = static_cast<socklen_t>(sizeof(from));
-            const ssize_t rc = ::recvfrom(fd_, data, capacity, 0,
+#ifdef __linux__
+            // MSG_TRUNC: return the real datagram length even when it did not
+            // fit, so callers can detect (and count) truncation.
+            const int recv_flags = MSG_TRUNC;
+#else
+            const int recv_flags = 0;
+#endif
+            const ssize_t rc = ::recvfrom(fd_, data, capacity, recv_flags,
                                           reinterpret_cast<sockaddr*>(&from),
                                           &from_len);
             if (rc >= 0) {
