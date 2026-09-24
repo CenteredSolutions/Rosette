@@ -282,6 +282,64 @@ static bool tc_spdp_8_5_3_004(std::string& err) {
     return true;
 }
 
+static bool tc_spdp_8_5_3_005(std::string& err) {
+    SPDPdiscoveredParticipantData local{};
+    local.guidPrefix = make_prefix(0x41u, 0x42u, 0x43u);
+    local.protocolVersion = PROTOCOLVERSION_2_5;
+    local.vendorId = VENDORID_THIS_IMPL;
+    local.leaseDuration = Duration::from_ms(20000u);
+    local.metatrafficUnicastLocatorCount = 1u;
+    local.metatrafficUnicastLocatorList[0] = make_udpv4_locator(0xC0A80132u, 7410u);
+
+    FakeTransport tx{};
+    SpdpWriter w(local, tx, spdp_multicast_locator_v4(0u), 1000u);
+
+    // A participant whose clock starts near zero must still announce at once.
+    w.tick(5u);
+    CHECK(tx.multicast_calls == 1, "first tick must announce immediately");
+    w.tick(500u);
+    CHECK(tx.multicast_calls == 1, "no re-announce before resendParticipantDataPeriod");
+    w.tick(1005u);
+    CHECK(tx.multicast_calls == 2, "re-announce once resendParticipantDataPeriod elapsed");
+    w.tick(1500u);
+    CHECK(tx.multicast_calls == 2, "period restarts from the last announcement");
+
+    // Each announcement is a new change with a larger SN, so best-effort
+    // SPDP readers that drop repeated SNs still see every update.
+    DataCap cap{};
+    ParseOps ops{};
+    ops.on_data = on_data_capture;
+    CHECK(parse_message(tx.last_msg.data(), static_cast<uint32_t>(tx.last_msg.size()),
+                        GuidPrefix{}, ops, &cap) == ParseResult::OK,
+          "announcement should parse");
+    CHECK(cap.data.writerSN == SequenceNumber::from_int64(2),
+          "the second announcement must carry SN 2");
+    return true;
+}
+
+// §8.5.3.2: a peer that disposes its SPDP instance is removed at once,
+// with the same callback a lease expiry fires, and may be rediscovered.
+static bool tc_spdp_8_5_3_006(std::string& err) {
+    PeerObs obs{};
+    SpdpReader r(on_new_peer, on_peer_removed, &obs);
+    const GuidPrefix gp = make_prefix(0x51u, 0x52u, 0x53u);
+    std::vector<Octet> payload{};
+    CHECK(build_payload_for_peer(gp, 20u, payload), "payload construction failed");
+    CHECK(r.on_data(gp, payload.data(), static_cast<uint32_t>(payload.size()), 0u),
+          "participant DATA should be accepted");
+
+    CHECK(!r.remove_peer(make_prefix(0x61u, 0x62u, 0x63u)), "unknown peer must not be removed");
+    CHECK(obs.removed_calls == 0, "removing an unknown peer must not fire callbacks");
+    CHECK(r.remove_peer(gp), "known peer must be removed on disposal");
+    CHECK(obs.removed_calls == 1 && r.peer_count() == 0u,
+          "disposal must fire peer-removed and empty the table before the lease ends");
+
+    CHECK(r.on_data(gp, payload.data(), static_cast<uint32_t>(payload.size()), 100u),
+          "a disposed peer that returns should be accepted");
+    CHECK(obs.new_calls == 2, "a returning peer must be reported as new");
+    return true;
+}
+
 void append_spdp_tests_8_5_3(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SPDP-8.5.3-001",
                      "§8.5.3.3: SPDPbuiltinParticipantWriter sends a DATA Submessage carrying local SPDPdiscoveredParticipantData PL_CDR payload.",
@@ -295,6 +353,12 @@ void append_spdp_tests_8_5_3(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SPDP-8.5.3-004",
                      "§8.5.3.2 directed SPDP: announce_unicast() sends the local participant data via send_unicast to the specified peer locator with correct SPDP entity IDs.",
                      tc_spdp_8_5_3_004});
+    tests.push_back({"TC-SPDP-8.5.3-005",
+                     "§8.5.3.3 periodic SPDP: the writer announces on its first tick, then once per resendParticipantDataPeriod, each announcement with the next SN.",
+                     tc_spdp_8_5_3_005});
+    tests.push_back({"TC-SPDP-8.5.3-006",
+                     "§8.5.3.2: disposing a participant removes it immediately (peer-removed fires once) and it can be rediscovered.",
+                     tc_spdp_8_5_3_006});
 }
 
 } // namespace spec_test

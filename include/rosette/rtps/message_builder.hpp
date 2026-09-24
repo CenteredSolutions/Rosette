@@ -323,9 +323,11 @@ public:
             if (!write_inline_qos(inline_qos)) return false;
         }
 
-        // EncapsulationHeader — §10.2, p. 244
-        if (!write_uint16(0x0001u)) return false;   // CDR_LE
-        if (!write_uint16(0x0000u)) return false;   // options
+        // EncapsulationHeader — §10.2, p. 244. The representation
+        // identifier is an octet pair, not a host-order integer:
+        // CDR_LE = {0x00, 0x01}, followed by two zero option octets.
+        static constexpr Octet kCdrLeEncapsulation[4] = {0x00u, 0x01u, 0x00u, 0x00u};
+        if (!write_bytes(kCdrLeEncapsulation, sizeof(kCdrLeEncapsulation))) return false;
 
         if (payload_bytes > 0) {
             if (!write_bytes(payload.data, payload_bytes)) return false;
@@ -488,21 +490,10 @@ private:
     bool write_uint32(uint32_t v) noexcept { return write_bytes(&v, 4u); }
     bool write_long(Long v)       noexcept { return write_bytes(&v, 4u); }
     bool write_byte(Octet v)      noexcept { return write_bytes(&v, 1u); }
-    bool write_sample_identity(const SampleIdentity& sample_id) noexcept {
-        if (!write_bytes(sample_id.writerGuid.prefix.value, 12u)) return false;
-        if (!write_bytes(sample_id.writerGuid.entityId.entityKey, 3u)) return false;
-        if (!write_byte(sample_id.writerGuid.entityId.entityKind)) return false;
-        if (!write_long(sample_id.sequenceNumber.high)) return false;
-        return write_uint32(sample_id.sequenceNumber.low);
-    }
     bool write_inline_qos(const InlineQos& inline_qos) noexcept {
-        if (inline_qos.hasRelatedSampleIdentity) {
-            if (!write_uint16(inline_qos_pid::RELATED_SAMPLE_IDENTITY)) return false;
-            if (!write_uint16(sample_identity_wire_size())) return false;
-            if (!write_sample_identity(inline_qos.relatedSampleIdentity)) return false;
-        }
-        if (!write_uint16(inline_qos_pid::SENTINEL)) return false;
-        return write_uint16(0u);
+        Octet encoded[kMaxInlineQosSize];
+        const uint16_t n = serialize_inline_qos(encoded, inline_qos);
+        return write_bytes(encoded, n);
     }
 
     bool write_submessage_header(const SubmessageHeader* h) noexcept {

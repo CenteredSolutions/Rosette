@@ -104,11 +104,24 @@ inline bool plcdr_write_string(Octet*      buf,
 // ============================================================
 // SedpWriter
 //
-// Sends PL_CDR_LE DATA submessages for all locally registered
-// endpoints to a specific remote participant's metatraffic locator.
+// Owns the two builtin SEDP writers and keeps one TRANSIENT_LOCAL
+// instance per local endpoint in each (§8.5.4.1, §8.5.4.3):
 //
-// Called by RTPSParticipant when a new peer is discovered via SPDP.
-// Each call serialises all known local writers and readers.
+//  - register_*()   writes the endpoint's DiscoveredWriterData /
+//                   DiscoveredReaderData once, when the endpoint is
+//                   created. Every matched peer receives it, whether it
+//                   was discovered before or after the endpoint existed.
+//  - unregister_*() removes that change from the history and writes a
+//                   disposal (PID_KEY_HASH = endpoint GUID, PID_STATUS_INFO
+//                   = DISPOSED|UNREGISTERED) so peers unmatch the endpoint.
+//  - on_peer_discovered() matches the peer's builtin SEDP readers; the
+//                   reliable TRANSIENT_LOCAL writer replays the current
+//                   history to them. Rediscovering a peer writes nothing.
+//
+// History holds at most RTPS_MAX_LOCAL_ENDPOINTS live announcements plus
+// one slot for disposals. When the history is full, the oldest disposal
+// is dropped first, so a live announcement is never evicted; a late
+// joiner asking for a dropped SN receives a GAP.
 //
 // §8.5.4.3, p. 167: the publications and subscriptions writers use
 // the SEDPbuiltin EntityIds defined in entity_id::.
@@ -118,8 +131,18 @@ inline bool plcdr_write_string(Octet*      buf,
 #  define RTPS_MAX_LOCAL_ENDPOINTS 8
 #endif
 
+static_assert(RTPS_MAX_LOCAL_ENDPOINTS >= 1 && RTPS_MAX_LOCAL_ENDPOINTS < 255,
+              "RTPS_MAX_LOCAL_ENDPOINTS must fit the uint8_t history depth");
+
 class SedpWriter {
 public:
+
+    /// History depth of each builtin writer: every live endpoint plus one
+    /// disposal in flight.
+    static constexpr uint8_t kSedpHistoryDepth =
+        static_cast<uint8_t>(RTPS_MAX_LOCAL_ENDPOINTS + 1);
+
+    using BuiltinWriter = StatefulWriter<kSedpHistoryDepth, RTPS_MAX_PEERS>;
 
     explicit SedpWriter(const GuidPrefix& local_prefix,
                         ITransport&       transport) noexcept
@@ -138,34 +161,46 @@ public:
     // ----------------------------------------------------------
     // register_writer() / register_reader()
     //
-    // Register a local endpoint for inclusion in SEDP announcements.
-    // Must be called before announce_to_peer().
+    // Record a local endpoint and announce it to every matched peer,
+    // now and (through TRANSIENT_LOCAL replay) to peers discovered later.
+    //
+    // §8.5.4, p. 163: "The SEDPbuiltinPublicationsWriter sends
+    //  DiscoveredWriterData for all local DataWriters"; likewise for
+    //  subscriptions.
+    //
+    // Verification: TC-SEDP-8.5.4-001/004 (announced on first match),
+    // TC-SEDP-8.5.4-007 (endpoint created after the peer was matched).
+    //
+    // @returns false when RTPS_MAX_LOCAL_ENDPOINTS endpoints of this kind
+    //          are already registered or the payload cannot be allocated.
     // ----------------------------------------------------------
-    bool register_writer(const DiscoveredWriterData& wd) noexcept {
-        DiscoveredWriterData* slot = alloc_writer_slot();
-        if (!slot) return false;
-        *slot = wd;
-        return true;
-    }
+    bool register_writer(const DiscoveredWriterData& wd) noexcept;
+    bool register_reader(const DiscoveredReaderData& rd) noexcept;
 
-    bool register_reader(const DiscoveredReaderData& rd) noexcept {
-        DiscoveredReaderData* slot = alloc_reader_slot();
-        if (!slot) return false;
-        *slot = rd;
-        return true;
-    }
+    // ----------------------------------------------------------
+    // unregister_writer() / unregister_reader()
+    //
+    // Withdraw a local endpoint: drop its announcement from the history
+    // and publish a disposal keyed by its GUID so peers unmatch it.
+    //
+    // §8.5.4.1 / §9.6.3.3: an instance is withdrawn by a change with
+    // StatusInfo DISPOSED|UNREGISTERED and the instance's KeyHash.
+    //
+    // Verification: TC-SEDP-8.5.4-008.
+    //
+    // @returns false when the GUID was never registered.
+    // ----------------------------------------------------------
+    bool unregister_writer(const Guid& writer_guid) noexcept;
+    bool unregister_reader(const Guid& reader_guid) noexcept;
 
     // ----------------------------------------------------------
     // announce_to_peer()
     //
-    // Send SEDP publications and subscriptions DATA to one remote
-    // participant's metatraffic unicast locator.
+    // Match one peer's builtin SEDP readers at `dest` so the current
+    // history replays to them. A peer that is already matched is left
+    // unchanged, so repeated calls write nothing new.
     //
-    // §8.5.4, p. 163:
-    //   "The SEDPbuiltinPublicationsWriter sends DiscoveredWriterData
-    //    for all local DataWriters to newly discovered participants."
-    //   "The SEDPbuiltinSubscriptionsWriter sends DiscoveredReaderData
-    //    for all local DataReaders."
+    // Verification: TC-SEDP-8.5.4-005.
     //
     // @param peer_prefix    Remote participant GUID prefix.
     // @param dest           Remote metatraffic locator for builtin readers.
@@ -173,7 +208,8 @@ public:
     void announce_to_peer(const GuidPrefix& peer_prefix,
                           const Locator&    dest) noexcept;
 
-    // Match or refresh remote builtin SEDP readers from SPDP data.
+    // Match the peer's builtin SEDP readers from its SPDP data (using all
+    // of its metatraffic unicast locators), which replays the history.
     void on_peer_discovered(const SPDPdiscoveredParticipantData& peer) noexcept;
 
     // Remove remote builtin SEDP readers when a peer expires.
@@ -187,24 +223,14 @@ public:
 
 private:
 
-    static constexpr uint8_t kSedpHistoryDepth = RTPS_MAX_LOCAL_ENDPOINTS;
-
-    StatefulWriter<kSedpHistoryDepth, RTPS_MAX_PEERS> publications_writer_;
-    StatefulWriter<kSedpHistoryDepth, RTPS_MAX_PEERS> subscriptions_writer_;
+    BuiltinWriter publications_writer_;
+    BuiltinWriter subscriptions_writer_;
 
     DiscoveredWriterData local_writers_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
     DiscoveredReaderData local_readers_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
-
-    DiscoveredWriterData* alloc_writer_slot() noexcept {
-        for (uint8_t i = 0; i < RTPS_MAX_LOCAL_ENDPOINTS; ++i)
-            if (!local_writers_[i].is_valid()) return &local_writers_[i];
-        return nullptr;
-    }
-    DiscoveredReaderData* alloc_reader_slot() noexcept {
-        for (uint8_t i = 0; i < RTPS_MAX_LOCAL_ENDPOINTS; ++i)
-            if (!local_readers_[i].is_valid()) return &local_readers_[i];
-        return nullptr;
-    }
+    /// SN of each slot's live announcement in its builtin writer's history.
+    SequenceNumber       local_writer_sn_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
+    SequenceNumber       local_reader_sn_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
 
     /// Serialise one DiscoveredWriterData as PL_CDR_LE.
     uint32_t serialise_writer(const DiscoveredWriterData& wd,
@@ -274,6 +300,26 @@ public:
                               const Octet*      payload,
                               uint32_t          payload_len,
                               SequenceNumber    writer_sn) noexcept;
+
+    // ----------------------------------------------------------
+    // on_publication_disposed() / on_subscription_disposed()
+    //
+    // A remote SEDP writer withdrew an endpoint (DATA whose inline QoS
+    // StatusInfo has DISPOSED or UNREGISTERED set). Removes it from the
+    // match table, which unmatches it from every local endpoint.
+    //
+    // §8.5.4.1, §9.6.3.3. Verification: TC-SEDP-8.5.4-009.
+    //
+    // @param sender_prefix  GUID prefix of the announcing participant.
+    // @param endpoint_guid  Withdrawn endpoint, from PID_KEY_HASH.
+    // @param writer_sn      Sequence number of the disposal DATA.
+    // ----------------------------------------------------------
+    void on_publication_disposed(const GuidPrefix& sender_prefix,
+                                 const Guid&       endpoint_guid,
+                                 SequenceNumber    writer_sn) noexcept;
+    void on_subscription_disposed(const GuidPrefix& sender_prefix,
+                                  const Guid&       endpoint_guid,
+                                  SequenceNumber    writer_sn) noexcept;
 
     // ----------------------------------------------------------
     // on_heartbeat()

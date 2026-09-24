@@ -167,13 +167,14 @@ int main() {
     }
 
     // MessageBuilder::append_data() always prepends a 4-byte CDR_LE
-    // encapsulation header (representation id 0x0001, options 0x0000 —
-    // see message_builder.hpp and tests/spec's TC-BLD-10.2-001) ahead of
+    // encapsulation header (representation identifier octets {0x00, 0x01},
+    // two zero option octets; DDSI-RTPS 2.5 §10.2 — see message_builder.hpp
+    // and tests/spec's TC-BLD-10.2-001) ahead of
     // whatever payload bytes the writer was given, and the reader reports
     // that header as part of the delivered CacheChange — this is the same
     // framing convention rosidl's CDR serializers expect to produce, not
     // an artifact of this test.
-    const rtps::Octet expected_header[4] = {0x01, 0x00, 0x00, 0x00};
+    const rtps::Octet expected_header[4] = {0x00, 0x01, 0x00, 0x00};
     const auto& got = g_received.front().bytes;
     const bool ok = got.size() == sizeof(expected_header) + sizeof(payload_text) &&
         std::memcmp(got.data(), expected_header, sizeof(expected_header)) == 0 &&

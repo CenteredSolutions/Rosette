@@ -175,7 +175,35 @@ RTPSParticipant::RTPSParticipant(uint8_t     domain_id,
     parse_ops_.on_nack_frag       = dispatch_nack_frag;
     parse_ops_.on_gap             = dispatch_gap;
 
+    // Only pairs with a local endpoint need proxies; remote-to-remote
+    // matches would only consume match records.
+    match_table_.set_local_prefix(participant_guid_.prefix);
+
     refresh_spdp_multicast_locator();
+}
+
+// ============================================================
+// assign_entity_id()  — §8.2.4.3, §9.3.1.2 Table 9.1
+// ============================================================
+
+EntityId RTPSParticipant::assign_entity_id(const EntityId& requested,
+                                           bool            is_writer,
+                                           TopicKind       topic_kind) noexcept
+{
+    if (!(requested == entity_id::UNKNOWN)) {
+        return requested;
+    }
+
+    const bool keyed = (topic_kind == TopicKind::WITH_KEY);
+    const uint32_t key = next_entity_key_++;
+
+    EntityId id{};
+    id.entityKey[0] = static_cast<Octet>((key >> 16u) & 0xFFu);
+    id.entityKey[1] = static_cast<Octet>((key >> 8u) & 0xFFu);
+    id.entityKey[2] = static_cast<Octet>(key & 0xFFu);
+    id.entityKind   = is_writer ? (keyed ? 0x02u : 0x03u)
+                                : (keyed ? 0x07u : 0x04u);
+    return id;
 }
 
 // ============================================================
@@ -195,7 +223,8 @@ StatefulReader* RTPSParticipant::create_reader(
         return nullptr;
     }
 
-    const Guid reader_guid{ participant_guid_.prefix, cfg.entityId };
+    const Guid reader_guid{ participant_guid_.prefix,
+                            assign_entity_id(cfg.entityId, false, cfg.topicKind) };
 
     StatefulReader* r = new (reader_storage_[slot]) StatefulReader(
         reader_guid, cfg.reliability, transport_,
@@ -219,6 +248,44 @@ StatefulReader* RTPSParticipant::create_reader(
     RTPS_LOG_I("participant", "reader created: slot=%d topic=%s type=%s",
                slot, cfg.topicName.str, cfg.typeName.str);
     return r;
+}
+
+// ============================================================
+// delete_writer() / delete_reader()
+// ============================================================
+
+bool RTPSParticipant::delete_writer(IStatefulWriter* writer) noexcept
+{
+    if (!writer) return false;
+    for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i) {
+        if (!writer_alive_[i] || writer_iface_[i] != writer) continue;
+        const Guid guid = writer->guid();
+        sedp_writer_.unregister_writer(guid);
+        match_table_.remove_writer(guid);
+        writer->~IStatefulWriter();
+        writer_iface_[i] = nullptr;
+        writer_alive_[i] = false;
+        RTPS_LOG_I("participant", "writer deleted: slot=%d", i);
+        return true;
+    }
+    return false;
+}
+
+bool RTPSParticipant::delete_reader(StatefulReader* reader) noexcept
+{
+    if (!reader) return false;
+    for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
+        if (!reader_alive_[i] ||
+            reinterpret_cast<StatefulReader*>(reader_storage_[i]) != reader) continue;
+        const Guid guid = reader->guid();
+        sedp_writer_.unregister_reader(guid);
+        match_table_.remove_reader(guid);
+        reader->~StatefulReader();
+        reader_alive_[i] = false;
+        RTPS_LOG_I("participant", "reader deleted: slot=%d", i);
+        return true;
+    }
+    return false;
 }
 
 // ============================================================
@@ -371,12 +438,14 @@ void RTPSParticipant::on_spdp_new_peer(const PeerEntry& peer,
         RTPS_LOG_W("participant", "new peer has no metatraffic locator, skipping SEDP");
         return;
     }
-    p->sedp_writer_.on_peer_discovered(peer.data);
+    // §8.5.3.2: direct SPDP to the new peer first, so it knows this
+    // participant (and has matched its builtin SEDP writers) before any
+    // SEDP DATA arrives; a peer drops DATA from writers it has not matched.
     const Locator& dest = peer.data.metatrafficUnicastLocatorList[0];
-    p->sedp_writer_.announce_to_peer(peer.data.guidPrefix, dest);
-    // §8.5.3.2: direct SPDP to new peer so it learns our locators immediately
-    // rather than waiting for the next periodic multicast interval.
     p->spdp_writer_.announce_unicast(dest);
+    // Matching the peer's builtin SEDP readers replays every live endpoint
+    // announcement to it (TRANSIENT_LOCAL, §8.5.4.1).
+    p->sedp_writer_.on_peer_discovered(peer.data);
     p->spdp_reader_.mark_sedp_announced(peer.data.guidPrefix);
 }
 
@@ -467,10 +536,29 @@ void RTPSParticipant::dispatch_data(const ParseContext& ctx,
         if (ctx.senderGuidPrefix == p->participant_guid_.prefix) {
             return;
         }
+        // A peer leaving cleanly disposes its SPDP instance (§8.5.3.2).
+        if (msg.inlineQos.withdraws_instance()) {
+            const GuidPrefix gone = msg.inlineQos.hasKeyHash
+                ? msg.inlineQos.key_hash_guid().prefix : ctx.senderGuidPrefix;
+            p->spdp_reader_.remove_peer(gone);
+            return;
+        }
         p->spdp_reader_.on_data(ctx.senderGuidPrefix,
                                 msg.serializedPayload,
                                 msg.serializedPayloadSize, now_ms);
         return;
+    }
+    // SEDP disposal: the key hash names the withdrawn endpoint (§9.6.3.3).
+    if (msg.inlineQos.withdraws_instance() && msg.inlineQos.hasKeyHash) {
+        const Guid endpoint = msg.inlineQos.key_hash_guid();
+        if (msg.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
+            p->sedp_reader_.on_publication_disposed(ctx.senderGuidPrefix, endpoint, msg.writerSN);
+            return;
+        }
+        if (msg.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
+            p->sedp_reader_.on_subscription_disposed(ctx.senderGuidPrefix, endpoint, msg.writerSN);
+            return;
+        }
     }
     if (msg.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
         p->sedp_reader_.on_publication_data(ctx.senderGuidPrefix,

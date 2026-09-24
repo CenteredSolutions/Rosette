@@ -49,6 +49,7 @@
 
 #pragma once
 
+#include "log.hpp"
 #include "types.hpp"
 #include <string.h>
 
@@ -200,6 +201,12 @@ inline bool qos_compatible(const DiscoveredWriterData& writer,
 #ifndef RTPS_MAX_DISCOVERED_READERS
 #  define RTPS_MAX_DISCOVERED_READERS 8
 #endif
+// Writer-reader pairs tracked at once. With a local prefix set, only pairs
+// that involve a local endpoint are tracked, so this scales with local
+// endpoints times their matched peers rather than with the whole graph.
+#ifndef RTPS_MAX_MATCH_RECORDS
+#  define RTPS_MAX_MATCH_RECORDS (RTPS_MAX_DISCOVERED_WRITERS * RTPS_MAX_DISCOVERED_READERS)
+#endif
 
 class EndpointMatchTable {
 public:
@@ -221,6 +228,18 @@ public:
         , on_unmatch_(on_unmatch)
         , user_data_(user_data)
     {}
+
+    // ----------------------------------------------------------
+    // set_local_prefix()
+    // Restrict matching to pairs in which at least one endpoint belongs
+    // to the participant with this prefix. Remote-to-remote pairs are
+    // still discovered but neither recorded nor reported, since no local
+    // proxy exists to wire. RTPSParticipant sets its own prefix.
+    // ----------------------------------------------------------
+    void set_local_prefix(const GuidPrefix& prefix) noexcept {
+        local_prefix_ = prefix;
+        has_local_prefix_ = true;
+    }
 
     // ----------------------------------------------------------
     // add_writer()
@@ -245,11 +264,12 @@ public:
 
         // Match against all known readers.
         if (!on_match_) return;
-        for (uint8_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i) {
+        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i) {
             if (!readers_[i].is_valid()) continue;
             if (!topics_match(wd, readers_[i])) continue;
             if (!qos_compatible(wd, readers_[i])) continue;
-            record_match(wd.writerGuid, readers_[i].readerGuid);
+            if (!involves_local(wd.writerGuid, readers_[i].readerGuid)) continue;
+            if (!record_match(wd.writerGuid, readers_[i].readerGuid)) continue;
             on_match_(wd, readers_[i], user_data_);
         }
     }
@@ -275,11 +295,12 @@ public:
         *slot = rd;
 
         if (!on_match_) return;
-        for (uint8_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i) {
+        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i) {
             if (!writers_[i].is_valid()) continue;
             if (!topics_match(writers_[i], rd)) continue;
             if (!qos_compatible(writers_[i], rd)) continue;
-            record_match(writers_[i].writerGuid, rd.readerGuid);
+            if (!involves_local(writers_[i].writerGuid, rd.readerGuid)) continue;
+            if (!record_match(writers_[i].writerGuid, rd.readerGuid)) continue;
             on_match_(writers_[i], rd, user_data_);
         }
     }
@@ -296,7 +317,7 @@ public:
     void remove_writer(const Guid& writer_guid) noexcept {
         // Fire on_unmatch for every recorded match involving this writer.
         if (on_unmatch_) {
-            for (uint8_t i = 0; i < kMaxMatches; ++i) {
+            for (uint32_t i = 0; i < kMaxMatches; ++i) {
                 if (matches_[i].writer_guid == writer_guid &&
                     matches_[i].reader_guid != GUID_UNKNOWN) {
                     on_unmatch_(writer_guid, matches_[i].reader_guid, user_data_);
@@ -314,7 +335,7 @@ public:
     // ----------------------------------------------------------
     void remove_reader(const Guid& reader_guid) noexcept {
         if (on_unmatch_) {
-            for (uint8_t i = 0; i < kMaxMatches; ++i) {
+            for (uint32_t i = 0; i < kMaxMatches; ++i) {
                 if (matches_[i].reader_guid == reader_guid &&
                     matches_[i].writer_guid != GUID_UNKNOWN) {
                     on_unmatch_(matches_[i].writer_guid, reader_guid, user_data_);
@@ -345,12 +366,12 @@ public:
         // Collect all writer GUIDs belonging to this participant.
         // We must fire on_unmatch before clearing the endpoint entries
         // so the callback can still read the match record.
-        for (uint8_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i) {
+        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i) {
             if (!writers_[i].is_valid()) continue;
             if (writers_[i].writerGuid.prefix != gone_prefix) continue;
             remove_writer(writers_[i].writerGuid);
         }
-        for (uint8_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i) {
+        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i) {
             if (!readers_[i].is_valid()) continue;
             if (readers_[i].readerGuid.prefix != gone_prefix) continue;
             remove_reader(readers_[i].readerGuid);
@@ -389,28 +410,38 @@ private:
         bool active() const noexcept { return writer_guid != GUID_UNKNOWN; }
     };
 
-    static constexpr uint8_t kMaxMatches =
-        RTPS_MAX_DISCOVERED_WRITERS * RTPS_MAX_DISCOVERED_READERS;
+    static constexpr uint32_t kMaxMatches = RTPS_MAX_MATCH_RECORDS;
 
     MatchRecord matches_[kMaxMatches] = {};
 
     bool already_matched(const Guid& wg, const Guid& rg) const noexcept {
-        for (uint8_t i = 0; i < kMaxMatches; ++i) {
+        for (uint32_t i = 0; i < kMaxMatches; ++i) {
             if (matches_[i].writer_guid == wg &&
                 matches_[i].reader_guid == rg) return true;
         }
         return false;
     }
 
-    void record_match(const Guid& wg, const Guid& rg) noexcept {
-        if (already_matched(wg, rg)) return;
-        for (uint8_t i = 0; i < kMaxMatches; ++i) {
+    // Returns true when the pair is newly recorded; false when it was
+    // already matched or the record table is full (the pair is then not
+    // reported, so every reported match has a matching unmatch).
+    bool record_match(const Guid& wg, const Guid& rg) noexcept {
+        if (already_matched(wg, rg)) return false;
+        for (uint32_t i = 0; i < kMaxMatches; ++i) {
             if (!matches_[i].active()) {
                 matches_[i].writer_guid = wg;
                 matches_[i].reader_guid = rg;
-                return;
+                return true;
             }
         }
+        RTPS_LOG_W("match", "match record table full (RTPS_MAX_MATCH_RECORDS=%lu)",
+                   (unsigned long)kMaxMatches);
+        return false;
+    }
+
+    bool involves_local(const Guid& wg, const Guid& rg) const noexcept {
+        return !has_local_prefix_ ||
+               wg.prefix == local_prefix_ || rg.prefix == local_prefix_;
     }
 
     // Tables
@@ -418,29 +449,31 @@ private:
     DiscoveredReaderData readers_[RTPS_MAX_DISCOVERED_READERS] = {};
 
     DiscoveredWriterData* find_writer(const Guid& g) noexcept {
-        for (uint8_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i)
+        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i)
             if (writers_[i].writerGuid == g) return &writers_[i];
         return nullptr;
     }
     DiscoveredWriterData* alloc_writer_slot() noexcept {
-        for (uint8_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i)
+        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i)
             if (!writers_[i].is_valid()) return &writers_[i];
         return nullptr;
     }
     DiscoveredReaderData* find_reader(const Guid& g) noexcept {
-        for (uint8_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i)
+        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i)
             if (readers_[i].readerGuid == g) return &readers_[i];
         return nullptr;
     }
     DiscoveredReaderData* alloc_reader_slot() noexcept {
-        for (uint8_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i)
+        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i)
             if (!readers_[i].is_valid()) return &readers_[i];
         return nullptr;
     }
 
-    OnMatch   on_match_;
-    OnUnmatch on_unmatch_;
-    void*     user_data_;
+    OnMatch    on_match_;
+    OnUnmatch  on_unmatch_;
+    void*      user_data_;
+    GuidPrefix local_prefix_ = {};
+    bool       has_local_prefix_ = false;
 };
 
 } // namespace rtps

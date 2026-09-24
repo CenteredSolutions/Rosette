@@ -135,6 +135,9 @@ public:
     virtual ~Socket() = default;
 
     virtual bool is_open() const noexcept = 0;
+    /// Joins a multicast group. Call before bind(): some backends (WIZnet)
+    /// latch membership when the socket opens, and hosted backends enable
+    /// port sharing here so several participants can bind the group port.
     virtual int joinMulticastGroup(const SocketMulticastMembership& membership) noexcept = 0;
     virtual int leaveMulticastGroup(const SocketMulticastMembership& membership) noexcept = 0;
     virtual int bind(const SocketAddress& local) noexcept = 0;

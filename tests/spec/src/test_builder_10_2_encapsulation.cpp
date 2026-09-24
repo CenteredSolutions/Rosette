@@ -40,9 +40,10 @@ static bool tc_bld_10_2_001(std::string& err) {
           "parse_message failed");
     CHECK(cap.calls == 1, "expected DATA callback");
     CHECK(cap.payload.size() >= 6u, "serializedPayload should include encapsulation + user payload");
-    CHECK(cap.payload[0] == 0x01u && cap.payload[1] == 0x00u &&
+    // §10.2: RepresentationIdentifier is octet[2]; CDR_LE is {0x00, 0x01}.
+    CHECK(cap.payload[0] == 0x00u && cap.payload[1] == 0x01u &&
           cap.payload[2] == 0x00u && cap.payload[3] == 0x00u,
-          "encapsulation header should be CDR_LE + zero options");
+          "encapsulation header should be CDR_LE {0x00,0x01} + zero options");
     CHECK(cap.payload[4] == 0xDEu && cap.payload[5] == 0xADu,
           "user payload should follow encapsulation header");
 
@@ -53,7 +54,7 @@ static bool tc_bld_10_2_001(std::string& err) {
 
 void append_builder_tests_10_2(std::vector<TestCase>& tests) {
     tests.push_back({"TC-BLD-10.2-001",
-                     "append_data() prepends CDR_LE encapsulation header (0x0001,0x0000) before user payload.",
+                     "§10.2: append_data() prepends the CDR_LE encapsulation header, octets {0x00,0x01,0x00,0x00}, before the user payload.",
                      tc_bld_10_2_001});
 }
 

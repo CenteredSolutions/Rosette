@@ -173,6 +173,16 @@ bool build_spdp_payload(const GuidPrefix& guid_prefix,
     const uint32_t lease[2] = {lease_seconds, 0u};
     if (!plcdr_write_param(buf, sizeof(buf), off, pid::PARTICIPANT_LEASE_DURATION, lease, 8u)) return false;
     if (!plcdr_write_param(buf, sizeof(buf), off, pid::METATRAFFIC_UNICAST_LOCATOR, &metatraffic_unicast, 24u)) return false;
+    // availableBuiltinEndpoints is a required SPDP field (§8.5.3.2,
+    // Table 8.73); SEDP matches only the builtin readers a peer declares.
+    const uint32_t builtin_endpoints =
+        builtin_endpoint::DISC_BUILTIN_ENDPOINT_PARTICIPANT_ANNOUNCER |
+        builtin_endpoint::DISC_BUILTIN_ENDPOINT_PARTICIPANT_DETECTOR |
+        builtin_endpoint::DISC_BUILTIN_ENDPOINT_PUBLICATIONS_ANNOUNCER |
+        builtin_endpoint::DISC_BUILTIN_ENDPOINT_PUBLICATIONS_DETECTOR |
+        builtin_endpoint::DISC_BUILTIN_ENDPOINT_SUBSCRIPTIONS_ANNOUNCER |
+        builtin_endpoint::DISC_BUILTIN_ENDPOINT_SUBSCRIPTIONS_DETECTOR;
+    if (!plcdr_write_param(buf, sizeof(buf), off, pid::BUILTIN_ENDPOINT_SET, &builtin_endpoints, 4u)) return false;
     if (!plcdr_write_sentinel(buf, sizeof(buf), off)) return false;
 
     out.assign(buf, buf + off);
@@ -241,6 +251,17 @@ bool build_subscription_payload(const DiscoveredReaderData& rd, std::vector<Octe
     if (!plcdr_write_sentinel(buf, sizeof(buf), off)) return false;
     out.assign(buf, buf + off);
     return true;
+}
+
+EntityId packet_writer_id(const CaptureTransport::Packet& packet) {
+    EntityId writer = entity_id::UNKNOWN;
+    ParseOps ops{};
+    ops.on_data = [](const ParseContext& ctx, const ParsedData& d) noexcept {
+        *static_cast<EntityId*>(ctx.user_data) = d.writerId;
+    };
+    (void)parse_message(packet.bytes.data(), static_cast<uint32_t>(packet.bytes.size()),
+                        GuidPrefix{}, ops, &writer);
+    return writer;
 }
 
 size_t count_sedp_data_announcements(const CaptureTransport& tx) {
@@ -360,10 +381,15 @@ static bool tc_part_8_5_1_002(std::string& err) {
             return false;
         }
     }
-    CHECK(!tx.packets[0].multicast && !tx.packets[1].multicast,
-          "SEDP announcements should be unicast to peer metatraffic locator");
-    CHECK(tx.packets[0].dest == remote_meta && tx.packets[1].dest == remote_meta,
-          "SEDP announcement destination should be peer metatraffic locator");
+    // §8.5.3.2: the directed SPDP reply precedes SEDP, so the peer has
+    // matched this participant's builtin writers before their DATA arrives.
+    CHECK(tx.packets.size() >= 3u, "expected SPDP reply plus two SEDP announcements");
+    CHECK(packet_writer_id(tx.packets[0]) == entity_id::SPDP_BUILTIN_PARTICIPANT_WRITER,
+          "first packet to a new peer must be the directed SPDP announcement");
+    for (const auto& packet : tx.packets) {
+        CHECK(!packet.multicast && packet.dest == remote_meta,
+              "discovery replies should be unicast to the peer metatraffic locator");
+    }
 
     g_participant_test_now_ms = 200u;
     CHECK(p.spdp_reader().on_data(remote_prefix,
@@ -424,10 +450,12 @@ static bool tc_part_8_5_1_002(std::string& err) {
                                   g_participant_test_now_ms),
           "participant should accept rediscovery after lease expiry");
     {
+        // Rediscovery replays the two existing announcements
+        // (TRANSIENT_LOCAL); it writes no duplicates.
         const size_t announces = count_sedp_data_announcements(tx);
-        if (announces != 6u) {
+        if (announces != 4u) {
             err = "rediscovery SEDP announce count mismatch: got " +
-                  std::to_string(announces) + " expected 6";
+                  std::to_string(announces) + " expected 4";
             return false;
         }
     }
@@ -708,6 +736,109 @@ static bool tc_part_8_5_1_004(std::string& err) {
     return true;
 }
 
+static bool tc_part_8_2_4_001(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "add_ipv4_address should succeed");
+
+    WriterConfig wcfg{};
+    wcfg.topicName.assign("rt/a");
+    wcfg.typeName.assign("T");
+    auto* w1 = p.create_writer<1>(wcfg);
+    auto* w2 = p.create_writer<1>(wcfg);
+    CHECK(w1 && w2, "writers should be created");
+    CHECK(!(w1->guid().entityId == w2->guid().entityId),
+          "default-config writers must get distinct EntityIds");
+    CHECK(w1->guid().entityId.entityKind == 0x03u,
+          "NO_KEY user writer must use entityKind 0x03 (Table 9.1)");
+
+    ReaderConfig rcfg{};
+    rcfg.topicName.assign("rt/a");
+    rcfg.typeName.assign("T");
+    StatefulReader* r1 = p.create_reader(rcfg);
+    rcfg.topicKind = TopicKind::WITH_KEY;
+    StatefulReader* r2 = p.create_reader(rcfg);
+    CHECK(r1 && r2, "readers should be created");
+    CHECK(r1->guid().entityId.entityKind == 0x04u,
+          "NO_KEY user reader must use entityKind 0x04 (Table 9.1)");
+    CHECK(r2->guid().entityId.entityKind == 0x07u,
+          "WITH_KEY user reader must use entityKind 0x07 (Table 9.1)");
+    CHECK(!(r1->guid().entityId == w1->guid().entityId) &&
+          !(r1->guid().entityId == r2->guid().entityId),
+          "every default-config endpoint must get its own EntityId");
+
+    const EntityId explicit_id{{0x00u, 0x00u, 0x42u}, 0x03u};
+    wcfg.entityId = explicit_id;
+    auto* w3 = p.create_writer<1>(wcfg);
+    CHECK(w3 && w3->guid().entityId == explicit_id,
+          "an explicitly configured EntityId must be kept");
+    return true;
+}
+
+// §8.5.1 / §8.5.4.1: deleting an endpoint frees its slot, dissolves its
+// matches, and announces its withdrawal to matched peers.
+static bool tc_part_8_5_1_005(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+
+    const GuidPrefix remote_prefix = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const Locator remote_meta = make_udpv4_locator(0xC0A80170u, 7410u);
+    std::vector<Octet> spdp_payload{};
+    CHECK(build_spdp_payload(remote_prefix, 30u, remote_meta, spdp_payload),
+          "SPDP payload build failed");
+    g_participant_test_now_ms = 100u;
+    CHECK(p.spdp_reader().on_data(remote_prefix, spdp_payload.data(),
+                                  static_cast<uint32_t>(spdp_payload.size()),
+                                  g_participant_test_now_ms),
+          "peer discovery should succeed");
+
+    WriterConfig wcfg{};
+    wcfg.topicName.assign("rt/doomed");
+    wcfg.typeName.assign("pkg::msg::dds_::T_");
+    // Fill every writer slot, so reuse after deletion is observable.
+    IStatefulWriter* writers[RTPS_MAX_USER_WRITERS] = {};
+    for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i) {
+        writers[i] = p.create_writer<1>(wcfg);
+        CHECK(writers[i] != nullptr, "create_writer should succeed while slots remain");
+    }
+    CHECK(p.create_writer<1>(wcfg) == nullptr, "writer table should be full");
+
+    // Remote reader on the same topic matches writers[0].
+    DiscoveredReaderData rd{};
+    rd.readerGuid.prefix = remote_prefix;
+    rd.readerGuid.entityId = make_entity(0x31u, 0x32u, 0x33u, 0x04u);
+    rd.topicName.assign("rt/doomed");
+    rd.typeName.assign("pkg::msg::dds_::T_");
+    rd.reliabilityKind = ReliabilityKind::RELIABLE;
+    rd.durabilityKind = DurabilityKind::VOLATILE;
+    p.match_table().add_reader(rd);
+    CHECK(writers[0]->matched_reader_count() == 1u, "writer should match the remote reader");
+
+    const Guid doomed = writers[0]->guid();
+    tx.packets.clear();
+    CHECK(p.delete_writer(writers[0]), "delete_writer should succeed");
+    CHECK(!p.delete_writer(writers[0]), "deleting twice must fail");
+
+    bool disposal_sent = false;
+    for (const auto& packet : tx.packets) {
+        Guid key = GUID_UNKNOWN;
+        ParseOps ops{};
+        ops.on_data = [](const ParseContext& ctx, const ParsedData& d) noexcept {
+            if (d.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER &&
+                d.inlineQos.withdraws_instance() && d.inlineQos.hasKeyHash) {
+                *static_cast<Guid*>(ctx.user_data) = d.inlineQos.key_hash_guid();
+            }
+        };
+        (void)parse_message(packet.bytes.data(), static_cast<uint32_t>(packet.bytes.size()),
+                            GuidPrefix{}, ops, &key);
+        if (key == doomed && packet.dest == remote_meta) disposal_sent = true;
+    }
+    CHECK(disposal_sent, "the peer must receive a disposal for the deleted writer");
+    CHECK(p.create_writer<1>(wcfg) != nullptr, "the freed slot must be reusable");
+    return true;
+}
+
 void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-001",
                      "§8.5.1/§8.5.3.3: participant announce path is gated on configured local locators and sends SPDP DATA to the well-known multicast locator.",
@@ -727,6 +858,12 @@ void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.3.4-002",
                      "§8.3.4/§8.4.3/§8.4.4: parse_received routes ACKNACK and NACK_FRAG to the addressed local writer instance for reliability state updates and retransmit workflow.",
                      tc_part_8_3_4_002});
+    tests.push_back({"TC-PART-8.2.4-001",
+                     "§8.2.4.3/§9.3.1.2 Table 9.1: endpoints created without an explicit EntityId get unique IDs with the user writer/reader entityKind for their TopicKind; explicit IDs are preserved.",
+                     tc_part_8_2_4_001});
+    tests.push_back({"TC-PART-8.5.1-005",
+                     "§8.5.1/§8.5.4.1: delete_writer() frees the slot for reuse, rejects a second delete, and sends matched peers an SEDP disposal keyed by the writer GUID.",
+                     tc_part_8_5_1_005});
 }
 
 } // namespace spec_test

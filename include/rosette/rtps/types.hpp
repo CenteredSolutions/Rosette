@@ -268,25 +268,72 @@ struct SampleIdentity {
 };
 
 // ============================================================
-// InlineQoS — minimal DATA-submessage inline QoS for service MVP
+// InlineQoS — the DATA-submessage inline QoS parameters this stack uses
+//
+// §9.4.5.3 (DATA inlineQos), §9.6.3.1 Table 9.13 (PID_KEY_HASH,
+// PID_STATUS_INFO), §9.6.3.3 (StatusInfo_t), §9.6.3.8 (KeyHash_t).
+//
+//  - relatedSampleIdentity: ROS 2 service request/reply correlation. It is
+//    written twice, as the DDS-RPC PID (0x0083) and as eProsima's vendor PID
+//    (0x800F): Fast DDS 2.6, the ROS 2 Humble default, reads only the
+//    latter, and readers skip parameters they do not understand (§9.4.2.11).
+//  - keyHash: the instance a change belongs to. For SEDP it is the
+//    endpoint GUID (§9.6.3.8: keys of 16 octets or less are sent as-is).
+//  - statusInfo: DISPOSED / UNREGISTERED flags carried by a change that
+//    withdraws an instance; SEDP uses it to announce endpoint deletion.
 // ============================================================
 
 namespace inline_qos_pid {
     inline constexpr uint16_t SENTINEL                        = 0x0001u;
+    inline constexpr uint16_t KEY_HASH                        = 0x0070u;
+    inline constexpr uint16_t STATUS_INFO                     = 0x0071u;
     inline constexpr uint16_t RELATED_SAMPLE_IDENTITY         = 0x0083u;
     inline constexpr uint16_t RELATED_SAMPLE_IDENTITY_CUSTOM  = 0x800Fu;
+}
+
+/// StatusInfo_t flag bits, stored in the last of its four octets (§9.6.3.3).
+namespace status_info {
+    inline constexpr uint8_t DISPOSED     = 0x01u;
+    inline constexpr uint8_t UNREGISTERED = 0x02u;
 }
 
 struct InlineQos {
     bool           hasRelatedSampleIdentity = false;
     SampleIdentity relatedSampleIdentity    = {};
+    bool           hasKeyHash               = false;
+    Octet          keyHash[16]              = {};
+    bool           hasStatusInfo            = false;
+    uint8_t        statusInfo               = 0u;   ///< status_info:: flags.
 
     void clear() noexcept {
         *this = InlineQos{};
     }
 
-    bool empty() const noexcept {
-        return !hasRelatedSampleIdentity;
+    constexpr bool empty() const noexcept {
+        return !hasRelatedSampleIdentity && !hasKeyHash && !hasStatusInfo;
+    }
+
+    /// Sets the key hash to a GUID, the SEDP instance key (§9.6.3.8).
+    void set_key_hash(const Guid& guid) noexcept {
+        for (uint8_t i = 0; i < 12u; ++i) keyHash[i] = guid.prefix.value[i];
+        for (uint8_t i = 0; i < 3u; ++i)  keyHash[12u + i] = guid.entityId.entityKey[i];
+        keyHash[15] = guid.entityId.entityKind;
+        hasKeyHash = true;
+    }
+
+    /// Reads the key hash back as a GUID; meaningful for SEDP instances.
+    Guid key_hash_guid() const noexcept {
+        Guid g{};
+        for (uint8_t i = 0; i < 12u; ++i) g.prefix.value[i] = keyHash[i];
+        for (uint8_t i = 0; i < 3u; ++i)  g.entityId.entityKey[i] = keyHash[12u + i];
+        g.entityId.entityKind = keyHash[15];
+        return g;
+    }
+
+    /// True when the change withdraws its instance.
+    bool withdraws_instance() const noexcept {
+        return hasStatusInfo &&
+               (statusInfo & (status_info::DISPOSED | status_info::UNREGISTERED)) != 0u;
     }
 };
 
@@ -294,9 +341,80 @@ inline constexpr uint16_t sample_identity_wire_size() noexcept {
     return 24u;
 }
 
+/// Largest inline QoS parameter list serialize_inline_qos() produces.
+inline constexpr uint16_t kMaxInlineQosSize =
+    2u * (4u + 24u) + (4u + 16u) + (4u + 4u) + 4u;
+
+/**
+ * @brief Size in octets of an inline QoS parameter list, sentinel included.
+ *
+ * @param[in] qos Parameters to encode.
+ * @return 0 when `qos` is empty (no inline QoS is sent), otherwise the
+ *   exact number of octets serialize_inline_qos() writes.
+ */
 inline constexpr uint16_t inline_qos_serialized_size(const InlineQos& qos) noexcept {
-    if (!qos.hasRelatedSampleIdentity) return 0u;
-    return static_cast<uint16_t>((4u + sample_identity_wire_size()) + 4u);
+    if (qos.empty()) return 0u;
+    uint16_t n = 4u;  // PID_SENTINEL
+    if (qos.hasRelatedSampleIdentity) n = static_cast<uint16_t>(n + 2u * (4u + sample_identity_wire_size()));
+    if (qos.hasKeyHash)               n = static_cast<uint16_t>(n + 4u + 16u);
+    if (qos.hasStatusInfo)            n = static_cast<uint16_t>(n + 4u + 4u);
+    return n;
+}
+
+/**
+ * @brief Encodes inline QoS as a little-endian ParameterList.
+ *
+ * Shared by MessageBuilder (copy path) and StatefulWriter's zero-copy path,
+ * so both put identical octets on the wire.
+ *
+ * @param[out] dst Destination; must hold inline_qos_serialized_size(qos) octets.
+ * @param[in]  qos Parameters to encode; must not be empty.
+ * @return Octets written.
+ *
+ * Verification:
+ * - Correct means: message_parser's inline QoS decoder restores every
+ *   parameter; covered by TC-BLD-9.4.5.3-005 (copy path) and
+ *   TC-SEDP-8.5.4-008 (zero-copy path) in tests/spec.
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §9.4.2.11 (ParameterList), §9.6.3.1 Table 9.13
+ */
+inline uint16_t serialize_inline_qos(Octet* dst, const InlineQos& qos) noexcept {
+    uint16_t off = 0u;
+    auto put16 = [&](uint16_t v) noexcept {
+        dst[off++] = static_cast<Octet>(v & 0xFFu);
+        dst[off++] = static_cast<Octet>(v >> 8u);
+    };
+    auto put32 = [&](uint32_t v) noexcept {
+        for (uint8_t i = 0; i < 4u; ++i) dst[off++] = static_cast<Octet>(v >> (8u * i));
+    };
+    if (qos.hasRelatedSampleIdentity) {
+        const SampleIdentity& id = qos.relatedSampleIdentity;
+        for (const uint16_t pid : {inline_qos_pid::RELATED_SAMPLE_IDENTITY,
+                                   inline_qos_pid::RELATED_SAMPLE_IDENTITY_CUSTOM}) {
+            put16(pid);
+            put16(sample_identity_wire_size());
+            for (uint8_t i = 0; i < 12u; ++i) dst[off++] = id.writerGuid.prefix.value[i];
+            for (uint8_t i = 0; i < 3u; ++i)  dst[off++] = id.writerGuid.entityId.entityKey[i];
+            dst[off++] = id.writerGuid.entityId.entityKind;
+            put32(static_cast<uint32_t>(id.sequenceNumber.high));
+            put32(id.sequenceNumber.low);
+        }
+    }
+    if (qos.hasKeyHash) {
+        put16(inline_qos_pid::KEY_HASH);
+        put16(16u);
+        for (uint8_t i = 0; i < 16u; ++i) dst[off++] = qos.keyHash[i];
+    }
+    if (qos.hasStatusInfo) {
+        put16(inline_qos_pid::STATUS_INFO);
+        put16(4u);
+        dst[off++] = 0u; dst[off++] = 0u; dst[off++] = 0u;
+        dst[off++] = qos.statusInfo;
+    }
+    put16(inline_qos_pid::SENTINEL);
+    put16(0u);
+    return off;
 }
 
 // ============================================================

@@ -186,12 +186,34 @@ public:
         return fd_ >= 0;
     }
 
+    /**
+     * @brief Joins a multicast group and lets other sockets share its port.
+     *
+     * A multicast group port is shared by every participant on the host
+     * (the RTPS SPDP port, the micro-ROS agent discovery port), so this
+     * enables SO_REUSEADDR and SO_REUSEPORT before joining. Callers join
+     * before bind(), which is when the kernel checks port sharing; unicast
+     * sockets never get reuse, so a busy unicast port fails to bind instead
+     * of silently splitting traffic between two owners.
+     *
+     * @param[in] membership Group, interface, and port to join.
+     * @return 0 on success, -1 with last_error() set on failure.
+     *
+     * References:
+     * - socket(7) (SO_REUSEADDR, SO_REUSEPORT), ip(7) (IP_ADD_MEMBERSHIP)
+     */
     int joinMulticastGroup(const SocketMulticastMembership& membership) noexcept override
     {
         if (!is_open()) {
             last_error_ = SocketError::closed;
             return -1;
         }
+
+        const int one = 1;
+        (void)::setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+#ifdef SO_REUSEPORT
+        (void)::setsockopt(fd_, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
+#endif
 
         if (membership.domain == SocketDomain::ipv4) {
             ip_mreq req{};
@@ -470,10 +492,6 @@ std::unique_ptr<Socket> PosixSocketProvider::open(SocketDomain domain,
     }
 
     const int one = 1;
-    (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-#ifdef SO_REUSEPORT
-    (void)::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one));
-#endif
     if (domain == SocketDomain::ipv6) {
         (void)::setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one));
     }

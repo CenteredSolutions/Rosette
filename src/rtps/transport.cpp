@@ -43,12 +43,13 @@ static bool locator_is_udp(const Locator& locator) noexcept
 SocketUdpTransport::SocketUdpTransport(rosette::net::SocketProvider& provider,
                                        uint16_t meta_port,
                                        uint16_t user_port,
-                                       uint32_t multicast_addr) noexcept
+                                       uint32_t multicast_addr,
+                                       uint16_t multicast_port) noexcept
     : SocketUdpTransport(
           provider,
           meta_port,
           user_port,
-          make_udpv4_locator(multicast_addr, meta_port))
+          make_udpv4_locator(multicast_addr, multicast_port))
 {
 }
 
@@ -68,6 +69,32 @@ SocketUdpTransport::~SocketUdpTransport() noexcept
     close();
 }
 
+std::unique_ptr<rosette::net::Socket> SocketUdpTransport::open_bound(uint16_t port,
+                                                                     bool join_group) noexcept
+{
+    const rosette::net::SocketDomain domain =
+        locator_is_ipv6(multicast_locator_) ? rosette::net::SocketDomain::ipv6
+                                            : rosette::net::SocketDomain::ipv4;
+    std::unique_ptr<rosette::net::Socket> socket = provider_.open(domain);
+    if (!socket) {
+        return nullptr;
+    }
+    // Membership precedes bind(): WIZnet latches it at OPEN, and hosted
+    // backends enable port sharing for group sockets at join time.
+    if (join_group &&
+        socket->join_multicast(locator_to_multicast_membership(multicast_locator_)) != 0) {
+        RTPS_LOG_E("transport", "multicast join failed: port=%u", (unsigned)port);
+        socket->close();
+        return nullptr;
+    }
+    if (socket->bind(any_bind_address(port)) != 0 ||
+        socket->set_receive_timeout(0u) != 0) {
+        socket->close();
+        return nullptr;
+    }
+    return socket;
+}
+
 bool SocketUdpTransport::open() noexcept
 {
     close();
@@ -76,66 +103,74 @@ bool SocketUdpTransport::open() noexcept
         return false;
     }
 
-    const rosette::net::SocketDomain domain =
-        locator_is_ipv6(multicast_locator_) ? rosette::net::SocketDomain::ipv6
-                                            : rosette::net::SocketDomain::ipv4;
+    // A board whose metatraffic port is the SPDP port listens for SPDP on
+    // its metatraffic socket; otherwise the shared SPDP port gets its own
+    // group socket and the metatraffic socket stays unicast-only.
+    const uint16_t multicast_port = static_cast<uint16_t>(multicast_locator_.port);
+    const bool shared_meta = (multicast_port == meta_port_);
 
-    meta_socket_ = provider_.open(domain);
-    if (!meta_socket_) {
-        return false;
-    }
-
-    if (meta_socket_->join_multicast(locator_to_multicast_membership(multicast_locator_)) != 0) {
+    meta_socket_ = open_bound(meta_port_, shared_meta);
+    user_socket_ = open_bound(user_port_, false);
+    if (!meta_socket_ || !user_socket_) {
+        RTPS_LOG_D("transport", "bind failed: meta_port=%u user_port=%u",
+                   (unsigned)meta_port_, (unsigned)user_port_);
         close();
         return false;
     }
 
-    if (meta_socket_->bind(any_bind_address(meta_port_)) != 0) {
-        close();
-        return false;
-    }
-
-    if (meta_socket_->set_receive_timeout(0u) != 0) {
-        close();
-        return false;
+    if (!shared_meta) {
+        spdp_socket_ = open_bound(multicast_port, true);
+        if (!spdp_socket_) {
+            RTPS_LOG_E("transport", "bind failed: spdp_port=%u", (unsigned)multicast_port);
+            close();
+            return false;
+        }
     }
 
     meta_open_ = true;
-
-    user_socket_ = provider_.open(domain);
-    if (!user_socket_) {
-        close();
-        return false;
-    }
-
-    if (user_socket_->bind(any_bind_address(user_port_)) != 0) {
-        close();
-        return false;
-    }
-
-    if (user_socket_->set_receive_timeout(0u) != 0) {
-        close();
-        return false;
-    }
-
     user_open_ = true;
     return true;
 }
 
 void SocketUdpTransport::close() noexcept
 {
-    if (meta_socket_) {
-        meta_socket_->close();
-        meta_socket_.reset();
-    }
-
-    if (user_socket_) {
-        user_socket_->close();
-        user_socket_.reset();
+    for (auto* socket : {&meta_socket_, &spdp_socket_, &user_socket_}) {
+        if (*socket) {
+            (*socket)->close();
+            socket->reset();
+        }
     }
 
     meta_open_ = false;
     user_open_ = false;
+}
+
+uint32_t SocketUdpTransport::receive_from(rosette::net::Socket* socket,
+                                          Octet*    buf,
+                                          uint32_t  buf_size,
+                                          uint32_t& src_addr,
+                                          uint16_t& src_port) noexcept
+{
+    if (socket == nullptr) {
+        return 0u;
+    }
+
+    rosette::net::SocketAddress remote{};
+    const std::ptrdiff_t received = socket->recv_from(buf, buf_size, &remote);
+    if (received <= 0) {
+        return 0u;
+    }
+
+    if (remote.is_ipv4()) {
+        src_addr = (static_cast<uint32_t>(remote.address[0]) << 24u) |
+                   (static_cast<uint32_t>(remote.address[1]) << 16u) |
+                   (static_cast<uint32_t>(remote.address[2]) << 8u) |
+                   static_cast<uint32_t>(remote.address[3]);
+    } else {
+        src_addr = 0u;
+    }
+    src_port = remote.port;
+    return static_cast<uint32_t>(received);
 }
 
 uint32_t SocketUdpTransport::poll_meta(Octet*    buf,
@@ -143,26 +178,14 @@ uint32_t SocketUdpTransport::poll_meta(Octet*    buf,
                                        uint32_t& src_addr,
                                        uint16_t& src_port) noexcept
 {
-    if (!meta_open_ || !meta_socket_) {
+    if (!meta_open_) {
         return 0u;
     }
-
-    rosette::net::SocketAddress remote{};
-    const std::ptrdiff_t received = meta_socket_->recv_from(buf, buf_size, &remote);
-    if (received <= 0) {
-        return 0u;
+    const uint32_t unicast = receive_from(meta_socket_.get(), buf, buf_size, src_addr, src_port);
+    if (unicast > 0u) {
+        return unicast;
     }
-
-    if (remote.is_ipv4()) {
-        src_addr = (static_cast<uint32_t>(remote.address[0]) << 24u) |
-                   (static_cast<uint32_t>(remote.address[1]) << 16u) |
-                   (static_cast<uint32_t>(remote.address[2]) << 8u) |
-                   static_cast<uint32_t>(remote.address[3]);
-    } else {
-        src_addr = 0u;
-    }
-    src_port = remote.port;
-    return static_cast<uint32_t>(received);
+    return receive_from(spdp_socket_.get(), buf, buf_size, src_addr, src_port);
 }
 
 uint32_t SocketUdpTransport::poll_user(Octet*    buf,
@@ -170,26 +193,10 @@ uint32_t SocketUdpTransport::poll_user(Octet*    buf,
                                        uint32_t& src_addr,
                                        uint16_t& src_port) noexcept
 {
-    if (!user_open_ || !user_socket_) {
+    if (!user_open_) {
         return 0u;
     }
-
-    rosette::net::SocketAddress remote{};
-    const std::ptrdiff_t received = user_socket_->recv_from(buf, buf_size, &remote);
-    if (received <= 0) {
-        return 0u;
-    }
-
-    if (remote.is_ipv4()) {
-        src_addr = (static_cast<uint32_t>(remote.address[0]) << 24u) |
-                   (static_cast<uint32_t>(remote.address[1]) << 16u) |
-                   (static_cast<uint32_t>(remote.address[2]) << 8u) |
-                   static_cast<uint32_t>(remote.address[3]);
-    } else {
-        src_addr = 0u;
-    }
-    src_port = remote.port;
-    return static_cast<uint32_t>(received);
+    return receive_from(user_socket_.get(), buf, buf_size, src_addr, src_port);
 }
 
 bool SocketUdpTransport::send_unicast(const BufRef& buf,

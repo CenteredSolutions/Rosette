@@ -210,6 +210,14 @@ static bool parse_inline_qos(Reader& r,
             }
             out.relatedSampleIdentity    = related;
             out.hasRelatedSampleIdentity = true;
+        } else if (pid == inline_qos_pid::KEY_HASH && length >= 16u) {
+            // §9.6.3.8: KeyHash_t is octet[16], byte order independent.
+            for (uint8_t i = 0; i < 16u; ++i) out.keyHash[i] = value[i];
+            out.hasKeyHash = true;
+        } else if (pid == inline_qos_pid::STATUS_INFO && length >= 4u) {
+            // §9.6.3.3: StatusInfo_t is octet[4]; the flags live in the last octet.
+            out.statusInfo    = value[3];
+            out.hasStatusInfo = true;
         }
 
         if (!r.skip(length)) return false;

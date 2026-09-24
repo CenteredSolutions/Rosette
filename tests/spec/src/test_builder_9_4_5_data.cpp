@@ -140,6 +140,51 @@ static bool tc_bld_9_4_5_3_004(std::string& err) {
     return true;
 }
 
+// §9.4.5.3 / §9.6.3.1: every inline QoS parameter this stack emits
+// (related sample identity, key hash, status info) survives a
+// build → parse round trip, and the Q flag is set.
+static bool tc_bld_9_4_5_3_005(std::string& err) {
+    MessageBuilder b{};
+    CHECK(b.begin(GuidPrefix{}, 256u), "begin should succeed");
+    BufRef payload = buf_alloc(16u);
+    CHECK(payload.valid(), "payload alloc failed");
+    payload.data[0] = 0x5Au;
+    payload.size = 1u;
+
+    InlineQos qos{};
+    qos.hasRelatedSampleIdentity = true;
+    qos.relatedSampleIdentity.writerGuid.prefix.value[0] = 0x21u;
+    qos.relatedSampleIdentity.writerGuid.entityId = make_entity(7u, 8u, 9u, 0x03u);
+    qos.relatedSampleIdentity.sequenceNumber = SequenceNumber::from_int64(42);
+    Guid key{};
+    key.prefix.value[11] = 0x99u;
+    key.entityId = make_entity(1u, 2u, 3u, 0x04u);
+    qos.set_key_hash(key);
+    qos.hasStatusInfo = true;
+    qos.statusInfo = status_info::DISPOSED | status_info::UNREGISTERED;
+
+    CHECK(b.append_data(make_entity(1u, 2u, 3u, 0xC7u), make_entity(4u, 5u, 6u, 0xC2u),
+                        SequenceNumber::from_int64(3), payload, true, qos),
+          "append_data with inline QoS should succeed");
+    BufRef out = b.finish();
+    DataCapture cap{};
+    CHECK(parse_single_data(out, cap), "built DATA message should parse");
+    CHECK(cap.data.inlineQosPresent, "Q flag must be set when inline QoS is present");
+    CHECK(cap.data.inlineQos.hasRelatedSampleIdentity &&
+          cap.data.inlineQos.relatedSampleIdentity == qos.relatedSampleIdentity,
+          "related sample identity must round-trip");
+    CHECK(cap.data.inlineQos.hasKeyHash && cap.data.inlineQos.key_hash_guid() == key,
+          "key hash must round-trip");
+    CHECK(cap.data.inlineQos.withdraws_instance() &&
+          cap.data.inlineQos.statusInfo == (status_info::DISPOSED | status_info::UNREGISTERED),
+          "status info must round-trip");
+    CHECK(inline_qos_serialized_size(qos) == kMaxInlineQosSize,
+          "all three parameters must use the maximum inline QoS size");
+    out.reset();
+    payload.reset();
+    return true;
+}
+
 void append_builder_tests_9_4_5_data(std::vector<TestCase>& tests) {
     tests.push_back({"TC-BLD-9.4.5.3-001",
                      "append_data() serializes a parseable DATA submessage with fixed fields and payload.",
@@ -153,6 +198,9 @@ void append_builder_tests_9_4_5_data(std::vector<TestCase>& tests) {
     tests.push_back({"TC-BLD-9.4.5.3-004",
                      "prepend_data_message() rejects non-empty inline qos in current MVP path.",
                      tc_bld_9_4_5_3_004});
+    tests.push_back({"TC-BLD-9.4.5.3-005",
+                     "§9.4.5.3/§9.6.3.1: related sample identity, PID_KEY_HASH and PID_STATUS_INFO inline QoS round-trip through append_data() and the parser.",
+                     tc_bld_9_4_5_3_005});
 }
 
 } // namespace spec_test

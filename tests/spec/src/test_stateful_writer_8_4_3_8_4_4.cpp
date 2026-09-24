@@ -159,10 +159,69 @@ static bool tc_swr_8_4_4_001(std::string& err) {
     return true;
 }
 
+// Counts HEARTBEATs in captured messages and records the last one.
+static int count_heartbeats(const CaptureTransport& tx, ParsedHeartbeat* last) {
+    int total = 0;
+    for (const auto& msg : tx.unicast_msgs) {
+        PacketCap cap{};
+        ParseOps ops{};
+        ops.on_heartbeat = [](const ParseContext& ctx, const ParsedHeartbeat& hb) noexcept {
+            auto* c = static_cast<PacketCap*>(ctx.user_data);
+            c->hb = hb;
+            c->hb_calls++;
+        };
+        (void)parse_message(msg.data(), static_cast<uint32_t>(msg.size()), GuidPrefix{}, ops, &cap);
+        total += cap.hb_calls;
+        if (cap.hb_calls > 0 && last) *last = cap.hb;
+    }
+    return total;
+}
+
+// §8.4.15.4 (reader-initiated exchange): a preemptive ACKNACK that
+// requests nothing but acknowledges less than the writer has written is
+// answered with a HEARTBEAT directed at that reader.
+static bool tc_swr_8_4_3_002(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer_guid = make_guid(0xE1u, 0xE2u, 0xE3u, make_entity(1u, 1u, 1u, 0x03u));
+    const Guid reader_guid = make_guid(0xF1u, 0xF2u, 0xF3u, make_entity(2u, 2u, 2u, 0x04u));
+    const Locator loc = make_udpv4_locator(0xC0A80145u, 7411u);
+    StatefulWriter<2, 1> w(writer_guid, ReliabilityKind::RELIABLE,
+                           DurabilityKind::VOLATILE, tx);
+    const Octet payload[1] = {0x42u};
+    CHECK(w.write_async(ChangeKind::ALIVE, payload, 1u), "write_async should succeed");
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+    tx.unicast_msgs.clear();
+
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = reader_guid.prefix;
+    ParsedAckNack ack{};
+    ack.readerId = reader_guid.entityId;
+    ack.writerId = writer_guid.entityId;
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(0));
+    ack.count = 1;
+    w.on_acknack(ctx, ack);
+
+    ParsedHeartbeat hb{};
+    CHECK(count_heartbeats(tx, &hb) == 1, "preemptive ACKNACK must elicit one HEARTBEAT");
+    CHECK(hb.readerId == reader_guid.entityId, "the HEARTBEAT must be directed at the reader");
+    CHECK(hb.lastSN == SequenceNumber::from_int64(1), "HEARTBEAT must advertise the written SN");
+
+    // An ACKNACK that acknowledges everything written needs no answer.
+    tx.unicast_msgs.clear();
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(2));
+    ack.count = 2;
+    w.on_acknack(ctx, ack);
+    CHECK(count_heartbeats(tx, nullptr) == 0, "an up-to-date reader must not get a HEARTBEAT");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_3_8_4_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.3-001",
                      "§8.4.3: ACKNACK cumulative ACK updates ReaderProxy acknowledgment state; duplicate ACKNACK counts are ignored.",
                      tc_swr_8_4_3_001});
+    tests.push_back({"TC-SWR-8.4.3-002",
+                     "§8.4.15.4: a preemptive ACKNACK (no NACK bits, base below the next SN) is answered with a directed HEARTBEAT; an up-to-date ACK is not.",
+                     tc_swr_8_4_3_002});
     tests.push_back({"TC-SWR-8.4.4-001",
                      "§8.4.4/§8.4.1.1: NACK_FRAG requests arm nackResponseDelay and trigger deferred retransmit plus directed final HEARTBEAT.",
                      tc_swr_8_4_4_001});

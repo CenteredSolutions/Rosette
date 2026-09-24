@@ -208,9 +208,14 @@ void SpdpWriter::do_announce(const Locator& dest, bool use_unicast) noexcept {
                   local_data_.guidPrefix,
                   entity_id::SPDP_BUILTIN_PARTICIPANT_READER,
                   entity_id::SPDP_BUILTIN_PARTICIPANT_WRITER,
-                  SequenceNumber::from_int64(1));   // SPDP is best-effort; SN not tracked.
+                  SequenceNumber::from_int64(next_sn_));
 
     if (ok) {
+        // Each announcement is a new change: best-effort SPDP readers
+        // (Fast DDS, Cyclone DDS) discard a sample whose SN is not greater
+        // than the last one seen from this writer, which would hide any
+        // later change to this participant's data.
+        ++next_sn_;
         RTPS_LOG_D("spdp", "%s participant (%lu bytes)",
                    use_unicast ? "unicasting" : "announcing",
                    (unsigned long)serialised_len);
@@ -474,6 +479,19 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
 //
 // §8.5.3.2, p. 160 — lease expiry enforcement.
 // ----------------------------------------------------------
+
+bool SpdpReader::remove_peer(const GuidPrefix& prefix) noexcept {
+    for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
+        if (!peers_[i].alive || peers_[i].data.guidPrefix != prefix) continue;
+        RTPS_LOG_I("spdp", "participant disposed: %02x%02x%02x%02x%02x%02x",
+                   prefix.value[0], prefix.value[1], prefix.value[2],
+                   prefix.value[3], prefix.value[4], prefix.value[5]);
+        if (on_peer_removed_) on_peer_removed_(peers_[i], user_data_);
+        peers_[i].alive = false;
+        return true;
+    }
+    return false;
+}
 
 void SpdpReader::tick(uint32_t now_ms) noexcept {
     for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {

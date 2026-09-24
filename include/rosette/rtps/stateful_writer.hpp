@@ -102,6 +102,9 @@ struct IStatefulWriter {
     /// §8.4.1.4, p. 108 — remove a matched reader.
     virtual void matched_reader_remove(const Guid& reader_guid) noexcept = 0;
 
+    /// Number of currently matched readers (§8.4.7.1 matched_readers).
+    virtual uint8_t matched_reader_count() const noexcept = 0;
+
     // ------------------------------------------------------------------
     // Depth-independent write path.
     //
@@ -482,10 +485,11 @@ public:
     // DATA/RTPS headers in-place (zero-copy), avoiding append_data()
     // encapsulation rewriting.
     // ----------------------------------------------------------
-    bool write_preframed_async(ChangeKind      kind,
-                               const Octet*    serialized_payload,
-                               uint32_t        payload_size,
-                               SequenceNumber* out_sn = nullptr) noexcept
+    bool write_preframed_async(ChangeKind       kind,
+                               const Octet*     serialized_payload,
+                               uint32_t         payload_size,
+                               SequenceNumber*  out_sn = nullptr,
+                               const InlineQos& inline_qos = InlineQos{}) noexcept
     {
         if (!serialized_payload || payload_size == 0) {
             return false;
@@ -494,7 +498,10 @@ public:
         if (staging_.payload.valid()) {
             staging_.payload.reset();
         }
-        BufRef payload_buf = buf_alloc_with_headroom(payload_size, kRtpsDataHeadroom);
+        // Headroom covers the RTPS/DATA headers plus the largest inline QoS,
+        // so send_data_to() can always frame this change in place.
+        BufRef payload_buf = buf_alloc_with_headroom(payload_size,
+                                                     kRtpsDataHeadroom + kMaxInlineQosSize);
         if (!payload_buf.valid()) {
             RTPS_LOG_E("writer", "write_preframed_async: buf_alloc_with_headroom failed");
             return false;
@@ -508,7 +515,7 @@ public:
         staging_.kind           = kind;
         staging_.writerGuid     = guid_;
         staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
-        staging_.inlineQos      = {};
+        staging_.inlineQos      = inline_qos;
         staging_.payload.block  = payload_buf.block;
         staging_.payload.data   = payload_buf.data;
         staging_.payload.size   = payload_buf.size;
@@ -560,12 +567,14 @@ public:
                    reader_guid.entityId.entityKey[0], reader_guid.entityId.entityKey[1],
                    reader_guid.entityId.entityKey[2], reader_guid.entityId.entityKind);
 
-        // TRANSIENT_LOCAL: replay every cached change to the new reader.
+        // TRANSIENT_LOCAL: replay every cached change to the new reader,
+        // and push it now rather than waiting for the next write.
         if (durability_ == DurabilityKind::TRANSIENT_LOCAL) {
             writer_cache_.replay_to_new_reader(
                 [&](const CacheChange& c) noexcept {
                     slot->add_change(c.sequenceNumber);
                 });
+            send_unsent_changes();
         }
         unlock();
         return true;
@@ -662,6 +671,16 @@ public:
 
         // NACKed SNs: arm the nackResponseDelay timer.
         proxy->requested_changes_set(msg.readerSNState, RTPS_GET_MS());
+
+        // An ACKNACK that requests nothing yet acknowledges less than this
+        // writer has written is a reader announcing itself (Fast DDS and
+        // Cyclone DDS send one, with bitmapBase 0 or 1, on matching). Answer
+        // with a HEARTBEAT directed at it so it learns the available range
+        // now instead of at the next heartbeat period (§8.4.15.4).
+        if (msg.readerSNState.numBits == 0u &&
+            msg.readerSNState.bitmapBase < nextSN_) {
+            send_heartbeat(false, sg);
+        }
 
         // Unblock write_reliable() if all readers are now satisfied.
         const SequenceNumber lsn = writer_cache_.get_seq_num_max();
@@ -817,7 +836,7 @@ public:
     uint32_t heartbeat_period()               const noexcept { return hb_period_ms_; }
     void     heartbeat_period(uint32_t ms)          noexcept { hb_period_ms_ = ms; }
 
-    uint8_t matched_reader_count() const noexcept {
+    uint8_t matched_reader_count() const noexcept override {
         uint8_t n = 0;
         for (uint8_t i = 0; i < MaxReaders; ++i)
             if (proxies_[i].is_matched()) ++n;
@@ -864,9 +883,9 @@ private:
         // headroom_available() == (ch.payload.data - block->payload()),
         // i.e. the reserved bytes before the CDR data.
         // ----------------------------------------------------------
-        if (ch.inlineQos.empty() &&
-            ch.payload.valid() &&
-            ch.payload.headroom_available() >= kRtpsDataHeadroom)
+        const uint16_t inline_qos_size = inline_qos_serialized_size(ch.inlineQos);
+        if (ch.payload.valid() &&
+            ch.payload.headroom_available() >= kRtpsDataHeadroom + inline_qos_size)
         {
             // Work on a non-owning view — we retain the block before
             // prepending so the CacheChange still owns the original ref.
@@ -876,6 +895,14 @@ private:
             view.data  = ch.payload.data;
             view.size  = ch.payload.size;
             // view.capacity() is correct because it is computed from block.
+
+            // Inline QoS sits between the fixed DATA fields and the
+            // serializedPayload — §9.4.5.3, Table 9.14, p. 204.
+            if (inline_qos_size > 0u) {
+                Octet* iq = view.prepend(inline_qos_size);
+                if (!iq) { view.reset(); return false; }
+                serialize_inline_qos(iq, ch.inlineQos);
+            }
 
             // Prepend DATA submessage header in-place.
             // §9.4.5.3, Table 9.14, p. 204.
@@ -895,9 +922,11 @@ private:
             if (!smh) { view.reset(); return false; }
 
             smh->submessageId = SubmessageKind::DATA;
-            smh->flags        = FLAG_E |
+            smh->flags        = static_cast<Octet>(
+                                FLAG_E |
                                 (ch.kind == ChangeKind::ALIVE
-                                    ? data_flags::D : data_flags::K);
+                                    ? data_flags::D : data_flags::K) |
+                                (inline_qos_size > 0u ? data_flags::Q : 0u));
             smh->submessageLength = static_cast<uint16_t>(
                 view.size - sizeof(SubmessageHeader));
 

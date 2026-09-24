@@ -311,15 +311,25 @@ public:
     // ----------------------------------------------------------
     // tick()
     //
-    // Call periodically.  Sends the announcement if
-    // resendParticipantDataPeriod has elapsed since the last send.
+    // Call periodically.  Sends the announcement on the first call,
+    // so a participant is discoverable as soon as its owner starts
+    // ticking it, and again whenever resendParticipantDataPeriod has
+    // elapsed since the last send.
+    //
+    // §8.5.3.3, p. 162: the SPDPbuiltinParticipantWriter announces
+    // "periodically", and a new participant must announce on startup
+    // for remote participants to discover it before the first period.
+    //
+    // Verification: TC-SPDP-8.5.3-005 (tests/spec) checks that the
+    // first tick announces and the next announce waits one period.
     //
     // @param now_ms  Current RTPS_GET_MS().
     // ----------------------------------------------------------
     void tick(uint32_t now_ms) noexcept {
-        if ((now_ms - last_sent_ms_) >= resend_ms_) {
+        if (!announced_once_ || (now_ms - last_sent_ms_) >= resend_ms_) {
             announce();
             last_sent_ms_ = now_ms;
+            announced_once_ = true;
         }
     }
 
@@ -339,6 +349,8 @@ private:
     Locator      dest_;
     uint32_t     resend_ms_;
     uint32_t     last_sent_ms_ = 0;
+    bool         announced_once_ = false;
+    int64_t      next_sn_ = 1;    ///< SN of the next announcement (§8.5.3.3).
     MessageBuilder builder_;
 };
 
@@ -419,6 +431,21 @@ public:
     // @param now_ms  Current RTPS_GET_MS().
     // ----------------------------------------------------------
     void tick(uint32_t now_ms) noexcept;
+
+    // ----------------------------------------------------------
+    // remove_peer()
+    //
+    // Forget a participant that announced its own departure: a peer
+    // shutting down cleanly disposes its SPDP instance (DATA with
+    // StatusInfo DISPOSED|UNREGISTERED, keyed by its participant GUID),
+    // which removes it now instead of at lease expiry.
+    //
+    // §8.5.3.2 (removal on expiry or disposal), §9.6.3.3 (StatusInfo_t).
+    // Verification: TC-SPDP-8.5.3-006.
+    //
+    // @returns true when the peer was known; fires on_peer_removed first.
+    // ----------------------------------------------------------
+    bool remove_peer(const GuidPrefix& prefix) noexcept;
 
     // ----------------------------------------------------------
     // mark_sedp_announced()

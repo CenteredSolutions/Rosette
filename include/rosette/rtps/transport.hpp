@@ -2,9 +2,9 @@
  * @file rtps/transport.hpp
  * @brief RTPS UDP transport abstraction backed by the shared socket module.
  *
- * The RTPS stack only needs a small subset of UDP/IP behavior:
- * open one metatraffic socket, open one user-data socket, send datagrams,
- * and poll for received datagrams. This header keeps the RTPS-facing API
+ * The RTPS stack only needs a small subset of UDP/IP behavior: open the
+ * metatraffic, SPDP-multicast, and user-data sockets, send datagrams, and
+ * poll for received datagrams. This header keeps the RTPS-facing API
  * stable while routing all socket operations through the backend-agnostic
  * socket layer in `net/socket.hpp`.
  */
@@ -44,33 +44,89 @@ struct ITransportRuntime {
 };
 
 /**
- * @brief UDP transport that operates on two backend-provided datagram sockets.
+ * @brief UDP transport over backend-provided datagram sockets.
  *
- * `meta_socket_` handles RTPS metatraffic such as SPDP and SEDP, while
- * `user_socket_` handles user-data traffic. The concrete backend is selected
- * by the supplied `SocketProvider`, so the RTPS code no longer needs to know
- * whether packets are traveling through FreeRTOS+TCP or a Wiznet offload path.
+ * DDSI-RTPS assigns each participant three receive ports (§9.6.1.1):
+ * - the SPDP multicast port `PB + DG*domainId + d0`, shared by every
+ *   participant in the domain;
+ * - its metatraffic unicast port `PB + DG*domainId + d1 + PG*participantId`
+ *   (SEDP and unicast SPDP);
+ * - its user-data unicast port `PB + DG*domainId + d3 + PG*participantId`.
+ *
+ * `spdp_socket_` binds the shared multicast port and holds the group
+ * membership; the backend must allow several processes to bind it at once
+ * (the POSIX provider sets SO_REUSEADDR and SO_REUSEPORT). `meta_socket_`
+ * and `user_socket_` bind the participant's unicast ports and are also used
+ * to send. When the multicast port equals `meta_port` (a single-participant
+ * board that listens for SPDP on its metatraffic socket), no separate
+ * multicast socket is opened and the metatraffic socket joins the group.
+ *
+ * The concrete backend is selected by the supplied `SocketProvider`, so the
+ * RTPS code does not know whether packets travel through POSIX sockets,
+ * FreeRTOS+TCP, or a WIZnet offload path.
  */
 class SocketUdpTransport : public ITransport {
 public:
+    /**
+     * @brief Creates an IPv4 transport; no socket is opened until open().
+     *
+     * @param[in] provider       Socket backend; must outlive the transport.
+     * @param[in] meta_port      Metatraffic unicast port to bind.
+     * @param[in] user_port      User-data unicast port to bind.
+     * @param[in] multicast_addr SPDP multicast group, host-order IPv4
+     *   (0xEFFF0001 for 239.255.0.1).
+     * @param[in] multicast_port SPDP multicast port for the domain.
+     */
     SocketUdpTransport(rosette::net::SocketProvider& provider,
                        uint16_t meta_port,
                        uint16_t user_port,
-                       uint32_t multicast_addr) noexcept;
+                       uint32_t multicast_addr,
+                       uint16_t multicast_port) noexcept;
+
+    /**
+     * @brief Creates a transport whose SPDP group and port come from a locator.
+     *
+     * @param[in] provider          Socket backend; must outlive the transport.
+     * @param[in] meta_port         Metatraffic unicast port to bind.
+     * @param[in] user_port         User-data unicast port to bind.
+     * @param[in] multicast_locator SPDP multicast group and port; its kind
+     *   (UDPv4 or UDPv6) selects the socket domain.
+     */
     SocketUdpTransport(rosette::net::SocketProvider& provider,
                        uint16_t meta_port,
                        uint16_t user_port,
                        const Locator& multicast_locator) noexcept;
     ~SocketUdpTransport() noexcept;
 
+    /**
+     * @brief Opens and binds every socket and joins the SPDP group.
+     *
+     * @return `true` when all sockets are ready; `false` (with everything
+     *   closed again) if any socket fails to open, bind, or join. A `false`
+     *   from a busy unicast port lets the caller retry with another
+     *   participant ID.
+     *
+     * Verification:
+     * - Correct means: a participant receives SPDP multicast sent to its
+     *   domain's port from other processes on the same host, and two
+     *   transports in one domain can be open at once.
+     * - Covered by: tests/ros2/run_rmw_interop_loopback.sh (discovery
+     *   against rmw_fastrtps_cpp).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §9.6.1.1 (default port mapping)
+     * - OMG DDSI-RTPS 2.5 §8.5.3 (SPDP)
+     */
     bool open() noexcept;
     void close() noexcept;
 
+    /// @brief Receives one metatraffic datagram (unicast first, then SPDP multicast).
     uint32_t poll_meta(Octet*    buf,
                        uint32_t  buf_size,
                        uint32_t& src_addr,
                        uint16_t& src_port) noexcept;
 
+    /// @brief Receives one user-data datagram.
     uint32_t poll_user(Octet*    buf,
                        uint32_t  buf_size,
                        uint32_t& src_addr,
@@ -85,17 +141,24 @@ public:
 
 private:
     rosette::net::Socket* socket_for(const Locator& dest) const noexcept;
+    static uint32_t receive_from(rosette::net::Socket* socket,
+                                 Octet*    buf,
+                                 uint32_t  buf_size,
+                                 uint32_t& src_addr,
+                                 uint16_t& src_port) noexcept;
     static rosette::net::SocketAddress locator_to_socket_address(
         const Locator& dest) noexcept;
     static rosette::net::SocketMulticastMembership locator_to_multicast_membership(
         const Locator& dest) noexcept;
     rosette::net::SocketAddress any_bind_address(uint16_t port) const noexcept;
+    std::unique_ptr<rosette::net::Socket> open_bound(uint16_t port, bool join_group) noexcept;
 
     rosette::net::SocketProvider& provider_;
     uint16_t meta_port_;
     uint16_t user_port_;
     Locator multicast_locator_{};
     std::unique_ptr<rosette::net::Socket> meta_socket_;
+    std::unique_ptr<rosette::net::Socket> spdp_socket_;
     std::unique_ptr<rosette::net::Socket> user_socket_;
     bool meta_open_ = false;
     bool user_open_ = false;

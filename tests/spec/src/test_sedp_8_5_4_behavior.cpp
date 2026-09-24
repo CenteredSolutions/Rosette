@@ -314,6 +314,36 @@ static bool tc_sedp_8_5_4_004(std::string& err) {
     return true;
 }
 
+// Parses every captured message and tallies SEDP DATA per builtin writer.
+struct SedpTally {
+    uint32_t pub_alive = 0u, sub_alive = 0u, pub_disposed = 0u, sub_disposed = 0u;
+    int64_t  last_pub_sn = 0, last_sub_sn = 0;
+    Guid     last_disposed_key = GUID_UNKNOWN;
+};
+
+static SedpTally tally_sedp(const FakeTransport& tx) {
+    SedpTally t{};
+    ParseOps ops{};
+    ops.on_data = [](const ParseContext& ctx, const ParsedData& d) noexcept {
+        auto* out = static_cast<SedpTally*>(ctx.user_data);
+        const bool disposed = d.inlineQos.withdraws_instance();
+        if (disposed && d.inlineQos.hasKeyHash) out->last_disposed_key = d.inlineQos.key_hash_guid();
+        if (d.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
+            (disposed ? out->pub_disposed : out->pub_alive)++;
+            out->last_pub_sn = d.writerSN.to_int64();
+        } else if (d.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
+            (disposed ? out->sub_disposed : out->sub_alive)++;
+            out->last_sub_sn = d.writerSN.to_int64();
+        }
+    };
+    for (const auto& msg : tx.sent) {
+        (void)parse_message(msg.data(), static_cast<uint32_t>(msg.size()), GuidPrefix{}, ops, &t);
+    }
+    return t;
+}
+
+// §8.5.4.1: each local endpoint is one TRANSIENT_LOCAL instance written
+// once. Rediscovering a peer must not write new changes.
 static bool tc_sedp_8_5_4_005(std::string& err) {
     FakeTransport tx{};
     const GuidPrefix local_prefix = make_guid(
@@ -333,36 +363,111 @@ static bool tc_sedp_8_5_4_005(std::string& err) {
     w.announce_to_peer(peer_prefix, dest);
     w.announce_to_peer(peer_prefix, dest);
 
-    CHECK(tx.sent.size() >= 4u, "two announce_to_peer() calls should produce at least four DATA messages");
+    const SedpTally t = tally_sedp(tx);
+    CHECK(t.pub_alive == 1u && t.sub_alive == 1u,
+          "rediscovering a matched peer must not re-send or re-write announcements");
+    CHECK(t.last_pub_sn == 1 && t.last_sub_sn == 1,
+          "each endpoint occupies a single SN in its builtin writer's history");
+    return true;
+}
 
-    int64_t last_pub_sn = 0;
-    int64_t last_sub_sn = 0;
-    uint32_t pub_data = 0u;
-    uint32_t sub_data = 0u;
-    for (const auto& msg : tx.sent) {
-        DataCapture cap{};
-        if (!try_parse_data_from_message(msg, cap)) {
-            continue;
-        }
-        const int64_t sn = cap.data.writerSN.to_int64();
-        if (cap.data.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
-            CHECK(sn > last_pub_sn, "publications writerSN must increase across announce_to_peer calls");
-            last_pub_sn = sn;
-            pub_data++;
-            continue;
-        }
-        if (cap.data.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
-            CHECK(sn > last_sub_sn, "subscriptions writerSN must increase across announce_to_peer calls");
-            last_sub_sn = sn;
-            sub_data++;
-            continue;
-        }
+// §8.5.4.1: an endpoint created after a peer was matched is announced to it.
+static bool tc_sedp_8_5_4_007(std::string& err) {
+    FakeTransport tx{};
+    const GuidPrefix local_prefix = make_guid(0xC1u, 0xC2u, 0xC3u, entity_id::PARTICIPANT).prefix;
+    SedpWriter w(local_prefix, tx);
+    const GuidPrefix peer_prefix = make_guid(0xD1u, 0xD2u, 0xD3u, entity_id::PARTICIPANT).prefix;
+    const Locator dest = make_udpv4_locator(0xC0A80110u, 7410u);
+    w.announce_to_peer(peer_prefix, dest);
+    CHECK(tx.sent.empty(), "nothing to announce before any endpoint exists");
+
+    const Guid late_writer = make_guid(0xC1u, 0xC2u, 0xC3u, make_entity(3u, 3u, 3u, 0x03u));
+    CHECK(w.register_writer(make_writer_data(late_writer, "late", "std_msgs::msg::String")),
+          "register_writer failed");
+    const SedpTally t = tally_sedp(tx);
+    CHECK(t.pub_alive == 1u, "an endpoint created after matching must be announced to the peer");
+    CHECK(tx.dests.back() == dest, "late announcement must go to the peer's metatraffic locator");
+    return true;
+}
+
+// §8.5.4.1 / §9.6.3.3: deleting an endpoint publishes a disposal keyed by
+// its GUID, and late joiners no longer receive its announcement.
+static bool tc_sedp_8_5_4_008(std::string& err) {
+    FakeTransport tx{};
+    const GuidPrefix local_prefix = make_guid(0xE1u, 0xE2u, 0xE3u, entity_id::PARTICIPANT).prefix;
+    SedpWriter w(local_prefix, tx);
+    const Guid writer_guid = make_guid(0xE1u, 0xE2u, 0xE3u, make_entity(4u, 4u, 4u, 0x03u));
+    CHECK(w.register_writer(make_writer_data(writer_guid, "gone", "std_msgs::msg::String")),
+          "register_writer failed");
+    const Locator dest = make_udpv4_locator(0xC0A80111u, 7410u);
+    w.announce_to_peer(make_guid(0xF1u, 0xF2u, 0xF3u, entity_id::PARTICIPANT).prefix, dest);
+
+    CHECK(w.unregister_writer(writer_guid), "unregister_writer should find the endpoint");
+    SedpTally t = tally_sedp(tx);
+    CHECK(t.pub_disposed == 1u, "deleting an endpoint must send one disposal");
+    CHECK(t.last_disposed_key == writer_guid, "disposal key hash must be the endpoint GUID");
+    CHECK(!w.unregister_writer(writer_guid), "a second unregister must report unknown GUID");
+
+    // A peer discovered afterwards receives no live announcement for it.
+    tx.sent.clear();
+    tx.dests.clear();
+    w.announce_to_peer(make_guid(0xF4u, 0xF5u, 0xF6u, entity_id::PARTICIPANT).prefix, dest);
+    t = tally_sedp(tx);
+    CHECK(t.pub_alive == 0u, "a deleted endpoint must not be replayed to late joiners");
+
+    // Registering and deleting many endpoints never evicts a live one.
+    const Guid keeper = make_guid(0xE1u, 0xE2u, 0xE3u, make_entity(9u, 9u, 9u, 0x03u));
+    CHECK(w.register_writer(make_writer_data(keeper, "keep", "std_msgs::msg::String")),
+          "register keeper failed");
+    for (uint8_t i = 0; i < 3u * SedpWriter::kSedpHistoryDepth; ++i) {
+        const Guid g = make_guid(0xE1u, 0xE2u, 0xE3u, make_entity(5u, 0u, i, 0x03u));
+        CHECK(w.register_writer(make_writer_data(g, "churn", "std_msgs::msg::String")),
+              "churn register failed");
+        CHECK(w.unregister_writer(g), "churn unregister failed");
     }
+    tx.sent.clear();
+    tx.dests.clear();
+    w.announce_to_peer(make_guid(0xF7u, 0xF8u, 0xF9u, entity_id::PARTICIPANT).prefix, dest);
+    t = tally_sedp(tx);
+    CHECK(t.pub_alive == 1u, "the live endpoint must survive disposal churn in the history");
+    return true;
+}
 
-    CHECK(last_pub_sn == 2, "expected two monotonically increasing publication sequence numbers");
-    CHECK(last_sub_sn == 2, "expected two monotonically increasing subscription sequence numbers");
-    CHECK(pub_data == 2u, "expected two publication DATA samples");
-    CHECK(sub_data == 2u, "expected two subscription DATA samples");
+// §8.5.4.1 / §9.6.3.3: a remote disposal unmatches the withdrawn endpoint.
+static bool tc_sedp_8_5_4_009(std::string& err) {
+    struct UnmatchObs { int matches = 0; int unmatches = 0; };
+    UnmatchObs obs{};
+    FakeTransport tx{};
+    EndpointMatchTable table(
+        [](const DiscoveredWriterData&, const DiscoveredReaderData&, void* u) noexcept {
+            static_cast<UnmatchObs*>(u)->matches++;
+        },
+        [](const Guid&, const Guid&, void* u) noexcept {
+            static_cast<UnmatchObs*>(u)->unmatches++;
+        },
+        &obs);
+    const GuidPrefix local_prefix = make_guid(0x11u, 0x22u, 0x33u, entity_id::PARTICIPANT).prefix;
+    SedpReader reader(local_prefix, tx, table);
+    const Guid local_reader = make_guid(0x11u, 0x22u, 0x33u, make_entity(1u, 1u, 1u, 0x04u));
+    table.add_reader(make_reader_data(local_reader, "scan", "sensor_msgs::msg::LaserScan"));
+
+    const Guid remote_writer = make_guid(0x44u, 0x55u, 0x66u, make_entity(2u, 2u, 2u, 0x03u));
+    std::vector<Octet> payload{};
+    CHECK(build_publication_payload(
+              make_writer_data(remote_writer, "scan", "sensor_msgs::msg::LaserScan"), payload),
+          "publication payload build failed");
+    reader.on_publication_data(remote_writer.prefix, payload.data(),
+                               static_cast<uint32_t>(payload.size()),
+                               SequenceNumber::from_int64(1));
+    CHECK(obs.matches == 1, "remote writer should match the local reader");
+
+    // A disposal from a different participant must be ignored.
+    reader.on_publication_disposed(local_prefix, remote_writer, SequenceNumber::from_int64(2));
+    CHECK(obs.unmatches == 0, "only the owning participant may withdraw an endpoint");
+
+    reader.on_publication_disposed(remote_writer.prefix, remote_writer,
+                                   SequenceNumber::from_int64(2));
+    CHECK(obs.unmatches == 1, "disposal must unmatch the withdrawn remote writer");
     return true;
 }
 
@@ -486,11 +591,20 @@ void append_sedp_tests_8_5_4(std::vector<TestCase>& tests) {
                      "§8.5.4.3: SEDP builtin publications writer uses monotonically increasing writerSN for distinct endpoint DATA changes.",
                      tc_sedp_8_5_4_004});
     tests.push_back({"TC-SEDP-8.5.4-005",
-                     "§8.5.4.3: SEDP builtin writer sequence numbers continue monotonically across repeated announce_to_peer() calls.",
+                     "§8.5.4.1: each local endpoint is written once; rediscovering a matched peer writes and sends nothing new.",
                      tc_sedp_8_5_4_005});
     tests.push_back({"TC-SEDP-8.5.4-006",
                      "§8.3.7.5/§8.5.4.1: SEDP reader responds to HEARTBEAT F=0 with NACK for missing SNs, and with pure ACK once all DATA received.",
                      tc_sedp_8_5_4_006});
+    tests.push_back({"TC-SEDP-8.5.4-007",
+                     "§8.5.4.1: an endpoint registered after a peer's builtin readers were matched is announced to that peer.",
+                     tc_sedp_8_5_4_007});
+    tests.push_back({"TC-SEDP-8.5.4-008",
+                     "§8.5.4.1/§9.6.3.3: unregistering an endpoint sends a disposal keyed by its GUID, stops replay to late joiners, and disposal churn never evicts a live announcement.",
+                     tc_sedp_8_5_4_008});
+    tests.push_back({"TC-SEDP-8.5.4-009",
+                     "§8.5.4.1/§9.6.3.3: a disposal from the owning participant unmatches the withdrawn remote endpoint; disposals from other participants are ignored.",
+                     tc_sedp_8_5_4_009});
 }
 
 } // namespace spec_test

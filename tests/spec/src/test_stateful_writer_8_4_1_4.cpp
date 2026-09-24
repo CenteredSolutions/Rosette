@@ -118,7 +118,7 @@ static bool tc_swr_8_4_1_4_002(std::string& err) {
 }
 
 static bool tc_swr_8_4_1_4_003(std::string& err) {
-    NullTransport tx{};
+    CaptureTransport tx{};
     const Guid writer_guid = make_guid(0x80u, 0x81u, 0x82u, make_entity(1u, 1u, 1u, 0xC2u));
     const Guid reader_guid = make_guid(0x90u, 0x91u, 0x92u, make_entity(2u, 2u, 2u, 0xC7u));
     const Locator loc = make_udpv4_locator(0xC0A80122u, 7411u);
@@ -134,14 +134,16 @@ static bool tc_swr_8_4_1_4_003(std::string& err) {
     payload.size = 1u;
     ch->payload.size = 1u;
     CHECK(w.add_change(static_cast<CacheChange&&>(*ch)), "add_change should succeed");
+    CHECK(tx.unicast_msgs.empty(), "no reader is matched yet, so nothing is sent");
 
     CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false),
           "matched_reader_add should succeed");
     auto* proxy = w.matched_reader_lookup(reader_guid);
     CHECK(proxy != nullptr, "matched_reader_lookup should find added proxy");
-    const ChangeForReader* unsent = proxy->next_unsent_change();
-    CHECK(unsent != nullptr, "TRANSIENT_LOCAL reader should receive replay-marked unsent change");
-    CHECK(unsent->sequenceNumber.to_int64() == 1, "replayed unsent change should target cached SN");
+    CHECK(proxy->next_unsent_change() == nullptr,
+          "TRANSIENT_LOCAL replay should be sent at match time, leaving nothing unsent");
+    CHECK(tx.unicast_msgs.size() == 1u && tx.unicast_dests[0] == loc,
+          "the cached change should be replayed to the new reader's locator");
     return true;
 }
 
@@ -153,7 +155,7 @@ void append_stateful_writer_tests_8_4_1_4(std::vector<TestCase>& tests) {
                      "§8.4.1.4: matched_reader_add plus write_reliable sends DATA to the matched reader locator with writer-assigned SN.",
                      tc_swr_8_4_1_4_002});
     tests.push_back({"TC-SWR-8.4.1.4-003",
-                     "§8.7.2.2-linked behavior: TRANSIENT_LOCAL matched reader replay marks cached changes UNSENT for delivery.",
+                     "§8.7.2.2: a TRANSIENT_LOCAL writer replays its cached changes to a newly matched reader immediately.",
                      tc_swr_8_4_1_4_003});
 }
 

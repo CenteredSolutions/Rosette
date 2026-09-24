@@ -174,7 +174,8 @@ public:
         int slot = find_free_writer_slot();
         if (slot < 0) return nullptr;
 
-        const Guid writer_guid{ participant_guid_.prefix, cfg.entityId };
+        const Guid writer_guid{ participant_guid_.prefix,
+                                assign_entity_id(cfg.entityId, true, cfg.topicKind) };
 
         // Placement-new into the pre-allocated, correctly aligned storage.
         W* w = new (writer_storage_[slot]) W(
@@ -202,6 +203,25 @@ public:
     StatefulReader* create_reader(const ReaderConfig&               cfg,
                                   StatefulReader::OnChangeAvailable on_change_avail = nullptr,
                                   void*                             user_data       = nullptr) noexcept;
+
+    // ----------------------------------------------------------
+    // delete_writer() / delete_reader()
+    //
+    // Destroy a local endpoint created by create_writer()/create_reader():
+    // withdraw it from SEDP (peers receive a disposal and unmatch it),
+    // dissolve its local matches, run its destructor, and free its slot
+    // for reuse.
+    //
+    // §8.5.1, p. 150 (Participant owns endpoint lifecycle); §8.5.4.1
+    // (endpoint removal is announced through SEDP).
+    //
+    // Verification: TC-PART-8.5.1-005 (slot reuse and disposal sent).
+    //
+    // @returns false when the pointer is not a live endpoint of this
+    //          participant.
+    // ----------------------------------------------------------
+    bool delete_writer(IStatefulWriter* writer) noexcept;
+    bool delete_reader(StatefulReader* reader) noexcept;
 
     // ----------------------------------------------------------
     // parse_received() — §8.3.4, p. 69.
@@ -240,7 +260,31 @@ public:
     SpdpReader&       spdp_reader()            noexcept { return spdp_reader_; }
     EndpointMatchTable& match_table()          noexcept { return match_table_; }
 
+    // ----------------------------------------------------------
+    // assign_entity_id()
+    //
+    // Returns `requested` unchanged when the caller chose an EntityId,
+    // and otherwise allocates a fresh user-defined one: a 3-octet
+    // entityKey from a per-participant counter (starting at 1, never
+    // reused) and the entityKind Table 9.1 prescribes for a user writer
+    // (0x02 with key, 0x03 without) or reader (0x07 with key, 0x04
+    // without). create_writer()/create_reader() call this, so endpoints
+    // created from a default WriterConfig/ReaderConfig get distinct GUIDs.
+    //
+    // §8.2.4.3, p. 29: "the EntityId_t uniquely identifies the Endpoint
+    //  within the Participant"; §9.3.1.2, Table 9.1 (entityKind values).
+    //
+    // Verification: TC-PART-8.2.4-001 (tests/spec) checks that default
+    // endpoints get distinct, correctly-kinded IDs and explicit IDs are kept.
+    // ----------------------------------------------------------
+    EntityId assign_entity_id(const EntityId& requested,
+                              bool            is_writer,
+                              TopicKind       topic_kind) noexcept;
+
 private:
+
+    /// Next entityKey handed out by assign_entity_id().
+    uint32_t next_entity_key_ = 1u;
 
     // ── Discovery callbacks ───────────────────────────────────
     static void on_spdp_new_peer    (const PeerEntry&, void*) noexcept;
