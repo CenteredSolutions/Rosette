@@ -136,7 +136,8 @@ void report(const rtps::SocketUdpTransport& transport, rtps::IStatefulWriter& wr
 
 int main() {
     board_init();
-    for (int i = 0; i < 30 && !stdio_usb_connected(); ++i) sleep_ms(100);
+    // Hold the boot log until a terminal attaches (up to 10 s).
+    for (int i = 0; i < 100 && !stdio_usb_connected(); ++i) sleep_ms(100);
     std::printf("[chatter] rosette RTPS chatter, datagram limit %u\n",
                 static_cast<unsigned>(ROSETTE_RTPS_MAX_DATAGRAM_SIZE));
 
@@ -146,7 +147,11 @@ int main() {
     static wiz::BoardDevice device{bus};
     static wiz::BoardSocketProvider sockets{device};
     static wiz::BoardLink link{device, sockets, mac};
-    while (!link.bring_link_up()) sleep_ms(500);
+    while (!link.bring_link_up()) {
+        std::printf("[chatter] waiting for chip / PHY link\n");
+        sleep_ms(2000);
+    }
+    std::printf("[chatter] PHY link up\n");
 
     // Addressing: DHCP, falling back to IPv4 link-local.
     static wiz::WiznetInterface<wiz::BoardChip, wiz::BoardBus> iface{device};
@@ -157,8 +162,13 @@ int main() {
     static net::AddressManager v4{providers};
     static net::NetworkAddress net_addr{v4, &iface};
     net_addr.begin();
+    uint32_t next_note = pf::monotonic_ms() + 2000u;
     while (!net_addr.has_address()) {
         net_addr.poll(pf::monotonic_ms());
+        if (static_cast<int32_t>(pf::monotonic_ms() - next_note) >= 0) {
+            next_note += 2000u;
+            std::printf("[chatter] waiting for an address (DHCP, then link-local)\n");
+        }
         sleep_ms(10);
     }
     const auto addr = net_addr.snapshot().v4.address;
@@ -169,8 +179,12 @@ int main() {
                                               spdp_port(kDomainId));
     transport.set_max_datagram_size(ROSETTE_RTPS_MAX_DATAGRAM_SIZE);
     if (!transport.open()) {
-        std::printf("[chatter] transport open failed (out of hardware sockets?)\n");
-        for (;;) sleep_ms(1000);
+        for (;;) {
+            std::printf("[chatter] transport open failed: ports %u/%u/%u (out of hardware sockets?)\n",
+                        meta_port(kDomainId, kParticipantId), user_port(kDomainId, kParticipantId),
+                        spdp_port(kDomainId));
+            sleep_ms(2000);
+        }
     }
     static rtps::RTPSParticipant participant(kDomainId, kParticipantId, transport);
     participant.add_ipv4_address((uint32_t{addr[0]} << 24) | (uint32_t{addr[1]} << 16) |
@@ -188,9 +202,14 @@ int main() {
         reader = participant.create_reader(string_topic<rtps::ReaderConfig>("rt/rosette/command"),
                                            on_command, nullptr);
     }
+    std::printf("[chatter] participant up: SPDP %u.%u.%u.%u -> 239.255.0.1:%u, meta %u, user %u\n",
+                addr[0], addr[1], addr[2], addr[3], spdp_port(kDomainId),
+                meta_port(kDomainId, kParticipantId), user_port(kDomainId, kParticipantId));
     if (writer == nullptr || reader == nullptr) {
-        std::printf("[chatter] endpoint creation failed\n");
-        for (;;) sleep_ms(1000);
+        for (;;) {
+            std::printf("[chatter] endpoint creation failed\n");
+            sleep_ms(2000);
+        }
     }
 
     uint32_t count = 0u;
