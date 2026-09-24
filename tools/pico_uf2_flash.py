@@ -137,9 +137,10 @@ def main() -> int:
             print("no Pico console or BOOTSEL drive found", file=sys.stderr)
             return 1
         touch_1200(port)
-        drive = wait_for(lambda: find_drive() or mount_bootsel_drive(), 15.0)
+        wait_for(lambda: any(os.path.exists(f"/dev/disk/by-label/{l}") for l in DRIVE_LABELS), 10.0)
+        drive = find_drive() or mount_bootsel_drive() or wait_for(find_drive, 60.0)
         if drive is None:
-            print("Pico did not enter BOOTSEL (is USB stdio enabled in the running app?)",
+            print("BOOTSEL drive not mounted (mount it, then rerun this command)",
                   file=sys.stderr)
             return 1
     print(f"[flash] {args.uf2} -> {drive}", flush=True)

@@ -526,7 +526,10 @@ public:
         uint16_t pointer = socket_tx_write_pointer(socket);
         pointer = ring_write(socket, pointer, data, required);
         set_socket_tx_write_pointer(socket, pointer);
-        issue_socket_command(socket, Chip::command_send());
+        // A multicast destination has no ARP answer; SEND_MAC uses the group
+        // MAC configure_udp_peer() wrote to Sn_DHAR instead.
+        const bool use_mac = is_multicast_ipv4(address) && Chip::command_send_mac() != 0u;
+        issue_socket_command(socket, use_mac ? Chip::command_send_mac() : Chip::command_send());
         send_pending_[socket] = true;
 
         return static_cast<std::ptrdiff_t>(length);
@@ -581,6 +584,18 @@ public:
         issue_socket_command(socket, Chip::command_receive_done());
         ack_socket_rx_interrupt(socket);
         return payload_len;
+    }
+
+    /**
+     * @brief Clears a socket's RECV interrupt so the next datagram re-asserts INT.
+     *
+     * Called before checking for data when sleeping on the INT-driven event,
+     * which closes the window in which a datagram could arrive unannounced.
+     */
+    void rearm_socket_rx_interrupt(socket_type socket) noexcept
+    {
+        const auto lock = bus_.acquire();
+        clear_socket_interrupt(socket, Chip::socket_interrupt_receive());
     }
 
     uint16_t socket_rx_available(socket_type socket) noexcept

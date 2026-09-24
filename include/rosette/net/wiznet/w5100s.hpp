@@ -79,6 +79,10 @@ struct W5100S final : ChipBase {
 
     static constexpr uint8_t command_open() { return 0x01u; }
     static constexpr uint8_t command_send() { return 0x20u; }
+    /// SEND_MAC (UDP): transmit to Sn_DHAR without ARP. Needed for multicast
+    /// from a unicast socket, where ARP for the group address never resolves
+    /// (W5100S datasheet §Sn_CR).
+    static constexpr uint8_t command_send_mac() { return 0x21u; }
     static constexpr uint8_t command_close() { return 0x10u; }
     static constexpr uint8_t command_receive_done() { return 0x40u; }
 

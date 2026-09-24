@@ -28,6 +28,7 @@
 #include <new>
 
 #include "rosette/platform/host_runtime.hpp"
+#include "rosette/platform/platform.hpp"
 
 #include "device.hpp"
 #include "executor.hpp"
@@ -200,6 +201,19 @@ public:
      * poll mode, a task notification under FreeRTOS. Either way this loop owns
      * the deadline and re-checks the chip after each wake.
      */
+    /**
+     * @brief True when the chip holds a received datagram for this socket.
+     *
+     * @param[in] rearm Clear the socket's RECV interrupt first, so a datagram
+     *   arriving after this check asserts INT again.
+     */
+    bool rx_pending(bool rearm) noexcept
+    {
+        if (!open_) return false;
+        if (rearm) device_.rearm_socket_rx_interrupt(socket_);
+        return device_.socket_rx_available(socket_) > 0u;
+    }
+
     std::ptrdiff_t recv_from(void* data,
                              std::size_t capacity,
                              SocketAddress* remote) noexcept override
@@ -355,6 +369,68 @@ public:
         return instance;
     }
 
+    /**
+     * @brief Sleeps until a listed socket holds a datagram, `wake` is
+     * signaled, or `timeout_ms` passes.
+     *
+     * The participant driver sleeps here between protocol passes. With the
+     * chip's INT pin routed to `wake` (attach_rx_interrupt(), and the event
+     * registered through set_receive_event()), each socket's RECV interrupt
+     * is cleared and its received-size register read once, and the core then
+     * sleeps on `wake` for the whole timeout: the next datagram asserts INT,
+     * whose interrupt signals `wake`. Clearing before reading means a datagram
+     * landing after the read still produces an edge, so none is missed.
+     * A board without an INT line is served by reading the registers again
+     * every kRxPollSliceMs while sleeping on `wake` in between.
+     *
+     * @param[in] sockets    Sockets opened by this provider (entries may be
+     *   null); each is a WiznetUdpSocket by construction.
+     * @param[in] count      Number of entries in `sockets`.
+     * @param[in] wake       Event that ends the wait early.
+     * @param[in] timeout_ms Longest wait; platform::kWaitForever blocks until
+     *   data or `wake`.
+     *
+     * Verification:
+     * - Correct means: returns within interrupt latency (INT wired) or
+     *   kRxPollSliceMs (no INT) of a datagram reaching any listed socket, and
+     *   immediately when `wake` is signaled.
+     * - Covered by: examples/rtps_chatter on the W5100S-EVB-Pico2 (command
+     *   echo against Fast DDS).
+     *
+     * References: W5100S datasheet §Sn_IR, §INT pin.
+     */
+    void wait_readable(Socket* const* sockets, std::size_t count,
+                       rosette::platform::Event& wake,
+                       uint32_t timeout_ms) noexcept override
+    {
+        using udp_socket = WiznetUdpSocket<Chip, Bus, ExecutorT>;
+        const bool interrupt_driven = (receive_event_ == &wake);
+        const uint32_t start = executor_type::now_ms();
+        for (;;) {
+            for (std::size_t i = 0; i < count; ++i) {
+                if (sockets[i] != nullptr &&
+                    static_cast<udp_socket*>(sockets[i])->rx_pending(interrupt_driven)) {
+                    return;
+                }
+            }
+            if (interrupt_driven) {
+                (void)wake.wait_for(timeout_ms);
+                return;
+            }
+            const uint32_t elapsed = executor_type::now_ms() - start;
+            if (timeout_ms != rosette::platform::kWaitForever && elapsed >= timeout_ms) {
+                return;
+            }
+            uint32_t slice = kRxPollSliceMs;
+            if (timeout_ms != rosette::platform::kWaitForever && timeout_ms - elapsed < slice) {
+                slice = timeout_ms - elapsed;
+            }
+            if (wake.wait_for(slice)) {
+                return;
+            }
+        }
+    }
+
     void release(socket_type socket) noexcept
     {
         if (socket < Chip::socket_count()) {
@@ -412,6 +488,9 @@ private:
         }
         return Chip::socket_count();
     }
+
+    /// Register re-read period for boards with no INT line (see wait_readable()).
+    static constexpr uint32_t kRxPollSliceMs = 2u;
 
     device_type& device_;
     executor_type executor_;

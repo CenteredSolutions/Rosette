@@ -139,6 +139,10 @@ struct W6x00 : ChipBase {
 
     static constexpr uint8_t command_open() { return 0x01u; }
     static constexpr uint8_t command_send() { return 0x20u; }
+    /// No SEND_MAC is used on the W6x00 (0 = send with SEND); multicast from
+    /// a unicast socket relies on the chip resolving the group MAC itself,
+    /// which is to be confirmed on a W6100 before relying on it.
+    static constexpr uint8_t command_send_mac() { return 0x00u; }
     static constexpr uint8_t command_close() { return 0x10u; }
     static constexpr uint8_t command_receive_done() { return 0x40u; }  // Sn_CR_RECV
 
