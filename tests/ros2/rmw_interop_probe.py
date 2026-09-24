@@ -5,10 +5,16 @@ Architecture:
     Rosette is exercised through stock ROS 2 client libraries: the same rclpy
     node runs on both sides of a session, and only `RMW_IMPLEMENTATION`
     differs. Role `alpha` publishes on `/<session>/alpha_to_beta` and
-    subscribes to `/<session>/beta_to_alpha`; role `beta` mirrors it. A
-    session passes when each side receives at least `--expect-rx` samples,
-    which requires SPDP discovery, SEDP endpoint matching, and reliable
-    DATA/HEARTBEAT/ACKNACK exchange to all work across the two middlewares.
+    subscribes to `/<session>/beta_to_alpha`; role `beta` mirrors it. Each
+    side also serves `std_srvs/SetBool` on `/<session>/<role>_echo` and, like
+    every default rclpy node, the parameter services; it calls the peer's
+    echo service and the peer's `get_parameters`.
+
+    A session passes when each side receives at least `--expect-rx` samples
+    and completes at least `--expect-calls` correlated service calls in each
+    direction. That requires SPDP discovery, SEDP endpoint matching, reliable
+    DATA/HEARTBEAT/ACKNACK exchange, and request/reply correlation through
+    PID_RELATED_SAMPLE_IDENTITY to all work across the two middlewares.
 
     Run the two roles on one host with `run_rmw_interop_loopback.sh`, or on two
     hosts by hand to put a real network between them.
@@ -37,8 +43,12 @@ from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rcl_interfaces.msg import ParameterType
+from rcl_interfaces.srv import GetParameters
 from std_msgs.msg import String
+from std_srvs.srv import SetBool
 
 from rtps_packet_capture import (
     CaptureHandle,
@@ -67,8 +77,10 @@ class InteropProbeNode(Node):
         rx_topic: str,
         publish_period_sec: float,
         role: str,
+        session: str,
+        peer_node: str,
     ) -> None:
-        """Creates the publisher, subscription, and publish timer.
+        """Creates the topic endpoints, the echo service, and the peer clients.
 
         Args:
             node_name: ROS node name.
@@ -77,12 +89,28 @@ class InteropProbeNode(Node):
             rx_topic: Topic this side subscribes to.
             publish_period_sec: Seconds between published samples.
             role: `alpha` or `beta`; embedded in every payload.
+            session: Session name shared by both sides.
+            peer_node: Fully-qualified name of the peer's node.
         """
         super().__init__(node_name, namespace=namespace)
         self._role = role
+        self._peer = "beta" if role == "alpha" else "alpha"
         self._host = socket.gethostname()
         self.tx_count = 0
         self.rx_count = 0
+        self.echo_ok = 0
+        self.param_ok = 0
+        self._call_seq = 0
+        self._inflight: list = []
+
+        # The peer reads this back through our parameter services.
+        self.declare_parameter("probe_rmw", rclpy.get_rmw_implementation_identifier())
+        self._echo_service = self.create_service(
+            SetBool, f"/{session}/{role}_echo", self._on_echo
+        )
+        self._echo_client = self.create_client(SetBool, f"/{session}/{self._peer}_echo")
+        self._param_client = self.create_client(GetParameters, f"{peer_node}/get_parameters")
+        self._call_timer = self.create_timer(publish_period_sec, self._call_peer)
 
         qos = QoSProfile(
             depth=10,
@@ -109,6 +137,47 @@ class InteropProbeNode(Node):
         self.rx_count += 1
         self.get_logger().info(f'rx seq={self.rx_count} payload="{msg.data}"')
 
+    def _on_echo(self, request: SetBool.Request, response: SetBool.Response) -> SetBool.Response:
+        """Serves the peer: echoes the request so the caller can check correlation."""
+        response.success = request.data
+        response.message = f"{self._role}:{int(request.data)}"
+        return response
+
+    def _call_peer(self) -> None:
+        """Calls the peer's echo and get_parameters services once each, when reachable."""
+        self._inflight = [f for f in self._inflight if not f.done()]
+        if self._inflight:
+            return
+        if self._echo_client.service_is_ready():
+            self._call_seq += 1
+            want = bool(self._call_seq % 2)
+            future = self._echo_client.call_async(SetBool.Request(data=want))
+            future.add_done_callback(lambda f, w=want: self._on_echo_reply(f, w))
+            self._inflight.append(future)
+        if self._param_client.service_is_ready():
+            future = self._param_client.call_async(GetParameters.Request(names=["probe_rmw"]))
+            future.add_done_callback(self._on_param_reply)
+            self._inflight.append(future)
+
+    def _on_echo_reply(self, future, sent: bool) -> None:
+        reply = future.result()
+        expected = f"{self._peer}:{int(sent)}"
+        if reply is not None and reply.success == sent and reply.message == expected:
+            self.echo_ok += 1
+            self.get_logger().info(f'echo ok={self.echo_ok} reply="{reply.message}"')
+        else:
+            self.get_logger().error(f"echo reply mismatch: sent={sent} got={reply}")
+
+    def _on_param_reply(self, future) -> None:
+        reply = future.result()
+        values = reply.values if reply is not None else []
+        if len(values) == 1 and values[0].type == ParameterType.PARAMETER_STRING:
+            self.param_ok += 1
+            self.get_logger().info(f"get_parameters ok={self.param_ok} "
+                                   f"peer_rmw={values[0].string_value}")
+        else:
+            self.get_logger().error(f"get_parameters reply unexpected: {reply}")
+
 
 def parse_args() -> argparse.Namespace:
     """Parses command-line options; see `--help` for each flag."""
@@ -121,6 +190,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duration-sec", type=float, default=20.0)
     parser.add_argument("--publish-period-sec", type=float, default=1.0)
     parser.add_argument("--expect-rx", type=int, default=1)
+    parser.add_argument("--expect-calls", type=int, default=1,
+                        help="Minimum correlated calls per peer service (echo and get_parameters).")
     parser.add_argument("--namespace", default="")
     parser.add_argument("--node-name", default=None)
     parser.add_argument(
@@ -155,13 +226,16 @@ def main() -> int:
     """Runs one side of an interop session.
 
     Returns:
-        0 when the expected RMW was loaded and at least `--expect-rx` samples
-        arrived before the deadline; 1 otherwise.
+        0 when the expected RMW was loaded, at least `--expect-rx` samples
+        arrived, and at least `--expect-calls` calls to each peer service
+        returned correctly correlated replies before the deadline; 1 otherwise.
     """
     args = parse_args()
     os.environ["ROS_DOMAIN_ID"] = str(args.domain)
     tx_topic, rx_topic = compute_topics(args.session, args.role)
     node_name = args.node_name or f"{args.session}_{args.role}_probe"
+    peer_role = "beta" if args.role == "alpha" else "alpha"
+    peer_node = f"{args.namespace.rstrip('/')}/{args.session}_{peer_role}_probe"
 
     capture: CaptureHandle | None = None
     if args.capture:
@@ -195,6 +269,8 @@ def main() -> int:
         rx_topic=rx_topic,
         publish_period_sec=args.publish_period_sec,
         role=args.role,
+        session=args.session,
+        peer_node=peer_node,
     )
     node.get_logger().info(
         f"role={args.role} rmw={loaded_rmw} domain={args.domain} tx={tx_topic} "
@@ -207,18 +283,25 @@ def main() -> int:
             rclpy.spin_once(node, timeout_sec=0.1)
     finally:
         tx_count, rx_count = node.tx_count, node.rx_count
-        node.get_logger().info(f"summary rmw={loaded_rmw} tx={tx_count} rx={rx_count}")
+        echo_ok, param_ok = node.echo_ok, node.param_ok
+        node.get_logger().info(f"summary rmw={loaded_rmw} tx={tx_count} rx={rx_count} "
+                               f"echo_calls={echo_ok} param_calls={param_ok}")
         node.destroy_node()
         rclpy.shutdown()
         if capture is not None:
             capture.stop()
             print(f"{_LOG_PREFIX} capture saved to {capture.pcap_file}")
 
+    ok = True
     if rx_count < args.expect_rx:
         print(f"{_LOG_PREFIX} expected at least {args.expect_rx} inbound samples, "
               f"got {rx_count}", file=sys.stderr)
-        return 1
-    return 0
+        ok = False
+    if min(echo_ok, param_ok) < args.expect_calls:
+        print(f"{_LOG_PREFIX} expected at least {args.expect_calls} correlated calls per "
+              f"peer service, got echo={echo_ok} get_parameters={param_ok}", file=sys.stderr)
+        ok = False
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

@@ -8,19 +8,23 @@ session passes, a stock ROS 2 application on `rmw_fastrtps_cpp` or
 
 | File | Role |
 | --- | --- |
-| `rmw_interop_probe.py` | Bidirectional `rclpy` node. Role `alpha` publishes `/<session>/alpha_to_beta` and subscribes `/<session>/beta_to_alpha`; `beta` mirrors it. Exits 0 only if it loaded the expected RMW and received `--expect-rx` samples. |
+| `rmw_interop_probe.py` | Bidirectional default `rclpy` node. Role `alpha` publishes `/<session>/alpha_to_beta` and subscribes `/<session>/beta_to_alpha`; `beta` mirrors it. Each serves `std_srvs/SetBool` on `/<session>/<role>_echo` and calls the peer's echo and `get_parameters` services. Exits 0 only if it loaded the expected RMW, received `--expect-rx` samples, and completed `--expect-calls` correctly correlated calls per peer service. |
+| `rmw_serialization_parity.py` | Serializes a corpus of populated messages (strings, arrays, nested sequences, mixed alignment) through `rmw_serialize()` on `rmw_rosette` and on a stock RMW, then checks that the CDR layouts match and that each side decodes the other's bytes. |
 | `rtps_packet_capture.py` | Optional `tcpdump` capture of one DDS domain's RTPS port block (DDSI-RTPS 2.5 §9.6.1.1). |
 | `run_rmw_interop_loopback.sh` | Runs `alpha` on the RMW under test and `beta` on a stock RMW on one host. |
 
 ## What a pass proves
 
-Both probes use RELIABLE + VOLATILE QoS, so a pass requires, in both directions:
+Topics use RELIABLE + VOLATILE QoS, so a pass requires, in both directions:
 
 1. SPDP participant discovery (DDSI-RTPS 2.5 §8.5.3).
 2. SEDP endpoint matching, including topic-name and type-name mangling that
    matches stock ROS 2 (`rt/` prefix, `std_msgs::msg::dds_::String_`).
 3. Reliable delivery: DATA, HEARTBEAT, and ACKNACK exchange (§8.4.7, §8.4.12).
-4. CDR payload compatibility for `std_msgs/msg/String`.
+4. CDR payload compatibility for `std_msgs/msg/String`, `std_srvs/srv/SetBool`,
+   and `rcl_interfaces/srv/GetParameters`.
+5. Service request/reply correlation (`PID_RELATED_SAMPLE_IDENTITY`): each echo
+   reply must carry the value its own request sent.
 
 Each probe checks `rclpy.get_rmw_implementation_identifier()` against
 `RMW_IMPLEMENTATION`, so a misconfigured environment fails instead of
@@ -37,6 +41,16 @@ silently testing a stock RMW against itself.
   source install/setup.bash
   ```
 
+## Serialization parity
+
+```bash
+tests/ros2/rmw_serialization_parity.py --reference rmw_fastrtps_cpp
+```
+
+Padding octets are not compared (CDR leaves their content unspecified), and
+octets a stock RMW reports past the last field are ignored (Fast DDS reports
+its size estimate as the serialized length). Every data octet must match.
+
 ## Single-host session
 
 ```bash
@@ -50,14 +64,25 @@ tests/ros2/run_rmw_interop_loopback.sh
 | `ROSETTE_DOMAIN` | `42` | DDS domain id |
 | `ROSETTE_DURATION_SEC` | `20` | Session length |
 | `ROSETTE_EXPECT_RX` | `3` | Minimum samples each side must receive |
+| `ROSETTE_EXPECT_CALLS` | `3` | Minimum correlated calls per peer service, per side |
 | `ROSETTE_CAPTURE` | `0` | `1` records a pcap from `alpha` (needs `tcpdump` privileges) |
 | `ROSETTE_CAPTURE_IFACE` | `any` on Linux | Capture interface |
 
-Validate the harness itself first by running two stock middlewares against each
-other; this must pass before a Rosette failure means anything:
+Validate the harness itself first by running the stock middleware against
+itself; this must pass before a Rosette failure means anything:
 
 ```bash
-ROSETTE_RMW=rmw_cyclonedds_cpp tests/ros2/run_rmw_interop_loopback.sh
+ROSETTE_RMW=rmw_fastrtps_cpp tests/ros2/run_rmw_interop_loopback.sh
+```
+
+Service correlation is not standardized across DDS vendors: Fast DDS carries
+it in inline QoS (the convention `rmw_rosette` follows), while
+`rmw_cyclonedds_cpp` prefixes a request header to the payload, so stock Cyclone
+and Fast DDS services do not interoperate either. Against a Cyclone peer, check
+topics only:
+
+```bash
+ROSETTE_PEER_RMW=rmw_cyclonedds_cpp ROSETTE_EXPECT_CALLS=0 tests/ros2/run_rmw_interop_loopback.sh
 ```
 
 ## Two-host session
