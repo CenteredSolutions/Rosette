@@ -35,6 +35,7 @@ import glob
 import os
 import select
 import shutil
+import subprocess
 import sys
 import termios
 import time
@@ -50,6 +51,26 @@ def find_drive() -> str | None:
             path = os.path.join(base, label)
             if os.path.isfile(os.path.join(path, "INFO_UF2.TXT")):
                 return path
+    return None
+
+
+def mount_bootsel_drive() -> str | None:
+    """Mounts an unmounted BOOTSEL drive via udisksctl; returns its mount point.
+
+    Desktop sessions automount the drive; headless or SSH sessions do not, and
+    udisksctl may then need polkit authorization (run it once interactively).
+    """
+    for label in DRIVE_LABELS:
+        dev = f"/dev/disk/by-label/{label}"
+        if not os.path.exists(dev):
+            continue
+        result = subprocess.run(["udisksctl", "mount", "--no-user-interaction", "-b", dev],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"[flash] could not mount {dev}: {result.stderr.strip()}\n"
+                  f"[flash] run: udisksctl mount -b {dev}", file=sys.stderr)
+            return None
+        return find_drive()
     return None
 
 
@@ -109,14 +130,14 @@ def main() -> int:
     parser.add_argument("--expect", default=None, help="text that ends monitoring successfully")
     args = parser.parse_args()
 
-    drive = find_drive()
+    drive = find_drive() or mount_bootsel_drive()
     if drive is None:
         port = args.port or (sorted(glob.glob("/dev/ttyACM*")) or [None])[0]
         if port is None:
             print("no Pico console or BOOTSEL drive found", file=sys.stderr)
             return 1
         touch_1200(port)
-        drive = wait_for(find_drive, 15.0)
+        drive = wait_for(lambda: find_drive() or mount_bootsel_drive(), 15.0)
         if drive is None:
             print("Pico did not enter BOOTSEL (is USB stdio enabled in the running app?)",
                   file=sys.stderr)

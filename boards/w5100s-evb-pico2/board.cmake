@@ -24,3 +24,8 @@ set(ROSETTE_SPI_CS     17         PARENT_SCOPE)
 set(ROSETTE_WIZNET_RST 20         PARENT_SCOPE)
 set(ROSETTE_WIZNET_INT 21         PARENT_SCOPE)
 set(ROSETTE_LED_PIN    25         PARENT_SCOPE)
+
+# Reboot into BOOTSEL when a host opens the USB console at 1200 baud
+# (tools/pico_uf2_flash.py). The SDK turns this off by default for firmware
+# that links TinyUSB itself, so it is forced on as a compile definition.
+add_compile_definitions(PICO_STDIO_USB_ENABLE_RESET_VIA_BAUD_RATE=1)
