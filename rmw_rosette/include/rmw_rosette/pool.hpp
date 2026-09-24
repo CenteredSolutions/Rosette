@@ -19,6 +19,8 @@
 #include <cstddef>
 #include <new>
 
+#include "rosette/platform/platform.hpp"
+
 namespace rmw_rosette {
 
 template <typename T, std::size_t N>
@@ -39,6 +41,7 @@ public:
      *   when all `N` slots are in use.
      */
     T* acquire() noexcept {
+        rosette::platform::LockGuard guard(mutex_);
         for (std::size_t i = 0; i < N; ++i) {
             if (!used_[i]) {
                 used_[i] = true;
@@ -63,6 +66,7 @@ public:
      *   same pool, not already released.
      */
     void release(T* obj) noexcept {
+        rosette::platform::LockGuard guard(mutex_);
         for (std::size_t i = 0; i < N; ++i) {
             if (&storage_[i] == obj) {
                 reset_in_place(storage_[i]);
@@ -86,6 +90,10 @@ private:
 
     T storage_[N] = {};
     bool used_[N] = {};
+    /// Serializes acquire()/release() across threads and cores; entity
+    /// creation and destruction may happen on any thread, even after the
+    /// owning context's participant is gone.
+    rosette::platform::Mutex mutex_;
 };
 
 }  // namespace rmw_rosette

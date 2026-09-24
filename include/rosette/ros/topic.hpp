@@ -145,6 +145,42 @@ public:
         return ros_ok(rcl_publish(&publisher_, &message, nullptr));
     }
 
+    /**
+     * @brief Blocks until every matched subscription has acknowledged every
+     * sample published so far, or the timeout passes.
+     *
+     * publish() never waits for delivery; this is the opt-in wait for
+     * applications that must know a RELIABLE sample arrived (for example a
+     * KEEP_LAST(1) command that must not be overwritten unseen). It maps to
+     * DDS `DataWriter::wait_for_acknowledgments()` through
+     * `rcl_publisher_wait_for_all_acked()`. Under rmw_rosette the wait keeps
+     * running the participant, so acknowledgments are received while waiting,
+     * bare metal included.
+     *
+     * @param[in] timeout_ms Longest wait in milliseconds; 0 checks once.
+     * @return `true` when all samples are acknowledged (immediately for a
+     *   BEST_EFFORT publisher or with no matched subscriptions); `false` on
+     *   timeout, or when the middleware does not support the wait.
+     *
+     * Verification:
+     * - Correct means: returns true once a reliable peer ACKs the last sample.
+     * - Covered by: rmw_rosette `rmw_publisher_wait_for_all_acked()`
+     *   (TC-SWR-8.4.7-001 for the writer state it waits on).
+     *
+     * References:
+     * - rcl/publisher.h (Humble), `rcl_publisher_wait_for_all_acked`
+     * - OMG DDS 1.4 §2.2.2.4.1.12
+     */
+    bool wait_for_all_acked(uint32_t timeout_ms) noexcept
+    {
+        if (!valid_) {
+            return false;
+        }
+        const rcl_duration_value_t timeout_ns =
+            static_cast<rcl_duration_value_t>(timeout_ms) * 1000000;
+        return rcl_publisher_wait_for_all_acked(&publisher_, timeout_ns) == RCL_RET_OK;
+    }
+
 private:
     /**
      * @brief Finalizes the underlying `rcl_publisher_t`.

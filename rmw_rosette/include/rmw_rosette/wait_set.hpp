@@ -2,19 +2,12 @@
  * @file rmw_rosette/wait_set.hpp
  * @brief rmw_wait_set_t backing store.
  *
- * rclc_executor calls `rmw_wait()` with a bounded timeout across an
- * arbitrary mix of subscriptions/services/clients/guard-conditions/events
- * and expects it to return as soon as any one of them is ready, or on
- * timeout. rosette::rtps has no blocking I/O model to hang this off of —
- * everything is driven by `RTPSParticipant::tick(now_ms)` plus
- * `parse_received()` fed from a socket recv loop.
- *
- * `rmw_wait()` (rmw_wait_set.cpp) bridges the two by polling: tick, drain
- * available socket reads, check each entity's readiness, repeat until
- * something is ready or the deadline passes. This burns CPU proportional
- * to poll granularity rather than blocking efficiently, a reasonable
- * trade on an MCU with nothing else to do, and the same pattern rclc's
- * own reference applications already use.
+ * Executors call `rmw_wait()` with a mix of subscriptions, services,
+ * clients, guard conditions, and events and expect it to return as soon as
+ * any is ready, or on timeout. The wait itself is rtps::ParticipantDriver's
+ * spin_until(): it runs the protocol and sleeps between passes on the
+ * platform Event and the transport's sockets, so a wait set carries only the
+ * context whose driver to use.
  */
 
 #pragma once
@@ -22,10 +15,6 @@
 #include "types.hpp"
 
 #include <cstdint>
-
-#ifndef RMW_ROSETTE_WAIT_POLL_PERIOD_MS
-#  define RMW_ROSETTE_WAIT_POLL_PERIOD_MS 5u
-#endif
 
 namespace rmw_rosette {
 

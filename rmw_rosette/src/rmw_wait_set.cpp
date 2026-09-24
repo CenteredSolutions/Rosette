@@ -15,7 +15,6 @@
 #include "rmw_rosette/types.hpp"
 #include "rmw_rosette/wait_set.hpp"
 
-#include "rosette/platform/host_runtime.hpp"
 
 #include <rmw/rmw.h>
 #include <rmw/error_handling.h>
@@ -171,13 +170,14 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
 }
 
 /**
- * @brief Polls a participant's transport and readers until an entity in
- * the wait set is ready or the timeout elapses.
+ * @brief Runs the participant until an entity in the wait set is ready or
+ * the timeout elapses.
  *
- * The blocking primitive rclc_executor builds its spin loop on: it drives
- * `RTPSParticipant::tick()`/`SocketTransportRuntime::spin_some()` (the
- * only way this stack's RTPS state machine advances) between readiness
- * checks, since nothing else in the process does so otherwise.
+ * The blocking primitive every executor builds its spin loop on, and the
+ * place the RTPS state machine advances: rtps::ParticipantDriver drains
+ * received datagrams, ticks, and checks readiness under the participant
+ * lock, then sleeps until a datagram arrives, a guard condition is
+ * triggered, or the participant's next timer is due.
  *
  * Per `rmw_wait()`'s contract (rmw/rmw.h), every entry in each input
  * array starts non-null and this function nulls out entries that are
@@ -189,8 +189,8 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
  *
  * The deadline follows `wait_timeout`'s documented contract: `nullptr`
  * blocks indefinitely, `{0, 0}` checks once without sleeping, and any
- * other value bounds the wait to that duration. Between checks, the loop
- * sleeps `RMW_ROSETTE_WAIT_POLL_PERIOD_MS` via `rosette_platform_delay_ms()`.
+ * other value bounds the wait to that duration. There is no polling
+ * interval: an idle wait costs no CPU until something needs it.
  *
  * @param[in,out] subscriptions Subscriptions to wait on; entries not
  *   ready are set to `nullptr`. May be `nullptr`.
@@ -227,48 +227,27 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
     auto* impl = static_cast<rmw_rosette::WaitSet*>(wait_set->data);
     rmw_rosette::Context& ctx = *impl->context;
 
-    // rmw_wait()'s contract (rmw/rmw.h): NULL wait_timeout means block
-    // indefinitely; {0,0} means check once and return immediately;
-    // otherwise wait up to that long. Deadline math stays in plain
-    // uint32_t milliseconds off rtps_platform_get_ms() — the same clock
-    // tick()/parse_received() already use throughout rosette::rtps — not
-    // std::chrono, which assumes a hosted C++ runtime this stack doesn't
-    // require (see rosette/platform/host_runtime.hpp: the whole point of
-    // that header is giving every target, bare-metal included, the same
-    // three calls).
-    uint32_t timeout_ms = 0;
-    const bool has_deadline = (wait_timeout != nullptr);
-    if (has_deadline) {
-        timeout_ms = static_cast<uint32_t>(wait_timeout->sec * 1000u +
-                                            wait_timeout->nsec / 1000000u);
+    // rmw_wait()'s contract (rmw/rmw.h): NULL wait_timeout blocks until
+    // something is ready; {0,0} checks once; otherwise wait up to that long.
+    uint32_t timeout_ms = rosette::platform::kWaitForever;
+    if (wait_timeout != nullptr) {
+        const uint64_t ms = static_cast<uint64_t>(wait_timeout->sec) * 1000u +
+                            wait_timeout->nsec / 1000000u;
+        timeout_ms = ms >= rosette::platform::kWaitForever
+            ? rosette::platform::kWaitForever - 1u : static_cast<uint32_t>(ms);
     }
-    const uint32_t start_ms = rtps_platform_get_ms();
 
-    rtps::SocketTransportRuntime runtime(*ctx.transport);
+    // The driver receives, ticks, and evaluates readiness under the
+    // participant lock, sleeping in between until a datagram, a guard
+    // condition trigger (which signals the driver's wake event), or the next
+    // RTPS timer.
+    const bool ready = ctx.driver->spin_until(
+        [&]() noexcept { return any_ready(subscriptions, guard_conditions, services, clients); },
+        timeout_ms);
 
-    for (;;) {
-        runtime.spin_some(ctx.rx_buffer, sizeof(ctx.rx_buffer), *ctx.participant);
-        const uint32_t now_ms = rtps_platform_get_ms();
-        ctx.participant->tick(now_ms);
-
-        if (any_ready(subscriptions, guard_conditions, services, clients)) {
-            finalize_ready(subscriptions, guard_conditions, services, clients, events);
-            return RMW_RET_OK;
-        }
-        // Unsigned subtraction wraps correctly across the ~49.7-day
-        // rollover of rtps_platform_get_ms() as long as the actual
-        // elapsed time never exceeds that span, same assumption the rest
-        // of rosette::rtps already makes for its own deadlines.
-        if (has_deadline && (now_ms - start_ms) >= timeout_ms) {
-            finalize_ready(subscriptions, guard_conditions, services, clients, events);
-            return RMW_RET_TIMEOUT;  // Covers timeout_ms == 0 (check-once) too.
-        }
-
-        // A short, fixed poll granularity rather than a real blocking
-        // wait — see wait_set.hpp's file comment for why this trade is
-        // reasonable on an MCU with nothing else to block on.
-        rosette_platform_delay_ms(RMW_ROSETTE_WAIT_POLL_PERIOD_MS);
-    }
+    rmw_rosette::ContextLock lock(ctx);
+    finalize_ready(subscriptions, guard_conditions, services, clients, events);
+    return ready ? RMW_RET_OK : RMW_RET_TIMEOUT;
 }
 
 }  // extern "C"

@@ -134,7 +134,7 @@ void compose_codec_type_name(const MessageCodec& codec, char* out, size_t cap) n
  * @brief Encodes a ROS message as a CDR body for an RTPS writer.
  *
  * rmw_publish() calls this and passes the result to
- * `IStatefulWriter::write_reliable()`, which adds the encapsulation header.
+ * `IStatefulWriter::write_async()`, which adds the encapsulation header.
  *
  * @param[in]  codec       Resolved codec for the message's type.
  * @param[in]  ros_message Message instance to encode.

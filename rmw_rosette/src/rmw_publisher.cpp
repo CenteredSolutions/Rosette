@@ -12,6 +12,7 @@
 #include "rmw_rosette/types.hpp"
 
 #include <rmw/rmw.h>
+#include <rmw/time.h>
 #include <rmw/error_handling.h>
 #include <rmw/get_network_flow_endpoints.h>
 
@@ -84,6 +85,7 @@ rmw_publisher_t* rmw_create_publisher(
     }
 
     auto* node_impl = static_cast<rmw_rosette::Node*>(node->data);
+    rmw_rosette::ContextLock lock(*node_impl->context);
 
     rtps::WriterConfig cfg{};
     rmw_rosette::fill_writer_config(cfg, *qos_policies);
@@ -152,6 +154,7 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     (void)node;
     if (!publisher || !publisher->data) return RMW_RET_INVALID_ARGUMENT;
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     if (impl->node && impl->writer) {
         impl->node->context->participant->delete_writer(impl->writer);
     }
@@ -182,6 +185,7 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     if (!publisher || !publisher->data || !ros_message) return RMW_RET_INVALID_ARGUMENT;
 
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
 
     uint8_t buf[kSerializeBufSize];
     const uint32_t len = rmw_rosette::serialize_message(impl->codec, ros_message,
@@ -242,6 +246,7 @@ rmw_ret_t rmw_publish_serialized_message(const rmw_publisher_t* publisher,
     }
 
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     const bool ok = impl->writer->write_async(
         rtps::ChangeKind::ALIVE,
         reinterpret_cast<const rtps::Octet*>(buf + hdr),
@@ -267,6 +272,7 @@ rmw_ret_t rmw_publisher_count_matched_subscriptions(const rmw_publisher_t* publi
                                                      size_t* subscription_count) {
     if (!publisher || !publisher->data || !subscription_count) return RMW_RET_INVALID_ARGUMENT;
     const auto* impl = static_cast<const rmw_rosette::Publisher*>(publisher->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     *subscription_count = impl->writer ? impl->writer->matched_reader_count() : 0u;
     return RMW_RET_OK;
 }
@@ -282,6 +288,7 @@ rmw_ret_t rmw_publisher_count_matched_subscriptions(const rmw_publisher_t* publi
 rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t* gid) {
     if (!publisher || !publisher->data || !gid) return RMW_RET_INVALID_ARGUMENT;
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     rmw_rosette::guid_to_rmw_gid(impl->writer->guid(), *gid);
     return RMW_RET_OK;
 }
@@ -322,21 +329,46 @@ rmw_ret_t rmw_publisher_assert_liveliness(const rmw_publisher_t* publisher) {
 }
 
 /**
- * @brief Waits until every matched reader acknowledged all samples.
+ * @brief Waits until every matched subscription acknowledged every sample.
  *
- * `IStatefulWriter` exposes no acknowledgment query, so this cannot be
- * answered truthfully and reports `RMW_RET_UNSUPPORTED`.
+ * The opt-in "block until delivered" for applications that need it (rclcpp
+ * `Publisher::wait_for_all_acked()`, DDS `wait_for_acknowledgments()`):
+ * publishing itself never blocks. The wait runs the participant through its
+ * driver, so the acknowledgments being waited for are received and processed
+ * during the wait, on any platform, including bare metal.
  *
- * @return `RMW_RET_UNSUPPORTED`, or `RMW_RET_INVALID_ARGUMENT` if null.
+ * @param[in] publisher    Publisher to wait on.
+ * @param[in] wait_timeout Longest wait; {0,0} checks once; RMW_DURATION_INFINITE
+ *   waits indefinitely.
+ * @return `RMW_RET_OK` once all samples are acknowledged (immediately for a
+ *   BEST_EFFORT publisher or with no matched subscriptions);
+ *   `RMW_RET_TIMEOUT` otherwise; `RMW_RET_INVALID_ARGUMENT` for a null argument.
+ *
+ * Verification:
+ * - Correct means: returns OK after a stock reliable subscriber has
+ *   acknowledged the last sample, TIMEOUT while one has not.
+ * - Covered by: TC-SWR-8.4.7-001 (writer acknowledgment state).
  *
  * References:
  * - rmw/rmw.h (Humble), `rmw_publisher_wait_for_all_acked`
+ * - OMG DDS 1.4 §2.2.2.4.1.12 (DataWriter::wait_for_acknowledgments)
  */
 rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher,
                                            rmw_time_t wait_timeout) {
-    (void)wait_timeout;
     if (!publisher || !publisher->data) return RMW_RET_INVALID_ARGUMENT;
-    return RMW_RET_UNSUPPORTED;
+    auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
+
+    uint32_t timeout_ms = rosette::platform::kWaitForever;
+    const rmw_time_t infinite = RMW_DURATION_INFINITE;
+    if (!rmw_time_equal(wait_timeout, infinite)) {
+        const uint64_t ms = rmw_time_total_nsec(wait_timeout) / 1000000u;
+        timeout_ms = ms >= rosette::platform::kWaitForever
+            ? rosette::platform::kWaitForever - 1u : static_cast<uint32_t>(ms);
+    }
+    rtps::IStatefulWriter* writer = impl->writer;
+    const bool acked = impl->node->context->driver->spin_until(
+        [writer]() noexcept { return writer->acknowledged_by_all(); }, timeout_ms);
+    return acked ? RMW_RET_OK : RMW_RET_TIMEOUT;
 }
 
 /// @brief Preallocated publish buffers are not offered; rmw_publish() uses a stack buffer.

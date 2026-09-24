@@ -82,6 +82,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node,
         return nullptr;
     }
     auto* node_impl = static_cast<rmw_rosette::Node*>(node->data);
+    rmw_rosette::ContextLock lock(*node_impl->context);
 
     ServiceSlot* slot = service_pool().acquire();
     if (!slot) {
@@ -128,6 +129,7 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
     (void)node;
     if (!service || !service->data) return RMW_RET_INVALID_ARGUMENT;
     auto* impl = static_cast<rmw_rosette::Service*>(service->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     if (impl->node) {
         rmw_rosette::destroy_service_endpoints(*impl->node, impl->reply_writer,
                                                impl->request_reader);
@@ -162,6 +164,7 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
     }
     *taken = false;
     auto* impl = static_cast<rmw_rosette::Service*>(service->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     rmw_rosette::PendingChange change;
     if (!impl->requests.pop(change)) return RMW_RET_OK;
 
@@ -205,6 +208,7 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
         return RMW_RET_INVALID_ARGUMENT;
     }
     auto* impl = static_cast<rmw_rosette::Service*>(service->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
 
     uint8_t buf[kReplyBufSize];
     const uint32_t len =

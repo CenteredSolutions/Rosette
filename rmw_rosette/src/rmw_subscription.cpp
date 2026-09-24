@@ -97,6 +97,7 @@ rmw_subscription_t* rmw_create_subscription(
     }
 
     auto* node_impl = static_cast<rmw_rosette::Node*>(node->data);
+    rmw_rosette::ContextLock lock(*node_impl->context);
 
     SubscriptionSlot* slot = subscription_pool().acquire();
     if (!slot) {
@@ -157,6 +158,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     (void)node;
     if (!subscription || !subscription->data) return RMW_RET_INVALID_ARGUMENT;
     auto* impl = static_cast<rmw_rosette::Subscription*>(subscription->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     if (impl->node && impl->reader) {
         impl->node->context->participant->delete_reader(impl->reader);
     }
@@ -195,6 +197,7 @@ rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_m
     *taken = false;
 
     auto* impl = static_cast<rmw_rosette::Subscription*>(subscription->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     rmw_rosette::PendingChange change;
     if (!impl->received.pop(change)) {
         return RMW_RET_OK;  // Nothing buffered — not an error, per rmw_take()'s contract.
@@ -255,6 +258,7 @@ rmw_ret_t rmw_take_serialized_message_with_info(
     *taken = false;
 
     auto* impl = static_cast<rmw_rosette::Subscription*>(subscription->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     rmw_rosette::PendingChange change;
     if (!impl->received.pop(change)) {
         return RMW_RET_OK;
@@ -292,6 +296,7 @@ rmw_ret_t rmw_subscription_count_matched_publishers(const rmw_subscription_t* su
                                                      size_t* publisher_count) {
     if (!subscription || !subscription->data || !publisher_count) return RMW_RET_INVALID_ARGUMENT;
     const auto* impl = static_cast<const rmw_rosette::Subscription*>(subscription->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     *publisher_count = impl->reader ? impl->reader->matched_writer_count() : 0u;
     return RMW_RET_OK;
 }
@@ -307,6 +312,7 @@ rmw_ret_t rmw_subscription_count_matched_publishers(const rmw_subscription_t* su
 rmw_ret_t rmw_get_gid_for_subscription(const rmw_subscription_t* subscription, rmw_gid_t* gid) {
     if (!subscription || !subscription->data || !gid) return RMW_RET_INVALID_ARGUMENT;
     auto* impl = static_cast<rmw_rosette::Subscription*>(subscription->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     rmw_rosette::guid_to_rmw_gid(impl->reader->guid(), *gid);
     return RMW_RET_OK;
 }

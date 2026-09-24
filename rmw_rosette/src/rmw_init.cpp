@@ -7,7 +7,7 @@
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/types.hpp"
 
-#include "rosette/rtps/spdp.hpp"  // rtps_platform_get_ipv4_addr
+#include "rosette/platform/host_runtime.hpp"  // rosette_platform_get_ipv4_addr
 
 #include <rmw/init.h>
 #include <rmw/init_options.h>
@@ -216,7 +216,7 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * over `rosette::net::posix::PosixSocketProvider` on the first free
  * participant ID (open_transport_on_free_ports()), then placement-news the
  * `RTPSParticipant` that borrows it. The participant advertises the host's
- * primary IPv4 address (`rtps_platform_get_ipv4_addr()`, overridable with
+ * primary IPv4 address (`rosette_platform_get_ipv4_addr()`, overridable with
  * `ROSETTE_LOCAL_IP`) rather than loopback: stock DDS implementations
  * ignore loopback locators from participants they cannot prove are local.
  *
@@ -258,7 +258,9 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     ctx.participant = new (ctx.participant_storage) rtps::RTPSParticipant(
         ctx.domain_id, participant_id, *ctx.transport);
 
-    ctx.participant->add_ipv4_address(rtps::rtps_platform_get_ipv4_addr());
+    ctx.participant->add_ipv4_address(rosette_platform_get_ipv4_addr());
+    ctx.driver = new (ctx.driver_storage) rtps::ParticipantDriver(
+        *ctx.participant, *ctx.transport, ctx.provider, ctx.rx_buffer, sizeof(ctx.rx_buffer));
     ctx.constructed = true;
 
     context->instance_id = options->instance_id;
@@ -300,6 +302,7 @@ rmw_ret_t rmw_context_fini(rmw_context_t* context) {
     rmw_context_impl_s* impl = context->impl;
     rmw_rosette::Context& ctx = impl->rosette_context;
     if (ctx.constructed) {
+        ctx.driver->~ParticipantDriver();
         ctx.participant->~RTPSParticipant();
         ctx.transport->~SocketUdpTransport();
         ctx.constructed = false;

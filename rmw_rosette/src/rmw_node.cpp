@@ -111,6 +111,7 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name,
     slot->node.namespace_ = slot->impl.namespace_;
     slot->node.context = context;
 
+    slot->impl.graph_guard.wake = &slot->impl.context->driver->wake_event();
     slot->impl.graph_guard_handle.implementation_identifier = rmw_rosette_identifier;
     slot->impl.graph_guard_handle.data = &slot->impl.graph_guard;
     slot->impl.graph_guard_handle.context = context;

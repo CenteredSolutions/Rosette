@@ -7,7 +7,8 @@
  * blocked rmw_wait() from another thread: executor interrupts, SIGINT
  * handling, and graph-change notifications all go through one. Each is a
  * pooled rmw_rosette::GuardCondition (types.hpp) holding an atomic flag;
- * rmw_trigger_guard_condition() sets it and rmw_wait() consumes it.
+ * rmw_trigger_guard_condition() sets it and signals the context driver's
+ * wake event, and rmw_wait() consumes it.
  */
 
 #include "rmw_rosette/identifier.h"
@@ -56,7 +57,7 @@ extern "C" {
  * - rmw/rmw.h (Humble), `rmw_create_guard_condition`
  */
 rmw_guard_condition_t* rmw_create_guard_condition(rmw_context_t* context) {
-    if (!context) {
+    if (!context || !context->impl) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_guard_condition: null context");
         return nullptr;
     }
@@ -66,6 +67,7 @@ rmw_guard_condition_t* rmw_create_guard_condition(rmw_context_t* context) {
                           "(RMW_ROSETTE_MAX_GUARD_CONDITIONS)");
         return nullptr;
     }
+    slot->impl.wake = &context->impl->rosette_context.driver->wake_event();
     slot->handle.implementation_identifier = rmw_rosette_identifier;
     slot->handle.data = &slot->impl;
     slot->handle.context = context;
@@ -89,7 +91,8 @@ rmw_ret_t rmw_destroy_guard_condition(rmw_guard_condition_t* guard_condition) {
 }
 
 /**
- * @brief Marks a guard condition triggered; safe to call from any thread.
+ * @brief Marks a guard condition triggered and wakes a sleeping rmw_wait();
+ * safe to call from any thread.
  *
  * The flag stays set until an rmw_wait() that includes this guard condition
  * reports it ready, so a trigger that lands between two waits is not lost.
@@ -107,7 +110,7 @@ rmw_ret_t rmw_destroy_guard_condition(rmw_guard_condition_t* guard_condition) {
  */
 rmw_ret_t rmw_trigger_guard_condition(const rmw_guard_condition_t* guard_condition) {
     if (!guard_condition || !guard_condition->data) return RMW_RET_INVALID_ARGUMENT;
-    static_cast<rmw_rosette::GuardCondition*>(guard_condition->data)->triggered.store(true);
+    static_cast<rmw_rosette::GuardCondition*>(guard_condition->data)->trigger();
     return RMW_RET_OK;
 }
 

@@ -36,13 +36,13 @@ set(ROSETTE_RTPS_SOURCES
   ${ROSETTE_ROOT}/src/rtps/buf_pool.cpp
   ${ROSETTE_ROOT}/src/rtps/message_parser.cpp
   ${ROSETTE_ROOT}/src/rtps/participant.cpp
+  ${ROSETTE_ROOT}/src/rtps/participant_driver.cpp
   ${ROSETTE_ROOT}/src/rtps/sedp.cpp
   ${ROSETTE_ROOT}/src/rtps/spdp.cpp
   ${ROSETTE_ROOT}/src/rtps/stateful_reader.cpp
   ${ROSETTE_ROOT}/src/rtps/transport.cpp
   ${ROSETTE_ROOT}/src/platform/posix/host_runtime.cpp
   ${ROSETTE_ROOT}/src/platform/posix/rtps_posix_log.cpp
-  ${ROSETTE_ROOT}/src/platform/posix/rtps_posix_platform.cpp
   ${ROSETTE_ROOT}/src/net/posix/socket.cpp
 )
 
@@ -76,12 +76,17 @@ target_include_directories(rmw_rosette
     ${ROSETTE_ROOT}/include/rosette/rtps
 )
 
-# RTPS_NO_FREERTOS selects the hosted build of the RTPS core (no FreeRTOS
-# task notifications). RTPS log levels (rosette/rtps/log.hpp): 0 none,
-# 1 error, 2 warning, 3 info, 4 debug, 5 trace; output goes to stderr.
+# Platform port (include/rosette/platform/platform.hpp). A host colcon build
+# runs on POSIX; a micro-ROS firmware workspace sets its board's OS and chip.
+set(ROSETTE_OS posix CACHE STRING "Platform OS layer: posix, freertos, baremetal")
+set(ROSETTE_CHIP host CACHE STRING "Platform chip layer: host, rp2")
+include(${ROSETTE_ROOT}/cmake/rosette_platform.cmake)
+target_link_libraries(rmw_rosette PRIVATE rosette_platform)
+
+# RTPS log levels (rosette/rtps/log.hpp): 0 none, 1 error, 2 warning,
+# 3 info, 4 debug, 5 trace; output goes to stderr.
 set(RMW_ROSETTE_RTPS_LOG_LEVEL 2 CACHE STRING "rosette::rtps log level (0-5)")
 target_compile_definitions(rmw_rosette PRIVATE
-  RTPS_NO_FREERTOS
   RTPS_LOG_LEVEL=${RMW_ROSETTE_RTPS_LOG_LEVEL}
 )
 
@@ -136,7 +141,9 @@ if(BUILD_TESTING)
     # Tests include rmw_rosette headers whose layouts depend on the capacity model.
     rmw_rosette_apply_capacity(${test_name})
     target_include_directories(${test_name} PRIVATE ${ROSETTE_ROOT}/include)
-    target_compile_definitions(${test_name} PRIVATE RTPS_NO_FREERTOS)
+    # Same platform selection as the library, without a second copy of its state.
+    target_compile_definitions(${test_name} PRIVATE
+      $<TARGET_PROPERTY:rosette_platform,INTERFACE_COMPILE_DEFINITIONS>)
     ament_target_dependencies(${test_name} geometry_msgs sensor_msgs std_msgs)
   endforeach()
 endif()

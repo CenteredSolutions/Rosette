@@ -93,6 +93,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node,
         return nullptr;
     }
     auto* node_impl = static_cast<rmw_rosette::Node*>(node->data);
+    rmw_rosette::ContextLock lock(*node_impl->context);
 
     ClientSlot* slot = client_pool().acquire();
     if (!slot) {
@@ -139,6 +140,7 @@ rmw_ret_t rmw_destroy_client(rmw_node_t* node, rmw_client_t* client) {
     (void)node;
     if (!client || !client->data) return RMW_RET_INVALID_ARGUMENT;
     auto* impl = static_cast<rmw_rosette::Client*>(client->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     if (impl->node) {
         rmw_rosette::destroy_service_endpoints(*impl->node, impl->request_writer,
                                                impl->reply_reader);
@@ -171,6 +173,7 @@ rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request,
         return RMW_RET_INVALID_ARGUMENT;
     }
     auto* impl = static_cast<rmw_rosette::Client*>(client->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
 
     uint8_t buf[kRequestBufSize];
     const uint32_t len =
@@ -219,6 +222,7 @@ rmw_ret_t rmw_take_response(const rmw_client_t* client, rmw_service_info_t* requ
     }
     *taken = false;
     auto* impl = static_cast<rmw_rosette::Client*>(client->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     rmw_rosette::PendingChange change;
     if (!impl->replies.pop(change)) return RMW_RET_OK;
 
@@ -258,6 +262,7 @@ rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_clie
     (void)node;
     if (!client || !client->data || !is_available) return RMW_RET_INVALID_ARGUMENT;
     const auto* impl = static_cast<const rmw_rosette::Client*>(client->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
     *is_available = impl->request_writer && impl->reply_reader &&
                     impl->request_writer->matched_reader_count() > 0u &&
                     impl->reply_reader->matched_writer_count() > 0u;

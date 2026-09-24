@@ -15,8 +15,8 @@
  * rmw_create_publisher() can't pick a template argument from it directly.
  *
  * Resolved by extending rtps::IStatefulWriter (Rosette's own type-erasure
- * base, not part of the RTPS wire contract) with write_reliable()/
- * write_async() — their signatures never mention CacheDepth, only the
+ * base, not part of the RTPS wire contract) with write_async() and
+ * acknowledged_by_all() — their signatures never mention CacheDepth, only the
  * writer's internal HistoryCache storage does — so every instantiation
  * satisfies the same interface for the write path, not just the
  * participant-internal operations it originally covered. See
@@ -32,6 +32,7 @@
 #include "rosette/net/posix/socket.hpp"
 #include "rosette/rtps/buf_pool.hpp"
 #include "rosette/rtps/participant.hpp"
+#include "rosette/rtps/participant_driver.hpp"
 #include "rosette/rtps/stateful_reader.hpp"
 #include "rosette/rtps/stateful_writer.hpp"
 #include "rosette/rtps/transport.hpp"
@@ -74,14 +75,27 @@ using PublisherWriter = rtps::IStatefulWriter;
 struct Context {
     alignas(rtps::SocketUdpTransport) unsigned char transport_storage[sizeof(rtps::SocketUdpTransport)];
     alignas(rtps::RTPSParticipant) unsigned char participant_storage[sizeof(rtps::RTPSParticipant)];
+    alignas(rtps::ParticipantDriver) unsigned char driver_storage[sizeof(rtps::ParticipantDriver)];
 
     rosette::net::posix::PosixSocketProvider provider{};
     rtps::SocketUdpTransport* transport   = nullptr;  ///< placement-new'd into transport_storage
     rtps::RTPSParticipant*    participant = nullptr;  ///< placement-new'd into participant_storage
+    /// Runs the participant and owns its lock; every rmw entry point that
+    /// touches RTPS state or a ChangeRing holds driver->mutex().
+    rtps::ParticipantDriver*  driver      = nullptr;  ///< placement-new'd into driver_storage
     uint8_t domain_id = 0;
     bool constructed = false;
-    /// Receive buffer rmw_wait() drains sockets into; one full datagram.
+    /// Receive buffer the driver drains sockets into; one full datagram.
     uint8_t rx_buffer[RMW_ROSETTE_MAX_DATAGRAM_SIZE] = {};
+};
+
+/// @brief Holds a context's participant lock for the enclosing scope.
+class ContextLock {
+public:
+    explicit ContextLock(Context& ctx) noexcept : guard_(ctx.driver->mutex()) {}
+
+private:
+    rosette::platform::LockGuard guard_;
 };
 
 /**
@@ -95,12 +109,24 @@ struct Context {
  */
 struct GuardCondition {
     std::atomic<bool> triggered{false};
+    /// Context's driver wake event; signaled on trigger so a sleeping
+    /// rmw_wait() returns at once instead of at its next timer.
+    rosette::platform::Event* wake = nullptr;
 
     GuardCondition() = default;
-    GuardCondition(const GuardCondition& other) noexcept : triggered(other.triggered.load()) {}
+    GuardCondition(const GuardCondition& other) noexcept
+        : triggered(other.triggered.load()), wake(other.wake) {}
     GuardCondition& operator=(const GuardCondition& other) noexcept {
         triggered.store(other.triggered.load());
+        wake = other.wake;
         return *this;
+    }
+
+    /// @brief Marks the condition ready and wakes the context's driver.
+    /// Safe from any thread and from POSIX signal handlers.
+    void trigger() noexcept {
+        triggered.store(true);
+        if (wake) wake->signal();
     }
 };
 
