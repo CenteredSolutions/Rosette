@@ -13,6 +13,9 @@ namespace {
 
 struct CaptureTransport : ITransport {
     std::vector<std::vector<Octet>> unicast_msgs{};
+    uint32_t limit = kMaxUdpDatagram;
+
+    uint32_t max_datagram_size() const noexcept override { return limit; }
 
     bool send_unicast(const BufRef& buf, const Locator&) noexcept override {
         unicast_msgs.emplace_back(buf.data, buf.data + buf.size);
@@ -303,6 +306,108 @@ static bool tc_srr_8_4_7_001(std::string& err) {
     return true;
 }
 
+namespace {
+
+bool last_acknack(const CaptureTransport& tx, ParsedAckNack& out) {
+    if (tx.unicast_msgs.empty()) return false;
+    ParseOps ops{};
+    ops.on_acknack = [](const ParseContext& c, const ParsedAckNack& a) noexcept {
+        *static_cast<ParsedAckNack*>(c.user_data) = a;
+    };
+    const std::vector<Octet>& msg = tx.unicast_msgs.back();
+    return parse_message(msg.data(), static_cast<uint32_t>(msg.size()), GuidPrefix{}, ops,
+                         &out) == ParseResult::OK;
+}
+
+void deliver(StatefulReader& r, const Guid& reader_guid, const Guid& writer_guid, int64_t sn) {
+    static const Octet payload[5] = {0x00u, 0x01u, 0x00u, 0x00u, 0x42u};
+    ParsedData data{};
+    data.readerId = reader_guid.entityId;
+    data.writerId = writer_guid.entityId;
+    data.writerSN = SequenceNumber::from_int64(sn);
+    data.dataFlag = true;
+    data.serializedPayload = payload;
+    data.serializedPayloadSize = sizeof(payload);
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+    r.on_data(ctx, data);
+}
+
+void heartbeat(StatefulReader& r, const Guid& reader_guid, const Guid& writer_guid,
+               int64_t last, int32_t count) {
+    ParsedHeartbeat hb{};
+    hb.readerId = reader_guid.entityId;
+    hb.writerId = writer_guid.entityId;
+    hb.firstSN = SequenceNumber::from_int64(1);
+    hb.lastSN = SequenceNumber::from_int64(last);
+    hb.count = count;
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+    r.on_heartbeat(ctx, hb);
+}
+
+}  // namespace
+
+// §8.4.12.1: on an unrestricted link the ACKNACK lists every missing change,
+// and a repair does not trigger another ACKNACK before the next HEARTBEAT.
+static bool tc_srr_8_4_7_002(std::string& err) {
+    CaptureTransport tx{};
+    const Guid reader_guid = make_guid(0x91u, 0x92u, 0x93u, make_entity(7u, 7u, 7u, 0x04u));
+    const Guid writer_guid = make_guid(0xA1u, 0xA2u, 0xA3u, make_entity(8u, 8u, 8u, 0x03u));
+    const Locator loc = make_udpv4_locator(0xC0A80155u, 7411u);
+    StatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 0u);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+
+    heartbeat(r, reader_guid, writer_guid, 4, 1);
+    ParsedAckNack ack{};
+    CHECK(tx.unicast_msgs.size() == 1u && last_acknack(tx, ack), "HEARTBEAT is answered");
+    CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(1) &&
+          ack.readerSNState.numBits == 4u, "all four missing changes are requested");
+    deliver(r, reader_guid, writer_guid, 1);
+    CHECK(tx.unicast_msgs.size() == 1u, "a repair alone sends nothing on an unrestricted link");
+    return true;
+}
+
+// §8.4.12.1 on a 1472-octet link: each ACKNACK requests only the lowest
+// missing change, and each repair (DATA or GAP) requests the next at once.
+static bool tc_srr_8_4_7_003(std::string& err) {
+    CaptureTransport tx{};
+    tx.limit = 1472u;
+    const Guid reader_guid = make_guid(0xB1u, 0xB2u, 0xB3u, make_entity(7u, 7u, 7u, 0x04u));
+    const Guid writer_guid = make_guid(0xC1u, 0xC2u, 0xC3u, make_entity(8u, 8u, 8u, 0x03u));
+    const Locator loc = make_udpv4_locator(0xC0A80166u, 7411u);
+    StatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 0u);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+
+    deliver(r, reader_guid, writer_guid, 4);
+    heartbeat(r, reader_guid, writer_guid, 4, 1);
+    ParsedAckNack ack{};
+    CHECK(tx.unicast_msgs.size() == 1u && last_acknack(tx, ack), "HEARTBEAT is answered");
+    CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(1) &&
+          ack.readerSNState.numBits == 1u && ack.readerSNState.test(0),
+          "only SN 1 is requested");
+
+    deliver(r, reader_guid, writer_guid, 1);
+    CHECK(tx.unicast_msgs.size() == 2u && last_acknack(tx, ack), "repair of 1 requests the next");
+    CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(2) &&
+          ack.readerSNState.numBits == 1u, "next request names SN 2 alone");
+
+    ParsedGap gap{};
+    gap.readerId = reader_guid.entityId;
+    gap.writerId = writer_guid.entityId;
+    gap.gapStart = SequenceNumber::from_int64(2);
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+    r.on_gap(ctx, gap);
+    CHECK(tx.unicast_msgs.size() == 3u && last_acknack(tx, ack), "GAP for 2 requests the next");
+    CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(3) &&
+          ack.readerSNState.numBits == 1u, "next request names SN 3 alone");
+
+    deliver(r, reader_guid, writer_guid, 3);
+    CHECK(tx.unicast_msgs.size() == 3u, "with nothing missing no further request is sent");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.8-001",
                      "§8.4.8: on_data accepts new DATA as CacheChange and ignores duplicates whose writerSN is not newer than highestSNReceived.",
@@ -319,6 +424,12 @@ void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.7-001",
                      "§8.4.7.1: ms_until_next_timer() reports the remaining heartbeatResponseDelay of a pending ACKNACK, zero when due, and no timer when none is pending.",
                      tc_srr_8_4_7_001});
+    tests.push_back({"TC-SRR-8.4.7-002",
+                     "§8.4.12.1: on an unrestricted link an ACKNACK requests every missing change; repairs wait for the next HEARTBEAT.",
+                     tc_srr_8_4_7_002});
+    tests.push_back({"TC-SRR-8.4.7-003",
+                     "§8.4.12.1: on a datagram-limited link an ACKNACK requests only the lowest missing change and each DATA or GAP repair requests the next at once.",
+                     tc_srr_8_4_7_003});
 }
 
 } // namespace spec_test

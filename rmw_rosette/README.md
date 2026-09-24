@@ -18,7 +18,8 @@ Verified against stock ROS 2 Humble (`rmw_fastrtps_cpp`) on one host:
 | Endpoints created after discovery are announced; destroyed ones are withdrawn | TC-SEDP-8.5.4-007/008/009, TC-PART-8.5.1-005, live check against Fast DDS |
 | CDR for any installed message type, byte-compatible with Fast DDS | `tests/ros2/rmw_serialization_parity.py`, `test/test_introspection_c_codec.cpp` |
 | Guard conditions, wait sets, matched counts, actual QoS | `test/test_guard_condition.cpp`, `test/test_pub_sub_loopback.cpp` |
-| Messages up to 64 KB through a 1472-octet datagram limit (DATA_FRAG both ways, fragmented service replies), no datagram over the limit | `tests/ros2/run_rmw_frag_loopback.sh` |
+| Unconfigured stock Fast DDS through a link that drops datagrams over 1472 octets: discovery, topics and services both ways; Rosette's messages up to 64 KB | `tests/ros2/run_rmw_frag_loopback.sh` (default `stock` mode) |
+| Messages up to 64 KB both ways when the peer caps `maxMessageSize` at the link limit | `ROSETTE_PEER_MODE=capped tests/ros2/run_rmw_frag_loopback.sh` |
 
 ### Serialization
 
@@ -47,10 +48,30 @@ again. A sample whose DATA would exceed the transport's datagram limit
 (`RMW_ROSETTE_MAX_DATAGRAM_SIZE`, lowered at runtime by the environment
 variable of the same name) goes out as DATA_FRAG, one fragment per datagram,
 with inline QoS in every fragment. Received fragments reassemble into a pool
-block. On a link without IP fragmentation (WIZnet hardware UDP: 1472 octets),
-peers must cap their datagrams to the same size, e.g. Fast DDS
-`maxMessageSize`; `RMW_ROSETTE_TRANSPORT_STATS=1` prints the datagram
-counters (largest sent/received, oversize, truncated) at shutdown.
+block. `RMW_ROSETTE_TRANSPORT_STATS=1` prints the datagram counters
+(largest sent/received, oversize, truncated, dropped) at shutdown.
+
+A link without IP reassembly (WIZnet hardware UDP, 1472 octets) silently
+loses any datagram above its limit. Stock peers, which send up to 64 KB per
+datagram, work over it unmodified:
+
+- Discovery and repairs: a stock writer answers an ACKNACK by packing every
+  requested change into one datagram, which such a link would lose on every
+  retry. On a limited transport every Rosette reader, SEDP included, requests
+  one missing change per ACKNACK and asks for the next as soon as it lands
+  (`repairs_must_fit_datagram()`), so each repair is a single DATA. Readers
+  track holes per writer (`SnReceiveWindow`) and honor GAP and HEARTBEAT
+  firstSN, so lost or reordered announcements are always recovered.
+- Samples: Rosette fragments to the limit, so it can send anything. A stock
+  peer sends a sample larger than the link limit as one IP-fragmented
+  datagram, and RTPS has no parameter by which a reader can ask for smaller
+  ones, so such samples cannot reach a board over this link. Either the peer
+  caps its datagrams (Fast DDS `maxMessageSize`), or the board uses an IP
+  stack that reassembles (lwIP over MACRAW).
+
+`RMW_ROSETTE_STRICT_LINK=1` makes a host transport drop every received
+datagram over the limit, the way such a link does, so the host harness faces
+a board's losses against real stock traffic.
 
 ### Capacity
 

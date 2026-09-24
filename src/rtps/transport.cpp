@@ -156,16 +156,26 @@ uint32_t SocketUdpTransport::receive_from(rosette::net::Socket* socket,
     }
 
     rosette::net::SocketAddress remote{};
-    const std::ptrdiff_t received = socket->recv_from(buf, buf_size, &remote);
-    if (received <= 0) {
-        return 0u;
-    }
-    ++stats_.rx_datagrams;
-    if (static_cast<uint32_t>(received) > stats_.max_rx_datagram) {
-        stats_.max_rx_datagram = static_cast<uint32_t>(received);
-    }
-    if (static_cast<uint32_t>(received) > max_datagram_) {
+    std::ptrdiff_t received = 0;
+    for (;;) {
+        received = socket->recv_from(buf, buf_size, &remote);
+        if (received <= 0) {
+            return 0u;
+        }
+        ++stats_.rx_datagrams;
+        if (static_cast<uint32_t>(received) > stats_.max_rx_datagram) {
+            stats_.max_rx_datagram = static_cast<uint32_t>(received);
+        }
+        if (static_cast<uint32_t>(received) <= max_datagram_) {
+            break;
+        }
         ++stats_.oversize_rx;
+        if (!strict_link_) {
+            break;
+        }
+        // Strict-link mode: this datagram could not have crossed the link
+        // intact, so it is lost exactly as on the wire. Keep draining.
+        ++stats_.dropped_rx;
     }
     if (static_cast<std::size_t>(received) > buf_size) {
         // The datagram did not fit. The complete submessages at its start

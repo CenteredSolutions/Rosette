@@ -197,14 +197,33 @@ public:
     void on_gap(const ParseContext& ctx,
                 const ParsedGap&   msg) noexcept;
 
-    // ----------------------------------------------------------
-    // §8.4.7.3  send_acknack()
-    //
-    // "Sends an ACKNACK to the matched writer."  — §8.4.7.3, p. 140
-    //
-    // Builds readerSNState from proxy.missing_changes().  Sends a pure
-    // ACK (empty bitmap, F-flag set) when nothing is missing.
-    // ----------------------------------------------------------
+    /**
+     * @brief Sends an ACKNACK to the matched writer.
+     *
+     * readerSNState normally lists every MISSING change. When the transport's
+     * datagram limit is below the IPv4 UDP maximum (a link without IP
+     * fragmentation, see narrow_repairs()), it lists only the lowest MISSING
+     * change: a writer answers an ACKNACK by packing all requested changes
+     * into as few datagrams as its own message size allows (Fast DDS: 65500
+     * octets), and such a datagram would be lost on this link again on every
+     * retry. One change per request keeps each repair a single DATA, and
+     * request_next_repair() asks for the next one as soon as it arrives. A
+     * pure ACK (empty set, F-flag set) is sent when nothing is missing.
+     *
+     * @param[in,out] proxy      Writer to acknowledge; its count is not
+     *   advanced here (the caller calls on_acknack_sent()).
+     * @param[in]     final_flag F-flag: the writer need not answer with a
+     *   HEARTBEAT.
+     *
+     * Verification:
+     * - Correct means: bitmapBase is at most the lowest MISSING change, every
+     *   set bit is MISSING, and on a narrow link exactly one bit is set.
+     * - Covered by: TC-SRR-8.4.7-002, TC-SRR-8.4.7-003,
+     *   tests/ros2/run_rmw_frag_loopback.sh (stock peer).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.7.3, §8.4.12 (reader behavior), §8.3.7.1 (ACKNACK)
+     */
     void send_acknack(DefaultWriterProxy& proxy,
                       bool                final_flag = false) noexcept;
 
@@ -254,6 +273,32 @@ private:
     DefaultWriterProxy* find_proxy_by_sender(const GuidPrefix& prefix,
                                              const EntityId&   writer_eid) noexcept;
     DefaultWriterProxy* find_free_slot() noexcept;
+
+    /**
+     * @brief True when repairs must be requested one change at a time.
+     *
+     * @return repairs_must_fit_datagram() for this reader's transport.
+     */
+    bool narrow_repairs() const noexcept;
+
+    /**
+     * @brief Requests the next MISSING change right after a repair lands.
+     *
+     * With narrow repairs a burst of N lost changes needs N request/repair
+     * round trips; sending the next ACKNACK when a repair (or a GAP for a
+     * requested change) arrives, rather than waiting for the writer's next
+     * periodic HEARTBEAT, makes the burst cost N round trips instead of N
+     * heartbeat periods. Does nothing on unrestricted links or when nothing
+     * is missing.
+     *
+     * @param[in,out] proxy Writer whose change was just repaired.
+     *
+     * Verification:
+     * - Correct means: on a narrow link, receiving a repaired change while
+     *   others are MISSING sends exactly one ACKNACK naming the lowest one.
+     * - Covered by: TC-SRR-8.4.7-003.
+     */
+    void request_next_repair(DefaultWriterProxy& proxy) noexcept;
 
     /// Insert a complete CacheChange into the history cache and fire callback.
     void accept_change(CacheChange&&       change,

@@ -159,6 +159,7 @@ add_executable(sedp_spec_tests
     src/spec_sedp_test_registry.cpp
     src/test_stateful_writer_clock_stub.cpp
     src/test_sedp_8_5_4_behavior.cpp
+    src/test_sedp_8_5_4_repairs.cpp
     src/test_sedp_8_5_5_1_matching.cpp
     src/test_sedp_9_6_3_2_plcdr.cpp
     ../../src/rtps/sedp.cpp

@@ -172,10 +172,10 @@ void report_transport_stats(const rtps::SocketUdpTransport& transport) noexcept 
     const rtps::TransportStats& st = transport.stats();
     std::fprintf(stderr,
                  "rmw_rosette transport: limit=%u tx=%u rx=%u max_tx=%u max_rx=%u "
-                 "oversize_tx=%u oversize_rx=%u truncated_rx=%u\n",
+                 "oversize_tx=%u oversize_rx=%u truncated_rx=%u dropped_rx=%u\n",
                  static_cast<unsigned>(transport.max_datagram_size()), st.tx_datagrams,
                  st.rx_datagrams, st.max_tx_datagram, st.max_rx_datagram, st.oversize_tx,
-                 st.oversize_rx, st.truncated_rx);
+                 st.oversize_rx, st.truncated_rx, st.dropped_rx);
 }
 
 }  // namespace
@@ -302,6 +302,9 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     // environment may lower it (never raise it) for a link with a smaller
     // MTU, e.g. to rehearse a WIZnet link's 1472 on a host.
     ctx.transport->set_max_datagram_size(effective_max_datagram_size());
+    // RMW_ROSETTE_STRICT_LINK rehearses such a link's losses on a host: every
+    // received datagram above the limit is discarded, as the wire would.
+    ctx.transport->set_strict_link(std::getenv("RMW_ROSETTE_STRICT_LINK") != nullptr);
     ctx.participant->add_ipv4_address(rosette_platform_get_ipv4_addr());
     ctx.driver = new (ctx.driver_storage) rtps::ParticipantDriver(
         *ctx.participant, *ctx.transport, ctx.provider, ctx.rx_buffer, sizeof(ctx.rx_buffer));

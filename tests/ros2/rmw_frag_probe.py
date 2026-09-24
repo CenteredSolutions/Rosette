@@ -11,13 +11,19 @@ Architecture:
     reads the peer's through get_parameters, so service replies are fragmented
     too and must still reach the client that asked.
 
-    Run by run_rmw_frag_loopback.sh with rmw_rosette as `alpha` and a stock
-    RMW, capped to the same datagram size, as `beta`.
+    Each direction is sized independently (--frame-sizes/--param-chars for
+    what this role sends, --peer-frame-sizes/--peer-param-chars for what it
+    expects back), because a stock peer with its default message size sends
+    any sample above the link limit as one IP-fragmented datagram, which a
+    link without IP reassembly cannot deliver. Run by
+    run_rmw_frag_loopback.sh with rmw_rosette as `alpha` and a stock RMW as
+    `beta`.
 
 Verification:
-    Correct means: every frame size arrives at least --expect-per-size times
-    with every octet intact, no frame arrives corrupted, and at least
-    --expect-calls get_parameters replies return the peer's exact string.
+    Correct means: every expected peer frame size arrives at least
+    --expect-per-size times with every octet intact, no frame arrives
+    corrupted, and at least --expect-calls get_parameters replies return the
+    peer's exact string.
 
 References:
     OMG DDSI-RTPS 2.5 §8.4.14 (fragmented data), §9.4.5.4 (DATA_FRAG).
@@ -46,21 +52,28 @@ def frame_pattern(seq: int, size: int) -> bytes:
     return bytes(((seq * 31) + i) & 0xFF for i in range(size))
 
 
-def param_text(role: str) -> str:
-    """Returns the large parameter string a role publishes."""
+def param_text(role: str, chars: int) -> str:
+    """Returns the `chars`-long parameter string a role publishes."""
     unit = f"{role}-rosette-fragment-"
-    return (unit * (PARAM_CHARS // len(unit) + 1))[:PARAM_CHARS]
+    return (unit * (chars // len(unit) + 1))[:chars]
+
+
+def size_list(text: str) -> tuple[int, ...]:
+    """Parses a comma-separated list of frame sizes."""
+    return tuple(int(part) for part in text.split(",") if part)
 
 
 class FragProbeNode(Node):
     """Publishes, verifies, and calls; counts results per frame size."""
 
-    def __init__(self, role: str, session: str, period: float) -> None:
+    def __init__(self, role: str, session: str, period: float, args) -> None:
         super().__init__(f"{session}_{role}_frag")
         self.role = role
         self.peer = "beta" if role == "alpha" else "alpha"
+        self.frame_sizes = size_list(args.frame_sizes)
+        self.peer_text = param_text(self.peer, args.peer_param_chars)
         self.tx = 0
-        self.ok_by_size = {size: 0 for size in FRAME_SIZES}
+        self.ok_by_size = {size: 0 for size in size_list(args.peer_frame_sizes)}
         self.corrupt = 0
         self.param_ok = 0
         self.param_bad = 0
@@ -68,7 +81,7 @@ class FragProbeNode(Node):
 
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE,
                          durability=DurabilityPolicy.VOLATILE)
-        self.declare_parameter(PAYLOAD_PARAM, param_text(role))
+        self.declare_parameter(PAYLOAD_PARAM, param_text(role, args.param_chars))
         self._pub = self.create_publisher(Image, f"/{session}/{role}_frames", qos)
         self.create_subscription(Image, f"/{session}/{self.peer}_frames", self._on_frame, qos)
         self._params = self.create_client(GetParameters,
@@ -76,7 +89,7 @@ class FragProbeNode(Node):
         self.create_timer(period, self._tick)
 
     def _tick(self) -> None:
-        size = FRAME_SIZES[self.tx % len(FRAME_SIZES)]
+        size = self.frame_sizes[self.tx % len(self.frame_sizes)]
         msg = Image()
         msg.header.frame_id = str(self.tx)
         msg.height, msg.width, msg.step = 1, size, size
@@ -100,7 +113,7 @@ class FragProbeNode(Node):
     def _on_param(self, future) -> None:
         reply = future.result()
         values = reply.values if reply is not None else []
-        if len(values) == 1 and values[0].string_value == param_text(self.peer):
+        if len(values) == 1 and values[0].string_value == self.peer_text:
             self.param_ok += 1
         else:
             self.param_bad += 1
@@ -116,6 +129,13 @@ def main() -> int:
     parser.add_argument("--period-sec", type=float, default=0.2)
     parser.add_argument("--expect-per-size", type=int, default=3)
     parser.add_argument("--expect-calls", type=int, default=2)
+    default_sizes = ",".join(str(s) for s in FRAME_SIZES)
+    parser.add_argument("--frame-sizes", default=default_sizes,
+                        help="comma-separated frame sizes this role publishes")
+    parser.add_argument("--peer-frame-sizes", default=default_sizes,
+                        help="comma-separated frame sizes expected from the peer")
+    parser.add_argument("--param-chars", type=int, default=PARAM_CHARS)
+    parser.add_argument("--peer-param-chars", type=int, default=PARAM_CHARS)
     args = parser.parse_args()
 
     rclpy.init()
@@ -124,7 +144,7 @@ def main() -> int:
     if expected_rmw and rmw != expected_rmw:
         print(f"[frag-probe] loaded {rmw}, expected {expected_rmw}", file=sys.stderr)
         return 1
-    node = FragProbeNode(args.role, args.session, args.period_sec)
+    node = FragProbeNode(args.role, args.session, args.period_sec, args)
     deadline = time.monotonic() + args.duration_sec
     while time.monotonic() < deadline:
         rclpy.spin_once(node, timeout_sec=0.05)

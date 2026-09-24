@@ -51,7 +51,8 @@
 #include "types.hpp"
 #include "endpoint_match_table.hpp"
 #include "message_builder.hpp"
-#include "message_parser.hpp"   // ParseContext, ParsedHeartbeat
+#include "message_parser.hpp"   // ParseContext, ParsedHeartbeat, ParsedGap
+#include "sn_receive_window.hpp"
 #include "spdp.hpp"   // pid namespace, plcdr_write_param
 #include "stateful_writer.hpp"
 
@@ -328,35 +329,77 @@ public:
                                   const Guid&       endpoint_guid,
                                   SequenceNumber    writer_sn) noexcept;
 
-    // ----------------------------------------------------------
-    // on_heartbeat()
-    //
-    // Handle an incoming HEARTBEAT from a remote SEDP writer.
-    // Sends an ACKNACK to writer_locator so the remote writer
-    // delivers any endpoint DATA the local reader is still missing.
-    //
-    // §8.3.7.5, p. 91: F=0 → MUST respond with ACKNACK.
-    // §8.5.4.1, p. 165: SEDP uses RELIABLE / TRANSIENT_LOCAL QoS.
-    //
-    // @param ctx             Parse context (senderGuidPrefix).
-    // @param msg             Decoded HEARTBEAT submessage.
-    // @param writer_locator  Unicast locator of the remote SEDP writer.
-    // ----------------------------------------------------------
+    /**
+     * @brief Answers a HEARTBEAT from a remote SEDP writer with an ACKNACK.
+     *
+     * The builtin readers are reliable (§8.5.4.1), so the ACKNACK names
+     * every endpoint announcement still missing from that writer, from the
+     * per-writer SnReceiveWindow: out-of-order arrivals and lost bursts leave
+     * holes, which are requested until DATA or GAP resolves them. firstSN
+     * resolves everything the writer no longer holds. On a link whose
+     * repairs must fit one datagram (repairs_must_fit_datagram()) only the
+     * lowest missing announcement is requested, and each arriving repair
+     * requests the next, so a peer that packs repairs (Fast DDS) still
+     * completes discovery.
+     *
+     * @param[in] ctx            Parse context; senderGuidPrefix names the peer.
+     * @param[in] msg            HEARTBEAT from SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER
+     *   or SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER; others are ignored.
+     * @param[in] writer_locator The peer's metatraffic unicast locator; the
+     *   ACKNACK and later repair requests go there.
+     *
+     * Verification:
+     * - Correct means: every hole below lastSN is requested until resolved;
+     *   a pure ACK (F=1) is sent only when nothing up to lastSN is missing.
+     * - Covered by: TC-SEDP-8.5.4-010, TC-SEDP-8.5.4-011.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.7.5 (HEARTBEAT), §8.4.12.1, §8.5.4.1
+     */
     void on_heartbeat(const ParseContext&    ctx,
                       const ParsedHeartbeat& msg,
                       const Locator&         writer_locator) noexcept;
 
+    /**
+     * @brief Resolves announcements a remote SEDP writer declared irrelevant.
+     *
+     * A writer sends GAP for sequence numbers it will never deliver (for
+     * example an endpoint announcement superseded by its disposal). Without
+     * this the reader would request them forever.
+     *
+     * @param[in] ctx Parse context; senderGuidPrefix names the peer.
+     * @param[in] msg GAP from an SEDP announcer; others are ignored.
+     *
+     * Verification:
+     * - Correct means: [gapStart, gapList.base) and every gapList bit are
+     *   resolved; on a narrow link the next hole is requested at once.
+     * - Covered by: TC-SEDP-8.5.4-011.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.7.4 (GAP), §8.4.12.1
+     */
+    void on_gap(const ParseContext& ctx, const ParsedGap& msg) noexcept;
+
+    /// @brief Forgets the reliability state kept for a peer that left.
+    void remove_peer(const GuidPrefix& prefix) noexcept;
+
 private:
 
-    // Per-peer ACKNACK state for the two SEDP builtin readers.
-    // — §8.5.4.3, Table 8.80: one pubs reader + one subs reader per peer.
+    /// Reliability state for one remote SEDP announcer (§8.4.10 WriterProxy).
+    struct SedpWriterState {
+        SnReceiveWindow window;
+        SequenceNumber  last_sn;          ///< Highest lastSN heard in a HEARTBEAT.
+        SequenceNumber  pending_repair;   ///< Sole change requested by a narrow ACKNACK.
+        uint32_t        acknack_count = 0;
+    };
+
+    /// Per-peer state for the two SEDP builtin readers (§8.5.4.3, Table 8.80).
     struct SedpBuiltinAckState {
-        GuidPrefix     prefix;
-        SequenceNumber pub_highest;     // highest pub DATA SN received (0 = none)
-        SequenceNumber sub_highest;     // highest sub DATA SN received (0 = none)
-        uint32_t       pub_count  = 0;  // outgoing ACKNACK count for pub writer
-        uint32_t       sub_count  = 0;  // outgoing ACKNACK count for sub writer
-        bool           alive      = false;
+        GuidPrefix      prefix;
+        SedpWriterState pub;              ///< SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER.
+        SedpWriterState sub;              ///< SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER.
+        Locator         writer_locator = LOCATOR_INVALID;
+        bool            alive = false;
     };
 
     GuidPrefix          local_prefix_;
@@ -380,6 +423,21 @@ private:
         }
         return free_slot;
     }
+
+    /**
+     * @brief Records an announcement's sequence number and reports whether
+     * it is new; requests the next repair when it was the one outstanding.
+     *
+     * @param[in] sender_prefix Announcing participant.
+     * @param[in] is_pub        Publications (true) or subscriptions announcer.
+     * @param[in] writer_sn     Sequence number of the DATA.
+     * @return `true` to process the announcement, `false` for a duplicate.
+     */
+    bool accept_announcement(const GuidPrefix& sender_prefix, bool is_pub,
+                             const SequenceNumber& writer_sn) noexcept;
+
+    /// Sends the ACKNACK describing `writer`'s window to the peer in `state`.
+    void send_acknack(SedpBuiltinAckState& state, bool is_pub) noexcept;
 
     /// Deserialise a PL_CDR_LE payload into a DiscoveredWriterData.
     static bool deserialise_writer(const Octet*         payload,

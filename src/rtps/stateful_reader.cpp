@@ -146,8 +146,10 @@ void StatefulReader::on_data(const ParseContext& ctx,
                (unsigned long)copy_size);
 
     if (proxy) {
+        const bool repair = proxy->is_missing(msg.writerSN);
         proxy->received_change_set(msg.writerSN);
         accept_change(static_cast<CacheChange&&>(change), *proxy);
+        if (repair) request_next_repair(*proxy);
     } else {
         reader_cache_.add_change(static_cast<CacheChange&&>(change));
     }
@@ -217,8 +219,10 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
 
     // Sample is complete — treat identically to a full DATA reception.
     if (proxy) {
+        const bool repair = proxy->is_missing(msg.writerSN);
         proxy->received_change_set(msg.writerSN);
         accept_change(static_cast<CacheChange&&>(out_change), *proxy);
+        if (repair) request_next_repair(*proxy);
     } else {
         reader_cache_.add_change(static_cast<CacheChange&&>(out_change));
     }
@@ -370,7 +374,9 @@ void StatefulReader::on_gap(const ParseContext& ctx,
         assembler_.discard(writer_guid, sn);
     });
 
+    const bool had_missing = proxy->has_missing_changes();
     proxy->on_gap(msg.gapStart, msg.gapList);
+    if (had_missing) request_next_repair(*proxy);
 
     // If all previously missing changes are now LOST, send a pure ACK.
     if (proxy->acknackPending && !proxy->has_missing_changes()) {
@@ -394,7 +400,12 @@ void StatefulReader::send_acknack(DefaultWriterProxy& proxy,
     if (dest == LOCATOR_INVALID) return;
 
     SequenceNumberSet sn_state{};
-    proxy.missing_changes(sn_state);
+    SequenceNumber first_missing{};
+    if (narrow_repairs() && proxy.lowest_missing_change(first_missing)) {
+        sn_state.add(first_missing);
+    } else {
+        proxy.missing_changes(sn_state);
+    }
 
     if (sn_state.numBits == 0) {
         sn_state.bitmapBase = proxy.highestSNReceived + 1;
@@ -423,6 +434,18 @@ void StatefulReader::send_acknack(DefaultWriterProxy& proxy,
         RTPS_LOG_W("reader", "ACKNACK builder failed (pool exhausted?)");
         builder_.abort();
     }
+}
+
+bool StatefulReader::narrow_repairs() const noexcept
+{
+    return repairs_must_fit_datagram(transport_);
+}
+
+void StatefulReader::request_next_repair(DefaultWriterProxy& proxy) noexcept
+{
+    if (!narrow_repairs() || !proxy.has_missing_changes()) return;
+    send_acknack(proxy, /*final=*/false);
+    proxy.on_acknack_sent(proxy.highestSNReceived);
 }
 
 // ============================================================

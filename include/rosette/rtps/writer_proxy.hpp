@@ -444,6 +444,42 @@ public:
         }
     }
 
+    /// @brief True when `sn` is tracked with status MISSING (a repair is owed).
+    bool is_missing(const SequenceNumber& sn) const noexcept {
+        for (uint8_t i = 0; i < N; ++i) {
+            if (changes_[i].is_valid() && changes_[i].sequenceNumber == sn)
+                return changes_[i].status == ChangeFromWriterStatus::MISSING;
+        }
+        return false;
+    }
+
+    /**
+     * @brief Finds the lowest sequence number still MISSING.
+     *
+     * StatefulReader narrows its ACKNACK to this one change on links that
+     * cannot carry large datagrams, so the writer's repair is a single DATA.
+     *
+     * @param[out] out Lowest MISSING sequence number; written only on success.
+     * @return `true` when some change is MISSING, `false` when none is.
+     *
+     * Verification:
+     * - Correct means: returns the minimum over all MISSING slots regardless
+     *   of slot order.
+     * - Covered by: TC-SRR-8.4.7-003.
+     */
+    bool lowest_missing_change(SequenceNumber& out) const noexcept {
+        bool found = false;
+        for (uint8_t i = 0; i < N; ++i) {
+            if (!changes_[i].is_valid() ||
+                changes_[i].status != ChangeFromWriterStatus::MISSING) continue;
+            if (!found || changes_[i].sequenceNumber < out) {
+                out = changes_[i].sequenceNumber;
+                found = true;
+            }
+        }
+        return found;
+    }
+
     // ----------------------------------------------------------
     // has_missing_changes()
     //

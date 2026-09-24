@@ -38,6 +38,7 @@ void append_spdp_tests_9_6_2_9_6_3_1(std::vector<TestCase>& tests);
 void register_all_spdp_tests(std::vector<TestCase>& tests);
 
 void append_sedp_tests_8_5_4(std::vector<TestCase>& tests);
+void append_sedp_tests_8_5_4_repairs(std::vector<TestCase>& tests);
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests);
 void append_sedp_tests_9_6_3_2(std::vector<TestCase>& tests);
 

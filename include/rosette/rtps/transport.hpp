@@ -42,6 +42,33 @@ struct ITransport {
     virtual uint16_t local_default_unicast_port() const noexcept { return 0u; }
 };
 
+/// Largest IPv4 UDP payload (65535 - 20 IP - 8 UDP); a transport limited
+/// below this sits on a link that cannot deliver IP-fragmented datagrams.
+constexpr uint32_t kMaxUdpDatagram = 65507u;
+
+/**
+ * @brief True when a reliable reader must request repairs one change at a time.
+ *
+ * A writer answers an ACKNACK by packing every requested change into as few
+ * datagrams as its own message size allows (Fast DDS: 65500 octets). On a
+ * link that cannot carry datagrams above `transport.max_datagram_size()`,
+ * such a repair datagram is lost again on every retry, so readers there
+ * request only the lowest missing change and ask for the next as soon as it
+ * arrives; each repair is then a single DATA.
+ *
+ * @param[in] transport Transport the reader sends and receives on.
+ * @return `true` when the transport's datagram limit is below kMaxUdpDatagram.
+ *
+ * Verification:
+ * - Correct means: stock Fast DDS (default message size) completes discovery
+ *   with a participant whose link drops datagrams above 1472 octets.
+ * - Covered by: TC-SRR-8.4.7-003, TC-SEDP-8.5.4-010,
+ *   tests/ros2/run_rmw_frag_loopback.sh (stock peer).
+ */
+inline bool repairs_must_fit_datagram(const ITransport& transport) noexcept {
+    return transport.max_datagram_size() < kMaxUdpDatagram;
+}
+
 struct ITransportRuntime {
     virtual ~ITransportRuntime() = default;
     virtual bool start() noexcept = 0;
@@ -89,6 +116,7 @@ struct TransportStats {
     uint32_t oversize_rx = 0;       ///< Datagrams received above max_datagram_size()
                                     ///< (a peer not capped to this link's limit).
     uint32_t truncated_rx = 0;      ///< Datagrams larger than the receive buffer.
+    uint32_t dropped_rx = 0;        ///< Oversize datagrams discarded by strict-link mode.
 };
 
 class SocketUdpTransport : public ITransport {
@@ -195,6 +223,29 @@ public:
         max_datagram_ = octets > 65507u ? 65507u : (octets < 512u ? 512u : octets);
     }
 
+    /**
+     * @brief Makes the host behave like a link that cannot carry datagrams
+     * above max_datagram_size().
+     *
+     * A WIZnet hardware-UDP socket, or any stack without IP reassembly, never
+     * delivers a datagram whose IP packet was fragmented on the wire: it is
+     * lost without trace. With strict-link mode on, receive discards every
+     * datagram longer than max_datagram_size() (counting it in
+     * TransportStats::dropped_rx) so a host run against an unmodified peer
+     * faces exactly the losses such a board would, and the recovery paths
+     * (NACK of the lost sequence numbers, one-change repairs) are exercised
+     * with real stock-middleware traffic.
+     *
+     * @param[in] enabled `true` to discard oversize datagrams on receive.
+     *
+     * Verification:
+     * - Correct means: no datagram above the limit reaches the participant;
+     *   discovery and every sample the peer can send within the limit still
+     *   arrive from stock Fast DDS with its default (65500) message size.
+     * - Covered by: tests/ros2/run_rmw_frag_loopback.sh (stock peer mode).
+     */
+    void set_strict_link(bool enabled) noexcept { strict_link_ = enabled; }
+
     /// @brief Datagram counters since open().
     const TransportStats& stats() const noexcept { return stats_; }
 
@@ -222,6 +273,7 @@ private:
     bool meta_open_ = false;
     bool user_open_ = false;
     uint32_t max_datagram_ = 65507u;
+    bool strict_link_ = false;
     TransportStats stats_{};
 };
 

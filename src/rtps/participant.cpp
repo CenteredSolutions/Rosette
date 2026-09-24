@@ -509,6 +509,7 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
     // matched_writer_remove on the affected local endpoints.
     p->match_table_.remove_participant(peer.data.guidPrefix);
     p->sedp_writer_.on_peer_removed(peer.data.guidPrefix);
+    p->sedp_reader_.remove_peer(peer.data.guidPrefix);
 }
 
 void RTPSParticipant::on_endpoint_match(const DiscoveredWriterData& wd,
@@ -704,6 +705,11 @@ void RTPSParticipant::dispatch_gap(const ParseContext& ctx,
                                    const ParsedGap&   msg) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(ctx.user_data);
+    if (msg.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER ||
+        msg.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
+        p->sedp_reader_.on_gap(ctx, msg);
+        return;
+    }
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
         if (!p->reader_alive_[i]) continue;
         auto* r = reinterpret_cast<StatefulReader*>(p->reader_storage_[i]);
