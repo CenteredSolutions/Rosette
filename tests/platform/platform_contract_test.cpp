@@ -142,11 +142,15 @@ void test_wall_clock() {
         check(pf::WallClock::synchronized(), "WallClock", "a realtime hint synchronizes the clock");
         check(diff > -5000 && diff < 5000, "WallClock", "now_us() matches the platform's realtime");
     }
+    // now_us() reads the monotonic clock internally, so bracket it with reads
+    // on either side: the offset-free value must fall inside that window.
     const int64_t before = pf::WallClock::offset_us();
     pf::WallClock::set_offset_us(before + 1000000);
-    const int64_t delta =
-        pf::WallClock::now_us() - (static_cast<int64_t>(pf::monotonic_us()) + before);
-    check(delta >= 1000000 && delta < 1005000, "WallClock", "set_offset_us moves now_us() by the offset");
+    const int64_t lo = static_cast<int64_t>(pf::monotonic_us());
+    const int64_t now = pf::WallClock::now_us();
+    const int64_t hi = static_cast<int64_t>(pf::monotonic_us());
+    const int64_t base = now - before - 1000000;
+    check(base >= lo && base <= hi, "WallClock", "set_offset_us moves now_us() by the offset");
     check(pf::WallClock::synchronized(), "WallClock", "setting an offset marks the clock synchronized");
     pf::WallClock::set_offset_us(before);
 }
