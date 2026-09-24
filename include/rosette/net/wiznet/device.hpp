@@ -10,7 +10,7 @@
 
 #include "rosette/platform/host_runtime.hpp"  // rosette_platform_get_ms for the bounded ARP probe
 
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
 extern "C" {
 #include "FreeRTOS.h"
 #include "task.h"
@@ -174,7 +174,7 @@ public:
         return mode_;
     }
 
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
     void register_socket_rx_task(socket_type socket,
                                  TaskHandle_t task = xTaskGetCurrentTaskHandle()) noexcept
     {
@@ -724,7 +724,7 @@ private:
      */
     void ack_socket_rx_interrupt(socket_type socket) noexcept
     {
-#ifdef ROSETTE_NO_FREERTOS
+#if !defined(ROSETTE_OS_FREERTOS)
         clear_socket_interrupt(socket, Chip::socket_interrupt_receive());
 #else
         (void)socket;
@@ -859,7 +859,7 @@ private:
     }
 
     Bus& bus_;
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
     TaskHandle_t interrupt_dispatch_task_ = nullptr;
     std::array<TaskHandle_t, Chip::socket_count()> socket_rx_tasks_{};
 #endif

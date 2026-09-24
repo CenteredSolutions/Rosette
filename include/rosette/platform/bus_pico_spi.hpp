@@ -6,7 +6,7 @@
 #include "hardware/gpio.h"
 #include "hardware/spi.h"
 
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
 #  include "FreeRTOS.h"
 #  include "semphr.h"
 #  include "task.h"
@@ -17,7 +17,7 @@ namespace rosette::platform {
 class PicoSpiBus {
 public:
     using address_type = uint32_t;
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
     using lock_timeout_type = TickType_t;
     static constexpr lock_timeout_type wait_forever = portMAX_DELAY;
 #else
@@ -36,7 +36,7 @@ public:
         , cs_pin_(config.cs_pin)
         , read_fill_(config.read_fill)
     {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         mutex_ = xSemaphoreCreateMutex();
 #endif
     }
@@ -46,7 +46,7 @@ public:
         , cs_pin_(other.cs_pin_)
         , read_fill_(other.read_fill_)
     {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         mutex_ = xSemaphoreCreateMutex();
 #endif
     }
@@ -56,7 +56,7 @@ public:
         , cs_pin_(other.cs_pin_)
         , read_fill_(other.read_fill_)
     {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         mutex_ = xSemaphoreCreateMutex();
 #endif
     }
@@ -166,7 +166,7 @@ public:
 private:
     bool lock(lock_timeout_type timeout) noexcept
     {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         return (mutex_ == nullptr) ||
                (xSemaphoreTake(mutex_, timeout) == pdTRUE);
 #else
@@ -177,7 +177,7 @@ private:
 
     void unlock() noexcept
     {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         if (mutex_ != nullptr) {
             (void)xSemaphoreGive(mutex_);
         }
@@ -185,7 +185,7 @@ private:
     }
 
     void begin_transaction() {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         taskENTER_CRITICAL();
 #endif
         gpio_put(cs_pin_, 0);
@@ -193,7 +193,7 @@ private:
 
     void end_transaction() {
         gpio_put(cs_pin_, 1);
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         taskEXIT_CRITICAL();
 #endif
     }
@@ -201,7 +201,7 @@ private:
     spi_inst_t* spi_;
     uint cs_pin_;
     uint8_t read_fill_;
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
     SemaphoreHandle_t mutex_ = nullptr;
 #endif
 };

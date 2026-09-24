@@ -15,7 +15,7 @@
  *
  * The @p Executor policy (see `executor.hpp`) decides how `recv_from()` waits:
  * a cooperative poll in a bare superloop, or a task notification under
- * FreeRTOS. It defaults to whichever fits the build (`ROSETTE_NO_FREERTOS`);
+ * FreeRTOS. It defaults to whichever fits the build's platform (`ROSETTE_OS_FREERTOS`);
  * pass `PollingExecutor` explicitly to force poll mode even under an RTOS.
  */
 

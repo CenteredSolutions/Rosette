@@ -11,7 +11,7 @@
  *
  * Build and run standalone:
  * @code
- *   c++ -std=c++17 -Wall -Wextra -DROSETTE_NO_FREERTOS -I include \
+ *   c++ -std=c++17 -Wall -Wextra -DROSETTE_OS_POSIX -DROSETTE_CHIP_HOST -I include \
  *       tests/host/wiznet_header_test.cpp -o /tmp/wiznet_header_test && /tmp/wiznet_header_test
  * @endcode
  * or through CMake: `cmake -S tests/host -B build/tests-host && ctest --test-dir build/tests-host`.

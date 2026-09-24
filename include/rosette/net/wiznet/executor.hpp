@@ -37,7 +37,7 @@
 
 #include "rosette/platform/host_runtime.hpp"
 
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
 extern "C" {
 #include "FreeRTOS.h"
 #include "task.h"
@@ -97,7 +97,7 @@ struct PollingExecutor {
     static constexpr uint32_t kBackstopMs = 20u;
 };
 
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
 
 /**
  * @brief Event-driven execution policy for FreeRTOS.
@@ -206,7 +206,7 @@ private:
 template<typename Device>
 using DefaultExecutor = FreeRtosExecutor<Device>;
 
-#else  // ROSETTE_NO_FREERTOS
+#else  // ROSETTE_OS_FREERTOS
 
 template<typename Device>
 using DefaultExecutor = PollingExecutor<Device>;

@@ -1,11 +1,11 @@
 /**
  * @file platform/pico_freertos.c
- * @brief Platform hook implementations for RP2350 and RP2040.
+ * @brief C runtime accessors (host_runtime.hpp, flash.hpp) for RP2350 and
+ * RP2040 under FreeRTOS.
  *
- * Implements the three extern "C" hooks declared in the RTPS stack:
+ * Implements:
  *
  *   rosette_platform_get_ms()              — monotonic millisecond counter
- *   rosette_platform_make_guid_prefix()    — unique participant GUID prefix
  *   rosette_platform_flash_erase()         — RP2350/RP2040 flash erase
  *   rosette_platform_flash_write()         — RP2350/RP2040 flash program
  *   rosette_platform_flash_read()          — RP2350/RP2040 flash read
@@ -34,7 +34,6 @@
 
 /* Pico SDK */
 #include "pico/stdlib.h"
-#include "pico/unique_id.h"
 #include "hardware/flash.h"
 #include "hardware/sync.h"
 
@@ -58,16 +57,12 @@ extern "C" {
 // ============================================================
 // rosette_platform_get_ms()
 //
-// Returns a monotonically increasing millisecond counter derived
-// from the FreeRTOS tick count.  Wraps at ~49.7 days (uint32_t).
-//
-// portTICK_PERIOD_MS = 1000 / configTICK_RATE_HZ.
-// With configTICK_RATE_HZ = 1000, this is exactly 1 ms per tick.
-// With configTICK_RATE_HZ = 100, multiply by 10.
+// Milliseconds from the RP2040/RP2350 64-bit hardware timer: the same time
+// base as rosette::platform::monotonic_us() (src/platform/chip/rp2), so C and
+// C++ callers read one clock whether or not FreeRTOS is running.
 // ============================================================
-
 uint32_t rosette_platform_get_ms(void) {
-    return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    return (uint32_t)(time_us_64() / 1000u);
 }
 
 // Yields to the scheduler for approximately `ms` milliseconds. Used by
@@ -80,43 +75,6 @@ void rosette_platform_delay_ms(uint32_t ms) {
 // nothing here calls this; provide it for symbol completeness as a plain yield.
 void rosette_platform_wait_for_event(uint32_t max_wait_ms) {
     vTaskDelay(pdMS_TO_TICKS(max_wait_ms));
-}
-
-// ============================================================
-// rosette_platform_make_guid_prefix()
-//
-// Derives a 12-byte GUID prefix unique to this device.
-//
-// Format:
-//   bytes 0-1  : vendor code 0xEE, 0xC0 (project-specific; not OMG-assigned)
-//   byte  2    : participant_id
-//   bytes 3-9  : 7 bytes from the RP2350/RP2040 64-bit unique board ID
-//   bytes 10-11: 0x00, 0x00 (reserved)
-//
-// The pico_unique_board_id is derived from the flash chip's 64-bit UID
-// via the QSPI flash RUID command — unique per device.
-// ============================================================
-
-typedef struct { uint8_t value[12]; } rosette_GuidPrefix;  /* mirrors GuidPrefix */
-
-rosette_GuidPrefix rosette_platform_make_guid_prefix(uint8_t participant_id) {
-    pico_unique_board_id_t uid;
-    pico_get_unique_board_id(&uid);
-
-    rosette_GuidPrefix prefix;
-    prefix.value[0]  = 0xEEu;           /* Project vendor byte 0 */
-    prefix.value[1]  = 0xC0u;           /* Project vendor byte 1 */
-    prefix.value[2]  = participant_id;
-    prefix.value[3]  = uid.id[1];
-    prefix.value[4]  = uid.id[2];
-    prefix.value[5]  = uid.id[3];
-    prefix.value[6]  = uid.id[4];
-    prefix.value[7]  = uid.id[5];
-    prefix.value[8]  = uid.id[6];
-    prefix.value[9]  = uid.id[7];
-    prefix.value[10] = 0x00u;
-    prefix.value[11] = 0x00u;
-    return prefix;
 }
 
 uint32_t rosette_platform_get_ipv4_addr(void) {

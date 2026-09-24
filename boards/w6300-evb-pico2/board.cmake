@@ -1,3 +1,6 @@
+# Platform port (include/rosette/platform/platform.hpp): OS layer and chip layer.
+set(ROSETTE_OS   "baremetal" PARENT_SCOPE)
+set(ROSETTE_CHIP "rp2" PARENT_SCOPE)
 set(ROSETTE_BOARD_FAMILY "pico" PARENT_SCOPE)
 set(ROSETTE_BOARD_ENABLE_PICO_SDK ON PARENT_SCOPE)
 

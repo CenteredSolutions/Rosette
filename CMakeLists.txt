@@ -71,8 +71,21 @@ target_include_directories(rosette_net PUBLIC
     ${ROSETTE_INTERNAL_INCLUDE_DIRS}
 )
 
-if(NOT ROSETTE_BOARD_ENABLE_FREERTOS)
-    target_compile_definitions(rosette_net PUBLIC ROSETTE_NO_FREERTOS)
+# The platform port the board selected (ROSETTE_OS / ROSETTE_CHIP in its
+# board.cmake); carries ROSETTE_OS_* / ROSETTE_CHIP_* to every consumer.
+set(ROSETTE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
+include(cmake/rosette_platform.cmake)
+target_link_libraries(rosette_net PUBLIC rosette_platform)
+
+# Platform conformance test for the selected board's port. On a Pico it
+# reports over USB serial; on the host it is also tests/platform's ctest.
+add_executable(rosette_platform_contract tests/platform/platform_contract_test.cpp)
+target_link_libraries(rosette_platform_contract PRIVATE rosette_platform)
+if(ROSETTE_BOARD_ENABLE_PICO_SDK)
+    target_link_libraries(rosette_platform_contract PRIVATE pico_stdlib pico_multicore)
+    pico_enable_stdio_usb(rosette_platform_contract 1)
+    pico_enable_stdio_uart(rosette_platform_contract 0)
+    pico_add_extra_outputs(rosette_platform_contract)
 endif()
 
 if(NOT ROSETTE_BOARD_ENABLE_PICO_SDK)

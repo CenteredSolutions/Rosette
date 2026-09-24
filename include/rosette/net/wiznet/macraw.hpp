@@ -123,12 +123,12 @@ public:
 
     void handle_interrupt_from_isr() noexcept override
     {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         device_.handle_interrupt_from_isr();
 #endif
     }
 
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
     void register_rx_task(TaskHandle_t task) noexcept override
     {
         device_.register_socket_rx_task(Chip::macraw_socket(), task);

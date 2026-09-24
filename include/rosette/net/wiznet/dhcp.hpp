@@ -30,7 +30,7 @@
 #include "device.hpp"
 #include "socket_provider.hpp"
 
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
 extern "C" {
 #include "FreeRTOS.h"
 #include "semphr.h"
@@ -268,7 +268,7 @@ protected:
 
     void lease_lock() const noexcept
     {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         if (lease_mutex_ != nullptr) {
             xSemaphoreTake(lease_mutex_, portMAX_DELAY);
         }
@@ -277,7 +277,7 @@ protected:
 
     void lease_unlock() const noexcept
     {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         if (lease_mutex_ != nullptr) {
             xSemaphoreGive(lease_mutex_);
         }
@@ -295,7 +295,7 @@ protected:
     apply_callback_type on_apply_ = nullptr;
     void* apply_user_ = nullptr;
     uint32_t xid_seed_ = 0x4d445343u;
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
     SemaphoreHandle_t lease_mutex_ = nullptr;
 #endif
 
@@ -1010,7 +1010,7 @@ private:
     uint32_t retry_at_ms_ = 0u;
 };
 
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
 
 /**
  * @brief FreeRTOS DHCP driver: acquires, sleeps to T1, renews, on its own task.
@@ -1116,6 +1116,6 @@ private:
     volatile bool force_renew_ = false;
 };
 
-#endif  // ROSETTE_NO_FREERTOS
+#endif  // ROSETTE_OS_FREERTOS
 
 }  // namespace rosette::net::wiznet

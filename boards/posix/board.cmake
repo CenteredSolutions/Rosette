@@ -1,3 +1,6 @@
+# Platform port (include/rosette/platform/platform.hpp): OS layer and chip layer.
+set(ROSETTE_OS   "posix" PARENT_SCOPE)
+set(ROSETTE_CHIP "host" PARENT_SCOPE)
 set(ROSETTE_BOARD_FAMILY "posix" PARENT_SCOPE)
 set(ROSETTE_BOARD_ENABLE_PICO_SDK OFF PARENT_SCOPE)
 set(ROSETTE_BOARD_ENABLE_FREERTOS OFF PARENT_SCOPE)

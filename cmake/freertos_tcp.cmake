@@ -20,6 +20,11 @@ else()
 endif()
 set(FREERTOS_HEAP 4 CACHE STRING "" FORCE)
 
+# Rosette supplies the network interface itself (the WIZnet MACRAW driver,
+# src/net/wiznet/macraw.cpp). Left unset, FreeRTOS+TCP picks a port from the
+# host system (libpcap on Linux/macOS), which is wrong for a firmware build.
+set(FREERTOS_PLUS_TCP_NETWORK_IF "A_CUSTOM_NETWORK_IF" CACHE STRING "" FORCE)
+
 # ── freertos_config: where FreeRTOSConfig.h / FreeRTOSIPConfig.h live ─────────
 if(NOT TARGET freertos_config)
     add_library(freertos_config INTERFACE)

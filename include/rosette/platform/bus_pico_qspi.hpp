@@ -29,7 +29,7 @@
 
 #include "hardware/gpio.h"
 
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
 #  include "FreeRTOS.h"
 #  include "semphr.h"
 #  include "task.h"
@@ -40,7 +40,7 @@ namespace rosette::platform {
 class PicoQspiBus {
 public:
     using address_type = uint32_t;
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
     using lock_timeout_type = TickType_t;
     static constexpr lock_timeout_type wait_forever = portMAX_DELAY;
 #else
@@ -59,7 +59,7 @@ public:
         : cfg_(config)
     {
         init_pins();
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         mutex_ = xSemaphoreCreateMutex();
 #endif
     }
@@ -67,7 +67,7 @@ public:
     PicoQspiBus(const PicoQspiBus& other) noexcept
         : cfg_(other.cfg_)
     {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         mutex_ = xSemaphoreCreateMutex();
 #endif
     }
@@ -165,7 +165,7 @@ private:
 
     bool lock(lock_timeout_type timeout) noexcept
     {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         return (mutex_ == nullptr) || (xSemaphoreTake(mutex_, timeout) == pdTRUE);
 #else
         (void)timeout;
@@ -175,7 +175,7 @@ private:
 
     void unlock() noexcept
     {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         if (mutex_ != nullptr) {
             (void)xSemaphoreGive(mutex_);
         }
@@ -184,7 +184,7 @@ private:
 
     void begin_transaction() noexcept
     {
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         taskENTER_CRITICAL();
 #endif
         gpio_put(cfg_.cs_pin, 0);
@@ -193,7 +193,7 @@ private:
     void end_transaction() noexcept
     {
         gpio_put(cfg_.cs_pin, 1);
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
         taskEXIT_CRITICAL();
 #endif
     }
@@ -229,7 +229,7 @@ private:
     }
 
     Config cfg_;
-#ifndef ROSETTE_NO_FREERTOS
+#if defined(ROSETTE_OS_FREERTOS)
     SemaphoreHandle_t mutex_ = nullptr;
 #endif
 };

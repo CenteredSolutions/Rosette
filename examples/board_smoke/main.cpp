@@ -13,7 +13,7 @@
 #include <cstdlib>
 #include <array>
 
-#ifdef ROSETTE_NO_FREERTOS
+#if !defined(ROSETTE_OS_FREERTOS)
 #include "rosette/net/posix/socket.hpp"
 
 #include <chrono>
@@ -103,7 +103,7 @@ inline const char* mdns_host_name_or_null() noexcept
     return (name[0] != '\0') ? name : nullptr;
 }
 
-#ifdef ROSETTE_NO_FREERTOS
+#if !defined(ROSETTE_OS_FREERTOS)
 
 using SocketProviderImpl = rosette::net::posix::PosixSocketProvider;
 
@@ -657,7 +657,7 @@ inline constexpr bool has_message_traits_v<std_msgs__msg__Float32> = true;
 
 }  // namespace rosette
 
-#ifdef ROSETTE_NO_FREERTOS
+#if !defined(ROSETTE_OS_FREERTOS)
 int main()
 {
     return run_posix_smoke();

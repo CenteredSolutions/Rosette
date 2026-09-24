@@ -472,6 +472,12 @@ public:
         return last_error_;
     }
 
+    /// @brief Underlying file descriptor, for PosixSocketProvider::wait_readable().
+    int native_handle() const noexcept
+    {
+        return fd_;
+    }
+
 private:
     int fd_ = -1;
     SocketError last_error_ = SocketError::none;
@@ -501,6 +507,32 @@ std::unique_ptr<Socket> PosixSocketProvider::open(SocketDomain domain,
         (void)::close(fd);
     }
     return socket;
+}
+
+void PosixSocketProvider::wait_readable(Socket* const* sockets, std::size_t count,
+                                        rosette::platform::Event& wake,
+                                        uint32_t timeout_ms) noexcept
+{
+    constexpr std::size_t kMaxSockets = 7u;
+    pollfd fds[kMaxSockets + 1u] = {};
+    nfds_t n = 0;
+    fds[n++] = pollfd{wake.native_handle(), POLLIN, 0};
+    for (std::size_t i = 0; i < count && n <= kMaxSockets; ++i) {
+        // Every socket this provider opens is a PosixDatagramSocket.
+        const auto* socket = static_cast<const PosixDatagramSocket*>(sockets[i]);
+        if (socket != nullptr && socket->is_open()) {
+            fds[n++] = pollfd{socket->native_handle(), POLLIN, 0};
+        }
+    }
+    const int timeout = (timeout_ms == rosette::platform::kWaitForever)
+        ? -1 : static_cast<int>(timeout_ms);
+    int rc;
+    do {
+        rc = ::poll(fds, n, timeout);
+    } while (rc < 0 && errno == EINTR);
+    if (rc > 0 && (fds[0].revents & POLLIN) != 0) {
+        (void)wake.consume();
+    }
 }
 
 }  // namespace rosette::net::posix

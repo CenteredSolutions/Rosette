@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <memory>
 
+#include "rosette/platform/platform.hpp"
+
 namespace rosette::net {
 
 enum class SocketDomain : uint8_t {
@@ -170,6 +172,51 @@ public:
         SocketDomain domain = SocketDomain::ipv4,
         SocketType type = SocketType::datagram,
         SocketProtocol protocol = SocketProtocol::udp) noexcept = 0;
+
+    /**
+     * @brief Registers the event signaled when a datagram arrives.
+     *
+     * Interrupt-driven backends (WIZnet INT pin, FreeRTOS+TCP socket
+     * callbacks) call `event->signal_from_isr()` or `signal()` on receive, so
+     * a thread sleeping in wait_readable() wakes as soon as data is there.
+     * Backends that can block on their sockets directly (POSIX) ignore it.
+     *
+     * @param[in] event Event to signal; must outlive the provider, or be null.
+     */
+    virtual void set_receive_event(rosette::platform::Event* event) noexcept {
+        receive_event_ = event;
+    }
+
+    /**
+     * @brief Sleeps until one of `sockets` is readable, `wake` is signaled,
+     * or `timeout_ms` passes.
+     *
+     * The participant driver calls this between protocol passes, so an idle
+     * node sleeps (WFE on bare metal, blocked on FreeRTOS and POSIX) instead of
+     * polling. The default waits on `wake` alone and relies on the backend
+     * signaling the event registered with set_receive_event() when a datagram
+     * arrives; register `wake` there. A return says only "check again": the
+     * caller drains every socket afterwards.
+     *
+     * @param[in] sockets    Sockets opened by this provider; may contain nulls.
+     * @param[in] count      Number of entries in `sockets`.
+     * @param[in] wake       Event other threads signal to end the wait early.
+     * @param[in] timeout_ms Longest wait; platform::kWaitForever blocks.
+     *
+     * Verification:
+     * - Correct means: returns promptly (well under the timeout) after a
+     *   datagram arrives on any listed socket or `wake` is signaled.
+     */
+    virtual void wait_readable(Socket* const* sockets, std::size_t count,
+                               rosette::platform::Event& wake,
+                               uint32_t timeout_ms) noexcept {
+        (void)sockets;
+        (void)count;
+        (void)wake.wait_for(timeout_ms);
+    }
+
+protected:
+    rosette::platform::Event* receive_event_ = nullptr;
 };
 
 const char* socket_error_string(SocketError error) noexcept;

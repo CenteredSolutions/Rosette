@@ -2,10 +2,9 @@
  * @file platform/posix/host_runtime.cpp
  * @brief POSIX implementation of the Rosette platform runtime accessors.
  *
- * Provides the millisecond clock and local-address queries declared in
- * `rosette/platform/host_runtime.hpp` for host builds (`ROSETTE_BOARD=posix`),
- * where they are used by examples and host tests that exercise the micro-ROS
- * client against a locally running `micro_ros_agent`.
+ * Provides the C accessors declared in `rosette/platform/host_runtime.hpp`
+ * for host builds. The clock and delay are the platform contract's
+ * (platform.hpp), so C callers and C++ callers read the same time base.
  *
  * The local IPv4 address is discovered once by opening a throwaway UDP socket
  * toward a public address and reading back the kernel-selected source address
@@ -14,11 +13,10 @@
  */
 
 #include "rosette/platform/host_runtime.hpp"
+#include "rosette/platform/platform.hpp"
 
-#include <chrono>
 #include <cstdlib>
 #include <cstring>
-#include <thread>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -106,10 +104,7 @@ uint8_t g_forced_ipv6[16] = {0};
 
 extern "C" uint32_t rosette_platform_get_ms(void)
 {
-    using clock = std::chrono::steady_clock;
-    static const auto start = clock::now();
-    return static_cast<uint32_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(clock::now() - start).count());
+    return rosette::platform::monotonic_ms();
 }
 
 extern "C" uint32_t rosette_platform_get_ipv4_addr(void)
@@ -146,13 +141,12 @@ extern "C" void rosette_platform_set_ipv6_addr(const uint8_t addr[16])
 
 extern "C" void rosette_platform_delay_ms(uint32_t ms)
 {
-    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+    rosette::platform::sleep_ms(ms);
 }
 
 extern "C" void rosette_platform_wait_for_event(uint32_t max_wait_ms)
 {
     // No hardware event source on the host; a short sleep keeps the poll loop
     // from spinning while staying responsive.
-    std::this_thread::sleep_for(
-        std::chrono::milliseconds(max_wait_ms < 2u ? max_wait_ms : 2u));
+    rosette::platform::sleep_ms(max_wait_ms < 2u ? max_wait_ms : 2u);
 }

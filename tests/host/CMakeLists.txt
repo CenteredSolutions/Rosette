@@ -12,6 +12,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 enable_testing()
 
+# Host tests run on the POSIX platform port (include/rosette/platform/platform.hpp).
+add_compile_definitions(ROSETTE_OS_POSIX ROSETTE_CHIP_HOST)
+
 # add_host_test(<name>) — one .cpp, header-only against include/, no link deps.
 function(add_host_test name)
     add_executable(${name} ${name}.cpp)
@@ -19,7 +22,6 @@ function(add_host_test name)
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../../include
         ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/net)
-    target_compile_definitions(${name} PRIVATE ROSETTE_NO_FREERTOS)
     target_compile_options(${name} PRIVATE -Wall -Wextra)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
