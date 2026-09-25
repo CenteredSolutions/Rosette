@@ -702,7 +702,11 @@ public:
             }
         }
 
-        // ── Phase 2: Periodic broadcast HEARTBEAT ────────────
+        // ── Phase 2: Periodic HEARTBEAT to announcing readers ─
+        // §8.4.9.2 T5-T7: a ReaderProxy is "announcing" only while it has
+        // unacknowledged changes, and only announcing proxies receive the
+        // periodic HEARTBEAT. A fully acknowledged reader hears nothing
+        // until the next write, so an idle link stays quiet.
         if ((now_ms - lastHbSentMs_) >= hb_period_ms_) {
             lastHbSentMs_ = now_ms;
             ++heartbeatCount_;
@@ -713,7 +717,7 @@ public:
             }
             for (uint8_t i = 0; i < MaxReaders; ++i) {
                 Proxy& proxy = proxies_[i];
-                if (!proxy.is_matched()) continue;
+                if (!proxy.is_matched() || !proxy.is_announcing()) continue;
                 const Locator& dest = proxy.best_locator();
                 if (dest == LOCATOR_INVALID) continue;
                 if (!builder_.begin(guid_.prefix)) continue;
@@ -769,26 +773,27 @@ public:
     // ms_until_next_timer()
     //
     // How long tick() can be deferred: the sooner of the next periodic
-    // HEARTBEAT (only while a reader is matched, since heartbeats go to
-    // matched readers) and the end of any pending nackResponseDelay
-    // (§8.4.7.1). The participant driver sleeps no longer than this.
+    // HEARTBEAT (only while some matched reader has unacknowledged changes,
+    // §8.4.9.2 T5-T7) and the end of any pending nackResponseDelay
+    // (§8.4.7.1). The participant driver sleeps no longer than this, so a
+    // fully acknowledged writer never wakes the CPU on its own.
     //
-    // Verification: TC-SWR-8.4.7-002.
+    // Verification: TC-SWR-8.4.7-002, TC-SWR-8.4.9-004.
     // ----------------------------------------------------------
     uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept override {
         uint32_t next = UINT32_MAX;
-        bool any_matched = false;
+        bool any_announcing = false;
         for (uint8_t i = 0; i < MaxReaders; ++i) {
             const Proxy& proxy = proxies_[i];
             if (!proxy.is_matched()) continue;
-            any_matched = true;
+            if (proxy.is_announcing()) any_announcing = true;
             if (proxy.nackPending) {
                 const uint32_t elapsed = now_ms - proxy.nackPendingSinceMs;
                 const uint32_t left = elapsed >= nack_delay_ms_ ? 0u : nack_delay_ms_ - elapsed;
                 if (left < next) next = left;
             }
         }
-        if (any_matched) {
+        if (any_announcing) {
             const uint32_t elapsed = now_ms - lastHbSentMs_;
             const uint32_t left = elapsed >= hb_period_ms_ ? 0u : hb_period_ms_ - elapsed;
             if (left < next) next = left;

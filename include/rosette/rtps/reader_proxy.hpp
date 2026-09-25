@@ -420,6 +420,34 @@ public:
         return false;
     }
 
+    /**
+     * @brief True while some tracked change is not yet acknowledged by this reader.
+     *
+     * The reliable StatefulWriter keeps a ReaderProxy "announcing" (sending
+     * it the periodic HEARTBEAT) exactly while unacked_changes() is
+     * non-empty, and "idle" otherwise. unacked_changes() is every change not
+     * ACKNOWLEDGED, so a change still UNSENT counts too.
+     *
+     * @return `true` when any tracked change has a status other than ACKNOWLEDGED.
+     *
+     * Verification:
+     * - Correct means: a proxy whose changes are all ACKNOWLEDGED (or that
+     *   tracks none) is idle; any UNSENT, UNACKNOWLEDGED, REQUESTED or
+     *   UNDERWAY change makes it announcing.
+     * - Covered by: TC-SWR-8.4.9-004, TC-SWR-8.2.2-002.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.9.2 (transitions T5-T7), §8.4.7.5 (unacked_changes)
+     */
+    bool is_announcing() const noexcept {
+        for (uint8_t i = 0; i < N; ++i) {
+            if (changes_[i].is_valid() &&
+                changes_[i].status != ChangeForReaderStatus::ACKNOWLEDGED)
+                return true;
+        }
+        return false;
+    }
+
     // ----------------------------------------------------------
     // §8.4.6  requested_changes()
     //

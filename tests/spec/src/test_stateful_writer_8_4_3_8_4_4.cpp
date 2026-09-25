@@ -259,10 +259,13 @@ static bool tc_swr_8_4_7_002(std::string& err) {
     CHECK(w.ms_until_next_timer(500u) == UINT32_MAX,
           "without matched readers there is nothing to heartbeat or repair");
     CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
-    CHECK(w.ms_until_next_timer(500u) == 1500u, "next HEARTBEAT is one period after the last");
+    CHECK(w.ms_until_next_timer(500u) == UINT32_MAX,
+          "a matched reader with nothing unacknowledged is idle: no HEARTBEAT timer");
 
     const Octet payload[1] = {0x42u};
     CHECK(w.write_async(ChangeKind::ALIVE, payload, 1u), "write_async should succeed");
+    CHECK(w.ms_until_next_timer(500u) <= 2000u,
+          "an unacknowledged change makes the reader announcing: the HEARTBEAT timer runs");
     ParseContext ctx{};
     ctx.senderGuidPrefix = reader_guid.prefix;
     ParsedAckNack nack{};
@@ -378,7 +381,7 @@ void append_stateful_writer_tests_8_4_3_8_4_4(std::vector<TestCase>& tests) {
                      "§8.4.7.1: acknowledged_by_all() is true for an empty history, false until every matched reader ACKs the newest SN, and always true for BEST_EFFORT.",
                      tc_swr_8_4_7_001});
     tests.push_back({"TC-SWR-8.4.7-002",
-                     "§8.4.7.1: ms_until_next_timer() is unbounded without readers, the heartbeat remainder with readers, and the nackResponseDelay remainder after a NACK.",
+                     "§8.4.7.1/§8.4.9.2: ms_until_next_timer() is unbounded while no reader has unacknowledged changes, the heartbeat remainder while one does, and the nackResponseDelay remainder after a NACK.",
                      tc_swr_8_4_7_002});
     tests.push_back({"TC-SWR-8.4.14-001",
                      "§8.4.14.1/§9.4.5.4: samples over the datagram limit go out as DATA_FRAG, every datagram within the limit, reassembling to the CDR header plus data with inline QoS in every fragment and in the result.",
