@@ -10,7 +10,8 @@
  *
  *   - publishes "hello from rosette #N" on /rosette/chatter every second;
  *   - prints every string received on /rosette/command;
- *   - prints discovery and datagram counters every five seconds.
+ *   - prints discovery and datagram counters every five seconds, including
+ *     sends the chip abandoned because ARP for the destination failed.
  *
  * From a PC in domain 0 with stock Fast DDS (no configuration):
  *   ros2 topic echo /rosette/chatter std_msgs/msg/String
@@ -119,17 +120,17 @@ Config string_topic(const char* ros_topic) noexcept {
 }
 
 void report(const rtps::SocketUdpTransport& transport, rtps::IStatefulWriter& writer,
-            rtps::StatefulReader& reader) noexcept {
+            rtps::StatefulReader& reader, uint32_t send_timeouts) noexcept {
     const rtps::TransportStats& st = transport.stats();
     std::printf("[chatter] matched readers=%u writers=%u commands=%lu | limit=%lu tx=%lu rx=%lu "
-                "max_tx=%lu max_rx=%lu oversize_tx=%lu oversize_rx=%lu truncated_rx=%lu\n",
+                "max_tx=%lu max_rx=%lu oversize_tx=%lu oversize_rx=%lu truncated_rx=%lu arp_timeouts=%lu\n",
                 writer.matched_reader_count(), reader.matched_writer_count(),
                 static_cast<unsigned long>(g_commands_received),
                 static_cast<unsigned long>(transport.max_datagram_size()),
                 static_cast<unsigned long>(st.tx_datagrams), static_cast<unsigned long>(st.rx_datagrams),
                 static_cast<unsigned long>(st.max_tx_datagram), static_cast<unsigned long>(st.max_rx_datagram),
                 static_cast<unsigned long>(st.oversize_tx), static_cast<unsigned long>(st.oversize_rx),
-                static_cast<unsigned long>(st.truncated_rx));
+                static_cast<unsigned long>(st.truncated_rx), static_cast<unsigned long>(send_timeouts));
 }
 
 }  // namespace
@@ -235,7 +236,7 @@ int main() {
         if (static_cast<int32_t>(t - next_report) >= 0) {
             next_report += kReportPeriodMs;
             pf::LockGuard guard(driver.mutex());
-            report(transport, *writer, *reader);
+            report(transport, *writer, *reader, device.send_timeouts());
         }
     }
 }

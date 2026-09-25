@@ -510,6 +510,11 @@ public:
             return -1;
         }
 
+        // Finish the previous datagram before touching Sn_DIPR/Sn_DPORT or the
+        // TX ring: the chip reads both while a SEND is in progress, so either
+        // write would redirect it or fuse the two payloads. Usually done by now.
+        wait_pending_send(socket);
+
         if (!configure_udp_peer(socket, address, port)) {
             std::printf("Failed to configure UDP peer for socket %d\n", socket);
             return -1;
@@ -518,10 +523,6 @@ public:
         const uint16_t required = static_cast<uint16_t>(length);
         while (socket_tx_free_size(socket) < required) {
         }
-
-        // Finish the previous datagram before reusing the TX ring so the chip
-        // does not fuse the two. Usually already done by now.
-        wait_pending_send(socket);
 
         uint16_t pointer = socket_tx_write_pointer(socket);
         pointer = ring_write(socket, pointer, data, required);
@@ -585,6 +586,9 @@ public:
         ack_socket_rx_interrupt(socket);
         return payload_len;
     }
+
+    /// @brief UDP/MACRAW SENDs that ended in Sn_IR.TIMEOUT (ARP failure) since start-up.
+    uint32_t send_timeouts() const noexcept { return send_timeouts_; }
 
     /**
      * @brief Clears a socket's RECV interrupt so the next datagram re-asserts INT.
@@ -709,16 +713,30 @@ private:
      * shows SENDOK. The `send_pending_` guard also means a context that never
      * sent (or whose SENDOK another path already consumed) does not spin.
      *
-     * SENDOK is cleared here unconditionally (harmless when already clear).
-     * `Sn_IR.TIMEOUT` (ARP/retransmit failure) and a closed socket end the wait
-     * so a dead peer cannot hang the caller.
+     * The SEND ends with SENDOK, or with `Sn_IR.TIMEOUT` when ARP for the
+     * destination fails (Sn_RTR x Sn_RCR, about 1.8 s at reset values); a
+     * closed socket also ends the wait, so a dead peer cannot hang the caller.
+     * Both bits are cleared here, as WIZnet's ioLibrary sendto() does. A
+     * TIMEOUT left set would end every later wait at once, and each following
+     * datagram would then be fused into the one still in flight.
+     *
+     * Verification:
+     * - Correct means: on the wire, every udp_send_to() is exactly one
+     *   datagram to its own destination, including after an ARP timeout.
+     * - Covered by: examples/rtps_chatter against a peer that advertises an
+     *   unreachable locator (send_timeouts() > 0 with no fused datagrams).
+     *
+     * References:
+     * - W5100S datasheet §Sn_IR (SENDOK, TIMEOUT), §Sn_CR SEND; WIZnet
+     *   ioLibrary socket.c sendto()
      */
     void wait_pending_send(socket_type socket) noexcept
     {
         while (send_pending_[socket]) {
             const uint8_t irq = read_u8(Chip::socket_interrupt(socket));
-            if ((irq & (Chip::socket_interrupt_send_ok() |
-                        Chip::socket_interrupt_timeout())) != 0u) {
+            if ((irq & Chip::socket_interrupt_send_ok()) != 0u) break;
+            if ((irq & Chip::socket_interrupt_timeout()) != 0u) {
+                ++send_timeouts_;
                 break;
             }
             if (read_u8(Chip::socket_status(socket)) == Chip::socket_status_closed()) {
@@ -726,8 +744,10 @@ private:
             }
         }
         send_pending_[socket] = false;
-        clear_socket_interrupt(socket, Chip::socket_interrupt_send_ok());
+        clear_socket_interrupt(socket, static_cast<uint8_t>(Chip::socket_interrupt_send_ok() |
+                                                            Chip::socket_interrupt_timeout()));
     }
+
 
     /**
      * @brief Clears the socket's RX interrupt so the chip INT line deasserts.
@@ -896,6 +916,7 @@ private:
     // A SEND was issued on this socket and its Sn_IR.SENDOK has not been
     // drained yet; see wait_pending_send().
     std::array<bool, Chip::socket_count()> send_pending_{};
+    uint32_t send_timeouts_ = 0u;
 
     // The chip has flagged an IPv4 address conflict (its own SIPR seen in an
     // ARP from another MAC). Latched under the bus lock by poll_common_interrupt()
