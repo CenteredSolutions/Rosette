@@ -32,18 +32,10 @@ set(ROSETTE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH
     "Rosette repository root (provides include/rosette/rtps and src/rtps)")
 get_filename_component(ROSETTE_ROOT "${ROSETTE_ROOT}" REALPATH)
 
+include(${ROSETTE_ROOT}/cmake/rosette_rtps_sources.cmake)
 set(ROSETTE_RTPS_SOURCES
-  ${ROSETTE_ROOT}/src/rtps/buf_pool.cpp
-  ${ROSETTE_ROOT}/src/rtps/message_parser.cpp
-  ${ROSETTE_ROOT}/src/rtps/participant.cpp
-  ${ROSETTE_ROOT}/src/rtps/participant_driver.cpp
-  ${ROSETTE_ROOT}/src/rtps/sedp.cpp
-  ${ROSETTE_ROOT}/src/rtps/endpoint_match_table.cpp
-  ${ROSETTE_ROOT}/src/rtps/spdp.cpp
-  ${ROSETTE_ROOT}/src/rtps/stateful_reader.cpp
-  ${ROSETTE_ROOT}/src/rtps/sn_window.cpp
-  ${ROSETTE_ROOT}/src/rtps/writer_proxy.cpp
-  ${ROSETTE_ROOT}/src/rtps/transport.cpp
+  ${ROSETTE_RTPS_PROTOCOL_SOURCES}
+  ${ROSETTE_RTPS_IO_SOURCES}
   ${ROSETTE_ROOT}/src/platform/posix/host_runtime.cpp
   ${ROSETTE_ROOT}/src/platform/posix/rtps_posix_log.cpp
   ${ROSETTE_ROOT}/src/net/posix/socket.cpp

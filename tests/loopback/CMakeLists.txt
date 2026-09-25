@@ -6,17 +6,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 enable_testing()
 
+get_filename_component(ROSETTE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." REALPATH)
+include(${ROSETTE_ROOT}/cmake/rosette_rtps_sources.cmake)
+
 add_executable(rtps_loopback_smoke
     rtps_loopback_smoke.cpp
-    ../../src/rtps/buf_pool.cpp
-    ../../src/rtps/message_parser.cpp
-    ../../src/rtps/participant.cpp
-    ../../src/rtps/sedp.cpp
-    ../../src/rtps/endpoint_match_table.cpp
-    ../../src/rtps/spdp.cpp
-    ../../src/rtps/stateful_reader.cpp
-    ../../src/rtps/sn_window.cpp
-    ../../src/rtps/writer_proxy.cpp
+    ${ROSETTE_RTPS_PROTOCOL_SOURCES}
     ../../src/platform/wall_clock.cpp
     ../../src/platform/chip/host/chip_host.cpp
 )

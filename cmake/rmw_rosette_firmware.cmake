@@ -90,6 +90,7 @@ include(${ROSETTE_ROOT}/rmw_rosette/cmake/rmw_rosette_capacity.cmake)
 # rmw_rosette_static
 # ------------------------------------------------------------
 set(_rr_dir ${ROSETTE_ROOT}/rmw_rosette)
+include(${ROSETTE_ROOT}/cmake/rosette_rtps_sources.cmake)
 add_library(rmw_rosette_static STATIC
   ${_rr_dir}/src/introspection_c_codec.cpp
   ${_rr_dir}/src/message_codec.cpp
@@ -108,17 +109,8 @@ add_library(rmw_rosette_static STATIC
   ${_rr_dir}/src/rmw_qos_event.cpp
   ${_rr_dir}/src/rmw_serialize.cpp
   ${_rr_dir}/src/service_endpoints.cpp
-  ${ROSETTE_ROOT}/src/rtps/buf_pool.cpp
-  ${ROSETTE_ROOT}/src/rtps/message_parser.cpp
-  ${ROSETTE_ROOT}/src/rtps/participant.cpp
-  ${ROSETTE_ROOT}/src/rtps/participant_driver.cpp
-  ${ROSETTE_ROOT}/src/rtps/sedp.cpp
-  ${ROSETTE_ROOT}/src/rtps/endpoint_match_table.cpp
-  ${ROSETTE_ROOT}/src/rtps/spdp.cpp
-  ${ROSETTE_ROOT}/src/rtps/stateful_reader.cpp
-  ${ROSETTE_ROOT}/src/rtps/sn_window.cpp
-  ${ROSETTE_ROOT}/src/rtps/writer_proxy.cpp
-  ${ROSETTE_ROOT}/src/rtps/transport.cpp
+  ${ROSETTE_RTPS_PROTOCOL_SOURCES}
+  ${ROSETTE_RTPS_IO_SOURCES}
   ${ROSETTE_ROOT}/src/rtps/rtps_stdio_log.cpp
 )
 target_include_directories(rmw_rosette_static

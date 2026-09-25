@@ -41,18 +41,10 @@ set(ROSETTE_RTPS_MAX_PEERS 8 CACHE STRING "Remote participants tracked at once")
 set(ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS 64 CACHE STRING "Remote writers (and readers) known from SEDP")
 set(ROSETTE_RTPS_LOG_LEVEL 2 CACHE STRING "rosette::rtps log level (0-5)")
 
+include(${ROSETTE_ROOT}/cmake/rosette_rtps_sources.cmake)
 add_library(rosette_rtps STATIC
-  ${ROSETTE_ROOT}/src/rtps/buf_pool.cpp
-  ${ROSETTE_ROOT}/src/rtps/message_parser.cpp
-  ${ROSETTE_ROOT}/src/rtps/participant.cpp
-  ${ROSETTE_ROOT}/src/rtps/participant_driver.cpp
-  ${ROSETTE_ROOT}/src/rtps/sedp.cpp
-  ${ROSETTE_ROOT}/src/rtps/endpoint_match_table.cpp
-  ${ROSETTE_ROOT}/src/rtps/spdp.cpp
-  ${ROSETTE_ROOT}/src/rtps/stateful_reader.cpp
-  ${ROSETTE_ROOT}/src/rtps/sn_window.cpp
-  ${ROSETTE_ROOT}/src/rtps/writer_proxy.cpp
-  ${ROSETTE_ROOT}/src/rtps/transport.cpp
+  ${ROSETTE_RTPS_PROTOCOL_SOURCES}
+  ${ROSETTE_RTPS_IO_SOURCES}
   ${ROSETTE_ROOT}/src/rtps/rtps_stdio_log.cpp
 )
 target_include_directories(rosette_rtps PUBLIC
