@@ -149,7 +149,8 @@ bool build_nack_frag_message(const GuidPrefix& sender_prefix,
 bool build_spdp_payload(const GuidPrefix& guid_prefix,
                         uint32_t lease_seconds,
                         const Locator& metatraffic_unicast,
-                        std::vector<Octet>& out) {
+                        std::vector<Octet>& out,
+                        const Locator& default_unicast = LOCATOR_INVALID) {
     Octet buf[512] = {};
     uint32_t off = 0;
 
@@ -173,6 +174,8 @@ bool build_spdp_payload(const GuidPrefix& guid_prefix,
     const uint32_t lease[2] = {lease_seconds, 0u};
     if (!plcdr_write_param(buf, sizeof(buf), off, pid::PARTICIPANT_LEASE_DURATION, lease, 8u)) return false;
     if (!plcdr_write_param(buf, sizeof(buf), off, pid::METATRAFFIC_UNICAST_LOCATOR, &metatraffic_unicast, 24u)) return false;
+    if (default_unicast != LOCATOR_INVALID &&
+        !plcdr_write_param(buf, sizeof(buf), off, pid::DEFAULT_UNICAST_LOCATOR, &default_unicast, 24u)) return false;
     // availableBuiltinEndpoints is a required SPDP field (§8.5.3.2,
     // Table 8.73); SEDP matches only the builtin readers a peer declares.
     const uint32_t builtin_endpoints =
@@ -839,6 +842,80 @@ static bool tc_part_8_5_1_005(std::string& err) {
     return true;
 }
 
+// §8.5.3.2: an endpoint announced without its own unicast locators is
+// reached at its participant's defaultUnicastLocatorList. Data to a matched
+// remote reader, and ACKNACKs to a matched remote writer, go there.
+static bool tc_part_8_5_1_007(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+
+    const GuidPrefix remote_prefix = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const Locator remote_meta = make_udpv4_locator(0xC0A80171u, 7410u);
+    const Locator remote_user = make_udpv4_locator(0xC0A80171u, 7411u);
+    std::vector<Octet> spdp_payload{};
+    CHECK(build_spdp_payload(remote_prefix, 30u, remote_meta, spdp_payload, remote_user),
+          "SPDP payload build failed");
+    g_participant_test_now_ms = 100u;
+    CHECK(p.spdp_reader().on_data(remote_prefix, spdp_payload.data(),
+                                  static_cast<uint32_t>(spdp_payload.size()),
+                                  g_participant_test_now_ms),
+          "peer discovery should succeed");
+
+    WriterConfig wcfg{};
+    wcfg.topicName.assign("rt/defaults");
+    wcfg.typeName.assign("pkg::msg::dds_::T_");
+    auto* w = p.create_writer<1>(wcfg);
+    CHECK(w != nullptr, "create_writer should succeed");
+    ReaderConfig rcfg{};
+    rcfg.topicName.assign("rt/defaults_back");
+    rcfg.typeName.assign("pkg::msg::dds_::T_");
+    StatefulReader* r = p.create_reader(rcfg, on_reader_change, nullptr);
+    CHECK(r != nullptr, "create_reader should succeed");
+
+    DiscoveredReaderData rd{};
+    rd.readerGuid.prefix = remote_prefix;
+    rd.readerGuid.entityId = make_entity(0x41u, 0x42u, 0x43u, 0x04u);
+    rd.topicName.assign("rt/defaults");
+    rd.typeName.assign("pkg::msg::dds_::T_");
+    rd.reliabilityKind = ReliabilityKind::RELIABLE;
+    rd.durabilityKind = DurabilityKind::VOLATILE;
+    p.match_table().add_reader(rd);   // No unicast locators of its own.
+
+    DiscoveredWriterData wd{};
+    wd.writerGuid.prefix = remote_prefix;
+    wd.writerGuid.entityId = make_entity(0x51u, 0x52u, 0x53u, 0x03u);
+    wd.topicName.assign("rt/defaults_back");
+    wd.typeName.assign("pkg::msg::dds_::T_");
+    wd.reliabilityKind = ReliabilityKind::RELIABLE;
+    wd.durabilityKind = DurabilityKind::VOLATILE;
+    p.match_table().add_writer(wd);   // No unicast locators of its own.
+
+    tx.packets.clear();
+    const Octet user_payload[1] = {0x5Au};
+    CHECK(w->write_async(ChangeKind::ALIVE, user_payload, 1u), "write_async should succeed");
+    bool data_to_default = false;
+    for (const auto& packet : tx.packets) {
+        if (packet_writer_id(packet) == w->guid().entityId && packet.dest == remote_user)
+            data_to_default = true;
+    }
+    CHECK(data_to_default, "DATA must go to the remote participant's default unicast locator");
+
+    tx.packets.clear();
+    ParsedHeartbeat hb{};
+    hb.writerId = wd.writerGuid.entityId;
+    hb.readerId = r->guid().entityId;
+    hb.firstSN = SequenceNumber::from_int64(1);
+    hb.lastSN = SequenceNumber::from_int64(1);
+    hb.count = 1;
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = remote_prefix;
+    r->on_heartbeat(ctx, hb);
+    CHECK(!tx.packets.empty() && tx.packets.back().dest == remote_user,
+          "the ACKNACK must go to the remote participant's default unicast locator");
+    return true;
+}
+
 // §8.5.3.2/§8.5.3.3: the participant's next timer is the soonest of its
 // SPDP announcement, peer leases, and endpoint timers, so a driver that
 // sleeps until then misses none of them.
@@ -896,6 +973,9 @@ void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-005",
                      "§8.5.1/§8.5.4.1: delete_writer() frees the slot for reuse, rejects a second delete, and sends matched peers an SEDP disposal keyed by the writer GUID.",
                      tc_part_8_5_1_005});
+    tests.push_back({"TC-PART-8.5.1-007",
+                     "§8.5.3.2: an endpoint announced without unicast locators is reached at its participant's default unicast locators, for DATA and ACKNACK alike.",
+                     tc_part_8_5_1_007});
     tests.push_back({"TC-PART-8.5.1-006",
                      "§8.5.3.2/§8.5.3.3: ms_until_next_timer() is unbounded without addresses, zero before the first SPDP announcement, and bounded by the SPDP period and peer lease expiry.",
                      tc_part_8_5_1_006});

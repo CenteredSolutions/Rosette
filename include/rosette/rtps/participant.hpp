@@ -326,6 +326,34 @@ private:
     int find_free_writer_slot() const noexcept;
     IStatefulWriter* find_writer_iface(const EntityId& eid) noexcept;
     StatefulReader*  find_reader(const EntityId& eid) noexcept;
+
+    /**
+     * @brief Resolves where a remote endpoint is reached.
+     *
+     * An endpoint's announcement may omit its unicast locators; it is then
+     * reached at its participant's defaultUnicastLocatorList from SPDP.
+     * Locators the endpoint announced are used as they are.
+     *
+     * @param[in]     remote_prefix GUID prefix of the endpoint's participant.
+     * @param[in,out] locators      The announced list; replaced by the
+     *   participant's defaults (owned by the SPDP peer table, valid until
+     *   the next SPDP update) when `count` is 0.
+     * @param[in,out] count         Entries in `locators`; stays 0 when the
+     *   participant is unknown or announced no defaults either.
+     *
+     * Verification:
+     * - Correct means: DATA to a matched remote reader and ACKNACKs to a
+     *   matched remote writer that announced no locators go to its
+     *   participant's default unicast locators.
+     * - Covered by: TC-PART-8.5.1-007.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (defaultUnicastLocatorList),
+     *   §8.5.4.2 (DiscoveredWriterData / DiscoveredReaderData)
+     */
+    void resolve_endpoint_locators(const GuidPrefix& remote_prefix,
+                                   const Locator*&   locators,
+                                   uint8_t&          count) const noexcept;
     template <typename Deliver>
     void for_each_addressed_reader(const EntityId& writer_id, const EntityId& reader_id,
                                    Deliver&& deliver) noexcept;

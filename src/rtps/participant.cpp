@@ -525,19 +525,36 @@ void RTPSParticipant::on_endpoint_match(const DiscoveredWriterData& wd,
     // Local writer matched to a remote reader.
     if (wd.writerGuid.prefix == p->participant_guid_.prefix) {
         IStatefulWriter* iw = p->find_writer_iface(wd.writerGuid.entityId);
-        if (iw) iw->matched_reader_add(rd.readerGuid,
-                                       rd.unicastLocatorList,
-                                       rd.unicastLocatorCount,
-                                       rd.expectsInlineQos);
+        if (iw) {
+            const Locator* locs = rd.unicastLocatorList;
+            uint8_t count = rd.unicastLocatorCount;
+            p->resolve_endpoint_locators(rd.readerGuid.prefix, locs, count);
+            iw->matched_reader_add(rd.readerGuid, locs, count, rd.expectsInlineQos);
+        }
     }
 
     // Local reader matched to a remote writer.
     if (rd.readerGuid.prefix == p->participant_guid_.prefix) {
         StatefulReader* r = p->find_reader(rd.readerGuid.entityId);
-        if (r) r->matched_writer_add(wd.writerGuid,
-                                     wd.unicastLocatorList,
-                                     wd.unicastLocatorCount);
+        if (r) {
+            const Locator* locs = wd.unicastLocatorList;
+            uint8_t count = wd.unicastLocatorCount;
+            p->resolve_endpoint_locators(wd.writerGuid.prefix, locs, count);
+            r->matched_writer_add(wd.writerGuid, locs, count);
+        }
     }
+}
+
+void RTPSParticipant::resolve_endpoint_locators(const GuidPrefix& remote_prefix,
+                                                const Locator*&   locators,
+                                                uint8_t&          count) const noexcept
+{
+    if (count > 0u) return;
+    spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
+        if (peer.data.guidPrefix != remote_prefix) return;
+        locators = peer.data.defaultUnicastLocatorList;
+        count    = peer.data.defaultUnicastLocatorCount;
+    });
 }
 
 void RTPSParticipant::on_endpoint_unmatch(const Guid& writer_guid,

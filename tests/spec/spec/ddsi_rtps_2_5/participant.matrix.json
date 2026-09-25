@@ -88,6 +88,14 @@
       "statement": "parse_received dispatches ACKNACK and NACK_FRAG submessages to the addressed local writer for reliability state processing.",
       "status": "implemented",
       "test_ids": ["TC-PART-8.3.4-002"]
+    },
+    {
+      "id": "REQ-PART-8.5.3.2-DEFAULT-UNICAST-LOCATORS",
+      "section": "8.5.3.2",
+      "normativity": "shall",
+      "statement": "An endpoint announced without unicast locators is reached at its participant's defaultUnicastLocatorList.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-007"]
     }
   ]
 }
