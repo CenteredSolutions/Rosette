@@ -29,7 +29,7 @@
 #define ROSETTE_PIN_SPI_CS          9
 
 #define ROSETTE_PIN_W5100S_RST     12
-#define ROSETTE_PIN_W5100S_INT     13
+#define ROSETTE_PIN_WIZNET_INT     13
 
 // RP2350 at 150 MHz → SPI1 can reach 75 MHz; W5100S max = 33.3 MHz.
 #define ROSETTE_SPI_BAUDRATE_HZ    (31250000u)

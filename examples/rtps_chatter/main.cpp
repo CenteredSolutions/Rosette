@@ -24,18 +24,11 @@
  * ROS 2 topic name mangling (rt/ prefix, <pkg>::msg::dds_::<Type>_ names).
  */
 
-#include <array>
 #include <cstdio>
 #include <cstring>
 
 #include "board.h"
-#include "rosette/net/address.hpp"
-#include "rosette/net/ipv4ll_provider.hpp"
-#include "rosette/net/wiznet/board.hpp"
-#include "rosette/net/wiznet/dhcp_provider.hpp"
-#include "rosette/net/wiznet/interface.hpp"
-#include "rosette/net/wiznet/link.hpp"
-#include "rosette/net/wiznet/rx_interrupt_pico.hpp"
+#include "rosette/net/wiznet/board_network.hpp"
 #include "rosette/platform/platform.hpp"
 #include "rosette/rtps/participant.hpp"
 #include "rosette/rtps/participant_driver.hpp"
@@ -142,38 +135,9 @@ int main() {
     std::printf("[chatter] rosette RTPS chatter, datagram limit %u\n",
                 static_cast<unsigned>(ROSETTE_RTPS_MAX_DATAGRAM_SIZE));
 
-    std::array<uint8_t, 6> mac{};
-    board_get_mac_address(mac.data());
-    auto bus = wiz::make_board_bus();
-    static wiz::BoardDevice device{bus};
-    static wiz::BoardSocketProvider sockets{device};
-    static wiz::BoardLink link{device, sockets, mac};
-    while (!link.bring_link_up()) {
-        std::printf("[chatter] waiting for chip / PHY link\n");
-        sleep_ms(2000);
-    }
-    std::printf("[chatter] PHY link up\n");
-
-    // Addressing: DHCP, falling back to IPv4 link-local.
-    static wiz::WiznetInterface<wiz::BoardChip, wiz::BoardBus> iface{device};
-    static wiz::DhcpAddressProvider<wiz::BoardChip, wiz::BoardBus> dhcp{
-        device, sockets, iface, wiz::dhcp_config("rosette-chatter")};
-    static net::Ipv4LinkLocalProvider zeroconf{mac, iface};
-    static net::AddressProvider* providers[] = {&dhcp, &zeroconf};
-    static net::AddressManager v4{providers};
-    static net::NetworkAddress net_addr{v4, &iface};
-    net_addr.begin();
-    uint32_t next_note = pf::monotonic_ms() + 2000u;
-    while (!net_addr.has_address()) {
-        net_addr.poll(pf::monotonic_ms());
-        if (static_cast<int32_t>(pf::monotonic_ms() - next_note) >= 0) {
-            next_note += 2000u;
-            std::printf("[chatter] waiting for an address (DHCP, then link-local)\n");
-        }
-        sleep_ms(10);
-    }
-    const auto addr = net_addr.snapshot().v4.address;
-    std::printf("[chatter] address %u.%u.%u.%u\n", addr[0], addr[1], addr[2], addr[3]);
+    wiz::bring_up_board_network("rosette-chatter");
+    net::SocketProvider& sockets = wiz::board_socket_provider();
+    const uint32_t addr = wiz::board_ipv4_address();
 
     static rtps::SocketUdpTransport transport(sockets, meta_port(kDomainId, kParticipantId),
                                               user_port(kDomainId, kParticipantId), kSpdpGroup,
@@ -188,13 +152,9 @@ int main() {
         }
     }
     static rtps::RTPSParticipant participant(kDomainId, kParticipantId, transport);
-    participant.add_ipv4_address((uint32_t{addr[0]} << 24) | (uint32_t{addr[1]} << 16) |
-                                 (uint32_t{addr[2]} << 8) | uint32_t{addr[3]});
+    participant.add_ipv4_address(addr);
     static rtps::ParticipantDriver driver(participant, transport, sockets, g_rx_buffer,
                                           sizeof(g_rx_buffer));
-    // INT pin -> the driver's wake event, which the driver registered with the
-    // provider: the driver sleeps until a datagram arrives.
-    wiz::attach_rx_interrupt(ROSETTE_PIN_W5100S_INT, sockets);
 
     rtps::IStatefulWriter* writer = nullptr;
     rtps::StatefulReader* reader = nullptr;
@@ -205,7 +165,9 @@ int main() {
                                            on_command, nullptr);
     }
     std::printf("[chatter] participant up: SPDP %u.%u.%u.%u -> 239.255.0.1:%u, meta %u, user %u\n",
-                addr[0], addr[1], addr[2], addr[3], spdp_port(kDomainId),
+                static_cast<unsigned>(addr >> 24), static_cast<unsigned>((addr >> 16) & 0xFFu),
+                static_cast<unsigned>((addr >> 8) & 0xFFu), static_cast<unsigned>(addr & 0xFFu),
+                spdp_port(kDomainId),
                 meta_port(kDomainId, kParticipantId), user_port(kDomainId, kParticipantId));
     if (writer == nullptr || reader == nullptr) {
         for (;;) {
@@ -223,7 +185,7 @@ int main() {
         (void)driver.spin_until([] { return false; }, wait);
 
         const uint32_t t = pf::monotonic_ms();
-        net_addr.poll(t);  // DHCP lease renewal
+        wiz::poll_board_network(t);  // DHCP lease renewal
         if (static_cast<int32_t>(t - next_publish) >= 0) {
             next_publish += kPublishPeriodMs;
             char text[48];
@@ -237,7 +199,7 @@ int main() {
         if (static_cast<int32_t>(t - next_report) >= 0) {
             next_report += kReportPeriodMs;
             pf::LockGuard guard(driver.mutex());
-            report(transport, *writer, *reader, device.send_timeouts());
+            report(transport, *writer, *reader, wiz::board_send_timeouts());
         }
     }
 }

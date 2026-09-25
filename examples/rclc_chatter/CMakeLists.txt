@@ -8,7 +8,7 @@
 #   cmake --build build-hw/pico2 --target rclc_chatter
 #   tools/pico_uf2_flash.py build-hw/pico2/examples/rclc_chatter/rclc_chatter.uf2 --monitor 60
 
-if(NOT ROSETTE_BOARD_ENABLE_WIZNET OR NOT ROSETTE_BOARD_ENABLE_PICO_SDK)
+if(NOT ROSETTE_BOARD_ENABLE_WIZNET OR NOT ROSETTE_BOARD_ENABLE_PICO_SDK OR ROSETTE_BOARD_ENABLE_FREERTOS)
     return()
 endif()
 
@@ -17,7 +17,7 @@ if(NOT TARGET rmw_rosette_firmware)
     return()
 endif()
 
-add_executable(rclc_chatter main.cpp wiznet_network.cpp)
+add_executable(rclc_chatter main.cpp)
 target_include_directories(rclc_chatter PRIVATE ${ROSETTE_ROOT}/include)
 target_link_libraries(rclc_chatter PRIVATE rmw_rosette_firmware rosette_bsp pico_stdlib)
 pico_add_extra_outputs(rclc_chatter)

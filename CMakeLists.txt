@@ -131,6 +131,11 @@ if(ROSETTE_BOARD_BUILD_BSP)
         )
     else()
         target_sources(rosette_bsp PRIVATE src/platform/pico_bare.c)
+        if(ROSETTE_BOARD_ENABLE_WIZNET)
+            # No RTOS: UDP/IP runs in the chip's hardware sockets, and the
+            # board network module owns the chip, link, and addressing.
+            target_sources(rosette_bsp PRIVATE src/net/wiznet/board_network.cpp)
+        endif()
     endif()
 
     target_include_directories(rosette_bsp PUBLIC

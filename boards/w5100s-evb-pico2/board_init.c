@@ -85,10 +85,10 @@ void board_init(void)
     gpio_set_dir(ROSETTE_PIN_W5100S_RST, GPIO_OUT);
     gpio_put(ROSETTE_PIN_W5100S_RST, 1);
 
-    gpio_init(ROSETTE_PIN_W5100S_INT);
-    gpio_set_dir(ROSETTE_PIN_W5100S_INT, GPIO_IN);
-    gpio_pull_up(ROSETTE_PIN_W5100S_INT);
-    gpio_set_irq_enabled_with_callback(ROSETTE_PIN_W5100S_INT,
+    gpio_init(ROSETTE_PIN_WIZNET_INT);
+    gpio_set_dir(ROSETTE_PIN_WIZNET_INT, GPIO_IN);
+    gpio_pull_up(ROSETTE_PIN_WIZNET_INT);
+    gpio_set_irq_enabled_with_callback(ROSETTE_PIN_WIZNET_INT,
                                        GPIO_IRQ_EDGE_FALL, true,
                                        &wiznet_int_callback);
 

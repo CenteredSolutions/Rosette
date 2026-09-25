@@ -34,7 +34,7 @@
 
 // ── W5100S control lines ──────────────────────────────────────────────────────
 #define ROSETTE_PIN_W5100S_RST     20   ///< Active-low reset
-#define ROSETTE_PIN_W5100S_INT     21   ///< Active-low interrupt (optional)
+#define ROSETTE_PIN_WIZNET_INT     21   ///< Active-low interrupt (optional)
 
 // ── SPI clock speed ───────────────────────────────────────────────────────────
 // W5100S maximum SPI clock: 33.3 MHz.  Use 31.25 MHz (250/8) on RP2350.

@@ -24,7 +24,7 @@
 #define ROSETTE_PIN_SPI_CS         17
 
 #define ROSETTE_PIN_W5100S_RST     20
-#define ROSETTE_PIN_W5100S_INT     21
+#define ROSETTE_PIN_WIZNET_INT     21
 
 // RP2040 sys_clk is 125 MHz; SPI0 can achieve up to 62.5 MHz.
 // W5100S max is 33.3 MHz — use 31.25 MHz (125/4).

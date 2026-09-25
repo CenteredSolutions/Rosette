@@ -37,7 +37,7 @@ static void spi_write_burst(uint8_t* buf, uint16_t len) {
 static void crit_enter(void) { taskENTER_CRITICAL(); }
 static void crit_exit(void)  { taskEXIT_CRITICAL();  }
 static void wiznet_irq_gpio_callback(uint gpio, uint32_t events) {
-    if ((gpio == ROSETTE_PIN_W5100S_INT) && ((events & GPIO_IRQ_EDGE_FALL) != 0u)) {
+    if ((gpio == ROSETTE_PIN_WIZNET_INT) && ((events & GPIO_IRQ_EDGE_FALL) != 0u)) {
         wiznet_macraw_interrupt_from_isr();
     }
 }
@@ -62,10 +62,10 @@ void board_init(void) {
     gpio_set_dir(ROSETTE_PIN_W5100S_RST, GPIO_OUT);
     gpio_put(ROSETTE_PIN_W5100S_RST, 1);
 
-    gpio_init(ROSETTE_PIN_W5100S_INT);
-    gpio_set_dir(ROSETTE_PIN_W5100S_INT, GPIO_IN);
-    gpio_pull_up(ROSETTE_PIN_W5100S_INT);
-    gpio_set_irq_enabled_with_callback(ROSETTE_PIN_W5100S_INT,
+    gpio_init(ROSETTE_PIN_WIZNET_INT);
+    gpio_set_dir(ROSETTE_PIN_WIZNET_INT, GPIO_IN);
+    gpio_pull_up(ROSETTE_PIN_WIZNET_INT);
+    gpio_set_irq_enabled_with_callback(ROSETTE_PIN_WIZNET_INT,
                                        GPIO_IRQ_EDGE_FALL,
                                        true,
                                        &wiznet_irq_gpio_callback);

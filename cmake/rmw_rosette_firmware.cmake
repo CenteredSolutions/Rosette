@@ -15,9 +15,10 @@
 #
 # rcl calls the rmw_* entry points directly (a static image has no
 # rmw_implementation loader), so rmw_rosette_firmware is the image's only rmw.
-# The firmware defines rmw_rosette's network port
-# (rmw_rosette/include/rmw_rosette/network_port.hpp) next to its network
-# bring-up.
+# The network port (rmw_rosette/include/rmw_rosette/network_port.hpp) is the
+# board's: WIZnet boards without an RTOS use src/network_port_wiznet.cpp over
+# rosette/net/wiznet/board_network.hpp, and the firmware calls
+# bring_up_board_network() before rcl_init().
 #
 # Inputs:
 #   ROSETTE_ROS2_C_STACK_DIR   the cross-built colcon install prefix, e.g.
@@ -132,6 +133,12 @@ target_compile_definitions(rmw_rosette_static PRIVATE
   RTPS_LOG_LEVEL=${ROSETTE_RMW_LOG_LEVEL}
   RMW_ROSETTE_HAVE_MICROXRCEDDS_TYPESUPPORT
 )
+# Network port (rmw_rosette/network_port.hpp): a WIZnet board without an RTOS
+# runs on the chip's hardware sockets through the board network module.
+if(ROSETTE_BOARD_ENABLE_WIZNET AND NOT ROSETTE_BOARD_ENABLE_FREERTOS)
+  target_sources(rmw_rosette_static PRIVATE ${_rr_dir}/src/network_port_wiznet.cpp)
+  target_link_libraries(rmw_rosette_static PUBLIC rosette_bsp)
+endif()
 rmw_rosette_apply_capacity(rmw_rosette_static)
 target_link_libraries(rmw_rosette_static PUBLIC ros2_c_client_stack_headers rosette_platform rosette_net)
 

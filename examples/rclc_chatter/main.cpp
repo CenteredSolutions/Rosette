@@ -34,14 +34,15 @@
 #include <std_msgs/msg/string.h>
 
 #include "board.h"
+#include "rosette/net/wiznet/board_network.hpp"
 #include "rosette/platform/platform.hpp"
-#include "wiznet_network.hpp"
 
 #include "pico/stdlib.h"
 
 namespace {
 
 namespace pf = rosette::platform;
+namespace wiz = rosette::net::wiznet;
 
 constexpr uint64_t kPublishPeriodNs = RCL_MS_TO_NS(1000);
 constexpr uint32_t kReportPeriodMs = 5000u;
@@ -100,7 +101,7 @@ int main() {
     for (int i = 0; i < 100 && !stdio_usb_connected(); ++i) sleep_ms(100);
     std::printf("[rclc] rclc chatter over rmw_rosette\n");
 
-    rclc_chatter::bring_up_wiznet_network("rosette-rclc");
+    wiz::bring_up_board_network("rosette-rclc");
 
     rcl_allocator_t allocator = rcl_get_default_allocator();
     rclc_support_t support;
@@ -143,14 +144,14 @@ int main() {
     for (;;) {
         (void)rclc_executor_spin_some(&executor, kSpinTimeoutNs);
         const uint32_t now = pf::monotonic_ms();
-        rclc_chatter::poll_wiznet_network(now);  // DHCP lease renewal
+        wiz::poll_board_network(now);  // DHCP lease renewal
         if (static_cast<int32_t>(now - next_report) >= 0) {
             next_report += kReportPeriodMs;
             const struct mallinfo heap = mallinfo();
             std::printf("[rclc] published=%lu commands=%lu heap_in_use=%d arp_timeouts=%lu\n",
                         static_cast<unsigned long>(g_published),
                         static_cast<unsigned long>(g_commands_received), heap.uordblks,
-                        static_cast<unsigned long>(rclc_chatter::wiznet_send_timeouts()));
+                        static_cast<unsigned long>(wiz::board_send_timeouts()));
         }
     }
 }
