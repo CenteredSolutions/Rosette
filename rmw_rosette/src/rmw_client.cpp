@@ -124,6 +124,8 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node,
     }
     impl.node = node_impl;
     impl.qos = *qos_policies;
+    impl.replies.set_depth(static_cast<uint32_t>(
+        rmw_rosette::effective_qos(impl.qos, false, RMW_ROSETTE_MAX_PENDING_CHANGES).depth));
     std::strncpy(impl.service_name, service_name, sizeof(impl.service_name) - 1);
 
     slot->handle.implementation_identifier = rmw_rosette_identifier;

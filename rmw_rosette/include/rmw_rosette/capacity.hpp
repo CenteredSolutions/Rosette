@@ -58,6 +58,14 @@
 #  define RMW_ROSETTE_MAX_SAMPLE_SIZE 65532
 #endif
 
+#ifndef RMW_ROSETTE_MAX_PENDING_CHANGES
+/// Deepest KEEP_LAST history a subscription, service, or client keeps
+/// between rmw takes (change_ring.hpp). Requests for a deeper history, and
+/// KEEP_ALL, run at this depth and report it through their actual QoS.
+/// The default holds `rmw_qos_profile_default` (depth 10) whole.
+#  define RMW_ROSETTE_MAX_PENDING_CHANGES 10
+#endif
+
 namespace rmw_rosette {
 
 /// Publisher pool: application publishers plus each node's own.

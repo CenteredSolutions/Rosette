@@ -46,6 +46,8 @@ set(RMW_ROSETTE_MAX_DATAGRAM_SIZE 65507 CACHE STRING
     "Largest UDP datagram sent or received: 65507 on hosts; 1472 (1500-byte MTU) where IP fragmentation is unavailable (WIZnet hardware UDP). Larger samples go out as DATA_FRAG; peers must cap their datagrams to this too")
 set(RMW_ROSETTE_MAX_SAMPLE_SIZE 65532 CACHE STRING
     "Largest serialized message (publish, service request or reply) in octets; sizes the largest buffer-pool class (at most 65532)")
+set(RMW_ROSETTE_MAX_PENDING_CHANGES 10 CACHE STRING
+    "Deepest KEEP_LAST history a subscription, service, or client keeps between takes; deeper requests and KEEP_ALL run at this depth (10 holds rmw_qos_profile_default whole)")
 set(RMW_ROSETTE_LARGE_BUFFERS 48 CACHE STRING
     "Blocks of RMW_ROSETTE_MAX_SAMPLE_SIZE (and, in the host pool profile, of 16 KiB): samples held in writer histories, reassembly, and take rings")
 
@@ -167,6 +169,7 @@ function(rmw_rosette_apply_capacity target)
     RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE=${RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE}
     RMW_ROSETTE_MAX_DATAGRAM_SIZE=${RMW_ROSETTE_MAX_DATAGRAM_SIZE}
     RMW_ROSETTE_MAX_SAMPLE_SIZE=${RMW_ROSETTE_MAX_SAMPLE_SIZE}
+    RMW_ROSETTE_MAX_PENDING_CHANGES=${RMW_ROSETTE_MAX_PENDING_CHANGES}
     RTPS_MAX_USER_WRITERS=${_rr_rtps_writers}
     RTPS_MAX_USER_READERS=${_rr_rtps_readers}
     RTPS_MAX_LOCAL_ENDPOINTS=${_rr_local_endpoints}

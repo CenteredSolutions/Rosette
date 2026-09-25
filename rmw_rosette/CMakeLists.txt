@@ -135,7 +135,7 @@ if(BUILD_TESTING)
   # Each test binary links librmw_rosette directly, so it exercises this
   # implementation without going through rmw_implementation's loader.
   foreach(test_name test_introspection_c_codec test_guard_condition test_pub_sub_loopback
-                    test_local_node_entities)
+                    test_change_ring test_local_node_entities)
     ament_add_gtest(${test_name} test/${test_name}.cpp TIMEOUT 60)
     target_link_libraries(${test_name} rmw_rosette)
     # Tests include rmw_rosette headers whose layouts depend on the capacity model.

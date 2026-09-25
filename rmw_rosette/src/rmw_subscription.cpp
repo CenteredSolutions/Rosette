@@ -147,6 +147,9 @@ rmw_subscription_t* rmw_create_subscription(
     slot->impl.codec = codec;
     slot->impl.qos = rmw_rosette::effective_qos(*qos_policies, false,
                                                 RMW_ROSETTE_MAX_PENDING_CHANGES);
+    // The context lock is held, so no change reaches the ring before it has
+    // the depth the application is told it has.
+    slot->impl.received.set_depth(static_cast<uint32_t>(slot->impl.qos.depth));
 
     slot->sub.implementation_identifier = rmw_rosette_identifier;
     slot->sub.data = &slot->impl;
