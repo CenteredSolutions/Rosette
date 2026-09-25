@@ -800,7 +800,7 @@ static bool tc_part_8_5_1_005(std::string& err) {
     wcfg.topicName.assign("rt/doomed");
     wcfg.typeName.assign("pkg::msg::dds_::T_");
     // Fill every writer slot, so reuse after deletion is observable.
-    IStatefulWriter* writers[RTPS_MAX_USER_WRITERS] = {};
+    StatefulWriter* writers[RTPS_MAX_USER_WRITERS] = {};
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i) {
         writers[i] = p.create_writer<1>(wcfg);
         CHECK(writers[i] != nullptr, "create_writer should succeed while slots remain");

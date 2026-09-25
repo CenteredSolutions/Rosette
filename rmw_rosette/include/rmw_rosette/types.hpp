@@ -7,24 +7,14 @@
  * rmw_create_*() and freed by rmw_destroy_*(). None of this is exposed
  * outside rmw_rosette — callers only ever see the rmw_*_t wrapper.
  *
- * CacheDepth is chosen at runtime, held type-erased
- * ---------------------------------------------------
- * rtps::RTPSParticipant::create_writer<CacheDepth, MaxReaders>() is a
- * function template — StatefulWriter<1,8> and StatefulWriter<8,8> are
- * distinct C++ types. rmw_qos_profile_t.depth is a runtime value, so
- * rmw_create_publisher() can't pick a template argument from it directly.
- *
- * Resolved by extending rtps::IStatefulWriter (Rosette's own type-erasure
- * base, not part of the RTPS wire contract) with write_async() and
- * acknowledged_by_all() — their signatures never mention CacheDepth, only the
- * writer's internal HistoryCache storage does — so every instantiation
- * satisfies the same interface for the write path, not just the
- * participant-internal operations it originally covered. See
- * qos.hpp::select_writer_depth() for the runtime dispatch over a small
- * closed set of depths this enables, and
- * tests/loopback/rtps_loopback_smoke.cpp for a working proof (it holds
- * the writer as IStatefulWriter*, not the concrete type, and publishes
- * through it).
+ * Writers of every history depth are one type
+ * -------------------------------------------
+ * rmw_qos_profile_t.depth is a runtime value, while a writer's history depth
+ * is fixed when its storage is laid out (rtps::StatefulWriterStorage<D, R>).
+ * qos.hpp::create_writer_for_qos() picks D from a small closed set of depths;
+ * every choice is an rtps::StatefulWriter, the one compiled writer class, so
+ * publishers, service replies, and client requests all hold a plain
+ * rtps::StatefulWriter* whatever depth it was created with.
  */
 
 #pragma once
@@ -54,10 +44,6 @@
 
 
 namespace rmw_rosette {
-
-/// Every publisher is held through this type-erased interface regardless
-/// of which CacheDepth qos.hpp::select_writer_depth() chose for it.
-using PublisherWriter = rtps::IStatefulWriter;
 
 /// Backing store for one rmw_context_t. Owns the single RTPSParticipant
 /// this process/firmware image presents to the ROS graph, plus the
@@ -156,7 +142,7 @@ struct Node {
 /// Backing store for one rmw_publisher_t.
 struct Publisher {
     Node*             node   = nullptr;
-    PublisherWriter*  writer = nullptr;
+    rtps::StatefulWriter*  writer = nullptr;
     MessageCodec      codec;
     rmw_qos_profile_t qos{};  ///< Profile in effect, reported by rmw_publisher_get_actual_qos().
     char              mangled_topic_name[RTPS_MAX_TOPIC_NAME_LEN] = {};
@@ -179,7 +165,7 @@ struct Subscription {
 struct Service {
     Node*                 node           = nullptr;
     rtps::StatefulReader* request_reader = nullptr;
-    PublisherWriter*      reply_writer   = nullptr;
+    rtps::StatefulWriter*      reply_writer   = nullptr;
     MessageCodec          request_codec;
     MessageCodec          response_codec;
     rmw_qos_profile_t     qos{};  ///< Requested profile, applied to both endpoints.
@@ -192,7 +178,7 @@ struct Service {
 /// only replies correlated with this client's request writer are accepted.
 struct Client {
     Node*                 node           = nullptr;
-    PublisherWriter*      request_writer = nullptr;
+    rtps::StatefulWriter*      request_writer = nullptr;
     rtps::StatefulReader* reply_reader   = nullptr;
     MessageCodec          request_codec;
     MessageCodec          response_codec;

@@ -450,7 +450,7 @@ void SedpWriter::on_peer_removed(const GuidPrefix& peer_prefix) noexcept
         Guid{peer_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR});
 }
 
-IStatefulWriter* SedpWriter::find_writer_iface(const EntityId& writer_id) noexcept
+StatefulWriter* SedpWriter::find_writer(const EntityId& writer_id) noexcept
 {
     if (writer_id == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
         return &publications_writer_;

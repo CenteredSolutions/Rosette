@@ -22,13 +22,12 @@
  *   StatefulWriterStorage<4>    — KEEP_LAST(4)
  *   StatefulWriterStorage<8,4>  — KEEP_LAST(8), 4 readers
  *
- * Everything outside the object that owns a writer uses StatefulWriter&.
- *
- * IStatefulWriter
- * ---------------
- * RTPSParticipant stores its writers in one table and calls the operations
- * of IStatefulWriter on them; rmw_rosette publishes through the same
- * interface.
+ * Everything outside the object that owns a writer uses StatefulWriter& or
+ * StatefulWriter*: RTPSParticipant keeps its writers of every depth in one
+ * table of StatefulWriter*, and rmw_rosette publishes through the same type.
+ * The only virtual function is the destructor, so a participant can destroy
+ * a writer through that pointer and the storage's payload references are
+ * released.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -57,65 +56,6 @@
 namespace rtps {
 
 // ============================================================
-// IStatefulWriter — the operations RTPSParticipant and rmw_rosette call
-// on a writer they hold in a table.
-// ============================================================
-
-struct IStatefulWriter {
-    virtual ~IStatefulWriter() = default;
-
-    /// §8.4.3, p. 118 — process incoming ACKNACK.
-    virtual void on_acknack(const ParseContext&  ctx,
-                            const ParsedAckNack& msg) noexcept = 0;
-
-    /// §8.4.4, p. 122 — process incoming NACK_FRAG.
-    virtual void on_nack_frag(const ParseContext&   ctx,
-                              const ParsedNackFrag& msg) noexcept = 0;
-
-    /// Periodic tick: retransmit deferred NACKs + send HEARTBEAT.
-    virtual void tick(uint32_t now_ms) noexcept = 0;
-
-    /// §8.2.4 — GUID of this writer endpoint.
-    virtual const Guid& guid() const noexcept = 0;
-
-    /// §8.4.1.4, p. 108 — add a matched reader.
-    virtual bool matched_reader_add(const Guid&    reader_guid,
-                                    const Locator* unicast_locators,
-                                    uint8_t        locator_count,
-                                    bool           expects_inline_qos) noexcept = 0;
-
-    /// §8.4.1.4, p. 108 — remove a matched reader.
-    virtual void matched_reader_remove(const Guid& reader_guid) noexcept = 0;
-
-    /// Number of currently matched readers (§8.4.7.1 matched_readers).
-    virtual uint8_t matched_reader_count() const noexcept = 0;
-
-    /// §8.4.1.4, p. 107 — add a change and send it; see StatefulWriter::write_async().
-    virtual bool write_async(ChangeKind       kind,
-                             const Octet*     payload_data,
-                             uint32_t         payload_size,
-                             const InlineQos& inline_qos = InlineQos{},
-                             SequenceNumber*  out_sn      = nullptr) noexcept = 0;
-
-    /// §8.4.1.4 — like write_async(), but takes ownership of a pool buffer
-    /// the caller already filled (payload.size set), avoiding a copy. The
-    /// payload is the CDR body; the writer adds the encapsulation header.
-    virtual bool write_async_owned(ChangeKind       kind,
-                                   BufRef&&         payload,
-                                   const InlineQos& inline_qos = InlineQos{},
-                                   SequenceNumber*  out_sn     = nullptr) noexcept = 0;
-
-    /// True when every change in the history is acknowledged by every
-    /// matched reader (§8.4.7.1 unacked_changes empty for all proxies).
-    /// Backs DDS wait_for_acknowledgments / rmw_publisher_wait_for_all_acked.
-    virtual bool acknowledged_by_all() const noexcept = 0;
-
-    /// Milliseconds until this writer's next timed action (heartbeat or a
-    /// deferred NACK repair) is due at `now_ms`; 0 when overdue.
-    virtual uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept = 0;
-};
-
-// ============================================================
 // Configuration defaults
 // ============================================================
 
@@ -141,10 +81,15 @@ struct IStatefulWriter {
  * Thread safety: not thread-safe; the caller holds the participant lock
  * (ParticipantDriver::mutex()) for every call.
  */
-class StatefulWriter : public IStatefulWriter {
+class StatefulWriter {
 public:
     StatefulWriter(const StatefulWriter&)            = delete;
     StatefulWriter& operator=(const StatefulWriter&) = delete;
+
+    /// @brief Destroys the writer and its storage, releasing every payload
+    /// reference its history holds. Virtual, so a writer is destroyed
+    /// correctly through StatefulWriter*.
+    virtual ~StatefulWriter() noexcept = default;
 
     /**
      * @brief Stages a new change and allocates a pool buffer for its payload.
@@ -227,7 +172,7 @@ public:
                      const Octet*     payload_data,
                      uint32_t         payload_size,
                      const InlineQos& inline_qos = InlineQos{},
-                     SequenceNumber*  out_sn     = nullptr) noexcept override;
+                     SequenceNumber*  out_sn     = nullptr) noexcept;
 
     /**
      * @brief Writes a change whose payload the caller already serialized
@@ -251,7 +196,7 @@ public:
     bool write_async_owned(ChangeKind       kind,
                            BufRef&&         payload,
                            const InlineQos& inline_qos = InlineQos{},
-                           SequenceNumber*  out_sn     = nullptr) noexcept override;
+                           SequenceNumber*  out_sn     = nullptr) noexcept;
 
     /**
      * @brief Writes a change whose payload is a complete serializedPayload.
@@ -300,10 +245,10 @@ public:
     bool matched_reader_add(const Guid&    reader_guid,
                             const Locator* unicast_locators,
                             uint8_t        locator_count,
-                            bool           expects_inline_qos = false) noexcept override;
+                            bool           expects_inline_qos = false) noexcept;
 
     /// @brief Unmatches a remote reader; unknown GUIDs are ignored (§8.4.1.4).
-    void matched_reader_remove(const Guid& reader_guid) noexcept override;
+    void matched_reader_remove(const Guid& reader_guid) noexcept;
 
     /// @brief The proxy of a matched reader, or null (§8.4.1.4 matched_reader_lookup).
     ReaderProxy* matched_reader_lookup(const Guid& reader_guid) noexcept {
@@ -348,7 +293,7 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.3, §8.4.9.2.8, §8.4.9.2.12, §8.4.15.4
      */
-    void on_acknack(const ParseContext& ctx, const ParsedAckNack& msg) noexcept override;
+    void on_acknack(const ParseContext& ctx, const ParsedAckNack& msg) noexcept;
 
     /**
      * @brief Processes a NACK_FRAG: the whole change is resent after nackResponseDelay.
@@ -362,7 +307,7 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.4, §8.3.7.7 (NACK_FRAG)
      */
-    void on_nack_frag(const ParseContext& ctx, const ParsedNackFrag& msg) noexcept override;
+    void on_nack_frag(const ParseContext& ctx, const ParsedNackFrag& msg) noexcept;
 
     /**
      * @brief Runs the writer's timed behavior.
@@ -381,9 +326,9 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.1 (nackResponseDelay, heartbeatPeriod), §8.4.9.2
      */
-    void tick(uint32_t now_ms) noexcept override;
+    void tick(uint32_t now_ms) noexcept;
 
-    const Guid&     guid()        const noexcept override { return guid_; }
+    const Guid&     guid()        const noexcept { return guid_; }
     ReliabilityKind reliability() const noexcept { return reliability_; }
     DurabilityKind  durability()  const noexcept { return durability_; }
     const HistoryCache& cache()   const noexcept { return writer_cache_; }
@@ -409,7 +354,7 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.7.1
      */
-    bool acknowledged_by_all() const noexcept override;
+    bool acknowledged_by_all() const noexcept;
 
     /**
      * @brief Milliseconds tick() can be deferred at `now_ms`.
@@ -428,10 +373,10 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.7.1, §8.4.9.2 (T5-T7)
      */
-    uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept override;
+    uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept;
 
     /// @brief Number of matched readers (§8.4.7.1 matched_readers).
-    uint8_t matched_reader_count() const noexcept override;
+    uint8_t matched_reader_count() const noexcept;
 
 protected:
     /**
@@ -457,8 +402,6 @@ protected:
                    ITransport& transport, HistoryCache& history, ReaderProxy* proxies,
                    ChangeForReader* proxy_changes, uint8_t max_readers,
                    uint32_t nack_delay_ms, uint32_t hb_period_ms) noexcept;
-
-    ~StatefulWriter() noexcept override = default;
 
 private:
     /**

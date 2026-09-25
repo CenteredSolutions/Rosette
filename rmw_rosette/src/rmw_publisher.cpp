@@ -47,7 +47,7 @@ extern "C" {
  * fully-qualified ROS topic name and DDS wire type name (topic_naming.hpp), builds a
  * `WriterConfig` from `qos_policies`, and creates the writer through
  * create_writer_for_qos() so its `CacheDepth` matches the requested
- * history depth. The resulting `IStatefulWriter*` and codec are
+ * history depth. The resulting `StatefulWriter*` and codec are
  * stored in a pooled `Publisher`, and the `rmw_publisher_t` returned to
  * the caller points at it.
  *
@@ -165,7 +165,7 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
  * @brief Serializes and publishes a ROS message.
  *
  * Encodes `ros_message` into a pool buffer (serialize_to_pool()) and hands
- * it to the publisher's `IStatefulWriter::write_async_owned()`, which adds
+ * it to the publisher's `StatefulWriter::write_async_owned()`, which adds
  * the change to the writer history, prepends the CDR encapsulation header,
  * and sends it to every matched reader, as DATA_FRAG when it exceeds the
  * transport's datagram limit. The call does
@@ -364,7 +364,7 @@ rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher,
         timeout_ms = ms >= rosette::platform::kWaitForever
             ? rosette::platform::kWaitForever - 1u : static_cast<uint32_t>(ms);
     }
-    rtps::IStatefulWriter* writer = impl->writer;
+    rtps::StatefulWriter* writer = impl->writer;
     const bool acked = impl->node->context->driver->spin_until(
         [writer]() noexcept { return writer->acknowledged_by_all(); }, timeout_ms);
     return acked ? RMW_RET_OK : RMW_RET_TIMEOUT;

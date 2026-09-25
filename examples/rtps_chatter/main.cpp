@@ -112,7 +112,7 @@ Config string_topic(const char* ros_topic) noexcept {
     return cfg;
 }
 
-void report(const rtps::SocketUdpTransport& transport, rtps::IStatefulWriter& writer,
+void report(const rtps::SocketUdpTransport& transport, rtps::StatefulWriter& writer,
             rtps::StatefulReader& reader, uint32_t send_timeouts) noexcept {
     const rtps::TransportStats& st = transport.stats();
     std::printf("[chatter] matched readers=%u writers=%u commands=%lu | limit=%lu tx=%lu rx=%lu "
@@ -156,7 +156,7 @@ int main() {
     static rtps::ParticipantDriver driver(participant, transport, sockets, g_rx_buffer,
                                           sizeof(g_rx_buffer));
 
-    rtps::IStatefulWriter* writer = nullptr;
+    rtps::StatefulWriter* writer = nullptr;
     rtps::StatefulReader* reader = nullptr;
     {
         pf::LockGuard guard(driver.mutex());

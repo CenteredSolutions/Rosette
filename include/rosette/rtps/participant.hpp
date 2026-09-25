@@ -16,10 +16,9 @@
  *
  * It constructs a StatefulWriterStorage<CacheDepth, MaxReaders>; the depth
  * changes the writer's data layout only, and every writer runs the one
- * compiled StatefulWriter. The participant keeps its writers in one table as
- * IStatefulWriter* for on_acknack(), on_nack_frag(), tick(), guid(), and
- * matched_reader_add/remove(); the application uses the returned
- * StatefulWriter* for write_async() / cache().
+ * compiled StatefulWriter. The participant keeps its writers in one table of
+ * StatefulWriter* and routes ACKNACK, NACK_FRAG, ticks, and matching to
+ * them; the application writes through the StatefulWriter* returned.
  *
  * Storage model
  * -------------
@@ -185,8 +184,7 @@ public:
             writer_guid, cfg.reliability, cfg.durability,
             transport_, cfg.nackDelayMs, cfg.hbPeriodMs);
 
-        // Store the IStatefulWriter* for type-erased participant operations.
-        writer_iface_[slot] = static_cast<IStatefulWriter*>(w);
+        writers_[slot] = w;
         writer_alive_[slot] = true;
 
         // Register endpoint for SEDP announcements.
@@ -223,7 +221,7 @@ public:
     // @returns false when the pointer is not a live endpoint of this
     //          participant.
     // ----------------------------------------------------------
-    bool delete_writer(IStatefulWriter* writer) noexcept;
+    bool delete_writer(StatefulWriter* writer) noexcept;
     bool delete_reader(StatefulReader* reader) noexcept;
 
     // ----------------------------------------------------------
@@ -343,8 +341,10 @@ private:
      * - Covered by: TC-PART-8.5.1-008.
      */
     static bool endpoint_names_fit(const TopicName& topic, const TopicName& type) noexcept;
-    IStatefulWriter* find_writer_iface(const EntityId& eid) noexcept;
-    StatefulReader*  find_reader(const EntityId& eid) noexcept;
+
+    /// @brief The local writer (SEDP builtin or user) with entity ID `eid`, or null.
+    StatefulWriter* find_writer(const EntityId& eid) noexcept;
+    StatefulReader* find_reader(const EntityId& eid) noexcept;
 
     /**
      * @brief Resolves where a matched endpoint is reached.
@@ -410,14 +410,15 @@ private:
     SedpWriter         sedp_writer_;
     SedpReader         sedp_reader_;
 
-    // Writer storage: opaque byte arrays, aligned for StatefulWriter.
-    // IStatefulWriter* overlay allows virtual dispatch without knowing D.
+    // Writer storage: opaque byte arrays, each holding one
+    // StatefulWriterStorage<D, R> of any depth; writers_ points at the
+    // StatefulWriter inside each live one.
     alignas(alignof(StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>))
     Octet writer_storage_[RTPS_MAX_USER_WRITERS]
                          [RTPS_PARTICIPANT_MAX_WRITER_BYTES];
 
-    IStatefulWriter* writer_iface_[RTPS_MAX_USER_WRITERS] = {};
-    bool             writer_alive_[RTPS_MAX_USER_WRITERS]  = {};
+    StatefulWriter* writers_[RTPS_MAX_USER_WRITERS]      = {};
+    bool            writer_alive_[RTPS_MAX_USER_WRITERS] = {};
 
     // Reader storage: one DefaultStatefulReader per slot, placement-new'd
     // by create_reader().

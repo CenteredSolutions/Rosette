@@ -159,7 +159,7 @@ RTPSParticipant::RTPSParticipant(uint8_t     domain_id,
     , sedp_writer_(participant_guid_.prefix, transport)
     , sedp_reader_(participant_guid_.prefix, transport, match_table_)
 {
-    memset(writer_iface_, 0, sizeof(writer_iface_));
+    memset(writers_, 0, sizeof(writers_));
     memset(writer_alive_, 0, sizeof(writer_alive_));
     memset(reader_alive_, 0, sizeof(reader_alive_));
 
@@ -274,16 +274,16 @@ StatefulReader* RTPSParticipant::create_reader(
 // delete_writer() / delete_reader()
 // ============================================================
 
-bool RTPSParticipant::delete_writer(IStatefulWriter* writer) noexcept
+bool RTPSParticipant::delete_writer(StatefulWriter* writer) noexcept
 {
     if (!writer) return false;
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i) {
-        if (!writer_alive_[i] || writer_iface_[i] != writer) continue;
+        if (!writer_alive_[i] || writers_[i] != writer) continue;
         const Guid guid = writer->guid();
         sedp_writer_.unregister_writer(guid);
         match_table_.remove_writer(guid);
-        writer->~IStatefulWriter();
-        writer_iface_[i] = nullptr;
+        writer->~StatefulWriter();
+        writers_[i] = nullptr;
         writer_alive_[i] = false;
         RTPS_LOG_I("participant", "writer deleted: slot=%d", i);
         return true;
@@ -354,8 +354,8 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
     sedp_writer_.tick(now_ms);
     sedp_reader_.tick(now_ms);
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
-        if (writer_alive_[i] && writer_iface_[i])
-            writer_iface_[i]->tick(now_ms);
+        if (writer_alive_[i] && writers_[i])
+            writers_[i]->tick(now_ms);
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i)
         if (reader_alive_[i])
             user_reader(i)->tick(now_ms);
@@ -371,8 +371,8 @@ uint32_t RTPSParticipant::ms_until_next_timer(uint32_t now_ms) const noexcept {
     consider(sedp_writer_.ms_until_next_timer(now_ms));
     consider(sedp_reader_.ms_until_next_timer(now_ms));
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
-        if (writer_alive_[i] && writer_iface_[i])
-            consider(writer_iface_[i]->ms_until_next_timer(now_ms));
+        if (writer_alive_[i] && writers_[i])
+            consider(writers_[i]->ms_until_next_timer(now_ms));
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i)
         if (reader_alive_[i])
             consider(user_reader(i)->ms_until_next_timer(now_ms));
@@ -526,7 +526,7 @@ void RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
 
     // Local writer matched to a reader.
     if (writer.guid.prefix == p->participant_guid_.prefix) {
-        IStatefulWriter* iw = p->find_writer_iface(writer.guid.entityId);
+        StatefulWriter* iw = p->find_writer(writer.guid.entityId);
         if (iw) {
             const Locator* locs = reader.locators;
             uint8_t count = reader.locatorCount;
@@ -575,7 +575,7 @@ void RTPSParticipant::on_endpoint_unmatch(const Guid& writer_guid,
                reader_guid.prefix.value[0], reader_guid.prefix.value[1],
                reader_guid.prefix.value[2], reader_guid.prefix.value[3]);
     if (writer_guid.prefix == p->participant_guid_.prefix) {
-        IStatefulWriter* iw = p->find_writer_iface(writer_guid.entityId);
+        StatefulWriter* iw = p->find_writer(writer_guid.entityId);
         if (iw) iw->matched_reader_remove(reader_guid);
     }
     if (reader_guid.prefix == p->participant_guid_.prefix) {
@@ -707,7 +707,7 @@ void RTPSParticipant::dispatch_acknack(const ParseContext&  ctx,
                msg.readerSNState.bitmapBase.high,
                (unsigned long)msg.readerSNState.bitmapBase.low,
                (unsigned long)msg.count);
-    IStatefulWriter* iw = p->find_writer_iface(msg.writerId);
+    StatefulWriter* iw = p->find_writer(msg.writerId);
     if (iw) iw->on_acknack(ctx, msg);
 }
 
@@ -715,7 +715,7 @@ void RTPSParticipant::dispatch_nack_frag(const ParseContext&   ctx,
                                          const ParsedNackFrag& msg) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(ctx.user_data);
-    IStatefulWriter* iw = p->find_writer_iface(msg.writerId);
+    StatefulWriter* iw = p->find_writer(msg.writerId);
     if (iw) iw->on_nack_frag(ctx, msg);
 }
 
@@ -747,14 +747,14 @@ int RTPSParticipant::find_free_writer_slot() const noexcept {
     return -1;
 }
 
-IStatefulWriter* RTPSParticipant::find_writer_iface(const EntityId& eid) noexcept {
-    if (IStatefulWriter* builtin = sedp_writer_.find_writer_iface(eid)) {
+StatefulWriter* RTPSParticipant::find_writer(const EntityId& eid) noexcept {
+    if (StatefulWriter* builtin = sedp_writer_.find_writer(eid)) {
         return builtin;
     }
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i) {
-        if (!writer_alive_[i] || !writer_iface_[i]) continue;
-        if (writer_iface_[i]->guid().entityId == eid)
-            return writer_iface_[i];
+        if (!writer_alive_[i] || !writers_[i]) continue;
+        if (writers_[i]->guid().entityId == eid)
+            return writers_[i];
     }
     return nullptr;
 }

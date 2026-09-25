@@ -138,7 +138,7 @@ bool compose_codec_type_name(const MessageCodec& codec, char* out, size_t cap) n
  * @brief Encodes a ROS message as a CDR body for an RTPS writer.
  *
  * rmw_publish() calls this and passes the result to
- * `IStatefulWriter::write_async()`, which adds the encapsulation header.
+ * `StatefulWriter::write_async()`, which adds the encapsulation header.
  *
  * @param[in]  codec       Resolved codec for the message's type.
  * @param[in]  ros_message Message instance to encode.
@@ -161,7 +161,7 @@ uint32_t serialize_message(const MessageCodec& codec, const void* ros_message,
  * @brief Encodes a ROS message into a pool buffer sized to fit it.
  *
  * rmw_publish(), rmw_send_request() and rmw_send_response() call this and
- * hand the buffer to IStatefulWriter::write_async_owned(), so a sample is
+ * hand the buffer to StatefulWriter::write_async_owned(), so a sample is
  * serialized once and never copied again, and no stack buffer bounds its
  * size. The smallest pool class is tried first, doubling until the message
  * fits, so small messages hold small blocks.

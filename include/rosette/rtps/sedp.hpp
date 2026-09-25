@@ -211,8 +211,9 @@ public:
     // Remove remote builtin SEDP readers when a peer expires.
     void on_peer_removed(const GuidPrefix& peer_prefix) noexcept;
 
-    // Route ACKNACK/NACK_FRAG for builtin SEDP writers.
-    IStatefulWriter* find_writer_iface(const EntityId& writer_id) noexcept;
+    /// @brief The builtin SEDP writer with entity ID `writer_id`, or null;
+    /// the participant routes ACKNACK and NACK_FRAG through it.
+    StatefulWriter* find_writer(const EntityId& writer_id) noexcept;
 
     // Drive builtin writer periodic maintenance.
     void tick(uint32_t now_ms) noexcept;

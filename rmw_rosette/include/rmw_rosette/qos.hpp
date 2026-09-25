@@ -98,7 +98,7 @@ inline constexpr uint8_t kSupportedWriterDepths[] = {1, 4, 8};
 
 /**
  * @brief Resolves an rmw_qos_profile_t's requested history depth to one
- * of the compiled StatefulWriter<> instantiations.
+ * of the writer storage depths the participant can create.
  *
  * create_writer_for_qos() calls this to decide which `create_writer<D>()`
  * specialization to invoke for a given publisher.
@@ -126,27 +126,27 @@ inline uint8_t select_writer_depth(const rmw_qos_profile_t& qos) noexcept {
 
 /**
  * @brief Creates a writer whose CacheDepth matches an rmw_qos_profile_t's
- * requested history depth, returned through the depth-erased interface.
+ * requested history depth.
  *
  * `rmw_create_publisher()` calls this in place of a direct
  * `RTPSParticipant::create_writer<D>()` call, since the template argument
  * `D` has to be resolved from `qos.depth` at run time.
  *
  * Dispatches select_writer_depth()'s result to the matching
- * `create_writer<D>()` specialization; every case is a distinct, real
- * `StatefulWriter<D, RTPS_MAX_MATCHED_READERS>` instantiation. A new
- * entry in kSupportedWriterDepths needs a matching case added here.
+ * `create_writer<D>()`; each case lays out a
+ * `StatefulWriterStorage<D, RTPS_MAX_MATCHED_READERS>`, and all of them run
+ * the same compiled writer. A new entry in kSupportedWriterDepths needs a
+ * matching case added here.
  *
  * @param[in,out] participant Owns the writer's storage slot.
  * @param[in] cfg Reliability/durability/topic/type config for the writer.
  * @param[in] qos Requested QoS profile; only `history`/`depth` affect the
  *   dispatch here (`reliability`/`durability` are expected to already be
  *   reflected in `cfg` via fill_writer_config()).
- * @return The new writer through the depth-erased `IStatefulWriter`
- *   interface (types.hpp), or `nullptr` if the participant's writer
- *   table is full.
+ * @return The new writer, or `nullptr` if the participant's writer table
+ *   is full.
  */
-inline rtps::IStatefulWriter* create_writer_for_qos(rtps::RTPSParticipant& participant,
+inline rtps::StatefulWriter* create_writer_for_qos(rtps::RTPSParticipant& participant,
                                                      const rtps::WriterConfig& cfg,
                                                      const rmw_qos_profile_t& qos) noexcept {
     switch (select_writer_depth(qos)) {

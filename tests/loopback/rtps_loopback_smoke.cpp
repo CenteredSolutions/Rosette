@@ -108,19 +108,13 @@ int main() {
     reader_cfg.typeName.assign("std_msgs::msg::dds_::String_");
     reader_cfg.reliability = rtps::ReliabilityKind::RELIABLE;
 
-    auto* writer_concrete = participant_a.create_writer<1>(writer_cfg);
+    rtps::StatefulWriter* writer = participant_a.create_writer<1>(writer_cfg);
     auto* reader = participant_b.create_reader(reader_cfg, on_change_available);
 
-    if (!writer_concrete || !reader) {
+    if (!writer || !reader) {
         std::fprintf(stderr, "FAIL: create_writer/create_reader returned nullptr\n");
         return 1;
     }
-
-    // Exercise the depth-erased IStatefulWriter path deliberately, not the
-    // concrete StatefulWriter<1,...>* — this is what an rmw_create_publisher()
-    // that picked CacheDepth at runtime (matching rmw_qos_profile_t.depth
-    // from a small closed set of instantiations) would actually hold.
-    rtps::IStatefulWriter* writer = writer_concrete;
 
     participant_a.announce();
     participant_b.announce();

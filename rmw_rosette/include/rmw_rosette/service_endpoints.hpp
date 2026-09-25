@@ -79,7 +79,7 @@ ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
                                                 const MessageCodec& request,
                                                 const MessageCodec& response,
                                                 rtps::StatefulReader::OnChangeAvailable on_change,
-                                                void* user_data, PublisherWriter*& writer,
+                                                void* user_data, rtps::StatefulWriter*& writer,
                                                 rtps::StatefulReader*& reader) noexcept;
 
 /**
@@ -91,7 +91,7 @@ ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
  * @param[in,out] writer Writer to delete; set to null.
  * @param[in,out] reader Reader to delete; set to null.
  */
-void destroy_service_endpoints(Node& node, PublisherWriter*& writer,
+void destroy_service_endpoints(Node& node, rtps::StatefulWriter*& writer,
                                rtps::StatefulReader*& reader) noexcept;
 
 }  // namespace rmw_rosette
