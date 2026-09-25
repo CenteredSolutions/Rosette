@@ -15,11 +15,13 @@
  *
  * Attributes (§8.4.1.1, Table 8.49, p. 103):
  *   remoteReaderGuid          — GUID of the matched remote reader.
- *   remoteGroupEntityId       — group entity (not used for non-group topics).
  *   unicastLocatorList        — locators used to address this reader.
- *   multicastLocatorList      — multicast locators (optional).
  *   expectsInlineQos          — whether this reader requires inline QoS.
  *   isActive                  — true while reader is reachable / alive.
+ *
+ * remoteGroupEntityId and multicastLocatorList are not stored: Rosette has
+ * no group (Publisher/Subscriber) entities, and a writer sends to each
+ * matched reader at its unicast locators only.
  *
  * Additional implementation attributes (§8.4.1.1, p. 103-104):
  *   changes_for_reader[]      — tracks per-SN delivery status.
@@ -116,7 +118,6 @@ public:
     // ----------------------------------------------------------
 
     Guid    remoteReaderGuid   = GUID_UNKNOWN;  ///< §8.4.1.1
-    Guid    remoteGroupEntityId = GUID_UNKNOWN; ///< §8.4.1.1 (unused for non-group)
     bool    expectsInlineQos   = false;         ///< §8.4.1.1
     bool    isActive           = false;         ///< §8.4.1.1
 
@@ -126,8 +127,6 @@ public:
 #endif
     Locator unicastLocatorList[RTPS_MAX_READER_PROXY_LOCATORS]   = {};
     uint8_t unicastLocatorCount                                   = 0;
-    Locator multicastLocatorList[RTPS_MAX_READER_PROXY_LOCATORS] = {};
-    uint8_t multicastLocatorCount                                 = 0;
 
     // ----------------------------------------------------------
     // Implementation tracking attributes
@@ -180,11 +179,9 @@ public:
 
     void clear() noexcept {
         remoteReaderGuid    = GUID_UNKNOWN;
-        remoteGroupEntityId = GUID_UNKNOWN;
         expectsInlineQos    = false;
         isActive            = false;
         unicastLocatorCount    = 0;
-        multicastLocatorCount  = 0;
         highestAckedSN      = SEQUENCENUMBER_ZERO;
         lastAcknackCount    = 0;
         nackPending         = false;

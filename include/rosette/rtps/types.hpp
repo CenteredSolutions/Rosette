@@ -789,6 +789,12 @@ enum class TopicKind : uint32_t {
 #  define RTPS_HEARTBEAT_RESPONSE_DELAY_MS  0u  ///< §8.4.7.1
 #endif
 
+/// Writers a user StatefulReader matches at once (DefaultStatefulReader);
+/// also the default number of fragment reassembly slots per reader.
+#ifndef RTPS_MAX_MATCHED_WRITERS
+#  define RTPS_MAX_MATCHED_WRITERS 8
+#endif
+
 // ============================================================
 // §8.5.3.2  SPDPdiscoveredParticipantData
 //

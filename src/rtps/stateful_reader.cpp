@@ -190,10 +190,10 @@ void StatefulReader::on_data(const ParseContext& ctx,
     if (proxy) {
         const bool repair = proxy->is_missing(msg.writerSN);
         record_change(*proxy, msg.writerSN);
-        accept_change(static_cast<CacheChange&&>(change), *proxy);
+        deliver(change);
         if (repair) request_next_repair(*proxy);
     } else {
-        reader_cache_.add_change(static_cast<CacheChange&&>(change));
+        deliver(change);
     }
 }
 
@@ -263,10 +263,10 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     if (proxy) {
         const bool repair = proxy->is_missing(msg.writerSN);
         record_change(*proxy, msg.writerSN);
-        accept_change(static_cast<CacheChange&&>(out_change), *proxy);
+        deliver(out_change);
         if (repair) request_next_repair(*proxy);
     } else {
-        reader_cache_.add_change(static_cast<CacheChange&&>(out_change));
+        deliver(out_change);
     }
 }
 
@@ -544,20 +544,9 @@ void StatefulReader::record_change(WriterProxy& proxy, const SequenceNumber& sn)
     proxy.received_change_set(sn);
 }
 
-void StatefulReader::accept_change(CacheChange&& change,
-                                   WriterProxy&  /*proxy*/) noexcept
+void StatefulReader::deliver(const CacheChange& change) noexcept
 {
-    // With a callback the change is handed over: the application sees the
-    // payload during the call and retains the buffer if it needs it longer
-    // (rmw_rosette's take rings do). Keeping it in the reader history as
-    // well would pin one pool block per delivered sample for nothing, which
-    // starves the pool under large (fragmented) samples. Without a callback
-    // the history is the only consumer interface, so the change is kept.
-    if (on_change_avail_) {
-        on_change_avail_(change, user_data_);
-        return;
-    }
-    reader_cache_.add_change(static_cast<CacheChange&&>(change));
+    if (on_change_avail_) on_change_avail_(change, user_data_);
 }
 
 } // namespace rtps

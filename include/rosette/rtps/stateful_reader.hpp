@@ -15,6 +15,9 @@
  * A change that withdraws an instance (inline QoS StatusInfo DISPOSED or
  * UNREGISTERED) is delivered with its NOT_ALIVE ChangeKind even when it
  * carries no payload, so consumers such as SEDP learn of the withdrawal.
+ * Every accepted change goes to the OnChangeAvailable callback, whose owner
+ * plays the role of the reader's HistoryCache (§8.2.2); the reader itself
+ * retains no delivered change.
  *
  * Proxy storage
  * -------------
@@ -63,22 +66,17 @@ namespace rtps {
 struct ITransport;
 
 // ============================================================
-// Configuration
-// ============================================================
-
-#ifndef RTPS_MAX_MATCHED_WRITERS
-#  define RTPS_MAX_MATCHED_WRITERS 8
-#endif
-
-// ============================================================
 // StatefulReader
 // ============================================================
 
 class StatefulReader {
 public:
 
-    /// Application callback — fired when a complete CacheChange arrives.
-    /// Valid only for the duration of the call; copy data before returning.
+    /// Consumer callback — fired when a complete CacheChange arrives. The
+    /// change is valid only for the duration of the call; a consumer that
+    /// needs the payload later retains its buffer (BufRef::retain()), as
+    /// rmw_rosette's ChangeRing does. The consumer is the reader's history:
+    /// the reader itself keeps no delivered changes.
     using OnChangeAvailable = void (*)(const CacheChange& change,
                                       void* user_data) noexcept;
 
@@ -147,7 +145,7 @@ public:
     //
     // Delegates to assembler_.on_data_frag().  When the assembler
     // reports completion (returns true), the assembled CacheChange is
-    // passed to accept_change() identically to a full DATA reception.
+    // delivered identically to a full DATA reception.
     //
     // Fragment numbers are 1-based — §9.4.5.4, p. 208.
     // Supports up to 256 fragments per sample — §9.4.2.8, p. 199.
@@ -243,9 +241,6 @@ public:
 
     const Guid&              guid()        const noexcept { return guid_; }
     ReliabilityKind          reliability() const noexcept { return reliability_; }
-    /// Received changes, kept only for readers without an OnChangeAvailable
-    /// callback (pull consumers); a callback receives each change instead.
-    const ReaderHistoryCache& cache()      const noexcept { return reader_cache_; }
 
     uint32_t heartbeat_response_delay()            const noexcept { return hb_response_ms_; }
     void     heartbeat_response_delay(uint32_t ms)       noexcept { hb_response_ms_ = ms; }
@@ -288,7 +283,7 @@ protected:
      *   construction, so it may be a member of a derived class.
      * @param[in] proxy_capacity  Number of entries in `proxies` (1-255).
      * @param[in] on_change_avail Callback fired on each new complete change;
-     *   null keeps changes in cache() instead.
+     *   null discards delivered changes.
      * @param[in] user_data       Forwarded to on_change_avail.
      * @param[in] hb_response_ms  heartbeatResponseDelay in milliseconds
      *   (§8.4.7.1); 0 answers a HEARTBEAT immediately.
@@ -375,9 +370,17 @@ private:
      */
     void record_change(WriterProxy& proxy, const SequenceNumber& sn) noexcept;
 
-    /// Insert a complete CacheChange into the history cache and fire callback.
-    void accept_change(CacheChange&& change,
-                       WriterProxy&  proxy) noexcept;
+    /**
+     * @brief Hands a complete, accepted change to the consumer callback.
+     *
+     * The reader keeps no copy: holding delivered changes would pin one
+     * pool block per sample until evicted. Without a callback the change
+     * is dropped, and its payload returns to the pool when the caller's
+     * CacheChange goes out of scope.
+     *
+     * @param[in] change Change accepted by on_data() or on_data_frag().
+     */
+    void deliver(const CacheChange& change) noexcept;
 
     // ── Data members ─────────────────────────────────────────
 
@@ -387,7 +390,6 @@ private:
     OnChangeAvailable on_change_avail_ = nullptr;
     void*             user_data_       = nullptr;
 
-    ReaderHistoryCache reader_cache_;
     WriterProxy*       proxies_;          ///< Owned by the BoundedStatefulReader.
     uint8_t            proxy_capacity_;
 

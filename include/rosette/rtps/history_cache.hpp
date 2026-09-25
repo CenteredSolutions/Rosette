@@ -335,22 +335,4 @@ private:
     }
 };
 
-// ============================================================
-// Convenience aliases
-//
-// A StatefulWriter with KEEP_LAST(1) uses a depth-1 cache.
-// A StatefulReader that can have up to M concurrent writers
-// each needs at most 1 outstanding sample, so depth M.
-// ============================================================
-
-/// Writer history cache: KEEP_LAST(1), single writer.
-using WriterHistoryCache = HistoryCache<1>;
-
-/// Reader history cache: one slot per matched writer.
-/// Adjust RTPS_MAX_MATCHED_WRITERS in config.hpp as required.
-#ifndef RTPS_MAX_MATCHED_WRITERS
-#  define RTPS_MAX_MATCHED_WRITERS 8
-#endif
-using ReaderHistoryCache = HistoryCache<RTPS_MAX_MATCHED_WRITERS>;
-
 } // namespace rtps

@@ -57,13 +57,14 @@ public:
     // Spec attributes (§8.4.10.4)
     // ----------------------------------------------------------
 
-    Guid remoteWriterGuid    = GUID_UNKNOWN;
-    Guid remoteGroupEntityId = GUID_UNKNOWN;  ///< Unused: no group writers.
+    // remoteGroupEntityId and multicastLocatorList are not stored: Rosette
+    // has no group entities, and ACKNACKs go to the writer's unicast
+    // locators only.
 
-    Locator unicastLocatorList[RTPS_MAX_WRITER_PROXY_LOCATORS]   = {};
-    uint8_t unicastLocatorCount                                   = 0;
-    Locator multicastLocatorList[RTPS_MAX_WRITER_PROXY_LOCATORS] = {};
-    uint8_t multicastLocatorCount                                 = 0;
+    Guid remoteWriterGuid = GUID_UNKNOWN;
+
+    Locator unicastLocatorList[RTPS_MAX_WRITER_PROXY_LOCATORS] = {};
+    uint8_t unicastLocatorCount                                 = 0;
 
     // ----------------------------------------------------------
     // Reader-side protocol state
