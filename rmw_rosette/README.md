@@ -94,10 +94,13 @@ the same relationships.
    `flash_safe_execute()`) that LittleFS takes by reference.
 2. **Graph introspection on rosette nodes.** Each context publishes its nodes
    on `ros_discovery_info` (`rmw_dds_common/msg/ParticipantEntitiesInfo`,
-   `ros_discovery_info_writer.hpp`), so stock peers see them. Rosette's own
-   `rmw_count_*`, `rmw_get_*_names_and_types*`, and `rmw_get_node_names*` need
-   a graph cache fed by SEDP and by other participants' `ros_discovery_info`;
-   they report unsupported until then.
+   `ros_discovery_info_writer.hpp`), so stock peers see them. Rosette nodes
+   see the graph through `rmw_count_publishers`/`rmw_count_subscribers`
+   (answered by the participant's `EndpointMatchTable`) and the context's one
+   graph guard condition, which discovery triggers. `rmw_get_node_names*` and
+   the `*_by_node` queries need other participants' `ros_discovery_info`, and
+   `rmw_get_*_names_and_types` needs remote endpoint names, which the match
+   table keeps only as keys; those report `RMW_RET_UNSUPPORTED`.
 3. **QoS events and listeners.** Event initialization reports
    `RMW_RET_UNSUPPORTED`, which both client libraries accept.
 4. **FreeRTOS+TCP network port.** Hosts and WIZnet boards have one

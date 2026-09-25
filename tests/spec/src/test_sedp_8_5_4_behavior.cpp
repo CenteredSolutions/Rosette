@@ -581,6 +581,54 @@ static bool tc_sedp_8_5_4_013(std::string& err) {
     return true;
 }
 
+// count() answers the graph's per-topic queries: local endpoints by name,
+// remote endpoints by topic key, whatever their type; on_change fires once
+// per recorded or forgotten endpoint and not for a repeated announcement.
+static bool tc_sedp_8_5_4_014(std::string& err) {
+    int changes = 0;
+    EndpointMatchTable t(nullptr, nullptr, &changes,
+                         [](void* u) noexcept { ++*static_cast<int*>(u); });
+    GuidPrefix local{};
+    local.value[0] = 0x01u;
+    GuidPrefix remote{};
+    remote.value[0] = 0x02u;
+    t.set_local_prefix(local);
+
+    auto writer = [](const GuidPrefix& prefix, uint8_t key, const char* topic,
+                     const char* type) {
+        DiscoveredWriterData wd{};
+        wd.writerGuid.prefix = prefix;
+        wd.writerGuid.entityId = make_entity(0u, 0u, key, 0x03u);
+        wd.topicName.assign(topic);
+        wd.typeName.assign(type);
+        return wd;
+    };
+    t.add_writer(writer(local, 1u, "rt/chatter", "std_msgs::msg::dds_::String_"));
+    t.add_writer(writer(remote, 2u, "rt/chatter", "std_msgs::msg::dds_::String_"));
+    t.add_writer(writer(remote, 3u, "rt/chatter", "std_msgs::msg::dds_::Int32_"));
+    t.add_writer(writer(remote, 4u, "rt/other", "std_msgs::msg::dds_::String_"));
+    CHECK(changes == 4, "each new endpoint fires on_change once");
+    t.add_writer(writer(remote, 2u, "rt/chatter", "std_msgs::msg::dds_::String_"));
+    CHECK(changes == 4, "a repeated identical announcement does not fire on_change");
+
+    CHECK(t.count("rt/chatter", true) == 3u, "local and remote writers of any type count");
+    CHECK(t.count("rt/chatter", false) == 0u, "no readers on the topic");
+    CHECK(t.count("rt/other", true) == 1u, "another topic counts separately");
+    CHECK(t.count("rt/none", true) == 0u, "an unknown topic counts zero");
+
+    DiscoveredWriterData gone = writer(remote, 2u, "rt/chatter", "std_msgs::msg::dds_::String_");
+    t.remove_writer(gone.writerGuid);
+    CHECK(changes == 5, "a forgotten endpoint fires on_change");
+    t.remove_writer(gone.writerGuid);
+    CHECK(changes == 5, "forgetting an unknown endpoint does not");
+    CHECK(t.count("rt/chatter", true) == 2u, "a forgotten endpoint no longer counts");
+
+    t.remove_participant(remote);
+    CHECK(t.count("rt/chatter", true) == 1u && t.count("rt/other", true) == 0u,
+          "a departed participant's endpoints no longer count; local ones still do");
+    return true;
+}
+
 void append_sedp_tests_8_5_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-8.5.4-001",
                      "§8.5.4/§8.5.4.3: SEDP writer announces registered local publications and subscriptions as DATA submessages with PL_CDR payloads.",
@@ -612,6 +660,9 @@ void append_sedp_tests_8_5_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-8.5.4-013",
                      "§8.4.14/§8.5.4.1: a fragmented endpoint announcement is reassembled by the builtin reader and matches the endpoint.",
                      tc_sedp_8_5_4_013});
+    tests.push_back({"TC-SEDP-8.5.4-014",
+                     "§8.5.4: count() counts local and remote endpoints per topic whatever their type; on_change fires once per recorded or forgotten endpoint.",
+                     tc_sedp_8_5_4_014});
 }
 
 } // namespace spec_test

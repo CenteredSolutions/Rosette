@@ -233,7 +233,31 @@ static bool tc_sedp_8_5_5_1_006(std::string& err) {
     return true;
 }
 
+// name_key() is 32-bit FNV-1a, and a remote endpoint stored by key is
+// matched only when both its topic key and its type key agree.
+static bool tc_sedp_8_5_5_1_007(std::string& err) {
+    CHECK(name_key("") == 0x811C9DC5u, "the empty name hashes to the FNV-1a offset basis");
+    CHECK(name_key(nullptr) == 0x811C9DC5u, "null hashes as the empty name");
+    CHECK(name_key("a") == 0xE40C292Cu, "FNV-1a test vector for \"a\"");
+    CHECK(name_key("foobar") == 0xBF9CF968u, "FNV-1a test vector for \"foobar\"");
+
+    Obs obs{};
+    EndpointMatchTable t(on_match, on_unmatch, &obs);
+    const Guid local_writer = make_guid(0x81u, 0x82u, 0x83u, make_entity(1u, 1u, 1u, 0x03u));
+    t.set_local_prefix(local_writer.prefix);
+    t.add_reader(make_reader(make_guid(0x91u, 0x92u, 0x93u, make_entity(2u, 2u, 2u, 0x04u)),
+                             "rt/chatter", "std_msgs::msg::dds_::Int32_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    t.add_writer(make_writer(local_writer, "rt/chatter", "std_msgs::msg::dds_::String_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    CHECK(obs.match_calls == 0, "a stored remote reader of another type does not match");
+    return true;
+}
+
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests) {
+    tests.push_back({"TC-SEDP-8.5.5.1-007",
+                     "§8.5.5.1: name_key() is 32-bit FNV-1a; a remote endpoint stored by key matches a later local endpoint only when topic and type keys both agree.",
+                     tc_sedp_8_5_5_1_007});
     tests.push_back({"TC-SEDP-8.5.5.1-006",
                      "§8.5.5.1: an endpoint whose topic or type name exceeds RTPS_MAX_TOPIC_NAME_LEN - 1 is ignored, never matched by its truncated prefix.",
                      tc_sedp_8_5_5_1_006});

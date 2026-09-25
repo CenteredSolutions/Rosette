@@ -971,6 +971,56 @@ static bool tc_part_8_5_1_006(std::string& err) {
     return true;
 }
 
+// The graph observer fires when SPDP discovers a peer, when SEDP records or
+// withdraws an endpoint, and when the peer's lease expires; a repeated
+// identical endpoint announcement does not fire it.
+static bool tc_part_8_5_1_009(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    int changes = 0;
+    p.set_on_graph_change([](void* u) noexcept { ++*static_cast<int*>(u); }, &changes);
+
+    const GuidPrefix remote_prefix = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    std::vector<Octet> spdp_payload{};
+    CHECK(build_spdp_payload(remote_prefix, 30u, make_udpv4_locator(0xC0A80171u, 7410u),
+                             spdp_payload),
+          "SPDP payload build failed");
+    g_participant_test_now_ms = 100u;
+    CHECK(p.spdp_reader().on_data(remote_prefix, spdp_payload.data(),
+                                  static_cast<uint32_t>(spdp_payload.size()),
+                                  g_participant_test_now_ms),
+          "peer discovery should succeed");
+    CHECK(changes == 1, "a discovered peer changes the graph");
+
+    DiscoveredReaderData rd{};
+    rd.readerGuid.prefix = remote_prefix;
+    rd.readerGuid.entityId = make_entity(0x41u, 0x42u, 0x43u, 0x04u);
+    rd.topicName.assign("rt/graph");
+    rd.typeName.assign("pkg::msg::dds_::T_");
+    p.match_table().add_reader(rd);
+    CHECK(changes == 2, "a recorded endpoint changes the graph");
+    p.match_table().add_reader(rd);
+    CHECK(changes == 2, "a repeated identical announcement does not");
+    CHECK(p.match_table().count("rt/graph", false) == 1u, "the reader is counted");
+
+    WriterConfig wcfg{};
+    wcfg.topicName.assign("rt/graph");
+    wcfg.typeName.assign("pkg::msg::dds_::T_");
+    StatefulWriter* w = p.create_writer<1>(wcfg);
+    CHECK(w != nullptr, "create_writer should succeed");
+    CHECK(changes == 3, "a local endpoint changes the graph");
+    CHECK(p.delete_writer(w), "delete_writer should succeed");
+    CHECK(changes == 4, "a deleted local endpoint changes the graph");
+
+    const int before_expiry = changes;
+    g_participant_test_now_ms = 100u + 31000u;
+    p.tick(g_participant_test_now_ms);
+    CHECK(changes >= before_expiry + 2, "lease expiry forgets the reader and the peer");
+    CHECK(p.match_table().count("rt/graph", false) == 0u, "the expired peer's reader is gone");
+    return true;
+}
+
 void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-001",
                      "§8.5.1/§8.5.3.3: participant announce path is gated on configured local locators and sends SPDP DATA to the well-known multicast locator.",
@@ -1005,6 +1055,9 @@ void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-006",
                      "§8.5.3.2/§8.5.3.3: ms_until_next_timer() is unbounded without addresses, zero before the first SPDP announcement, and bounded by the SPDP period and peer lease expiry.",
                      tc_part_8_5_1_006});
+    tests.push_back({"TC-PART-8.5.1-009",
+                     "§8.5.3/§8.5.4: the graph observer fires when a peer is discovered or expires and when an endpoint is recorded or forgotten, not for a repeated identical announcement.",
+                     tc_part_8_5_1_009});
 }
 
 } // namespace spec_test

@@ -269,6 +269,43 @@ public:
     void clear_addresses() noexcept;
     bool has_addresses() const noexcept;
 
+    /// Called when the discovered graph changed; see set_on_graph_change().
+    using OnGraphChange = void (*)(void* user_data) noexcept;
+
+    /**
+     * @brief Registers the one observer told when the discovered graph changes.
+     *
+     * The graph is what discovery knows: the participants SPDP has found
+     * and the endpoints, local or remote, in the match table. The observer
+     * fires when a participant is discovered or leaves, and when an
+     * endpoint is recorded, changes topic or type, or is forgotten. It is
+     * a hint to re-query (for rmw, to trigger the graph guard condition),
+     * not a description of the change; several changes may fire it several
+     * times.
+     *
+     * The observer runs on the thread that drives the participant, inside
+     * parse_received(), tick(), or endpoint creation and deletion, with
+     * whatever lock that caller holds; it must not call back into the
+     * participant.
+     *
+     * @param[in] fn        Observer, or null to clear it.
+     * @param[in] user_data Passed to `fn` unchanged.
+     *
+     * Verification:
+     * - Correct means: the observer fires when SPDP adds or removes a peer
+     *   and when SEDP adds or withdraws an endpoint, and not for a repeated
+     *   identical announcement.
+     * - Covered by: TC-PART-8.5.1-009.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3 (SPDP), §8.5.4 (SEDP)
+     * - rmw_dds_common/context.hpp (Humble), `graph_guard_condition`
+     */
+    void set_on_graph_change(OnGraphChange fn, void* user_data) noexcept {
+        on_graph_change_ = fn;
+        graph_change_user_ = user_data;
+    }
+
     // ----------------------------------------------------------
     // Accessors
     // ----------------------------------------------------------
@@ -312,6 +349,12 @@ private:
                                      const TopicName&,
                                      void*) noexcept;
     static void on_endpoint_unmatch (const Guid&, const Guid&, void*) noexcept;
+    static void on_endpoints_changed(void*) noexcept;
+
+    /// @brief Tells the graph observer, if any, that the graph changed.
+    void notify_graph_change() noexcept {
+        if (on_graph_change_) on_graph_change_(graph_change_user_);
+    }
 
     // ── ParseOps trampolines ─────────────────────────────────
     static void dispatch_data          (const ParseContext&, const ParsedData&) noexcept;
@@ -427,6 +470,9 @@ private:
     bool  reader_alive_[RTPS_MAX_USER_READERS] = {};
 
     ParseOps parse_ops_;
+
+    OnGraphChange on_graph_change_   = nullptr;
+    void*         graph_change_user_ = nullptr;
 };
 
 } // namespace rtps

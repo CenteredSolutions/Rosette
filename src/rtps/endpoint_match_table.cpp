@@ -10,20 +10,15 @@
 
 namespace rtps {
 
-uint64_t topic_type_key(const char* topic, const char* type) noexcept
+uint32_t name_key(const char* name) noexcept
 {
-    constexpr uint64_t kOffsetBasis = 0xCBF29CE484222325ull;
-    constexpr uint64_t kPrime       = 0x00000100000001B3ull;
-    uint64_t h = kOffsetBasis;
-    auto mix = [&h](const char* s) noexcept {
-        for (; s && *s; ++s) {
-            h ^= static_cast<uint8_t>(*s);
-            h *= kPrime;
-        }
-        h *= kPrime;      // A zero octet after each name: XOR with 0, then multiply.
-    };
-    mix(topic);
-    mix(type);
+    constexpr uint32_t kOffsetBasis = 0x811C9DC5u;
+    constexpr uint32_t kPrime       = 0x01000193u;
+    uint32_t h = kOffsetBasis;
+    for (; name && *name; ++name) {
+        h ^= static_cast<uint8_t>(*name);
+        h *= kPrime;
+    }
     return h;
 }
 
@@ -53,14 +48,16 @@ EndpointMatchTable::RemoteEndpoint* EndpointMatchTable::find(RemoteEndpoint* tab
     return g == GUID_UNKNOWN ? free_slot : nullptr;
 }
 
-void EndpointMatchTable::store_remote(RemoteEndpoint& slot, const Guid& guid, uint64_t key,
+void EndpointMatchTable::store_remote(RemoteEndpoint& slot, const Guid& guid,
+                                      uint32_t topic_key, uint32_t type_key,
                                       ReliabilityKind reliability, DurabilityKind durability,
                                       bool expects_inline_qos, const Locator* locators,
                                       uint8_t locator_count) noexcept
 {
     slot = RemoteEndpoint{};
     slot.guid             = guid;
-    slot.key              = key;
+    slot.topicKey         = topic_key;
+    slot.typeKey          = type_key;
     slot.reliability      = static_cast<uint8_t>(reliability);
     slot.durability       = static_cast<uint8_t>(durability);
     slot.expectsInlineQos = expects_inline_qos;
@@ -81,7 +78,8 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
         RTPS_LOG_W("match", "writer name longer than RTPS_MAX_TOPIC_NAME_LEN - 1, ignored");
         return;
     }
-    const uint64_t key = topic_type_key(wd.topicName.str, wd.typeName.str);
+    const uint32_t topic_key = name_key(wd.topicName.str);
+    const uint32_t type_key  = name_key(wd.typeName.str);
 
     if (is_local(wd.writerGuid)) {
         LocalEndpoint* w = find(local_writers_, RTPS_MAX_LOCAL_ENDPOINTS, wd.writerGuid);
@@ -91,8 +89,11 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
                        RTPS_MAX_LOCAL_ENDPOINTS);
             return;
         }
-        *w = LocalEndpoint{wd.writerGuid, wd.topicName, wd.typeName, key,
+        const bool is_change = !w->valid() || w->topicName != wd.topicName ||
+                               w->typeName != wd.typeName;
+        *w = LocalEndpoint{wd.writerGuid, wd.topicName, wd.typeName, topic_key, type_key,
                            wd.reliabilityKind, wd.durabilityKind, false};
+        if (is_change) changed();
         const MatchedEndpoint writer{w->guid, nullptr, 0u, false};
         for (const LocalEndpoint& r : local_readers_) {
             if (!r.valid() || r.topicName != w->topicName || r.typeName != w->typeName) continue;
@@ -100,7 +101,7 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
             report(writer, MatchedEndpoint{r.guid, nullptr, 0u, r.expectsInlineQos}, w->topicName);
         }
         for (const RemoteEndpoint& r : remote_readers_) {
-            if (!r.valid() || r.key != key) continue;
+            if (!r.valid() || r.topicKey != topic_key || r.typeKey != type_key) continue;
             if (!qos_compatible(w->reliability, w->durability,
                                 r.reliability_kind(), r.durability_kind())) continue;
             report(writer, r.matched(), w->topicName);
@@ -115,8 +116,10 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
                    RTPS_MAX_DISCOVERED_WRITERS);
         return;
     }
-    store_remote(*w, wd.writerGuid, key, wd.reliabilityKind, wd.durabilityKind, false,
-                 wd.unicastLocatorList, wd.unicastLocatorCount);
+    const bool is_change = !w->valid() || w->topicKey != topic_key || w->typeKey != type_key;
+    store_remote(*w, wd.writerGuid, topic_key, type_key, wd.reliabilityKind,
+                 wd.durabilityKind, false, wd.unicastLocatorList, wd.unicastLocatorCount);
+    if (is_change) changed();
     for (const LocalEndpoint& r : local_readers_) {
         if (!r.valid() || r.topicName != wd.topicName || r.typeName != wd.typeName) continue;
         if (!qos_compatible(wd.reliabilityKind, wd.durabilityKind,
@@ -133,7 +136,8 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
         RTPS_LOG_W("match", "reader name longer than RTPS_MAX_TOPIC_NAME_LEN - 1, ignored");
         return;
     }
-    const uint64_t key = topic_type_key(rd.topicName.str, rd.typeName.str);
+    const uint32_t topic_key = name_key(rd.topicName.str);
+    const uint32_t type_key  = name_key(rd.typeName.str);
 
     if (is_local(rd.readerGuid)) {
         LocalEndpoint* r = find(local_readers_, RTPS_MAX_LOCAL_ENDPOINTS, rd.readerGuid);
@@ -143,8 +147,11 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
                        RTPS_MAX_LOCAL_ENDPOINTS);
             return;
         }
-        *r = LocalEndpoint{rd.readerGuid, rd.topicName, rd.typeName, key,
+        const bool is_change = !r->valid() || r->topicName != rd.topicName ||
+                               r->typeName != rd.typeName;
+        *r = LocalEndpoint{rd.readerGuid, rd.topicName, rd.typeName, topic_key, type_key,
                            rd.reliabilityKind, rd.durabilityKind, rd.expectsInlineQos};
+        if (is_change) changed();
         const MatchedEndpoint reader{r->guid, nullptr, 0u, r->expectsInlineQos};
         for (const LocalEndpoint& w : local_writers_) {
             if (!w.valid() || w.topicName != r->topicName || w.typeName != r->typeName) continue;
@@ -152,7 +159,7 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
             report(MatchedEndpoint{w.guid, nullptr, 0u, false}, reader, r->topicName);
         }
         for (const RemoteEndpoint& w : remote_writers_) {
-            if (!w.valid() || w.key != key) continue;
+            if (!w.valid() || w.topicKey != topic_key || w.typeKey != type_key) continue;
             if (!qos_compatible(w.reliability_kind(), w.durability_kind(),
                                 r->reliability, r->durability)) continue;
             report(w.matched(), reader, r->topicName);
@@ -167,8 +174,11 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
                    RTPS_MAX_DISCOVERED_READERS);
         return;
     }
-    store_remote(*r, rd.readerGuid, key, rd.reliabilityKind, rd.durabilityKind,
-                 rd.expectsInlineQos, rd.unicastLocatorList, rd.unicastLocatorCount);
+    const bool is_change = !r->valid() || r->topicKey != topic_key || r->typeKey != type_key;
+    store_remote(*r, rd.readerGuid, topic_key, type_key, rd.reliabilityKind,
+                 rd.durabilityKind, rd.expectsInlineQos, rd.unicastLocatorList,
+                 rd.unicastLocatorCount);
+    if (is_change) changed();
     for (const LocalEndpoint& w : local_writers_) {
         if (!w.valid() || w.topicName != rd.topicName || w.typeName != rd.typeName) continue;
         if (!qos_compatible(w.reliability, w.durability,
@@ -214,20 +224,34 @@ void EndpointMatchTable::dissolve(const Guid& guid, bool is_writer) noexcept
 
 void EndpointMatchTable::remove_writer(const Guid& writer_guid) noexcept
 {
+    if (writer_guid == GUID_UNKNOWN) return;
     dissolve(writer_guid, /*is_writer=*/true);
-    if (LocalEndpoint* w = find(local_writers_, RTPS_MAX_LOCAL_ENDPOINTS, writer_guid))
+    bool forgotten = false;
+    if (LocalEndpoint* w = find(local_writers_, RTPS_MAX_LOCAL_ENDPOINTS, writer_guid)) {
         *w = LocalEndpoint{};
-    if (RemoteEndpoint* w = find(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, writer_guid))
+        forgotten = true;
+    }
+    if (RemoteEndpoint* w = find(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, writer_guid)) {
         *w = RemoteEndpoint{};
+        forgotten = true;
+    }
+    if (forgotten) changed();
 }
 
 void EndpointMatchTable::remove_reader(const Guid& reader_guid) noexcept
 {
+    if (reader_guid == GUID_UNKNOWN) return;
     dissolve(reader_guid, /*is_writer=*/false);
-    if (LocalEndpoint* r = find(local_readers_, RTPS_MAX_LOCAL_ENDPOINTS, reader_guid))
+    bool forgotten = false;
+    if (LocalEndpoint* r = find(local_readers_, RTPS_MAX_LOCAL_ENDPOINTS, reader_guid)) {
         *r = LocalEndpoint{};
-    if (RemoteEndpoint* r = find(remote_readers_, RTPS_MAX_DISCOVERED_READERS, reader_guid))
+        forgotten = true;
+    }
+    if (RemoteEndpoint* r = find(remote_readers_, RTPS_MAX_DISCOVERED_READERS, reader_guid)) {
         *r = RemoteEndpoint{};
+        forgotten = true;
+    }
+    if (forgotten) changed();
 }
 
 void EndpointMatchTable::remove_participant(const GuidPrefix& gone_prefix) noexcept
@@ -243,6 +267,27 @@ void EndpointMatchTable::remove_participant(const GuidPrefix& gone_prefix) noexc
         const Guid guid = r.guid;
         remove_reader(guid);
     }
+}
+
+// ------------------------------------------------------------
+// Graph queries
+// ------------------------------------------------------------
+
+uint32_t EndpointMatchTable::count(const char* topic, bool writers) const noexcept
+{
+    if (!topic) return 0u;
+    const LocalEndpoint*  locals  = writers ? local_writers_ : local_readers_;
+    const RemoteEndpoint* remotes = writers ? remote_writers_ : remote_readers_;
+    const uint32_t n_remote = writers ? RTPS_MAX_DISCOVERED_WRITERS : RTPS_MAX_DISCOVERED_READERS;
+    const uint32_t topic_key = name_key(topic);
+    uint32_t n = 0u;
+    for (uint32_t i = 0; i < RTPS_MAX_LOCAL_ENDPOINTS; ++i) {
+        if (locals[i].valid() && strcmp(locals[i].topicName.str, topic) == 0) ++n;
+    }
+    for (uint32_t i = 0; i < n_remote; ++i) {
+        if (remotes[i].valid() && remotes[i].topicKey == topic_key) ++n;
+    }
+    return n;
 }
 
 }  // namespace rtps

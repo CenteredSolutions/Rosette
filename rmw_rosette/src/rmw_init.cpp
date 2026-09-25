@@ -193,6 +193,18 @@ void destroy_participant(rmw_rosette::Context& ctx) noexcept {
     ctx.constructed = false;
 }
 
+/**
+ * @brief Triggers a context's graph guard condition; the participant's graph observer.
+ *
+ * Runs on the thread driving the participant, under the context lock;
+ * GuardCondition::trigger() is safe there.
+ *
+ * @param[in] graph_guard The context's rmw_rosette::GuardCondition.
+ */
+void trigger_graph_guard(void* graph_guard) noexcept {
+    static_cast<rmw_rosette::GuardCondition*>(graph_guard)->trigger();
+}
+
 }  // namespace
 
 extern "C" {
@@ -275,7 +287,8 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * stock DDS implementations ignore loopback locators from participants they
  * cannot prove are local. The participant's first user writer is the
  * `ros_discovery_info` writer (ros_discovery_info_writer.hpp), which every
- * node created on this context reports to.
+ * node created on this context reports to. The context's graph guard
+ * condition is triggered by every graph change the participant reports.
  *
  * @param[in] options Init options; `domain_id` and `instance_id` are used.
  * @param[out] context Context to initialize.
@@ -328,6 +341,11 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     ctx.driver = new (ctx.driver_storage) rtps::ParticipantDriver(
         *ctx.participant, *ctx.transport, *ctx.provider, ctx.rx_buffer, sizeof(ctx.rx_buffer));
     ctx.constructed = true;
+    ctx.graph_guard.wake = &ctx.driver->wake_event();
+    ctx.graph_guard_handle.implementation_identifier = rmw_rosette_identifier;
+    ctx.graph_guard_handle.data = &ctx.graph_guard;
+    ctx.graph_guard_handle.context = context;
+    ctx.participant->set_on_graph_change(trigger_graph_guard, &ctx.graph_guard);
     if (!ctx.discovery_info.create(*ctx.participant)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: cannot create the ros_discovery_info writer "
                           "(participant writer table full)");

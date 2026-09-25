@@ -5,13 +5,18 @@
  * rcl builds every executor wakeup (interrupts, SIGINT, graph changes) on
  * guard conditions, so these tests pin the contract rcl relies on: a trigger
  * wakes exactly one wait, is not lost when it lands between waits, and an
- * untriggered condition is reported not-ready.
+ * untriggered condition is reported not-ready. The graph guard condition is
+ * the context's one guard, shared by its nodes and triggered by graph
+ * changes, and rmw_count_publishers()/rmw_count_subscribers() see local
+ * endpoints as soon as they exist.
  */
 
 #include <gtest/gtest.h>
 
 #include <rcutils/allocator.h>
+#include <rmw/error_handling.h>
 #include <rmw/rmw.h>
+#include <std_msgs/msg/string.h>
 
 #include <thread>
 
@@ -88,5 +93,52 @@ TEST_F(GuardConditionTest, NodeGraphGuardConditionIsStable) {
     const rmw_guard_condition_t* b = rmw_node_get_graph_guard_condition(node);
     ASSERT_NE(a, nullptr);
     EXPECT_EQ(a, b);
+    EXPECT_EQ(rmw_destroy_node(node), RMW_RET_OK);
+}
+
+TEST_F(GuardConditionTest, NodesShareTheContextGraphGuardCondition) {
+    rmw_node_t* a = rmw_create_node(&context_, "graph_guard_a", "/");
+    rmw_node_t* b = rmw_create_node(&context_, "graph_guard_b", "/");
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    EXPECT_EQ(rmw_node_get_graph_guard_condition(a), rmw_node_get_graph_guard_condition(b));
+    EXPECT_EQ(rmw_destroy_node(b), RMW_RET_OK);
+    EXPECT_EQ(rmw_destroy_node(a), RMW_RET_OK);
+}
+
+TEST_F(GuardConditionTest, LocalEndpointsTriggerGraphGuardAndCount) {
+    rmw_node_t* node = rmw_create_node(&context_, "graph_count_test", "/");
+    ASSERT_NE(node, nullptr);
+    auto* graph = const_cast<rmw_guard_condition_t*>(rmw_node_get_graph_guard_condition(node));
+    EXPECT_TRUE(wait_on(graph, rmw_time_t{0, 0})) << "node creation changes the graph";
+    EXPECT_FALSE(wait_on(graph, rmw_time_t{0, 0}));
+
+    size_t count = 99;
+    ASSERT_EQ(rmw_count_publishers(node, "/graph_count", &count), RMW_RET_OK);
+    EXPECT_EQ(count, 0u);
+
+    const rosidl_message_type_support_t* ts = ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String);
+    rmw_qos_profile_t qos = rmw_qos_profile_default;
+    rmw_publisher_options_t pub_options = rmw_get_default_publisher_options();
+    rmw_publisher_t* pub = rmw_create_publisher(node, ts, "/graph_count", &qos, &pub_options);
+    ASSERT_NE(pub, nullptr);
+    EXPECT_TRUE(wait_on(graph, rmw_time_t{0, 0})) << "a new publisher changes the graph";
+
+    ASSERT_EQ(rmw_count_publishers(node, "/graph_count", &count), RMW_RET_OK);
+    EXPECT_EQ(count, 1u);
+    ASSERT_EQ(rmw_count_subscribers(node, "/graph_count", &count), RMW_RET_OK);
+    EXPECT_EQ(count, 0u);
+    ASSERT_EQ(rmw_count_publishers(node, "/other", &count), RMW_RET_OK);
+    EXPECT_EQ(count, 0u);
+
+    EXPECT_EQ(rmw_count_publishers(node, "no_leading_slash", &count), RMW_RET_INVALID_ARGUMENT);
+    rmw_reset_error();
+    EXPECT_EQ(rmw_count_publishers(node, "/graph_count", nullptr), RMW_RET_INVALID_ARGUMENT);
+    rmw_reset_error();
+
+    EXPECT_EQ(rmw_destroy_publisher(node, pub), RMW_RET_OK);
+    EXPECT_TRUE(wait_on(graph, rmw_time_t{0, 0})) << "a destroyed publisher changes the graph";
+    ASSERT_EQ(rmw_count_publishers(node, "/graph_count", &count), RMW_RET_OK);
+    EXPECT_EQ(count, 0u);
     EXPECT_EQ(rmw_destroy_node(node), RMW_RET_OK);
 }

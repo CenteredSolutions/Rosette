@@ -151,7 +151,7 @@ RTPSParticipant::RTPSParticipant(uint8_t     domain_id,
     , participant_guid_{make_participant_guid_prefix(participant_id),
                         entity_id::PARTICIPANT}
     , spdp_multicast_locator_(LOCATOR_INVALID)
-    , match_table_(on_endpoint_match, on_endpoint_unmatch, this)
+    , match_table_(on_endpoint_match, on_endpoint_unmatch, this, on_endpoints_changed)
     , spdp_writer_(local_participant_data_,
                    transport,
                    LOCATOR_INVALID)
@@ -472,6 +472,7 @@ void RTPSParticipant::on_spdp_new_peer(const PeerEntry& peer,
                peer.data.guidPrefix.value[0], peer.data.guidPrefix.value[1],
                peer.data.guidPrefix.value[2], peer.data.guidPrefix.value[3],
                peer.data.guidPrefix.value[4], peer.data.guidPrefix.value[5]);
+    p->notify_graph_change();
     if (peer.data.metatrafficUnicastLocatorCount == 0) {
         RTPS_LOG_W("participant", "new peer has no metatraffic locator, skipping SEDP");
         return;
@@ -514,6 +515,12 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
     p->match_table_.remove_participant(peer.data.guidPrefix);
     p->sedp_writer_.on_peer_removed(peer.data.guidPrefix);
     p->sedp_reader_.on_peer_removed(peer.data.guidPrefix);
+    p->notify_graph_change();
+}
+
+void RTPSParticipant::on_endpoints_changed(void* self) noexcept
+{
+    static_cast<RTPSParticipant*>(self)->notify_graph_change();
 }
 
 void RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,

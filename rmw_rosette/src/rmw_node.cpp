@@ -70,18 +70,17 @@ extern "C" {
  * @brief Creates a node scoped to a context's RTPS participant.
  *
  * RTPS has no node concept of its own; this exists to satisfy rcl's node
- * lifecycle, own the graph guard condition rcl_node_init() requires, and
- * give graph-cache queries something to scope by. Every
+ * lifecycle and give graph-cache queries something to scope by. Every
  * node created against one `rmw_context_t` shares that context's single
  * `RTPSParticipant` — a participant is process-wide; nodes are a ROS
  * concept layered on top of it.
  *
  * Draws a slot from node_pool(), copies `name`/`namespace_` into the
  * slot's fixed buffers via copy_bounded(), and fills the `rmw_node_t`
- * fields to point at those buffers. The node's graph guard condition lives
- * in the same slot, so it shares the node's lifetime. Finally the node is
- * published on `ros_discovery_info`, which is how stock peers learn that it
- * exists; a node that cannot be published is not created.
+ * fields to point at those buffers. Finally the node is published on
+ * `ros_discovery_info`, which is how stock peers learn that it exists (a
+ * node that cannot be published is not created), and the context's graph
+ * guard condition is triggered for local observers.
  *
  * @param[in] context Context whose participant this node is scoped to.
  * @param[in] name Node name.
@@ -123,11 +122,6 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name,
     slot->node.namespace_ = slot->impl.namespace_;
     slot->node.context = context;
 
-    slot->impl.graph_guard.wake = &slot->impl.context->driver->wake_event();
-    slot->impl.graph_guard_handle.implementation_identifier = rmw_rosette_identifier;
-    slot->impl.graph_guard_handle.data = &slot->impl.graph_guard;
-    slot->impl.graph_guard_handle.context = context;
-
     rmw_rosette::ContextLock lock(*slot->impl.context);
     if (!slot->impl.context->discovery_info.add_node(slot->impl)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_node: cannot publish ros_discovery_info "
@@ -135,11 +129,14 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name,
         node_pool().release(slot);
         return nullptr;
     }
+    slot->impl.context->graph_guard.trigger();
     return &slot->node;
 }
 
 /**
  * @brief Withdraws a node from `ros_discovery_info` and returns its slot to the pool.
+ *
+ * Triggers the context's graph guard condition, since the node list changed.
  *
  * @param[in] node Node to destroy.
  * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `node` or its data is null.
@@ -150,6 +147,7 @@ rmw_ret_t rmw_destroy_node(rmw_node_t* node) {
     {
         rmw_rosette::ContextLock lock(*impl->context);
         impl->context->discovery_info.remove_node(*impl);
+        impl->context->graph_guard.trigger();
     }
     node_pool().release(slot_from(node));
     return RMW_RET_OK;
@@ -160,16 +158,19 @@ rmw_ret_t rmw_destroy_node(rmw_node_t* node) {
  *
  * rcl_node_init() fails when this returns null, and rcl's graph helpers
  * (`rcl_wait_for_publishers`, `rclpy` `wait_for_service`) add it to their
- * wait sets. The condition is embedded in the node's pool slot; it is
- * triggered when discovery changes the graph this node observes.
+ * wait sets. Every node of a context shares the context's one graph guard
+ * condition, as stock DDS-based rmw implementations do: the participant
+ * triggers it whenever discovery changes the graph (rmw_init()), and node
+ * creation and destruction trigger it for local nodes.
  *
  * @param[in] node Node whose graph guard condition is requested.
- * @return The node's guard condition, valid until rmw_destroy_node();
- *   `nullptr` only if `node` or its data is null.
+ * @return The context's graph guard condition, valid until
+ *   rmw_context_fini(); `nullptr` only if `node` or its data is null.
  *
  * Verification:
- * - Correct means: rcl_node_init() succeeds, and the returned handle is
- *   stable for the node's lifetime.
+ * - Correct means: rcl_node_init() succeeds, the returned handle is stable
+ *   for the node's lifetime, and a wait on it returns when a publisher
+ *   appears on the graph.
  * - Covered by: rmw_rosette/test/test_guard_condition.cpp.
  *
  * References:
@@ -178,7 +179,7 @@ rmw_ret_t rmw_destroy_node(rmw_node_t* node) {
  */
 const rmw_guard_condition_t* rmw_node_get_graph_guard_condition(const rmw_node_t* node) {
     if (!node || !node->data) return nullptr;
-    return &static_cast<rmw_rosette::Node*>(node->data)->graph_guard_handle;
+    return &static_cast<rmw_rosette::Node*>(node->data)->context->graph_guard_handle;
 }
 
 }  // extern "C"

@@ -46,49 +46,6 @@
 
 namespace rmw_rosette {
 
-/// Backing store for one rmw_context_t. Owns the single RTPSParticipant
-/// this process/firmware image presents to the ROS graph, plus the
-/// transport it talks through.
-///
-/// RTPSParticipant and SocketUdpTransport both have non-default,
-/// non-copyable constructors (they need domain/participant id and ports
-/// known at construction time), so they can't live as plain default-
-/// constructed members the way Pool<T,N> expects. They're placement-new'd
-/// into aligned storage instead — the same technique
-/// RTPSParticipant::create_writer<>() itself already uses for its writer
-/// table (see participant.hpp) — so this stays a single static
-/// allocation per context slot, constructed once at rmw_init() and torn
-/// down once at rmw_context_fini(), not per-message.
-struct Context {
-    alignas(rtps::SocketUdpTransport) unsigned char transport_storage[sizeof(rtps::SocketUdpTransport)];
-    alignas(rtps::RTPSParticipant) unsigned char participant_storage[sizeof(rtps::RTPSParticipant)];
-    alignas(rtps::ParticipantDriver) unsigned char driver_storage[sizeof(rtps::ParticipantDriver)];
-
-    /// Socket backend from the build's network port (network_port.hpp).
-    rosette::net::SocketProvider* provider = nullptr;
-    rtps::SocketUdpTransport* transport   = nullptr;  ///< placement-new'd into transport_storage
-    rtps::RTPSParticipant*    participant = nullptr;  ///< placement-new'd into participant_storage
-    /// Runs the participant and owns its lock; every rmw entry point that
-    /// touches RTPS state or a ChangeRing holds driver->mutex().
-    rtps::ParticipantDriver*  driver      = nullptr;  ///< placement-new'd into driver_storage
-    /// Publishes this participant's nodes on `ros_discovery_info`; every
-    /// node and endpoint creation and destruction reports to it.
-    RosDiscoveryInfoWriter discovery_info;
-    uint8_t domain_id = 0;
-    bool constructed = false;
-    /// Receive buffer the driver drains sockets into; one full datagram.
-    uint8_t rx_buffer[RMW_ROSETTE_MAX_DATAGRAM_SIZE] = {};
-};
-
-/// @brief Holds a context's participant lock for the enclosing scope.
-class ContextLock {
-public:
-    explicit ContextLock(Context& ctx) noexcept : guard_(ctx.driver->mutex()) {}
-
-private:
-    rosette::platform::LockGuard guard_;
-};
-
 /**
  * @brief Backing store for one rmw_guard_condition_t.
  *
@@ -121,6 +78,55 @@ struct GuardCondition {
     }
 };
 
+/// Backing store for one rmw_context_t. Owns the single RTPSParticipant
+/// this process/firmware image presents to the ROS graph, plus the
+/// transport it talks through.
+///
+/// RTPSParticipant and SocketUdpTransport both have non-default,
+/// non-copyable constructors (they need domain/participant id and ports
+/// known at construction time), so they can't live as plain default-
+/// constructed members the way Pool<T,N> expects. They're placement-new'd
+/// into aligned storage instead — the same technique
+/// RTPSParticipant::create_writer<>() itself already uses for its writer
+/// table (see participant.hpp) — so this stays a single static
+/// allocation per context slot, constructed once at rmw_init() and torn
+/// down once at rmw_context_fini(), not per-message.
+struct Context {
+    alignas(rtps::SocketUdpTransport) unsigned char transport_storage[sizeof(rtps::SocketUdpTransport)];
+    alignas(rtps::RTPSParticipant) unsigned char participant_storage[sizeof(rtps::RTPSParticipant)];
+    alignas(rtps::ParticipantDriver) unsigned char driver_storage[sizeof(rtps::ParticipantDriver)];
+
+    /// Socket backend from the build's network port (network_port.hpp).
+    rosette::net::SocketProvider* provider = nullptr;
+    rtps::SocketUdpTransport* transport   = nullptr;  ///< placement-new'd into transport_storage
+    rtps::RTPSParticipant*    participant = nullptr;  ///< placement-new'd into participant_storage
+    /// Runs the participant and owns its lock; every rmw entry point that
+    /// touches RTPS state or a ChangeRing holds driver->mutex().
+    rtps::ParticipantDriver*  driver      = nullptr;  ///< placement-new'd into driver_storage
+    /// Publishes this participant's nodes on `ros_discovery_info`; every
+    /// node and endpoint creation and destruction reports to it.
+    RosDiscoveryInfoWriter discovery_info;
+    /// Triggered whenever the participant's view of the ROS graph changes
+    /// (a peer, endpoint, or local node comes or goes). One per context,
+    /// returned by rmw_node_get_graph_guard_condition() for every node, as
+    /// rmw_dds_common::Context::graph_guard_condition is in stock rmw.
+    GuardCondition        graph_guard;
+    rmw_guard_condition_t graph_guard_handle{};
+    uint8_t domain_id = 0;
+    bool constructed = false;
+    /// Receive buffer the driver drains sockets into; one full datagram.
+    uint8_t rx_buffer[RMW_ROSETTE_MAX_DATAGRAM_SIZE] = {};
+};
+
+/// @brief Holds a context's participant lock for the enclosing scope.
+class ContextLock {
+public:
+    explicit ContextLock(Context& ctx) noexcept : guard_(ctx.driver->mutex()) {}
+
+private:
+    rosette::platform::LockGuard guard_;
+};
+
 #ifndef RMW_ROSETTE_MAX_NAME_LEN
 #  define RMW_ROSETTE_MAX_NAME_LEN 64
 #endif
@@ -135,10 +141,6 @@ struct GuardCondition {
 /// backs must keep reporting them for its whole lifetime.
 struct Node {
     Context* context = nullptr;
-    /// Signaled when this node's view of the ROS graph changes; returned by
-    /// rmw_node_get_graph_guard_condition(), which rcl_node_init() requires.
-    GuardCondition        graph_guard;
-    rmw_guard_condition_t graph_guard_handle{};
     char     name[RMW_ROSETTE_MAX_NAME_LEN] = {};
     char     namespace_[RMW_ROSETTE_MAX_NAME_LEN] = {};
 };
