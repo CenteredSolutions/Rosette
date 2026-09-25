@@ -34,21 +34,28 @@
  * ------------------------------
  * 1. Find the smallest class whose block_size >= min_size.
  * 2. If that class has a free block, return it (exact-fit).
- * 3. If not, try each larger class in order (promote-on-exhaustion).
- *    Promotion is explicit; the caller can inspect BufRef::capacity()
- *    to know what it actually received.
+ * 3. If not, try each larger class in order (promote-on-exhaustion), except
+ *    the largest: it holds whole samples too large for any other class
+ *    (a sample is always stored contiguously, and fragmented only on the
+ *    wire), so a request that fits a smaller class never takes one. Small
+ *    traffic running a class dry therefore cannot starve large samples.
+ *    The caller can inspect BufRef::capacity() to know what it received.
  * 4. If all eligible classes are exhausted, return an invalid BufRef.
  *
- * Default size-class configuration (override in config.hpp)
- * ----------------------------------------------------------
- *  Class 0:  128 bytes,  8 slots  — HEARTBEAT, ACKNACK, GAP, small ctrl
- *  Class 1:  256 bytes,  6 slots  — SPDP/SEDP PL_CDR, small DATA
- *  Class 2:  512 bytes,  4 slots  — medium DATA, default TX scratch
- *  Class 3: 1024 bytes,  2 slots  — large DATA
- *  Class 4: 2048 bytes,  2 slots  — DATA_FRAG reassembly
+ * Size-class configuration
+ * ------------------------
+ * Every class size and count is a RTPS_POOL_CLASS<n>_SIZE / _COUNT macro.
+ * Firmware builds set them from board inputs in cmake/rosette_rtps.cmake
+ * (control messages, discovery announcements, small samples, one datagram,
+ * and ROSETTE_RTPS_MAX_SAMPLE_SIZE); rmw_rosette sets its own in
+ * rmw_rosette/cmake/rmw_rosette_capacity.cmake. The defaults below serve
+ * host unit tests:
  *
- * Total managed payload: 8×128 + 6×256 + 4×512 + 2×1024 + 2×2048
- *                       = 1024 + 1536 + 2048 + 2048 + 4096 = 10 752 bytes
+ *  Class 0:  128 bytes, 8 slots
+ *  Class 1:  256 bytes, 8 slots
+ *  Class 2:  512 bytes, 8 slots
+ *  Class 3: 1024 bytes, 4 slots
+ *  Class 4: 2048 bytes, 4 slots  (largest: samples only)
  *
  * MessageBuilder compatibility
  * ----------------------------
@@ -458,26 +465,32 @@ public:
     MultiBufPool(const MultiBufPool&)            = delete;
     MultiBufPool& operator=(const MultiBufPool&) = delete;
 
-    // ----------------------------------------------------------
-    // alloc(min_size)
-    //
-    // Returns a BufRef from the smallest size class whose block
-    // capacity >= min_size.  If the ideal class is exhausted, the
-    // next larger class is tried (promote-on-exhaustion).
-    //
-    // BufRef::capacity() reflects the actual block size received,
-    // which may be larger than min_size.
-    //
-    // Returns an invalid BufRef if all eligible classes are full.
-    //
-    // @param min_size  Minimum usable bytes required.  Defaults to
-    //                  the smallest class size so callers that don't
-    //                  care about size get the most economical block.
-    // ----------------------------------------------------------
+    /**
+     * @brief Allocates a block of at least `min_size` usable bytes.
+     *
+     * Takes the smallest class that fits and, when it is exhausted, the
+     * next larger one, but never promotes into the largest class: that
+     * class is reserved for samples no smaller class can hold.
+     *
+     * @param[in] min_size  Minimum usable bytes; defaults to the smallest
+     *   class size.
+     * @param[in] caller_pc Allocation site recorded by RTPS_BUFPOOL_DEBUG.
+     * @return A block whose capacity() may exceed `min_size`, or an invalid
+     *   BufRef when every eligible class is exhausted or `min_size` exceeds
+     *   the largest class.
+     *
+     * Verification:
+     * - Correct means: smallest fit first; promotion stops below the
+     *   largest class for requests a smaller class can hold.
+     * - Covered by: tests/host/buf_pool_class_test.cpp.
+     */
     BufRef alloc(uint32_t min_size = RTPS_POOL_CLASS0_SIZE,
                  uintptr_t caller_pc = 0u) noexcept {
+        constexpr uint8_t kLargest = kPoolClassCount - 1u;
+        const bool fits_smaller_class = min_size <= class_sizes_[kLargest - 1u];
         for (uint8_t c = 0; c < kPoolClassCount; ++c) {
             if (class_sizes_[c] < min_size) continue;  // Class too small.
+            if (c == kLargest && fits_smaller_class) break;  // Reserved for samples.
             BufBlock* b = dispatch_alloc(c);
             if (!b) continue;  // Class exhausted — promote to next.
 #ifdef RTPS_BUFPOOL_DEBUG

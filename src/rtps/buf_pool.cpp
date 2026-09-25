@@ -3,27 +3,25 @@
  * @brief Global MultiBufPool singleton definition.
  *
  * The pool lives in .bss and is zero-initialised by the C runtime before
- * the MultiBufPool constructor runs.  The constructor chains init() calls
- * on each SlabClass which build the per-class free lists.
+ * the MultiBufPool constructor runs. The constructor chains init() calls
+ * on each SlabClass, which build the per-class free lists.
  *
- * On RP2350 this object occupies approximately:
- *   8 slots  × (sizeof(BufBlock) + 128)  =  8 × 144  = 1 088 bytes
- *   8 slots  × (sizeof(BufBlock) + 256)  =  8 × 272  = 2 112 bytes
- *   8 slots  × (sizeof(BufBlock) + 512)  =  8 × 528  = 4 160 bytes
- *   2 slots  × (sizeof(BufBlock) + 1024) =  2 × 1040 = 2 064 bytes
- *   2 slots  × (sizeof(BufBlock) + 2048) =  2 × 2064 = 4 112 bytes
- *   ─────────────────────────────────────────────────────────────────    
- *   Total                                              ≈ 13 536 bytes
- *
- * (sizeof(BufBlock) = 4 + 4 + 2 + 1 + 1 = 12 bytes, padded to 16 by
- *  StorageSlot alignment on a 4-byte-minimum-aligned Octet array.)
- *
- * Place this translation unit in SRAM (not flash) by your linker script.
+ * Its size is the sum over classes of COUNT x (SIZE + sizeof(BufBlock)),
+ * where sizeof(BufBlock) is 12 octets on ARM32. The class sizes and counts
+ * come from the build (buf_pool.hpp, "Size-class configuration").
  */
 
 #include "buf_pool.hpp"
 
 namespace rtps {
+
+#ifdef ROSETTE_RTPS_MAX_DATAGRAM_SIZE
+// Class 3 holds one datagram: a received DATA payload, a built message, or
+// a sample small enough to go out unfragmented together with its RTPS
+// headers (kRtpsDataHeadroom).
+static_assert(RTPS_POOL_CLASS3_SIZE >= ROSETTE_RTPS_MAX_DATAGRAM_SIZE + kRtpsDataHeadroom,
+              "RTPS_POOL_CLASS3_SIZE must hold one datagram plus its RTPS headers");
+#endif
 
 MultiBufPool g_buf_pool;
 

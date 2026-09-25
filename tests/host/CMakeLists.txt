@@ -41,3 +41,18 @@ add_host_test(ipv4ll_provider_test)
 add_host_test(address_manager_test)
 add_host_test(network_address_test)
 add_host_test(wiznet_address_provider_test)
+
+# RTPS buffer pool size-class selection, on a pool of two blocks per class.
+add_executable(buf_pool_class_test
+    buf_pool_class_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/rtps/buf_pool.cpp)
+target_include_directories(buf_pool_class_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/rtps)
+target_compile_definitions(buf_pool_class_test PRIVATE
+    RTPS_LOG_LEVEL=0
+    RTPS_POOL_CLASS0_COUNT=2u RTPS_POOL_CLASS1_COUNT=2u RTPS_POOL_CLASS2_COUNT=2u
+    RTPS_POOL_CLASS3_COUNT=2u RTPS_POOL_CLASS4_COUNT=2u)
+target_compile_options(buf_pool_class_test PRIVATE -Wall -Wextra)
+add_test(NAME buf_pool_class_test COMMAND buf_pool_class_test)
