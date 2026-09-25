@@ -37,7 +37,7 @@ struct Fixture {
     Guid reader_guid{};
     Guid writer_guid{};
     Locator loc = make_udpv4_locator(0xC0A80188u, 7411u);
-    StatefulReader r;
+    DefaultStatefulReader r;
 
     Fixture()
         : reader_guid(make_guid(0x51u, make_entity(7u, 7u, 7u, 0x04u))),

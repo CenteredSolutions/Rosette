@@ -31,7 +31,7 @@ static bool tc_srr_8_4_7_4_001(std::string& err) {
     const Guid writer_guid = make_guid(0x21u, 0x22u, 0x23u, make_entity(4u, 5u, 6u, 0xC2u));
     const Locator loc = make_udpv4_locator(0xC0A80114u, 7411u);
 
-    StatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "first matched_writer_add should succeed");
     CHECK(r.matched_writer_count() == 1u, "matched writer count should be one");
     CHECK(r.matched_writer_lookup(writer_guid) != nullptr, "matched writer should be discoverable");

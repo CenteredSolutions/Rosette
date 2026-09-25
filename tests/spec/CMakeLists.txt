@@ -163,6 +163,8 @@ add_executable(sedp_spec_tests
     src/test_sedp_8_5_5_1_matching.cpp
     src/test_sedp_9_6_3_2_plcdr.cpp
     ../../src/rtps/sedp.cpp
+    ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/sn_window.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp

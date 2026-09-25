@@ -52,17 +52,22 @@ public:
      * @brief Copies one received change into the ring.
      *
      * Called from the reader's OnChangeAvailable trampoline. When the ring
-     * is full the oldest unread change is overwritten.
+     * is full the oldest unread change is overwritten. Only ALIVE changes
+     * with a payload are stored: ROS 2 topics are keyless, so an rmw take
+     * returns samples and never instance state, and a disposal or
+     * unregistration (NOT_ALIVE, often without payload) is not a message.
      *
      * @param[in] change Change delivered by the RTPS reader; its payload
      *   buffer is retained, the rest is copied.
-     * @return `true` when the change was stored.
+     * @return `true` when the change was stored; `false` for a NOT_ALIVE
+     *   change or an empty payload.
      *
      * Verification:
      * - Correct means: after N pushes into a ring of capacity C, pop()
      *   returns the last min(N, C) changes in arrival order.
      */
     bool push(const rtps::CacheChange& change) noexcept {
+        if (change.kind != rtps::ChangeKind::ALIVE) return false;
         if (!change.payload.valid() || change.payload.size == 0) return false;
         PendingChange& slot = slots_[head_];
         // Share the reader's pool buffer: a new reference, released when the

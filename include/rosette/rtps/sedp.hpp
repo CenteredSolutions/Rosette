@@ -21,20 +21,16 @@
  * PID_TYPE_NAME, PID_RELIABILITY, PID_DURABILITY.
  * Optional: PID_UNICAST_LOCATOR (if different from participant default).
  *
- * Send policy (project constraint)
- * ----------------------------------
- * SEDP is sent ONCE per newly discovered peer — not re-sent on every
- * SPDP heartbeat.  This is tracked via SpdpReader::sedp_announced.
- * After sending, SpdpReader::mark_sedp_announced() is called.
- *
  * Reliability (§8.5.4.1, p. 165)
  * --------------------------------
- * The SEDP builtin endpoints use RELIABLE / TRANSIENT_LOCAL QoS.
- * On this embedded target we use a simplified approach: SEDP data is
- * sent as BEST_EFFORT (no retransmit machinery for builtin endpoints)
- * and re-sent if/when the remote participant sends a new SPDP announce.
- * This is permitted by §8.5.4.1 note that says implementations may
- * choose simpler reliability for builtins.
+ * The SEDP builtin endpoints are RELIABLE / TRANSIENT_LOCAL, and here they
+ * are the ordinary protocol engines: SedpWriter owns two StatefulWriters and
+ * SedpReader two StatefulReaders. When SPDP discovers a participant, each
+ * side matches the peer's builtin counterparts from its
+ * availableBuiltinEndpoints. Each local endpoint is written once, when it is
+ * created; TRANSIENT_LOCAL replay delivers it to peers discovered later, and
+ * the readers request lost announcements until DATA or GAP resolves them.
+ * SEDP itself only encodes and decodes the PL_CDR endpoint data.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -51,8 +47,7 @@
 #include "types.hpp"
 #include "endpoint_match_table.hpp"
 #include "message_builder.hpp"
-#include "message_parser.hpp"   // ParseContext, ParsedHeartbeat, ParsedGap
-#include "sn_window.hpp"
+#include "stateful_reader.hpp"
 #include "spdp.hpp"   // pid namespace, plcdr_write_param
 #include "stateful_writer.hpp"
 
@@ -252,192 +247,135 @@ private:
 // ============================================================
 // SedpReader
 //
-// Receives SEDP DATA submessages from remote participants and feeds
-// the DiscoveredWriterData / DiscoveredReaderData into the
-// EndpointMatchTable.
+// Owns the two builtin SEDP readers (§8.5.4.3, Table 8.80) and turns the
+// changes they deliver into EndpointMatchTable updates:
 //
-// Also handles incoming HEARTBEATs from remote SEDP writers and
-// responds with ACKNACK so those writers deliver their endpoint data.
-// — §8.5.4.1, p. 165; §8.3.7.5, p. 91.
+//  - Each builtin reader is a RELIABLE StatefulReader (§8.5.4.1) with one
+//    WriterProxy per remote participant. on_peer_discovered() matches the
+//    peer's SEDP announcers from its SPDP data; the readers then request,
+//    repair and acknowledge announcements exactly as any reliable reader.
+//  - A delivered ALIVE change is a PL_CDR DiscoveredWriterData or
+//    DiscoveredReaderData (§9.6.3.2) and is added to the match table; a
+//    NOT_ALIVE change withdraws the endpoint its key names.
 // ============================================================
 
 class SedpReader {
 public:
 
-    // ----------------------------------------------------------
-    // Constructor
-    //
-    // @param local_prefix  GUID prefix of the local participant
-    //                      (used as the sender prefix in ACKNACK messages).
-    // @param transport     Transport for sending ACKNACK replies.
-    // @param match_table   Endpoint match table to update on DATA.
-    // ----------------------------------------------------------
-    explicit SedpReader(const GuidPrefix&   local_prefix,
-                        ITransport&         transport,
-                        EndpointMatchTable& match_table) noexcept
-        : local_prefix_(local_prefix)
-        , transport_(transport)
-        , match_table_(match_table)
-    {}
-
-    // ----------------------------------------------------------
-    // on_publication_data()
-    //
-    // Process a SEDP publications DATA submessage payload.
-    //
-    // §8.5.4, p. 163:
-    //   "The SEDPbuiltinPublicationsReader receives DiscoveredWriterData
-    //    from remote participants and updates the local discovery state."
-    //
-    // @param sender_prefix  GUID prefix of the announcing participant.
-    // @param payload        PL_CDR_LE payload bytes.
-    // @param payload_len    Byte count.
-    // @param writer_sn      Sequence number from the DATA submessage header.
-    // ----------------------------------------------------------
-    void on_publication_data(const GuidPrefix& sender_prefix,
-                             const Octet*      payload,
-                             uint32_t          payload_len,
-                             SequenceNumber    writer_sn) noexcept;
-
-    // ----------------------------------------------------------
-    // on_subscription_data()
-    //
-    // Process a SEDP subscriptions DATA submessage payload.
-    // ----------------------------------------------------------
-    void on_subscription_data(const GuidPrefix& sender_prefix,
-                              const Octet*      payload,
-                              uint32_t          payload_len,
-                              SequenceNumber    writer_sn) noexcept;
-
-    // ----------------------------------------------------------
-    // on_publication_disposed() / on_subscription_disposed()
-    //
-    // A remote SEDP writer withdrew an endpoint (DATA whose inline QoS
-    // StatusInfo has DISPOSED or UNREGISTERED set). Removes it from the
-    // match table, which unmatches it from every local endpoint.
-    //
-    // §8.5.4.1, §9.6.3.3. Verification: TC-SEDP-8.5.4-009.
-    //
-    // @param sender_prefix  GUID prefix of the announcing participant.
-    // @param endpoint_guid  Withdrawn endpoint, from PID_KEY_HASH.
-    // @param writer_sn      Sequence number of the disposal DATA.
-    // ----------------------------------------------------------
-    void on_publication_disposed(const GuidPrefix& sender_prefix,
-                                 const Guid&       endpoint_guid,
-                                 SequenceNumber    writer_sn) noexcept;
-    void on_subscription_disposed(const GuidPrefix& sender_prefix,
-                                  const Guid&       endpoint_guid,
-                                  SequenceNumber    writer_sn) noexcept;
+    /// A builtin SEDP reader: one matched announcer per remote participant.
+    using BuiltinReader = BoundedStatefulReader<RTPS_MAX_PEERS>;
 
     /**
-     * @brief Answers a HEARTBEAT from a remote SEDP writer with an ACKNACK.
+     * @brief Creates the builtin publications and subscriptions readers.
      *
-     * The builtin readers are reliable (§8.5.4.1), so the ACKNACK names
-     * every endpoint announcement still missing from that writer, from the
-     * per-writer SequenceNumberWindow: out-of-order arrivals and lost bursts leave
-     * holes, which are requested until DATA or GAP resolves them. firstSN
-     * resolves everything the writer no longer holds. On a link whose
-     * repairs must fit one datagram (repairs_must_fit_datagram()) only the
-     * lowest missing announcement is requested, and each arriving repair
-     * requests the next, so a peer that packs repairs (Fast DDS) still
-     * completes discovery.
-     *
-     * @param[in] ctx            Parse context; senderGuidPrefix names the peer.
-     * @param[in] msg            HEARTBEAT from SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER
-     *   or SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER; others are ignored.
-     * @param[in] writer_locator The peer's metatraffic unicast locator; the
-     *   ACKNACK and later repair requests go there.
-     *
-     * Verification:
-     * - Correct means: every hole below lastSN is requested until resolved;
-     *   a pure ACK (F=1) is sent only when nothing up to lastSN is missing.
-     * - Covered by: TC-SEDP-8.5.4-010, TC-SEDP-8.5.4-011.
-     *
-     * References:
-     * - OMG DDSI-RTPS 2.5 §8.3.7.5 (HEARTBEAT), §8.4.12.1, §8.5.4.1
+     * @param[in] local_prefix GUID prefix of the local participant; the
+     *   readers' GUIDs are this prefix with the SEDPbuiltin detector
+     *   EntityIds.
+     * @param[in] transport    Transport for ACKNACKs; must outlive this.
+     * @param[in] match_table  Table updated with discovered endpoints; must
+     *   outlive this.
      */
-    void on_heartbeat(const ParseContext&    ctx,
-                      const ParsedHeartbeat& msg,
-                      const Locator&         writer_locator) noexcept;
+    SedpReader(const GuidPrefix&   local_prefix,
+               ITransport&         transport,
+               EndpointMatchTable& match_table) noexcept;
+
+    SedpReader(const SedpReader&)            = delete;
+    SedpReader& operator=(const SedpReader&) = delete;
 
     /**
-     * @brief Resolves announcements a remote SEDP writer declared irrelevant.
+     * @brief Matches a newly discovered participant's SEDP announcers.
      *
-     * A writer sends GAP for sequence numbers it will never deliver (for
-     * example an endpoint announcement superseded by its disposal). Without
-     * this the reader would request them forever.
+     * Each announcer the peer lists in availableBuiltinEndpoints is matched
+     * with the corresponding builtin reader at the peer's metatraffic
+     * unicast locators (multicast when it lists none); an announcer it does
+     * not list is unmatched. Matching an already matched announcer changes
+     * nothing, so its reliability state survives SPDP refreshes.
      *
-     * @param[in] ctx Parse context; senderGuidPrefix names the peer.
-     * @param[in] msg GAP from an SEDP announcer; others are ignored.
+     * @param[in] peer The peer's SPDPdiscoveredParticipantData.
      *
      * Verification:
-     * - Correct means: [gapStart, gapList.base) and every gapList bit are
-     *   resolved; on a narrow link the next hole is requested at once.
-     * - Covered by: TC-SEDP-8.5.4-011.
+     * - Correct means: after the call, DATA and HEARTBEAT from each listed
+     *   announcer are processed and ACKNACKs go to the peer's locator.
+     * - Covered by: TC-SEDP-8.5.4-006, TC-SEDP-8.5.4-011.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.3.7.4 (GAP), §8.4.12.1
+     * - OMG DDSI-RTPS 2.5 §8.5.4.1, §8.5.3.2 (availableBuiltinEndpoints)
      */
-    void on_gap(const ParseContext& ctx, const ParsedGap& msg) noexcept;
+    void on_peer_discovered(const SPDPdiscoveredParticipantData& peer) noexcept;
 
-    /// @brief Forgets the reliability state kept for a peer that left.
-    void remove_peer(const GuidPrefix& prefix) noexcept;
+    /// @brief Unmatches a departed participant's SEDP announcers.
+    void on_peer_removed(const GuidPrefix& peer_prefix) noexcept;
+
+    /**
+     * @brief The builtin reader matched with the SEDP announcer `writer_id`.
+     *
+     * The participant routes every DATA, DATA_FRAG, HEARTBEAT,
+     * HEARTBEAT_FRAG and GAP from a SEDP announcer here. The builtin
+     * EntityIds are reserved (§9.3.1.2), so the writer alone identifies the
+     * destination whatever readerId the submessage names.
+     *
+     * @param[in] writer_id EntityId of the sending writer.
+     * @return The publications or subscriptions reader, or nullptr when
+     *   `writer_id` is not a SEDP announcer.
+     */
+    StatefulReader* reader_for_writer(const EntityId& writer_id) noexcept;
+
+    /// @brief Sends ACKNACKs whose heartbeatResponseDelay has elapsed.
+    void tick(uint32_t now_ms) noexcept {
+        publications_reader_.tick(now_ms);
+        subscriptions_reader_.tick(now_ms);
+    }
+
+    /// @brief Soonest pending ACKNACK of the two builtin readers, or UINT32_MAX.
+    uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept {
+        const uint32_t a = publications_reader_.ms_until_next_timer(now_ms);
+        const uint32_t b = subscriptions_reader_.ms_until_next_timer(now_ms);
+        return a < b ? a : b;
+    }
 
 private:
 
-    /// Reliability state for one remote SEDP announcer (§8.4.10 WriterProxy).
-    struct SedpWriterState {
-        SequenceNumberWindow window;
-        SequenceNumber  last_sn;          ///< Highest lastSN heard in a HEARTBEAT.
-        SequenceNumber  pending_repair;   ///< Sole change requested by a narrow ACKNACK.
-        uint32_t        acknack_count = 0;
-    };
+    /**
+     * @brief Applies one publication announcement delivered by the reader.
+     *
+     * ALIVE: decodes the DiscoveredWriterData and adds it to the match table.
+     * NOT_ALIVE: removes the writer named by the change's key, provided it
+     * belongs to the announcing participant (a participant may only
+     * withdraw its own endpoints).
+     *
+     * @param[in] change Change delivered by publications_reader_.
+     *
+     * Verification:
+     * - Correct means: a valid announcement matches the endpoint; a
+     *   disposal from its owner unmatches it; anything else is ignored.
+     * - Covered by: TC-SEDP-8.5.4-002, TC-SEDP-8.5.4-009,
+     *   TC-SEDP-9.6.3.2-*.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4.2 (DiscoveredWriterData), §9.6.3.2,
+     *   §9.6.3.3 (StatusInfo_t)
+     */
+    void on_publication_change(const CacheChange& change) noexcept;
 
-    /// Per-peer state for the two SEDP builtin readers (§8.5.4.3, Table 8.80).
-    struct SedpBuiltinAckState {
-        GuidPrefix      prefix;
-        SedpWriterState pub;              ///< SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER.
-        SedpWriterState sub;              ///< SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER.
-        Locator         writer_locator = LOCATOR_INVALID;
-        bool            alive = false;
-    };
+    /// @brief As on_publication_change(), for DiscoveredReaderData.
+    void on_subscription_change(const CacheChange& change) noexcept;
 
-    GuidPrefix          local_prefix_;
-    ITransport&         transport_;
-    EndpointMatchTable& match_table_;
-    MessageBuilder      builder_;
-    SedpBuiltinAckState ack_states_[RTPS_MAX_PEERS] = {};
-
-    SedpBuiltinAckState* find_or_alloc_ack_state(const GuidPrefix& prefix) noexcept {
-        SedpBuiltinAckState* free_slot = nullptr;
-        for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
-            if (ack_states_[i].alive && ack_states_[i].prefix == prefix)
-                return &ack_states_[i];
-            if (!ack_states_[i].alive && !free_slot)
-                free_slot = &ack_states_[i];
-        }
-        if (free_slot) {
-            *free_slot = SedpBuiltinAckState{};
-            free_slot->prefix = prefix;
-            free_slot->alive  = true;
-        }
-        return free_slot;
+    static void publication_trampoline(const CacheChange& change, void* self) noexcept {
+        static_cast<SedpReader*>(self)->on_publication_change(change);
+    }
+    static void subscription_trampoline(const CacheChange& change, void* self) noexcept {
+        static_cast<SedpReader*>(self)->on_subscription_change(change);
     }
 
     /**
-     * @brief Records an announcement's sequence number and reports whether
-     * it is new; requests the next repair when it was the one outstanding.
+     * @brief The endpoint a NOT_ALIVE announcement withdraws.
      *
-     * @param[in] sender_prefix Announcing participant.
-     * @param[in] is_pub        Publications (true) or subscriptions announcer.
-     * @param[in] writer_sn     Sequence number of the DATA.
-     * @return `true` to process the announcement, `false` for a duplicate.
+     * @param[in]  change   A NOT_ALIVE change from a builtin reader.
+     * @param[out] endpoint The PID_KEY_HASH inline QoS (the endpoint GUID,
+     *   §9.6.3.8), or else the PID_ENDPOINT_GUID of the serialized key.
+     * @return `false` when the change names no endpoint.
      */
-    bool accept_announcement(const GuidPrefix& sender_prefix, bool is_pub,
-                             const SequenceNumber& writer_sn) noexcept;
-
-    /// Sends the ACKNACK describing `writer`'s window to the peer in `state`.
-    void send_acknack(SedpBuiltinAckState& state, bool is_pub) noexcept;
+    static bool withdrawn_endpoint(const CacheChange& change, Guid& endpoint) noexcept;
 
     /// Deserialise a PL_CDR_LE payload into a DiscoveredWriterData.
     static bool deserialise_writer(const Octet*         payload,
@@ -459,6 +397,10 @@ private:
                                   DurabilityKind&  durability_out,
                                   Locator*         unicast_locs,
                                   uint8_t&         unicast_count) noexcept;
+
+    EndpointMatchTable& match_table_;
+    BuiltinReader       publications_reader_;
+    BuiltinReader       subscriptions_reader_;
 };
 
 } // namespace rtps

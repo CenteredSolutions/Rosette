@@ -41,6 +41,15 @@
       "test_ids": ["TC-SEDP-8.5.4-003"]
     },
     {
+      "id": "REQ-SEDP-8.5.4.1-RELIABLE-BUILTIN-READERS",
+      "section": "8.5.4.1",
+      "page": 165,
+      "normativity": "shall",
+      "statement": "The SEDP builtin readers are reliable StatefulReaders matched from SPDP: they request lost announcements, reassemble fragmented ones, and apply disposals from the owning participant.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.4-006", "TC-SEDP-8.5.4-009", "TC-SEDP-8.5.4-011", "TC-SEDP-8.5.4-013"]
+    },
+    {
       "id": "REQ-SEDP-8.5.5.1-TOPIC-TYPE",
       "section": "8.5.5.1",
       "page": 169,

@@ -1,4 +1,5 @@
 #include "spec_test_common.hpp"
+#include "sedp_peer_driver.hpp"
 
 #include "rosette/rtps/sedp.hpp"
 #include "rosette/rtps/transport.hpp"
@@ -244,9 +245,9 @@ static bool tc_sedp_8_5_4_002(std::string& err) {
     std::vector<Octet> payload{};
     CHECK(build_publication_payload(wd, payload), "publication payload build failed");
 
-    reader.on_publication_data(remote_writer.prefix, payload.data(),
-                               static_cast<uint32_t>(payload.size()),
-                               SequenceNumber::from_int64(1));
+    const SedpPeer peer{remote_writer.prefix, make_udpv4_locator(0xC0A80131u, 7410u)};
+    peer.discover(reader);
+    peer.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, payload);
     CHECK(obs.calls == 1, "publication data should trigger endpoint match");
     CHECK(obs.last_w == remote_writer && obs.last_r == local_reader, "match GUIDs mismatch");
     return true;
@@ -267,9 +268,9 @@ static bool tc_sedp_8_5_4_003(std::string& err) {
     std::vector<Octet> payload{};
     CHECK(build_subscription_payload(rd, payload), "subscription payload build failed");
 
-    reader.on_subscription_data(remote_reader.prefix, payload.data(),
-                                static_cast<uint32_t>(payload.size()),
-                                SequenceNumber::from_int64(1));
+    const SedpPeer peer{remote_reader.prefix, make_udpv4_locator(0xC0A80151u, 7410u)};
+    peer.discover(reader);
+    peer.announce(reader, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER, 1, payload);
     CHECK(obs.calls == 1, "subscription data should trigger endpoint match");
     CHECK(obs.last_w == local_writer && obs.last_r == remote_reader, "match GUIDs mismatch");
     return true;
@@ -456,17 +457,21 @@ static bool tc_sedp_8_5_4_009(std::string& err) {
     CHECK(build_publication_payload(
               make_writer_data(remote_writer, "scan", "sensor_msgs::msg::LaserScan"), payload),
           "publication payload build failed");
-    reader.on_publication_data(remote_writer.prefix, payload.data(),
-                               static_cast<uint32_t>(payload.size()),
-                               SequenceNumber::from_int64(1));
+    const EntityId pubs = entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER;
+    const SedpPeer owner{remote_writer.prefix, make_udpv4_locator(0xC0A80144u, 7410u)};
+    const SedpPeer other{make_guid(0x77u, 0x88u, 0x99u, entity_id::PARTICIPANT).prefix,
+                         make_udpv4_locator(0xC0A80177u, 7410u)};
+    owner.discover(reader);
+    other.discover(reader);
+    owner.announce(reader, pubs, 1, payload);
     CHECK(obs.matches == 1, "remote writer should match the local reader");
 
     // A disposal from a different participant must be ignored.
-    reader.on_publication_disposed(local_prefix, remote_writer, SequenceNumber::from_int64(2));
+    other.dispose(reader, pubs, 1, remote_writer);
     CHECK(obs.unmatches == 0, "only the owning participant may withdraw an endpoint");
 
-    reader.on_publication_disposed(remote_writer.prefix, remote_writer,
-                                   SequenceNumber::from_int64(2));
+    // Inline QoS alone (no payload, no key) withdraws the endpoint.
+    owner.dispose(reader, pubs, 2, remote_writer);
     CHECK(obs.unmatches == 1, "disposal must unmatch the withdrawn remote writer");
     return true;
 }
@@ -477,14 +482,23 @@ static bool tc_sedp_8_5_4_009(std::string& err) {
 // §8.3.7.5, p. 91: A HEARTBEAT with F=0 MUST produce an ACKNACK.
 // §8.5.4.1, p. 165: SEDP builtin endpoints use RELIABLE QoS.
 //
-// Verify that SedpReader::on_heartbeat() sends:
-//   1. Exactly one unicast ACKNACK to the writer_locator.
+// Verify that the builtin publications reader, once SPDP has matched the
+// peer's announcer, sends:
+//   1. Exactly one unicast ACKNACK to the peer's metatraffic locator.
 //   2. An ACKNACK NACKing the full range [firstSN..lastSN] when no
-//      DATA has been received yet (highest_sn = 0).
-//   3. A pure ACK (numBits=0) after data up to lastSN is recorded
-//      via on_publication_data().
+//      DATA has been received yet.
+//   3. A pure ACK (numBits=0) after every change up to lastSN arrived.
 //   4. A monotonically increasing ACKNACK count on repeated HBs.
 // ============================================================
+
+static bool parse_single_acknack(const std::vector<Octet>& msg, ParsedAckNack& out) {
+    ParseOps ops{};
+    ops.on_acknack = [](const ParseContext& c, const ParsedAckNack& a) noexcept {
+        *static_cast<ParsedAckNack*>(c.user_data) = a;
+    };
+    return parse_message(msg.data(), static_cast<uint32_t>(msg.size()), GuidPrefix{}, ops,
+                         &out) == ParseResult::OK;
+}
 
 static bool tc_sedp_8_5_4_006(std::string& err) {
     FakeTransport tx{};
@@ -492,88 +506,72 @@ static bool tc_sedp_8_5_4_006(std::string& err) {
     const GuidPrefix local_prefix = make_guid(0xA1u, 0xA2u, 0xA3u, entity_id::PARTICIPANT).prefix;
     SedpReader reader(local_prefix, tx, table);
 
-    const GuidPrefix remote_prefix = make_guid(0xB1u, 0xB2u, 0xB3u, entity_id::PARTICIPANT).prefix;
-    const Locator remote_meta = make_udpv4_locator(0xC0A820C8u, 7410u);
+    const EntityId pubs = entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER;
+    const SedpPeer peer{make_guid(0xB1u, 0xB2u, 0xB3u, entity_id::PARTICIPANT).prefix,
+                        make_udpv4_locator(0xC0A820C8u, 7410u)};
 
-    // Simulate a HEARTBEAT from the remote publications writer (seq 1-3, F=0).
-    ParseContext ctx{};
-    ctx.senderGuidPrefix = remote_prefix;
-    ctx.user_data        = nullptr;
-
-    ParsedHeartbeat hb{};
-    hb.writerId   = entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER;
-    hb.readerId   = entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR;
-    hb.firstSN    = SequenceNumber::from_int64(1);
-    hb.lastSN     = SequenceNumber::from_int64(3);
-    hb.count      = 1;
-    hb.finalFlag  = false;
+    peer.heartbeat(reader, pubs, 1, 3, 1);
+    CHECK(tx.sent.empty(), "a HEARTBEAT from an undiscovered participant is ignored");
+    peer.discover(reader);
 
     // Before any DATA is received, HEARTBEAT should produce a NACK for 1..3.
-    reader.on_heartbeat(ctx, hb, remote_meta);
+    peer.heartbeat(reader, pubs, 1, 3, 1);
     CHECK(tx.sent.size() == 1u, "HEARTBEAT F=0 must elicit exactly one ACKNACK");
-    CHECK(tx.dests[0] == remote_meta, "ACKNACK must be sent to writer_locator");
+    CHECK(tx.dests[0] == peer.meta, "ACKNACK must go to the peer's metatraffic locator");
 
-    // Parse the ACKNACK and verify it requests SNs 1-3.
-    {
-        ParseOps ops{};
-        struct AckCap { int calls = 0; ParsedAckNack ack{}; };
-        AckCap cap{};
-        ops.on_acknack = [](const ParseContext& /*c*/, const ParsedAckNack& a) noexcept {
-            // capture via user_data trick below
-            (void)a;
-        };
-        // Direct struct inspection of the parsed ACKNACK.
-        ParsedAckNack parsed_ack{};
-        bool got_ack = false;
-        ParseOps ops2{};
-        ops2.on_acknack = [](const ParseContext& c, const ParsedAckNack& a) noexcept {
-            auto* out = static_cast<ParsedAckNack*>(c.user_data);
-            *out = a;
-        };
-        ParseContext rctx{};
-        rctx.user_data = &parsed_ack;
-        parse_message(tx.sent[0].data(),
-                      static_cast<uint32_t>(tx.sent[0].size()),
-                      GuidPrefix{}, ops2, &parsed_ack);
+    ParsedAckNack ack{};
+    CHECK(parse_single_acknack(tx.sent[0], ack), "ACKNACK must parse");
+    CHECK(ack.writerId == pubs, "ACKNACK writerId must match SEDP publications announcer");
+    CHECK(ack.readerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR,
+          "ACKNACK readerId must match SEDP publications detector");
+    CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(1),
+          "ACKNACK bitmapBase must be firstSN when no data received");
+    CHECK(ack.readerSNState.numBits >= 3u, "ACKNACK must cover SNs 1-3 in the NACK bitmap");
+    CHECK(ack.count == 1, "first ACKNACK count must be 1");
 
-        CHECK(parsed_ack.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER,
-              "ACKNACK writerId must match SEDP publications announcer");
-        CHECK(parsed_ack.readerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR,
-              "ACKNACK readerId must match SEDP publications detector");
-        CHECK(parsed_ack.readerSNState.bitmapBase == SequenceNumber::from_int64(1),
-              "ACKNACK bitmapBase must be firstSN when no data received");
-        CHECK(parsed_ack.readerSNState.numBits >= 3u,
-              "ACKNACK must cover SNs 1-3 in the NACK bitmap");
-        CHECK(parsed_ack.count == 1, "first ACKNACK count must be 1");
-    }
-
-    // Record that we received publication data with SN 1, 2, 3.
-    reader.on_publication_data(remote_prefix, nullptr, 0u, SequenceNumber::from_int64(1));
-    reader.on_publication_data(remote_prefix, nullptr, 0u, SequenceNumber::from_int64(2));
-    reader.on_publication_data(remote_prefix, nullptr, 0u, SequenceNumber::from_int64(3));
+    peer.account(reader, pubs, 1);
+    peer.account(reader, pubs, 2);
+    peer.account(reader, pubs, 3);
 
     // Now a second HEARTBEAT for the same range should yield a pure ACK.
-    hb.count = 2;
     tx.sent.clear();
     tx.dests.clear();
-    reader.on_heartbeat(ctx, hb, remote_meta);
+    peer.heartbeat(reader, pubs, 1, 3, 2);
     CHECK(tx.sent.size() == 1u, "second HEARTBEAT must still elicit ACKNACK");
+    CHECK(parse_single_acknack(tx.sent[0], ack), "second ACKNACK must parse");
+    CHECK(ack.readerSNState.numBits == 0u,
+          "after receiving all data, ACKNACK must be a pure ACK (numBits=0)");
+    CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(4),
+          "pure ACK bitmapBase must be lastSN+1");
+    CHECK(ack.count == 2, "second ACKNACK count must be 2");
+    return true;
+}
 
-    {
-        ParsedAckNack parsed_ack2{};
-        ParseOps ops3{};
-        ops3.on_acknack = [](const ParseContext& c, const ParsedAckNack& a) noexcept {
-            *static_cast<ParsedAckNack*>(c.user_data) = a;
-        };
-        parse_message(tx.sent[0].data(),
-                      static_cast<uint32_t>(tx.sent[0].size()),
-                      GuidPrefix{}, ops3, &parsed_ack2);
-        CHECK(parsed_ack2.readerSNState.numBits == 0u,
-              "after receiving all data, ACKNACK must be a pure ACK (numBits=0)");
-        CHECK(parsed_ack2.readerSNState.bitmapBase == SequenceNumber::from_int64(4),
-              "pure ACK bitmapBase must be lastSN+1");
-        CHECK(parsed_ack2.count == 2, "second ACKNACK count must be 2");
-    }
+// §8.4.14 / §8.5.4.1: an announcement too large for one datagram arrives as
+// DATA_FRAGs; the builtin reader reassembles it and the endpoint matches.
+static bool tc_sedp_8_5_4_013(std::string& err) {
+    MatchObs obs{};
+    FakeTransport tx{};
+    EndpointMatchTable table(on_match, nullptr, &obs);
+    const GuidPrefix local_prefix = make_guid(0x13u, 0x14u, 0x15u, entity_id::PARTICIPANT).prefix;
+    SedpReader reader(local_prefix, tx, table);
+
+    const Guid local_reader = make_guid(0x13u, 0x14u, 0x15u, make_entity(8u, 8u, 8u, 0x04u));
+    table.add_reader(make_reader_data(local_reader, "scan", "sensor_msgs::msg::LaserScan"));
+
+    const Guid remote_writer = make_guid(0x35u, 0x36u, 0x37u, make_entity(9u, 9u, 9u, 0x03u));
+    std::vector<Octet> payload{};
+    CHECK(build_publication_payload(
+              make_writer_data(remote_writer, "scan", "sensor_msgs::msg::LaserScan"), payload),
+          "publication payload build failed");
+    CHECK(payload.size() > 64u, "the announcement spans several fragments");
+
+    const SedpPeer peer{remote_writer.prefix, make_udpv4_locator(0xC0A80135u, 7410u)};
+    peer.discover(reader);
+    peer.announce_fragmented(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1,
+                             payload, 32u);
+    CHECK(obs.calls == 1, "the reassembled announcement matches the endpoint");
+    CHECK(obs.last_w == remote_writer && obs.last_r == local_reader, "match GUIDs mismatch");
     return true;
 }
 
@@ -594,7 +592,7 @@ void append_sedp_tests_8_5_4(std::vector<TestCase>& tests) {
                      "§8.5.4.1: each local endpoint is written once; rediscovering a matched peer writes and sends nothing new.",
                      tc_sedp_8_5_4_005});
     tests.push_back({"TC-SEDP-8.5.4-006",
-                     "§8.3.7.5/§8.5.4.1: SEDP reader responds to HEARTBEAT F=0 with NACK for missing SNs, and with pure ACK once all DATA received.",
+                     "§8.3.7.5/§8.5.4.1: once SPDP matches a peer's announcer, the SEDP reader answers HEARTBEAT F=0 with a NACK for missing SNs, and with a pure ACK once all DATA received.",
                      tc_sedp_8_5_4_006});
     tests.push_back({"TC-SEDP-8.5.4-007",
                      "§8.5.4.1: an endpoint registered after a peer's builtin readers were matched is announced to that peer.",
@@ -603,8 +601,11 @@ void append_sedp_tests_8_5_4(std::vector<TestCase>& tests) {
                      "§8.5.4.1/§9.6.3.3: unregistering an endpoint sends a disposal keyed by its GUID, stops replay to late joiners, and disposal churn never evicts a live announcement.",
                      tc_sedp_8_5_4_008});
     tests.push_back({"TC-SEDP-8.5.4-009",
-                     "§8.5.4.1/§9.6.3.3: a disposal from the owning participant unmatches the withdrawn remote endpoint; disposals from other participants are ignored.",
+                     "§8.5.4.1/§9.6.3.3: an inline-QoS-only disposal from the owning participant unmatches the withdrawn remote endpoint; disposals from other participants are ignored.",
                      tc_sedp_8_5_4_009});
+    tests.push_back({"TC-SEDP-8.5.4-013",
+                     "§8.4.14/§8.5.4.1: a fragmented endpoint announcement is reassembled by the builtin reader and matches the endpoint.",
+                     tc_sedp_8_5_4_013});
 }
 
 } // namespace spec_test

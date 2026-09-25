@@ -34,6 +34,14 @@
       "test_ids": ["TC-SRR-8.4.8-001"]
     },
     {
+      "id": "REQ-SRR-9.6.3.3-DELIVER-DISPOSALS",
+      "section": "9.6.3.3",
+      "normativity": "shall",
+      "statement": "A DATA whose StatusInfo disposes or unregisters the instance is delivered with the corresponding NOT_ALIVE ChangeKind and its key hash, even when it carries no serialized payload.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.8-003"]
+    },
+    {
       "id": "REQ-SRR-8.3.7.5-8.4.9-HEARTBEAT-ACKNACK",
       "section": "8.3.7.5",
       "page": 91,

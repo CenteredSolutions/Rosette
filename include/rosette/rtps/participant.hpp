@@ -197,8 +197,8 @@ public:
     // ----------------------------------------------------------
     // create_reader()
     //
-    // (Non-template: StatefulReader depth is fixed by the number of
-    //  matched writers, not by history depth.)
+    // Every user reader is a DefaultStatefulReader: it matches up to
+    // RTPS_MAX_MATCHED_WRITERS writers and has no history-depth parameter.
     //
     // @returns Typed pointer, or nullptr if the slot table is full.
     // ----------------------------------------------------------
@@ -326,6 +326,17 @@ private:
     int find_free_writer_slot() const noexcept;
     IStatefulWriter* find_writer_iface(const EntityId& eid) noexcept;
     StatefulReader*  find_reader(const EntityId& eid) noexcept;
+    template <typename Deliver>
+    void for_each_addressed_reader(const EntityId& writer_id, const EntityId& reader_id,
+                                   Deliver&& deliver) noexcept;
+
+    /// @brief The user reader in slot `i`; valid only while reader_alive_[i].
+    DefaultStatefulReader* user_reader(int i) noexcept {
+        return reinterpret_cast<DefaultStatefulReader*>(reader_storage_[i]);
+    }
+    const DefaultStatefulReader* user_reader(int i) const noexcept {
+        return reinterpret_cast<const DefaultStatefulReader*>(reader_storage_[i]);
+    }
     void register_writer_endpoint(const Guid& guid, const WriterConfig& cfg) noexcept;
     bool add_address_locator_pair(const Locator& meta, const Locator& user) noexcept;
     bool remove_address_locator_pair(const Locator& meta, const Locator& user) noexcept;
@@ -358,9 +369,10 @@ private:
     IStatefulWriter* writer_iface_[RTPS_MAX_USER_WRITERS] = {};
     bool             writer_alive_[RTPS_MAX_USER_WRITERS]  = {};
 
-    // Reader storage (StatefulReader is not templated on depth).
-    alignas(StatefulReader)
-    Octet reader_storage_[RTPS_MAX_USER_READERS][sizeof(StatefulReader)];
+    // Reader storage: one DefaultStatefulReader per slot, placement-new'd
+    // by create_reader().
+    alignas(DefaultStatefulReader)
+    Octet reader_storage_[RTPS_MAX_USER_READERS][sizeof(DefaultStatefulReader)];
     bool  reader_alive_[RTPS_MAX_USER_READERS] = {};
 
     ParseOps parse_ops_;

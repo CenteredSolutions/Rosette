@@ -12,13 +12,45 @@
 
 namespace rtps {
 
-// ============================================================
-// Constructor / Destructor
-// ============================================================
+namespace {
+
+/**
+ * @brief Derives the ChangeKind of an arriving DATA.
+ *
+ * The inline QoS StatusInfo says whether a change withdraws its instance:
+ * DISPOSED takes precedence over UNREGISTERED, as a disposed instance is
+ * also gone for this reader. Without StatusInfo, a DATA whose payload is the
+ * serialized key (K flag) is a disposal, and any other DATA is ALIVE.
+ *
+ * @param[in] msg The DATA submessage.
+ * @return ALIVE, NOT_ALIVE_DISPOSED or NOT_ALIVE_UNREGISTERED.
+ *
+ * Verification:
+ * - Correct means: StatusInfo DISPOSED or UNREGISTERED always yields a
+ *   NOT_ALIVE kind, whatever the D and K flags.
+ * - Covered by: TC-SRR-8.4.8-003, TC-SEDP-8.5.4-009.
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §8.2.1.2 (ChangeKind_t), §9.6.3.3 (StatusInfo_t)
+ */
+ChangeKind change_kind_of(const ParsedData& msg) noexcept
+{
+    if (msg.inlineQos.hasStatusInfo) {
+        if ((msg.inlineQos.statusInfo & status_info::DISPOSED) != 0u)
+            return ChangeKind::NOT_ALIVE_DISPOSED;
+        if ((msg.inlineQos.statusInfo & status_info::UNREGISTERED) != 0u)
+            return ChangeKind::NOT_ALIVE_UNREGISTERED;
+    }
+    return msg.keyFlag ? ChangeKind::NOT_ALIVE_DISPOSED : ChangeKind::ALIVE;
+}
+
+}  // namespace
 
 StatefulReader::StatefulReader(const Guid&       guid,
                                ReliabilityKind   reliability,
                                ITransport&       transport,
+                               WriterProxy*      proxies,
+                               uint8_t           proxy_capacity,
                                OnChangeAvailable on_change_avail,
                                void*             user_data,
                                uint32_t          hb_response_ms) noexcept
@@ -27,13 +59,10 @@ StatefulReader::StatefulReader(const Guid&       guid,
     , transport_(transport)
     , on_change_avail_(on_change_avail)
     , user_data_(user_data)
+    , proxies_(proxies)
+    , proxy_capacity_(proxy_capacity)
     , hb_response_ms_(hb_response_ms)
 {
-}
-
-StatefulReader::~StatefulReader() noexcept {
-    // assembler_ destructor clears all FragmentedChange slots and
-    // releases their pool buffers — no explicit call needed here.
 }
 
 // ============================================================
@@ -47,8 +76,8 @@ bool StatefulReader::matched_writer_add(const Guid&    writer_guid,
     if (find_proxy(writer_guid)) return false;
     WriterProxy* slot = find_free_slot();
     if (!slot) {
-        RTPS_LOG_W("reader", "writer proxy table full (max=%d)",
-                   RTPS_MAX_MATCHED_WRITERS);
+        RTPS_LOG_W("reader", "writer proxy table full (max=%u)",
+                   (unsigned)proxy_capacity_);
         return false;
     }
     slot->init(writer_guid, unicast_locators, locator_count);
@@ -112,10 +141,12 @@ void StatefulReader::on_data(const ParseContext& ctx,
         return;
     }
 
+    const ChangeKind kind = change_kind_of(msg);
+
     // A DATA without payload or key (inline QoS only) carries nothing to
-    // deliver, but its sequence number is accounted for so it is never
-    // requested again.
-    if (!msg.dataFlag && !msg.keyFlag) {
+    // deliver unless it withdraws an instance; its sequence number is
+    // accounted for either way so it is never requested again.
+    if (!msg.dataFlag && !msg.keyFlag && kind == ChangeKind::ALIVE) {
         if (proxy) {
             const bool repair = proxy->is_missing(msg.writerSN);
             record_change(*proxy, msg.writerSN);
@@ -124,25 +155,26 @@ void StatefulReader::on_data(const ParseContext& ctx,
         return;
     }
 
-    // Allocate the smallest pool class that fits the payload.
-    BufRef payload = buf_alloc(msg.serializedPayloadSize);
-    if (!payload.valid()) {
-        RTPS_LOG_E("reader", "buf_alloc failed for DATA payload size=%lu",
-                   (unsigned long)msg.serializedPayloadSize);
-        return;
+    // Copy the payload into the smallest pool class that fits it. A
+    // disposal sent as inline QoS alone has no payload to copy.
+    BufRef payload{};
+    uint32_t copy_size = 0;
+    if (msg.dataFlag || msg.keyFlag) {
+        payload = buf_alloc(msg.serializedPayloadSize);
+        if (!payload.valid()) {
+            RTPS_LOG_E("reader", "buf_alloc failed for DATA payload size=%lu",
+                       (unsigned long)msg.serializedPayloadSize);
+            return;
+        }
+        copy_size = (msg.serializedPayloadSize <= payload.capacity())
+                    ? msg.serializedPayloadSize : payload.capacity();
+        if (copy_size > 0 && msg.serializedPayload)
+            memcpy(payload.data, msg.serializedPayload, copy_size);
+        payload.size = copy_size;
     }
 
-    const uint32_t copy_size =
-        (msg.serializedPayloadSize <= payload.capacity())
-        ? msg.serializedPayloadSize : payload.capacity();
-
-    if (copy_size > 0 && msg.serializedPayload)
-        memcpy(payload.data, msg.serializedPayload, copy_size);
-    payload.size = copy_size;
-
     CacheChange change{};
-    change.kind            = msg.keyFlag ? ChangeKind::NOT_ALIVE_DISPOSED
-                                         : ChangeKind::ALIVE;
+    change.kind            = kind;
     change.writerGuid      = Guid{ ctx.senderGuidPrefix, msg.writerId };
     change.sequenceNumber  = msg.writerSN;
     change.sourceTimestamp = ctx.sourceTimestamp;
@@ -444,7 +476,7 @@ void StatefulReader::request_next_repair(WriterProxy& proxy) noexcept
 // ============================================================
 
 void StatefulReader::tick(uint32_t now_ms) noexcept {
-    for (uint8_t i = 0; i < RTPS_MAX_MATCHED_WRITERS; ++i) {
+    for (uint8_t i = 0; i < proxy_capacity_; ++i) {
         WriterProxy& proxy = proxies_[i];
         if (!proxy.is_matched()) continue;
 
@@ -461,7 +493,7 @@ void StatefulReader::tick(uint32_t now_ms) noexcept {
 
 uint32_t StatefulReader::ms_until_next_timer(uint32_t now_ms) const noexcept {
     uint32_t next = UINT32_MAX;
-    for (uint8_t i = 0; i < RTPS_MAX_MATCHED_WRITERS; ++i) {
+    for (uint8_t i = 0; i < proxy_capacity_; ++i) {
         const WriterProxy& proxy = proxies_[i];
         if (!proxy.is_matched() || !proxy.acknackPending) continue;
         // Wrap-safe "is the deadline in the past" test, as in acknack_response_due().
@@ -474,13 +506,13 @@ uint32_t StatefulReader::ms_until_next_timer(uint32_t now_ms) const noexcept {
 
 uint8_t StatefulReader::matched_writer_count() const noexcept {
     uint8_t n = 0;
-    for (uint8_t i = 0; i < RTPS_MAX_MATCHED_WRITERS; ++i)
+    for (uint8_t i = 0; i < proxy_capacity_; ++i)
         if (proxies_[i].is_matched()) ++n;
     return n;
 }
 
 WriterProxy* StatefulReader::find_proxy(const Guid& guid) noexcept {
-    for (uint8_t i = 0; i < RTPS_MAX_MATCHED_WRITERS; ++i)
+    for (uint8_t i = 0; i < proxy_capacity_; ++i)
         if (proxies_[i].is_matched() &&
             proxies_[i].remoteWriterGuid == guid)
             return &proxies_[i];
@@ -494,7 +526,7 @@ WriterProxy* StatefulReader::find_proxy_by_sender(
 }
 
 WriterProxy* StatefulReader::find_free_slot() noexcept {
-    for (uint8_t i = 0; i < RTPS_MAX_MATCHED_WRITERS; ++i)
+    for (uint8_t i = 0; i < proxy_capacity_; ++i)
         if (!proxies_[i].is_matched()) return &proxies_[i];
     return nullptr;
 }

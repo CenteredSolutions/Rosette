@@ -30,6 +30,8 @@ struct CaptureTransport : ITransport {
 struct ChangeCapture {
     int calls = 0;
     SequenceNumber last_sn = SEQUENCENUMBER_UNKNOWN;
+    ChangeKind last_kind = ChangeKind::ALIVE;
+    InlineQos last_qos{};
     std::vector<Octet> payload{};
 };
 
@@ -37,7 +39,13 @@ void on_change_capture(const CacheChange& change, void* user) noexcept {
     auto* cap = static_cast<ChangeCapture*>(user);
     cap->calls++;
     cap->last_sn = change.sequenceNumber;
-    cap->payload.assign(change.payload.data, change.payload.data + change.payload.size);
+    cap->last_kind = change.kind;
+    cap->last_qos = change.inlineQos;
+    if (change.payload.valid()) {
+        cap->payload.assign(change.payload.data, change.payload.data + change.payload.size);
+    } else {
+        cap->payload.clear();
+    }
 }
 
 Guid make_guid(Octet p0, Octet p1, Octet p2, const EntityId& eid) {
@@ -58,11 +66,11 @@ static bool tc_srr_8_4_8_001(std::string& err) {
     const Guid writer_guid = make_guid(0x41u, 0x42u, 0x43u, make_entity(2u, 2u, 2u, 0xC2u));
     const Locator loc = make_udpv4_locator(0xC0A80122u, 7411u);
 
-    StatefulReader r(reader_guid,
-                     ReliabilityKind::RELIABLE,
-                     tx,
-                     on_change_capture,
-                     &cap);
+    DefaultStatefulReader r(reader_guid,
+                            ReliabilityKind::RELIABLE,
+                            tx,
+                            on_change_capture,
+                            &cap);
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
 
     const Octet wire_payload[7] = {0x00u, 0x01u, 0x00u, 0x00u, 0xAAu, 0xBBu, 0xCCu};
@@ -100,7 +108,7 @@ static bool tc_srr_8_4_8_002(std::string& err) {
     const Guid reader_guid = make_guid(0x35u, 0x36u, 0x37u, make_entity(1u, 1u, 1u, 0x04u));
     const Guid writer_guid = make_guid(0x45u, 0x46u, 0x47u, make_entity(2u, 2u, 2u, 0x03u));
     const Locator loc = make_udpv4_locator(0xC0A80123u, 7411u);
-    StatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, on_change_capture, &cap);
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, on_change_capture, &cap);
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
 
     const Octet wire_payload[5] = {0x00u, 0x01u, 0x00u, 0x00u, 0x77u};
@@ -129,18 +137,63 @@ static bool tc_srr_8_4_8_002(std::string& err) {
     return true;
 }
 
+// §9.6.3.3: a change that withdraws an instance is delivered with its
+// NOT_ALIVE kind and key hash even when the DATA carries only inline QoS;
+// an inline-QoS-only DATA that withdraws nothing is accounted, not delivered.
+static bool tc_srr_8_4_8_003(std::string& err) {
+    CaptureTransport tx{};
+    ChangeCapture cap{};
+    const Guid reader_guid = make_guid(0x38u, 0x39u, 0x3Au, make_entity(1u, 1u, 1u, 0xC7u));
+    const Guid writer_guid = make_guid(0x48u, 0x49u, 0x4Au, make_entity(2u, 2u, 2u, 0xC2u));
+    const Locator loc = make_udpv4_locator(0xC0A80124u, 7411u);
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, on_change_capture, &cap);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+
+    ParsedData data{};
+    data.readerId = reader_guid.entityId;
+    data.writerId = writer_guid.entityId;
+    data.inlineQosPresent = true;
+    data.inlineQos.set_key_hash(writer_guid);
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+
+    data.writerSN = SequenceNumber::from_int64(1);
+    r.on_data(ctx, data);
+    CHECK(cap.calls == 0, "inline QoS without StatusInfo is accounted, not delivered");
+
+    data.writerSN = SequenceNumber::from_int64(2);
+    data.inlineQos.hasStatusInfo = true;
+    data.inlineQos.statusInfo = status_info::DISPOSED | status_info::UNREGISTERED;
+    r.on_data(ctx, data);
+    CHECK(cap.calls == 1 && cap.last_sn.to_int64() == 2, "a disposal is delivered");
+    CHECK(cap.last_kind == ChangeKind::NOT_ALIVE_DISPOSED, "DISPOSED yields NOT_ALIVE_DISPOSED");
+    CHECK(cap.payload.empty(), "an inline-QoS-only disposal has no payload");
+    CHECK(cap.last_qos.hasKeyHash && cap.last_qos.key_hash_guid() == writer_guid,
+          "the disposal carries the instance's key hash");
+
+    data.writerSN = SequenceNumber::from_int64(3);
+    data.inlineQos.statusInfo = status_info::UNREGISTERED;
+    r.on_data(ctx, data);
+    CHECK(cap.calls == 2 && cap.last_kind == ChangeKind::NOT_ALIVE_UNREGISTERED,
+          "UNREGISTERED alone yields NOT_ALIVE_UNREGISTERED");
+
+    r.on_data(ctx, data);
+    CHECK(cap.calls == 2, "a repeated disposal is not delivered again");
+    return true;
+}
+
 static bool tc_srr_8_4_9_001(std::string& err) {
     CaptureTransport tx{};
     const Guid reader_guid = make_guid(0x51u, 0x52u, 0x53u, make_entity(3u, 3u, 3u, 0xC7u));
     const Guid writer_guid = make_guid(0x61u, 0x62u, 0x63u, make_entity(4u, 4u, 4u, 0xC2u));
     const Locator loc = make_udpv4_locator(0xC0A80133u, 7411u);
 
-    StatefulReader r(reader_guid,
-                     ReliabilityKind::RELIABLE,
-                     tx,
-                     nullptr,
-                     nullptr,
-                     0u);
+    DefaultStatefulReader r(reader_guid,
+                            ReliabilityKind::RELIABLE,
+                            tx,
+                            nullptr,
+                            nullptr,
+                            0u);
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
 
     const Octet wire_payload[5] = {0x00u, 0x01u, 0x00u, 0x00u, 0x11u};
@@ -209,7 +262,7 @@ static bool tc_srr_8_4_9_002(std::string& err) {
     const Guid writer_guid = make_guid(0x81u, 0x82u, 0x83u, make_entity(6u, 6u, 6u, 0xC2u));
     const Locator loc = make_udpv4_locator(0xC0A80144u, 7411u);
 
-    StatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
 
     const Octet frag_payload[4] = {0x10u, 0x11u, 0x12u, 0x13u};
@@ -280,7 +333,7 @@ static bool tc_srr_8_4_7_001(std::string& err) {
     const Guid reader_guid = make_guid(0x71u, 0x72u, 0x73u, make_entity(5u, 5u, 5u, 0x04u));
     const Guid writer_guid = make_guid(0x81u, 0x82u, 0x83u, make_entity(6u, 6u, 6u, 0x03u));
     const Locator loc = make_udpv4_locator(0xC0A80144u, 7411u);
-    StatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 200u);
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 200u);
     CHECK(r.ms_until_next_timer(0u) == UINT32_MAX, "an unmatched reader has no timer");
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
     CHECK(r.ms_until_next_timer(0u) == UINT32_MAX, "no ACKNACK is pending before a HEARTBEAT");
@@ -355,7 +408,7 @@ static bool tc_srr_8_4_7_002(std::string& err) {
     const Guid reader_guid = make_guid(0x91u, 0x92u, 0x93u, make_entity(7u, 7u, 7u, 0x04u));
     const Guid writer_guid = make_guid(0xA1u, 0xA2u, 0xA3u, make_entity(8u, 8u, 8u, 0x03u));
     const Locator loc = make_udpv4_locator(0xC0A80155u, 7411u);
-    StatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 0u);
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 0u);
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
 
     heartbeat(r, reader_guid, writer_guid, 4, 1);
@@ -376,7 +429,7 @@ static bool tc_srr_8_4_7_003(std::string& err) {
     const Guid reader_guid = make_guid(0xB1u, 0xB2u, 0xB3u, make_entity(7u, 7u, 7u, 0x04u));
     const Guid writer_guid = make_guid(0xC1u, 0xC2u, 0xC3u, make_entity(8u, 8u, 8u, 0x03u));
     const Locator loc = make_udpv4_locator(0xC0A80166u, 7411u);
-    StatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 0u);
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 0u);
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
 
     deliver(r, reader_guid, writer_guid, 4);
@@ -416,6 +469,9 @@ void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.8-002",
                      "§8.4.12.2: a retransmitted change filling a gap below the highest received SN is delivered; repeats of delivered SNs are dropped.",
                      tc_srr_8_4_8_002});
+    tests.push_back({"TC-SRR-8.4.8-003",
+                     "§9.6.3.3: a DATA whose StatusInfo withdraws the instance is delivered as NOT_ALIVE with its key hash, even without payload; inline QoS alone otherwise is not delivered.",
+                     tc_srr_8_4_8_003});
     tests.push_back({"TC-SRR-8.4.9-001",
                      "§8.3.7.5/§8.4.9: on_heartbeat schedules ACKNACK when missing changes exist; with heartbeatResponseDelay=0 it is sent immediately.",
                      tc_srr_8_4_9_001});

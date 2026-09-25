@@ -12,6 +12,18 @@
  * once, repairs included, and requests MISSING changes in ACKNACKs until DATA
  * or GAP resolves them (§8.4.12.2). A BEST_EFFORT reader delivers only
  * changes newer than every change it has seen from that writer (§8.4.12.1).
+ * A change that withdraws an instance (inline QoS StatusInfo DISPOSED or
+ * UNREGISTERED) is delivered with its NOT_ALIVE ChangeKind even when it
+ * carries no payload, so consumers such as SEDP learn of the withdrawal.
+ *
+ * Proxy storage
+ * -------------
+ * StatefulReader runs over a caller-provided WriterProxy array, so one
+ * compiled reader serves readers of every capacity: user readers match at
+ * most RTPS_MAX_MATCHED_WRITERS writers, while the SEDP builtin readers match
+ * one announcer per remote participant (RTPS_MAX_PEERS). Declare a reader as
+ * BoundedStatefulReader<N>, which owns the array; pass it around as
+ * StatefulReader.
  *
  * Fragment reassembly
  * -------------------
@@ -70,27 +82,8 @@ public:
     using OnChangeAvailable = void (*)(const CacheChange& change,
                                       void* user_data) noexcept;
 
-    // ----------------------------------------------------------
-    // Constructor
-    //
-    // @param guid            This reader's GUID (§8.2.4).
-    // @param reliability     RELIABLE or BEST_EFFORT (§8.3.3).
-    // @param transport       Transport for sending ACKNACK / NACK_FRAG.
-    // @param on_change_avail Callback fired on each new complete change.
-    // @param user_data       Forwarded to on_change_avail.
-    // @param hb_response_ms  heartbeatResponseDelay in ms — §8.4.7.1, p. 135.
-    // ----------------------------------------------------------
-    StatefulReader(const Guid&       guid,
-                   ReliabilityKind   reliability,
-                   ITransport&       transport,
-                   OnChangeAvailable on_change_avail = nullptr,
-                   void*             user_data       = nullptr,
-                   uint32_t          hb_response_ms  =
-                       RTPS_HEARTBEAT_RESPONSE_DELAY_MS) noexcept;
-
     StatefulReader(const StatefulReader&)            = delete;
     StatefulReader& operator=(const StatefulReader&) = delete;
-    ~StatefulReader() noexcept;
 
     // ----------------------------------------------------------
     // §8.4.7.4  matched_writer_add()
@@ -122,21 +115,27 @@ public:
      * The change is delivered (to the OnChangeAvailable callback, or the
      * reader history without one) when its writer's proxy says it is new:
      * see is_new_change(). A RELIABLE reader drops DATA from writers it has
-     * not matched. A DATA with neither payload nor key is accounted for but
-     * not delivered. When the DATA repairs a MISSING change on a narrow link,
-     * the next MISSING change is requested at once.
+     * not matched. The change's kind comes from the inline QoS StatusInfo
+     * (see change_kind_of()). A DATA with neither payload nor key is
+     * delivered, without payload, only when its StatusInfo withdraws the
+     * instance; otherwise it is accounted for but not delivered. When the
+     * DATA repairs a MISSING change on a narrow link, the next MISSING change
+     * is requested at once.
      *
      * @param[in] ctx Parse context; senderGuidPrefix and sourceTimestamp.
      * @param[in] msg The DATA; its payload is copied into a pool buffer.
      *
      * Verification:
      * - Correct means: each change is delivered at most once; a reliable
-     *   reader delivers every change the writer does not GAP.
-     * - Covered by: TC-SRR-8.4.8-001, TC-SRR-8.4.8-002, TC-SRR-8.4.10-001,
-     *   TC-SRR-8.4.10-002, TC-SRR-8.4.10-003, TC-SRR-8.4.12-001.
+     *   reader delivers every change the writer does not GAP; a disposal
+     *   arrives as NOT_ALIVE with the writer's key hash.
+     * - Covered by: TC-SRR-8.4.8-001, TC-SRR-8.4.8-002, TC-SRR-8.4.8-003,
+     *   TC-SRR-8.4.10-001, TC-SRR-8.4.10-002, TC-SRR-8.4.10-003,
+     *   TC-SRR-8.4.12-001.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.3.7.2 (DATA), §8.4.12.1, §8.4.12.2
+     * - OMG DDSI-RTPS 2.5 §8.3.7.2 (DATA), §8.4.12.1, §8.4.12.2,
+     *   §9.6.3.3 (StatusInfo_t)
      */
     void on_data(const ParseContext& ctx,
                  const ParsedData&   msg) noexcept;
@@ -269,6 +268,45 @@ public:
     // ----------------------------------------------------------
     uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept;
 
+    /// @brief Most writers this reader can match at once.
+    uint8_t max_matched_writers() const noexcept { return proxy_capacity_; }
+
+protected:
+
+    /**
+     * @brief Creates a reader over caller-provided WriterProxy storage.
+     *
+     * Only BoundedStatefulReader constructs a StatefulReader, passing the
+     * array it owns; code that uses a reader holds a StatefulReader& or *.
+     *
+     * @param[in] guid            This reader's GUID (§8.2.4).
+     * @param[in] reliability     RELIABLE or BEST_EFFORT (§8.3.3).
+     * @param[in] transport       Transport for ACKNACK and NACK_FRAG; must
+     *   outlive the reader.
+     * @param[in] proxies         Storage for one WriterProxy per matched
+     *   writer. It must outlive the reader and is not accessed during
+     *   construction, so it may be a member of a derived class.
+     * @param[in] proxy_capacity  Number of entries in `proxies` (1-255).
+     * @param[in] on_change_avail Callback fired on each new complete change;
+     *   null keeps changes in cache() instead.
+     * @param[in] user_data       Forwarded to on_change_avail.
+     * @param[in] hb_response_ms  heartbeatResponseDelay in milliseconds
+     *   (§8.4.7.1); 0 answers a HEARTBEAT immediately.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.7.1 (StatefulReader attributes)
+     */
+    StatefulReader(const Guid&       guid,
+                   ReliabilityKind   reliability,
+                   ITransport&       transport,
+                   WriterProxy*      proxies,
+                   uint8_t           proxy_capacity,
+                   OnChangeAvailable on_change_avail,
+                   void*             user_data,
+                   uint32_t          hb_response_ms) noexcept;
+
+    ~StatefulReader() noexcept = default;
+
 private:
 
     WriterProxy* find_proxy(const Guid& guid) noexcept;
@@ -350,7 +388,8 @@ private:
     void*             user_data_       = nullptr;
 
     ReaderHistoryCache reader_cache_;
-    WriterProxy        proxies_[RTPS_MAX_MATCHED_WRITERS];
+    WriterProxy*       proxies_;          ///< Owned by the BoundedStatefulReader.
+    uint8_t            proxy_capacity_;
 
     /// Fragment reassembler — §8.4.14, p. 156.
     /// One slot per matched writer; 256-fragment bitmap; pool-backed.
@@ -359,5 +398,44 @@ private:
     uint32_t       hb_response_ms_;
     MessageBuilder builder_;
 };
+
+/**
+ * @brief A StatefulReader that owns storage for `kMaxWriters` WriterProxies.
+ *
+ * The protocol logic lives once in StatefulReader (stateful_reader.cpp);
+ * this template only adds the array, so readers of different capacities
+ * share all code and differ only in size.
+ *
+ * @tparam kMaxWriters Most writers matched at once (1-255).
+ */
+template <uint8_t kMaxWriters>
+class BoundedStatefulReader final : public StatefulReader {
+    static_assert(kMaxWriters >= 1u, "a reader must be able to match a writer");
+
+public:
+    /**
+     * @brief Creates a reader with no matched writers.
+     *
+     * The parameters are those of StatefulReader's constructor, less the
+     * proxy storage this class provides.
+     */
+    BoundedStatefulReader(const Guid&       guid,
+                          ReliabilityKind   reliability,
+                          ITransport&       transport,
+                          OnChangeAvailable on_change_avail = nullptr,
+                          void*             user_data       = nullptr,
+                          uint32_t          hb_response_ms  =
+                              RTPS_HEARTBEAT_RESPONSE_DELAY_MS) noexcept
+        : StatefulReader(guid, reliability, transport, proxy_storage_, kMaxWriters,
+                         on_change_avail, user_data, hb_response_ms)
+    {}
+
+private:
+    // Constructed after the base, which only records its address.
+    WriterProxy proxy_storage_[kMaxWriters];
+};
+
+/// Reader for user topics: up to RTPS_MAX_MATCHED_WRITERS matched writers.
+using DefaultStatefulReader = BoundedStatefulReader<RTPS_MAX_MATCHED_WRITERS>;
 
 } // namespace rtps

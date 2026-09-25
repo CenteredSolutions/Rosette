@@ -39,7 +39,7 @@ struct Fixture {
     Guid reader_guid{};
     Guid writer_guid{};
     Locator loc = make_udpv4_locator(0xC0A801A0u, 7411u);
-    StatefulReader r;
+    DefaultStatefulReader r;
     int32_t hb_count = 0;
 
     explicit Fixture(ReliabilityKind reliability = ReliabilityKind::RELIABLE)

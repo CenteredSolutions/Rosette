@@ -5,7 +5,6 @@
 
 #include "sedp.hpp"
 
-#include "gap_encoding.hpp"
 #include "log.hpp"
 #include "stateful_writer.hpp"   // ITransport
 #include <string.h>
@@ -590,22 +589,117 @@ bool SedpReader::read_plcdr_fields(const Octet*  payload,
 }
 
 // ============================================================
-// SedpReader::on_publication_data()
-//
-// §8.5.4, p. 163:
-//   "The SEDPbuiltinPublicationsReader processes DiscoveredWriterData."
+// SedpReader — builtin readers and announcement decoding
 // ============================================================
 
-void SedpReader::on_publication_data(const GuidPrefix& sender_prefix,
-                                     const Octet*      payload,
-                                     uint32_t          payload_len,
-                                     SequenceNumber    writer_sn) noexcept
+namespace {
+
+// Matches (or, when the peer does not list it, unmatches) one of the peer's
+// SEDP announcers with the builtin reader that receives its announcements.
+void match_builtin_announcer(StatefulReader&                      reader,
+                             const SPDPdiscoveredParticipantData& peer,
+                             uint32_t                             announcer_bit,
+                             const EntityId&                      announcer_id) noexcept
 {
-    if (!accept_announcement(sender_prefix, /*is_pub=*/true, writer_sn)) return;
+    const Guid announcer{peer.guidPrefix, announcer_id};
+    if ((peer.availableBuiltinEndpoints & announcer_bit) == 0u) {
+        reader.matched_writer_remove(announcer);
+        return;
+    }
+    if (reader.matched_writer_lookup(announcer)) return;
+    const bool unicast = peer.metatrafficUnicastLocatorCount > 0u;
+    reader.matched_writer_add(announcer,
+                              unicast ? peer.metatrafficUnicastLocatorList
+                                      : peer.metatrafficMulticastLocatorList,
+                              unicast ? peer.metatrafficUnicastLocatorCount
+                                      : peer.metatrafficMulticastLocatorCount);
+}
+
+}  // namespace
+
+SedpReader::SedpReader(const GuidPrefix&   local_prefix,
+                       ITransport&         transport,
+                       EndpointMatchTable& match_table) noexcept
+    : match_table_(match_table)
+    , publications_reader_(
+          Guid{local_prefix, entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR},
+          ReliabilityKind::RELIABLE, transport, publication_trampoline, this)
+    , subscriptions_reader_(
+          Guid{local_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR},
+          ReliabilityKind::RELIABLE, transport, subscription_trampoline, this)
+{}
+
+void SedpReader::on_peer_discovered(const SPDPdiscoveredParticipantData& peer) noexcept
+{
+    match_builtin_announcer(publications_reader_, peer,
+                            builtin_endpoint::DISC_BUILTIN_ENDPOINT_PUBLICATIONS_ANNOUNCER,
+                            entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER);
+    match_builtin_announcer(subscriptions_reader_, peer,
+                            builtin_endpoint::DISC_BUILTIN_ENDPOINT_SUBSCRIPTIONS_ANNOUNCER,
+                            entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER);
+}
+
+void SedpReader::on_peer_removed(const GuidPrefix& peer_prefix) noexcept
+{
+    publications_reader_.matched_writer_remove(
+        Guid{peer_prefix, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER});
+    subscriptions_reader_.matched_writer_remove(
+        Guid{peer_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER});
+}
+
+StatefulReader* SedpReader::reader_for_writer(const EntityId& writer_id) noexcept
+{
+    if (writer_id == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) return &publications_reader_;
+    if (writer_id == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) return &subscriptions_reader_;
+    return nullptr;
+}
+
+void SedpReader::on_publication_change(const CacheChange& change) noexcept
+{
+    if (change.kind != ChangeKind::ALIVE) {
+        Guid endpoint{};
+        if (withdrawn_endpoint(change, endpoint) &&
+            endpoint.prefix == change.writerGuid.prefix) {
+            match_table_.remove_writer(endpoint);
+        }
+        return;
+    }
     DiscoveredWriterData wd{};
-    if (!deserialise_writer(payload, payload_len, wd)) return;
+    if (!deserialise_writer(change.payload.data, change.payload.size, wd)) return;
     if (!wd.is_valid()) return;
     match_table_.add_writer(wd);
+}
+
+void SedpReader::on_subscription_change(const CacheChange& change) noexcept
+{
+    if (change.kind != ChangeKind::ALIVE) {
+        Guid endpoint{};
+        if (withdrawn_endpoint(change, endpoint) &&
+            endpoint.prefix == change.writerGuid.prefix) {
+            match_table_.remove_reader(endpoint);
+        }
+        return;
+    }
+    DiscoveredReaderData rd{};
+    if (!deserialise_reader(change.payload.data, change.payload.size, rd)) return;
+    if (!rd.is_valid()) return;
+    match_table_.add_reader(rd);
+}
+
+bool SedpReader::withdrawn_endpoint(const CacheChange& change, Guid& endpoint) noexcept
+{
+    if (change.inlineQos.hasKeyHash) {
+        endpoint = change.inlineQos.key_hash_guid();
+        return true;
+    }
+    TopicName       topic{};
+    TopicName       type{};
+    ReliabilityKind reliability{};
+    DurabilityKind  durability{};
+    Locator         locs[RTPS_MAX_LOCATORS_PER_PARTICIPANT];
+    uint8_t         loc_count = 0;
+    return read_plcdr_fields(change.payload.data, change.payload.size, topic, type, endpoint,
+                             reliability, durability, locs, loc_count);
 }
 
 bool SedpReader::deserialise_writer(const Octet*         payload,
@@ -624,174 +718,6 @@ bool SedpReader::deserialise_writer(const Octet*         payload,
         out.unicastLocatorList[i] = locs[i];
     out.unicastLocatorCount = loc_count;
     return true;
-}
-
-// ============================================================
-// SedpReader::on_subscription_data()
-//
-// §8.5.4, p. 163:
-//   "The SEDPbuiltinSubscriptionsReader processes DiscoveredReaderData."
-// ============================================================
-
-void SedpReader::on_subscription_data(const GuidPrefix& sender_prefix,
-                                      const Octet*      payload,
-                                      uint32_t          payload_len,
-                                      SequenceNumber    writer_sn) noexcept
-{
-    if (!accept_announcement(sender_prefix, /*is_pub=*/false, writer_sn)) return;
-    DiscoveredReaderData rd{};
-    if (!deserialise_reader(payload, payload_len, rd)) return;
-    if (!rd.is_valid()) return;
-    match_table_.add_reader(rd);
-}
-
-// ============================================================
-// SedpReader::on_publication_disposed() / on_subscription_disposed()
-//
-// §8.5.4.1 / §9.6.3.3: a DATA with StatusInfo DISPOSED or UNREGISTERED
-// withdraws the endpoint named by its key. Removing it from the match
-// table fires on_unmatch for every local endpoint it was matched with.
-// ============================================================
-
-void SedpReader::on_publication_disposed(const GuidPrefix& sender_prefix,
-                                         const Guid&       endpoint_guid,
-                                         SequenceNumber    writer_sn) noexcept
-{
-    if (!accept_announcement(sender_prefix, /*is_pub=*/true, writer_sn)) return;
-    // Only the owning participant may withdraw its endpoints.
-    if (endpoint_guid.prefix != sender_prefix) return;
-    match_table_.remove_writer(endpoint_guid);
-}
-
-void SedpReader::on_subscription_disposed(const GuidPrefix& sender_prefix,
-                                          const Guid&       endpoint_guid,
-                                          SequenceNumber    writer_sn) noexcept
-{
-    if (!accept_announcement(sender_prefix, /*is_pub=*/false, writer_sn)) return;
-    if (endpoint_guid.prefix != sender_prefix) return;
-    match_table_.remove_reader(endpoint_guid);
-}
-
-// ============================================================
-// SedpReader reliability: HEARTBEAT, GAP, repairs.
-//
-// §8.4.12.1: the reader answers a HEARTBEAT with the set of changes it is
-// missing; §8.3.7.4: a GAP resolves changes the writer will never send.
-// ============================================================
-
-bool SedpReader::accept_announcement(const GuidPrefix&     sender_prefix,
-                                     bool                  is_pub,
-                                     const SequenceNumber& writer_sn) noexcept
-{
-    SedpBuiltinAckState* state = find_or_alloc_ack_state(sender_prefix);
-    if (!state) return true;
-    SedpWriterState& writer = is_pub ? state->pub : state->sub;
-    // An announcement beyond the window cannot be recorded; it is processed
-    // anyway (discovery data is idempotent) and requested again later.
-    const bool is_new = writer.window.covers(writer_sn) ? writer.window.resolve(writer_sn)
-                                                        : !writer.window.is_resolved(writer_sn);
-    if (!is_new) return false;
-    if (writer_sn > writer.last_sn) writer.last_sn = writer_sn;
-    if (writer_sn == writer.pending_repair && repairs_must_fit_datagram(transport_)) {
-        send_acknack(*state, is_pub);
-    }
-    return true;
-}
-
-void SedpReader::send_acknack(SedpBuiltinAckState& state, bool is_pub) noexcept
-{
-    if (state.writer_locator == LOCATOR_INVALID) return;
-    SedpWriterState& writer = is_pub ? state.pub : state.sub;
-
-    const bool narrow = repairs_must_fit_datagram(transport_);
-    SequenceNumberSet sn_state{};
-    writer.window.unresolved(writer.last_sn, narrow ? 1u : 256u, sn_state);
-    // bitmapBase is the window's lowest unresolved number, so a narrow
-    // request names exactly that change.
-    writer.pending_repair = (narrow && !sn_state.empty()) ? sn_state.bitmapBase
-                                                          : SequenceNumber{};
-    const bool final_flag = sn_state.empty();
-    ++writer.acknack_count;
-
-    const EntityId reader_id = is_pub ? entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR
-                                      : entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR;
-    const EntityId writer_id = is_pub ? entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER
-                                      : entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER;
-
-    RTPS_LOG_D("sedp", "ACKNACK base=%d:%lu bits=%lu final=%d",
-               sn_state.bitmapBase.high, (unsigned long)sn_state.bitmapBase.low,
-               (unsigned long)sn_state.numBits, (int)final_flag);
-
-    if (!builder_.begin(local_prefix_)) return;
-    builder_.append_info_dst(state.prefix);
-    const bool ok = builder_.append_acknack(
-        reader_id, writer_id, sn_state,
-        static_cast<Long>(writer.acknack_count), final_flag);
-    if (ok) {
-        BufRef buf = builder_.finish();
-        transport_.send_unicast(buf, state.writer_locator);
-        buf.reset();
-    } else {
-        RTPS_LOG_W("sedp", "SEDP ACKNACK builder failed (pool exhausted?)");
-        builder_.abort();
-    }
-}
-
-void SedpReader::on_heartbeat(const ParseContext&    ctx,
-                              const ParsedHeartbeat& msg,
-                              const Locator&         writer_locator) noexcept
-{
-    if (writer_locator == LOCATOR_INVALID) return;
-
-    bool is_pub;
-    if (msg.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
-        is_pub = true;
-    } else if (msg.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
-        is_pub = false;
-    } else {
-        return;
-    }
-
-    SedpBuiltinAckState* state = find_or_alloc_ack_state(ctx.senderGuidPrefix);
-    if (!state) return;
-    state->writer_locator = writer_locator;
-    SedpWriterState& writer = is_pub ? state->pub : state->sub;
-    if (msg.lastSN > writer.last_sn) writer.last_sn = msg.lastSN;
-    writer.window.resolve_below(msg.firstSN);
-    send_acknack(*state, is_pub);
-}
-
-void SedpReader::on_gap(const ParseContext& ctx, const ParsedGap& msg) noexcept
-{
-    bool is_pub;
-    if (msg.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
-        is_pub = true;
-    } else if (msg.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
-        is_pub = false;
-    } else {
-        return;
-    }
-    SedpBuiltinAckState* state = find_or_alloc_ack_state(ctx.senderGuidPrefix);
-    if (!state) return;
-    SedpWriterState& writer = is_pub ? state->pub : state->sub;
-
-    writer.window.resolve_range(msg.gapStart, gap_run_end(msg.gapStart, msg.gapList));
-    msg.gapList.for_each([&](const SequenceNumber& sn) noexcept {
-        writer.window.resolve(sn);
-    });
-    if (repairs_must_fit_datagram(transport_) && writer.pending_repair != SequenceNumber{} &&
-        writer.window.is_resolved(writer.pending_repair)) {
-        send_acknack(*state, is_pub);
-    }
-}
-
-void SedpReader::remove_peer(const GuidPrefix& prefix) noexcept
-{
-    for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
-        if (ack_states_[i].alive && ack_states_[i].prefix == prefix) {
-            ack_states_[i] = SedpBuiltinAckState{};
-        }
-    }
 }
 
 bool SedpReader::deserialise_reader(const Octet*         payload,

@@ -1,4 +1,5 @@
 #include "spec_test_common.hpp"
+#include "sedp_peer_driver.hpp"
 
 #include "rosette/rtps/sedp.hpp"
 #include "rosette/rtps/transport.hpp"
@@ -97,9 +98,9 @@ static bool tc_sedp_9_6_3_2_001(std::string& err) {
     std::vector<Octet> payload{};
     CHECK(build_writer_payload(true, true, payload), "payload build failed");
 
-    reader.on_publication_data(GuidPrefix{}, payload.data(),
-                               static_cast<uint32_t>(payload.size()),
-                               SequenceNumber::from_int64(1));
+    const SedpPeer peer{GuidPrefix{}, make_udpv4_locator(0xC0A80101u, 7410u)};
+    peer.discover(reader);
+    peer.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, payload);
     CHECK(obs.match_calls == 1, "unknown PIDs should be skipped without breaking required field parse");
     return true;
 }
@@ -116,9 +117,9 @@ static bool tc_sedp_9_6_3_2_002(std::string& err) {
     std::vector<Octet> payload{};
     CHECK(build_writer_payload(false, false, payload), "payload build failed");
 
-    reader.on_publication_data(GuidPrefix{}, payload.data(),
-                               static_cast<uint32_t>(payload.size()),
-                               SequenceNumber::from_int64(1));
+    const SedpPeer peer{GuidPrefix{}, make_udpv4_locator(0xC0A80101u, 7410u)};
+    peer.discover(reader);
+    peer.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, payload);
     CHECK(obs.match_calls == 0, "missing PID_ENDPOINT_GUID should reject discovered endpoint");
     return true;
 }

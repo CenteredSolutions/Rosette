@@ -244,7 +244,7 @@ StatefulReader* RTPSParticipant::create_reader(
     const Guid reader_guid{ participant_guid_.prefix,
                             assign_entity_id(cfg.entityId, false, cfg.topicKind) };
 
-    StatefulReader* r = new (reader_storage_[slot]) StatefulReader(
+    StatefulReader* r = new (reader_storage_[slot]) DefaultStatefulReader(
         reader_guid, cfg.reliability, transport_,
         on_change_avail, user_data, cfg.hbResponseMs);
 
@@ -293,12 +293,11 @@ bool RTPSParticipant::delete_reader(StatefulReader* reader) noexcept
 {
     if (!reader) return false;
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
-        if (!reader_alive_[i] ||
-            reinterpret_cast<StatefulReader*>(reader_storage_[i]) != reader) continue;
+        if (!reader_alive_[i] || user_reader(i) != reader) continue;
         const Guid guid = reader->guid();
         sedp_writer_.unregister_reader(guid);
         match_table_.remove_reader(guid);
-        reader->~StatefulReader();
+        user_reader(i)->~DefaultStatefulReader();
         reader_alive_[i] = false;
         RTPS_LOG_I("participant", "reader deleted: slot=%d", i);
         return true;
@@ -351,12 +350,13 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
     spdp_writer_.tick(now_ms);
     spdp_reader_.tick(now_ms);
     sedp_writer_.tick(now_ms);
+    sedp_reader_.tick(now_ms);
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
         if (writer_alive_[i] && writer_iface_[i])
             writer_iface_[i]->tick(now_ms);
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i)
         if (reader_alive_[i])
-            reinterpret_cast<StatefulReader*>(reader_storage_[i])->tick(now_ms);
+            user_reader(i)->tick(now_ms);
 }
 
 uint32_t RTPSParticipant::ms_until_next_timer(uint32_t now_ms) const noexcept {
@@ -367,13 +367,13 @@ uint32_t RTPSParticipant::ms_until_next_timer(uint32_t now_ms) const noexcept {
     };
     consider(spdp_reader_.ms_until_next_expiry(now_ms));
     consider(sedp_writer_.ms_until_next_timer(now_ms));
+    consider(sedp_reader_.ms_until_next_timer(now_ms));
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
         if (writer_alive_[i] && writer_iface_[i])
             consider(writer_iface_[i]->ms_until_next_timer(now_ms));
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i)
         if (reader_alive_[i])
-            consider(reinterpret_cast<const StatefulReader*>(reader_storage_[i])
-                         ->ms_until_next_timer(now_ms));
+            consider(user_reader(i)->ms_until_next_timer(now_ms));
     return next;
 }
 
@@ -480,8 +480,10 @@ void RTPSParticipant::on_spdp_new_peer(const PeerEntry& peer,
     const Locator& dest = peer.data.metatrafficUnicastLocatorList[0];
     p->spdp_writer_.announce_unicast(dest);
     // Matching the peer's builtin SEDP readers replays every live endpoint
-    // announcement to it (TRANSIENT_LOCAL, §8.5.4.1).
+    // announcement to it (TRANSIENT_LOCAL, §8.5.4.1); matching its SEDP
+    // writers lets the local builtin readers receive and repair its own.
     p->sedp_writer_.on_peer_discovered(peer.data);
+    p->sedp_reader_.on_peer_discovered(peer.data);
     p->spdp_reader_.mark_sedp_announced(peer.data.guidPrefix);
 }
 
@@ -509,7 +511,7 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
     // matched_writer_remove on the affected local endpoints.
     p->match_table_.remove_participant(peer.data.guidPrefix);
     p->sedp_writer_.on_peer_removed(peer.data.guidPrefix);
-    p->sedp_reader_.remove_peer(peer.data.guidPrefix);
+    p->sedp_reader_.on_peer_removed(peer.data.guidPrefix);
 }
 
 void RTPSParticipant::on_endpoint_match(const DiscoveredWriterData& wd,
@@ -559,6 +561,55 @@ void RTPSParticipant::on_endpoint_unmatch(const Guid& writer_guid,
 }
 
 // ============================================================
+// Reader-side submessage routing
+// ============================================================
+
+/**
+ * @brief Calls `deliver` on every local reader a reader-side submessage is for.
+ *
+ * DATA, DATA_FRAG, HEARTBEAT, HEARTBEAT_FRAG and GAP all travel from a writer
+ * to a reader, and are routed the same way. A submessage from a SEDP
+ * announcer goes to the builtin SEDP reader matched with it, whatever
+ * readerId it names: builtin EntityIds are reserved (§9.3.1.2), and stock
+ * implementations address SEDP traffic to ENTITYID_UNKNOWN as often as to
+ * the detector. Any other submessage goes to the user reader named by
+ * readerId, or to every user reader when readerId is ENTITYID_UNKNOWN
+ * (§8.3.7, readerId semantics); each reader then ignores writers it has not
+ * matched.
+ *
+ * @param[in] writer_id Submessage writerId.
+ * @param[in] reader_id Submessage readerId.
+ * @param[in] deliver   Callable taking StatefulReader&.
+ *
+ * Verification:
+ * - Correct means: SEDP traffic never reaches a user reader, and user
+ *   traffic reaches exactly the addressed readers.
+ * - Covered by: tests/ros2/run_rmw_interop_loopback.sh (discovery and topic
+ *   traffic against Fast DDS). A unit test would parse a SEDP DATA with
+ *   readerId ENTITYID_UNKNOWN and check that no user reader sees it.
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §8.3.7 (submessage readerId), §9.3.1.2 (builtin
+ *   EntityIds)
+ */
+template <typename Deliver>
+void RTPSParticipant::for_each_addressed_reader(const EntityId& writer_id,
+                                                const EntityId& reader_id,
+                                                Deliver&&       deliver) noexcept
+{
+    if (StatefulReader* builtin = sedp_reader_.reader_for_writer(writer_id)) {
+        deliver(*builtin);
+        return;
+    }
+    for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
+        if (!reader_alive_[i]) continue;
+        StatefulReader& r = *user_reader(i);
+        if (r.guid().entityId == reader_id || reader_id == entity_id::UNKNOWN)
+            deliver(r);
+    }
+}
+
+// ============================================================
 // ParseOps trampolines
 // ============================================================
 
@@ -585,52 +636,18 @@ void RTPSParticipant::dispatch_data(const ParseContext& ctx,
                                 msg.serializedPayloadSize, now_ms);
         return;
     }
-    // SEDP disposal: the key hash names the withdrawn endpoint (§9.6.3.3).
-    if (msg.inlineQos.withdraws_instance() && msg.inlineQos.hasKeyHash) {
-        const Guid endpoint = msg.inlineQos.key_hash_guid();
-        if (msg.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
-            p->sedp_reader_.on_publication_disposed(ctx.senderGuidPrefix, endpoint, msg.writerSN);
-            return;
-        }
-        if (msg.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
-            p->sedp_reader_.on_subscription_disposed(ctx.senderGuidPrefix, endpoint, msg.writerSN);
-            return;
-        }
-    }
-    if (msg.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
-        p->sedp_reader_.on_publication_data(ctx.senderGuidPrefix,
-                                            msg.serializedPayload,
-                                            msg.serializedPayloadSize,
-                                            msg.writerSN);
-        return;
-    }
-    if (msg.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
-        p->sedp_reader_.on_subscription_data(ctx.senderGuidPrefix,
-                                             msg.serializedPayload,
-                                             msg.serializedPayloadSize,
-                                             msg.writerSN);
-        return;
-    }
-    for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
-        if (!p->reader_alive_[i]) continue;
-        auto* r = reinterpret_cast<StatefulReader*>(p->reader_storage_[i]);
-        if (r->guid().entityId == msg.readerId ||
-            msg.readerId == entity_id::UNKNOWN)
-            r->on_data(ctx, msg);
-    }
+    p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
+        r.on_data(ctx, msg);
+    });
 }
 
 void RTPSParticipant::dispatch_data_frag(const ParseContext&   ctx,
                                          const ParsedDataFrag& msg) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(ctx.user_data);
-    for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
-        if (!p->reader_alive_[i]) continue;
-        auto* r = reinterpret_cast<StatefulReader*>(p->reader_storage_[i]);
-        if (r->guid().entityId == msg.readerId ||
-            msg.readerId == entity_id::UNKNOWN)
-            r->on_data_frag(ctx, msg);
-    }
+    p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
+        r.on_data_frag(ctx, msg);
+    });
 }
 
 void RTPSParticipant::dispatch_heartbeat(const ParseContext&    ctx,
@@ -642,41 +659,18 @@ void RTPSParticipant::dispatch_heartbeat(const ParseContext&    ctx,
                ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3],
                msg.firstSN.high, (unsigned long)msg.firstSN.low,
                msg.lastSN.high,  (unsigned long)msg.lastSN.low);
-
-    // Route HEARTBEATs from SEDP builtin writers to the SEDP reader.
-    // — §8.3.7.5, p. 91: F=0 HEARTBEAT requires ACKNACK response.
-    if (msg.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER ||
-        msg.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
-        Locator writer_locator = LOCATOR_INVALID;
-        p->spdp_reader_.for_each_peer([&](const PeerEntry& peer) {
-            if (peer.data.guidPrefix == ctx.senderGuidPrefix &&
-                peer.data.metatrafficUnicastLocatorCount > 0u) {
-                writer_locator = peer.data.metatrafficUnicastLocatorList[0];
-            }
-        });
-        p->sedp_reader_.on_heartbeat(ctx, msg, writer_locator);
-    }
-
-    for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
-        if (!p->reader_alive_[i]) continue;
-        auto* r = reinterpret_cast<StatefulReader*>(p->reader_storage_[i]);
-        if (r->guid().entityId == msg.readerId ||
-            msg.readerId == entity_id::UNKNOWN)
-            r->on_heartbeat(ctx, msg);
-    }
+    p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
+        r.on_heartbeat(ctx, msg);
+    });
 }
 
 void RTPSParticipant::dispatch_heartbeat_frag(const ParseContext&       ctx,
                                               const ParsedHeartbeatFrag& msg) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(ctx.user_data);
-    for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
-        if (!p->reader_alive_[i]) continue;
-        auto* r = reinterpret_cast<StatefulReader*>(p->reader_storage_[i]);
-        if (r->guid().entityId == msg.readerId ||
-            msg.readerId == entity_id::UNKNOWN)
-            r->on_heartbeat_frag(ctx, msg);
-    }
+    p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
+        r.on_heartbeat_frag(ctx, msg);
+    });
 }
 
 void RTPSParticipant::dispatch_acknack(const ParseContext&  ctx,
@@ -705,18 +699,9 @@ void RTPSParticipant::dispatch_gap(const ParseContext& ctx,
                                    const ParsedGap&   msg) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(ctx.user_data);
-    if (msg.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER ||
-        msg.writerId == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER) {
-        p->sedp_reader_.on_gap(ctx, msg);
-        return;
-    }
-    for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
-        if (!p->reader_alive_[i]) continue;
-        auto* r = reinterpret_cast<StatefulReader*>(p->reader_storage_[i]);
-        if (r->guid().entityId == msg.readerId ||
-            msg.readerId == entity_id::UNKNOWN)
-            r->on_gap(ctx, msg);
-    }
+    p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
+        r.on_gap(ctx, msg);
+    });
 }
 
 // ============================================================
@@ -744,8 +729,7 @@ IStatefulWriter* RTPSParticipant::find_writer_iface(const EntityId& eid) noexcep
 StatefulReader* RTPSParticipant::find_reader(const EntityId& eid) noexcept {
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
         if (!reader_alive_[i]) continue;
-        auto* r = reinterpret_cast<StatefulReader*>(reader_storage_[i]);
-        if (r->guid().entityId == eid) return r;
+        if (user_reader(i)->guid().entityId == eid) return user_reader(i);
     }
     return nullptr;
 }
