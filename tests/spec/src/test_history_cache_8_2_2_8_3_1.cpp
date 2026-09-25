@@ -39,7 +39,7 @@ CacheChange make_change(const Guid& writer_guid,
 } // namespace
 
 static bool tc_hc_8_3_1_001(std::string& err) {
-    HistoryCache<3> cache{};
+    HistoryCacheStorage<3> cache{};
     CHECK(cache.is_empty(), "new cache should start empty");
     CHECK(cache.size() == 0u, "new cache size should be zero");
     CHECK(cache.get_seq_num_min() == SEQUENCENUMBER_UNKNOWN,
@@ -64,7 +64,7 @@ static bool tc_hc_8_3_1_001(std::string& err) {
 }
 
 static bool tc_hc_8_3_1_002(std::string& err) {
-    HistoryCache<2> cache{};
+    HistoryCacheStorage<2> cache{};
     const Guid w = make_guid(0x20u, 0x21u, 0x22u, make_entity(2u, 2u, 2u, 0xC2u));
 
     CHECK(cache.add_change(make_change(w, 1, 0xB1u)) != nullptr, "add_change #1 should succeed");
@@ -81,7 +81,7 @@ static bool tc_hc_8_3_1_002(std::string& err) {
 }
 
 static bool tc_hc_8_3_1_003(std::string& err) {
-    HistoryCache<2> cache{};
+    HistoryCacheStorage<2> cache{};
     const Guid wa = make_guid(0x31u, 0x32u, 0x33u, make_entity(3u, 3u, 3u, 0xC2u));
     const Guid wb = make_guid(0x41u, 0x42u, 0x43u, make_entity(4u, 4u, 4u, 0xC2u));
     const Guid wc = make_guid(0x51u, 0x52u, 0x53u, make_entity(5u, 5u, 5u, 0xC2u));
@@ -100,7 +100,7 @@ static bool tc_hc_8_3_1_003(std::string& err) {
 }
 
 static bool tc_hc_8_3_1_004(std::string& err) {
-    HistoryCache<3> cache{};
+    HistoryCacheStorage<3> cache{};
     const Guid w = make_guid(0x61u, 0x62u, 0x63u, make_entity(6u, 6u, 6u, 0xC2u));
 
     CHECK(cache.add_change(make_change(w, 10, 0xDAu)) != nullptr, "add_change #1 should succeed");
@@ -116,7 +116,7 @@ static bool tc_hc_8_3_1_004(std::string& err) {
 }
 
 static bool tc_hc_8_3_1_005(std::string& err) {
-    HistoryCache<4> cache{};
+    HistoryCacheStorage<4> cache{};
     const Guid w = make_guid(0x71u, 0x72u, 0x73u, make_entity(7u, 7u, 7u, 0xC2u));
     CHECK(cache.add_change(make_change(w, 1, 0xE1u)) != nullptr, "add_change #1 should succeed");
     CHECK(cache.add_change(make_change(w, 4, 0xE4u)) != nullptr, "add_change #2 should succeed");
@@ -148,7 +148,7 @@ static bool tc_hc_8_3_1_005(std::string& err) {
 }
 
 static bool tc_hc_8_3_1_006(std::string& err) {
-    HistoryCache<4> cache{};
+    HistoryCacheStorage<4> cache{};
     const Guid w = make_guid(0x81u, 0x82u, 0x83u, make_entity(8u, 8u, 8u, 0xC2u));
     CHECK(cache.add_change(make_change(w, 1, 0xF1u)) != nullptr, "add_change #1 should succeed");
     CHECK(cache.add_change(make_change(w, 3, 0xF3u)) != nullptr, "add_change #2 should succeed");
@@ -165,7 +165,7 @@ static bool tc_hc_8_3_1_006(std::string& err) {
 }
 
 static bool tc_hc_8_3_1_007(std::string& err) {
-    HistoryCache<3> cache{};
+    HistoryCacheStorage<3> cache{};
     const Guid w = make_guid(0x91u, 0x92u, 0x93u, make_entity(9u, 9u, 9u, 0xC2u));
     CHECK(cache.add_change(make_change(w, 21, 0x11u)) != nullptr, "add_change #1 should succeed");
     CHECK(cache.add_change(make_change(w, 22, 0x12u)) != nullptr, "add_change #2 should succeed");

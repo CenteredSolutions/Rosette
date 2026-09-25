@@ -173,8 +173,8 @@ public:
     static constexpr uint8_t kCacheDepth = CacheDepth;
     static constexpr uint8_t kMaxReaders = MaxReaders;
 
-    /// Concrete HistoryCache type for this writer's depth.
-    using Cache = HistoryCache<CacheDepth>;
+    /// History storage sized for this writer's depth.
+    using Cache = HistoryCacheStorage<CacheDepth>;
 
     /// Proxy depth equals cache depth — §8.4.1.1, p. 103.
     using Proxy = ReaderProxy<CacheDepth>;
@@ -741,7 +741,7 @@ public:
     const Guid&     guid()        const noexcept override { return guid_; }
     ReliabilityKind reliability() const noexcept { return reliability_; }
     DurabilityKind  durability()  const noexcept { return durability_; }
-    const Cache&    cache()       const noexcept { return writer_cache_; }
+    const HistoryCache& cache()   const noexcept { return writer_cache_; }
 
     /// nack_response_delay() — §8.4.1.1, p. 104.
     uint32_t nack_response_delay()            const noexcept { return nack_delay_ms_; }
@@ -1111,7 +1111,7 @@ private:
     DurabilityKind  durability_;
     ITransport&     transport_;
 
-    Cache  writer_cache_;          ///< HistoryCache<CacheDepth>
+    Cache  writer_cache_;          ///< HistoryCacheStorage<CacheDepth>
     Proxy  proxies_[MaxReaders];   ///< ReaderProxy<CacheDepth>[MaxReaders]
 
     CacheChange    staging_{};     ///< Staging area for new_change().

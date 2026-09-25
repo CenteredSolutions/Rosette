@@ -26,6 +26,7 @@ set(ROSETTE_RTPS_PROTOCOL_SOURCES
   ${ROSETTE_ROOT}/src/rtps/participant.cpp
   ${ROSETTE_ROOT}/src/rtps/sedp.cpp
   ${ROSETTE_ROOT}/src/rtps/endpoint_match_table.cpp
+  ${ROSETTE_ROOT}/src/rtps/history_cache.cpp
   ${ROSETTE_ROOT}/src/rtps/spdp.cpp
   ${ROSETTE_ROOT}/src/rtps/stateful_reader.cpp
   ${ROSETTE_ROOT}/src/rtps/sn_window.cpp

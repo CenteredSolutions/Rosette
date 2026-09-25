@@ -1,21 +1,20 @@
 /**
  * @file rtps/history_cache.hpp
- * @brief CacheChange and HistoryCache — RTPS Writer/Reader history.
+ * @brief CacheChange and HistoryCache — the RTPS writer history.
  *
- * Maps directly to the PIM defined in §8.2.9 (CacheChange) and §8.3.1
- * (HistoryCache) of the DDSI-RTPS 2.5 specification
- * (OMG formal/2022-04-01).
+ * Maps to the PIM of the DDSI-RTPS 2.5 specification (OMG formal/2022-04-01):
+ * CacheChange (§8.2.9) and HistoryCache (§8.3.1).
  *
- * Implementation notes
- * --------------------
- *  - KEEP_LAST(1) semantics only — consistent with the stated constraint
- *    that topics will not have KEEP_HISTORY(n) where n > 1.
- *  - Fixed-capacity N using a circular array; no heap.
- *  - Payload memory is supplied by an external pool (BufRef handle);
- *    the cache itself only stores a reference-counted handle, keeping
- *    the struct lightweight.
- *  - Pool-backed payload buffers allow zero-copy forwarding to the
- *    transport layer.
+ * Design
+ * ------
+ *  - HistoryCache is one compiled class (src/rtps/history_cache.cpp) that
+ *    operates on slot storage it is given: a pointer to CacheChange slots and
+ *    their count. HistoryCacheStorage<N> owns an array of N slots and hands it
+ *    to the HistoryCache base, so a cache of any depth is laid out exactly
+ *    while every depth shares one copy of the code.
+ *  - Fixed capacity, no heap. Payload memory comes from the buffer pool
+ *    (BufRef handle); a slot holds only the reference-counted handle, so
+ *    payloads are forwarded to the transport without copying.
  *
  * Spec references (all OMG formal/2022-04-01)
  * --------------------------------------------
@@ -40,9 +39,8 @@ namespace rtps {
 //  managed by a Writer."
 //  — §8.2.9, Table 8.11, p. 35
 //
-// Fields match Table 8.11 exactly.  The inlineQos field is omitted for
-// the embedded target (no inline QoS needed for KEEP_LAST(1) topics
-// with no key).
+// Fields follow Table 8.11. instanceHandle is omitted: ROS 2 topics are
+// keyless, so every change belongs to the one instance of its writer.
 // ============================================================
 
 /**
@@ -83,221 +81,174 @@ struct CacheChange {
 };
 
 // ============================================================
-// §8.3.1  HistoryCache<N>
+// §8.3.1  HistoryCache
 //
 // "The HistoryCache maintains a list of CacheChange objects."
 //  — §8.3.1, p. 62
-//
-// KEEP_LAST(1) semantics: only the most recent change per writer
-// GUID is retained.  For a Writer cache there is exactly one logical
-// writer, so capacity N == 1 suffices per spec §8.3.3.1 (p. 68).
-// For embedded use N is exposed as a template parameter so that
-// future KEEP_LAST(n) can be introduced without redesign.
-//
-// Template parameter
-//   N : maximum number of simultaneous CacheChange objects.
-//       Set N = 1 for a Writer with KEEP_LAST(1).
-//       Set N >= matched-reader-count for a Reader cache.
 // ============================================================
 
 /**
- * @brief Fixed-capacity history cache with KEEP_LAST(N≤1) semantics.
+ * @brief Fixed-capacity history of CacheChanges with KEEP_LAST eviction.
  *
- * Operations are named and defined per §8.3.1 of the spec.
+ * A StatefulWriter keeps every change it has written here until each matched
+ * reliable reader acknowledges it or KEEP_LAST(depth) evicts it; the writer's
+ * HEARTBEAT range (firstSN, lastSN) is get_seq_num_min() / get_seq_num_max(),
+ * and repairs are served from get_change(). Operations are named and defined
+ * per §8.3.1.
  *
- * Thread safety: This class is NOT thread-safe on its own.  The caller
- * must hold the appropriate lock or run only from the dispatch task.
- * (RX dispatch is single-threaded per design; writer retransmit task
- * accesses the cache only after taking the writer mutex.)
+ * The cache does not own its slots: it operates on the `capacity` slots the
+ * derived HistoryCacheStorage<N> passes to the constructor, so there is one
+ * compiled copy of this class for every depth. It is neither copyable nor
+ * movable, because the slot pointer refers into the object that owns it.
+ *
+ * Thread safety: not thread-safe on its own. The caller holds the
+ * participant lock (ParticipantDriver::mutex()) for every call.
  */
-template<uint8_t N>
 class HistoryCache {
-    static_assert(N >= 1, "HistoryCache must have at least one slot");
-
 public:
+    HistoryCache(const HistoryCache&) = delete;
+    HistoryCache& operator=(const HistoryCache&) = delete;
 
-    HistoryCache() noexcept { clear_all(); }
+    /**
+     * @brief Inserts a change, evicting the oldest one when the cache is full.
+     *
+     * Implements §8.3.1 add_change(). When every slot is occupied, the change
+     * with the lowest sequence number from the same writer is removed and its
+     * payload released (KEEP_LAST, §8.3.3.1); when no slot holds a change from
+     * that writer, the globally oldest change is removed instead.
+     *
+     * @param[in] change Change to insert; the cache takes ownership of
+     *   change.payload.
+     * @return The slot now holding the change. Never null: a full cache always
+     *   has a change to evict.
+     *
+     * Verification:
+     * - Correct means: after capacity() insertions from one writer, the next
+     *   insertion removes exactly the lowest sequence number and keeps the rest.
+     * - Covered by: TC-HC-8.3.1-001, TC-HC-8.3.3.1-001, TC-HC-8.3.3.1-002.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.1 (add_change), §8.3.3.1 (KEEP_LAST)
+     */
+    CacheChange* add_change(CacheChange&& change) noexcept;
 
-    // ----------------------------------------------------------
-    // §8.3.1  add_change()
-    //
-    // "Inserts a new CacheChange into the HistoryCache."
-    //  — §8.3.1, Operation add_change, p. 63
-    //
-    // With KEEP_LAST(1) semantics the oldest change with the same
-    // writerGuid is evicted when the cache is full, per §8.3.3.1:
-    //   "When a new sample arrives and the HistoryCache is full,
-    //    the oldest change that has kind ALIVE or
-    //    NOT_ALIVE_DISPOSED is removed."
-    //   — §8.3.3.1, p. 68
-    //
-    // @param change   CacheChange to insert.  The cache takes
-    //                 ownership of change.payload on success.
-    // @returns        Pointer to the inserted slot, or nullptr if
-    //                 no slot could be reclaimed (all N slots are
-    //                 occupied by changes with higher sequence numbers
-    //                 — should not occur under KEEP_LAST(1)).
-    // ----------------------------------------------------------
-    CacheChange* add_change(CacheChange&& change) noexcept {
-        // Fast path: find an empty slot.
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!slots_[i].is_valid()) {
-                slots_[i] = static_cast<CacheChange&&>(change);
-                return &slots_[i];
-            }
-        }
-        // KEEP_LAST(1) eviction: remove the slot with the lowest SN
-        // from the same writer, or globally oldest if no match.
-        CacheChange* victim = find_oldest_for_writer(change.writerGuid);
-        if (!victim) victim = find_globally_oldest();
-        if (!victim) return nullptr;        // Saturated; caller should not reach here.
-        victim->clear();
-        *victim = static_cast<CacheChange&&>(change);
-        return victim;
-    }
+    /**
+     * @brief Removes the change with `sequenceNumber` and releases its payload.
+     *
+     * @param[in] sequenceNumber Sequence number of the change to remove.
+     * @return `true` when a change was removed; `false` when none had that
+     *   sequence number.
+     *
+     * Verification:
+     * - Correct means: a removed change is no longer returned by get_change()
+     *   and its pool block is returned; an absent number changes nothing.
+     * - Covered by: TC-HC-8.3.1-002.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.1 (remove_change)
+     */
+    bool remove_change(const SequenceNumber& sequenceNumber) noexcept;
 
-    // ----------------------------------------------------------
-    // §8.3.1  remove_change()
-    //
-    // "Removes the CacheChange with the given sequenceNumber from
-    //  the HistoryCache."
-    //  — §8.3.1, Operation remove_change, p. 63
-    //
-    // The payload BufRef is released, returning the pool block.
-    //
-    // @param sequenceNumber  SN of the change to remove.
-    // @returns true if found and removed.
-    // ----------------------------------------------------------
-    bool remove_change(const SequenceNumber& sequenceNumber) noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (slots_[i].is_valid() &&
-                slots_[i].sequenceNumber == sequenceNumber) {
-                slots_[i].clear();
-                return true;
-            }
-        }
-        return false;
-    }
+    /**
+     * @brief Finds the change with `sequenceNumber`.
+     *
+     * @param[in] sequenceNumber Sequence number to look up.
+     * @return Non-owning pointer, valid until the change is removed or
+     *   evicted; null when no change has that number. The caller must not
+     *   release its payload.
+     *
+     * Verification:
+     * - Covered by: TC-HC-8.3.1-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.1 (get_change)
+     */
+    const CacheChange* get_change(const SequenceNumber& sequenceNumber) const noexcept;
 
-    // ----------------------------------------------------------
-    // §8.3.1  get_change()
-    //
-    // "Returns the CacheChange with the given sequenceNumber."
-    //  — §8.3.1, Operation get_change, p. 63
-    //
-    // Returns a non-owning pointer; valid until remove_change() or
-    // clear_all().  Caller must not release the payload.
-    // ----------------------------------------------------------
-    const CacheChange* get_change(const SequenceNumber& sequenceNumber) const noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (slots_[i].is_valid() &&
-                slots_[i].sequenceNumber == sequenceNumber) {
-                return &slots_[i];
-            }
-        }
-        return nullptr;
-    }
-
+    /// @brief Mutable form of get_change(const SequenceNumber&) const.
     CacheChange* get_change(const SequenceNumber& sequenceNumber) noexcept {
         return const_cast<CacheChange*>(
             static_cast<const HistoryCache*>(this)->get_change(sequenceNumber));
     }
 
-    // ----------------------------------------------------------
-    // §8.3.1  get_seq_num_min() / get_seq_num_max()
-    //
-    // "Returns the minimum/maximum SequenceNumber of all changes
-    //  in the HistoryCache."
-    //  — §8.3.1, p. 63
-    //
-    // Returns SEQUENCENUMBER_UNKNOWN when cache is empty.
-    // ----------------------------------------------------------
-    SequenceNumber get_seq_num_min() const noexcept {
-        SequenceNumber result = SEQUENCENUMBER_UNKNOWN;
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!slots_[i].is_valid()) continue;
-            if (result == SEQUENCENUMBER_UNKNOWN ||
-                slots_[i].sequenceNumber < result) {
-                result = slots_[i].sequenceNumber;
-            }
-        }
-        return result;
-    }
+    /**
+     * @brief Lowest sequence number in the cache.
+     *
+     * @return The minimum, or SEQUENCENUMBER_UNKNOWN when the cache is empty.
+     *
+     * Verification:
+     * - Covered by: TC-HC-8.3.1-001, TC-HC-8.3.1-004.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.1 (get_seq_num_min)
+     */
+    SequenceNumber get_seq_num_min() const noexcept;
 
-    SequenceNumber get_seq_num_max() const noexcept {
-        SequenceNumber result = SEQUENCENUMBER_UNKNOWN;
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!slots_[i].is_valid()) continue;
-            if (result == SEQUENCENUMBER_UNKNOWN ||
-                slots_[i].sequenceNumber > result) {
-                result = slots_[i].sequenceNumber;
-            }
-        }
-        return result;
-    }
+    /**
+     * @brief Highest sequence number in the cache.
+     *
+     * @return The maximum, or SEQUENCENUMBER_UNKNOWN when the cache is empty.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.1 (get_seq_num_max)
+     */
+    SequenceNumber get_seq_num_max() const noexcept;
 
-    // ----------------------------------------------------------
-    // Convenience
-    // ----------------------------------------------------------
+    /// @brief True when no slot holds a change.
+    bool is_empty() const noexcept { return size() == 0u; }
 
-    bool is_empty() const noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (slots_[i].is_valid()) return false;
-        }
-        return true;
-    }
+    /// @brief Number of changes held.
+    uint8_t size() const noexcept;
 
-    uint8_t size() const noexcept {
-        uint8_t count = 0;
-        for (uint8_t i = 0; i < N; ++i) {
-            if (slots_[i].is_valid()) ++count;
-        }
-        return count;
-    }
+    /// @brief Number of slots: the most changes the cache holds at once.
+    uint8_t capacity() const noexcept { return capacity_; }
 
-    /// Remove and release every change.  Called on participant teardown.
-    void clear_all() noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (slots_[i].is_valid()) slots_[i].clear();
-        }
-    }
+    /**
+     * @brief Removes every change and releases each payload.
+     *
+     * Verification:
+     * - Covered by: TC-HC-8.3.1-004.
+     */
+    void clear_all() noexcept;
 
-    // ----------------------------------------------------------
-    // Iteration — allows callers to walk all live changes without
-    // exposing the internal array directly.
-    //
-    // fn : void(const CacheChange&)
-    // ----------------------------------------------------------
+    /**
+     * @brief Calls `fn(const CacheChange&)` for each change held, in slot order.
+     *
+     * Verification:
+     * - Covered by: TC-HC-8.3.1-003.
+     */
     template<typename Fn>
     void for_each_change(Fn&& fn) const noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (slots_[i].is_valid()) fn(slots_[i]);
+        for (uint8_t i = 0; i < capacity_; ++i) {
+            if (slots_[i].is_valid()) fn(static_cast<const CacheChange&>(slots_[i]));
         }
     }
 
+    /// @brief Calls `fn(CacheChange&)` for each change held, in slot order.
     template<typename Fn>
     void for_each_change(Fn&& fn) noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
+        for (uint8_t i = 0; i < capacity_; ++i) {
             if (slots_[i].is_valid()) fn(slots_[i]);
         }
     }
 
-    // ----------------------------------------------------------
-    // TRANSIENT_LOCAL durability — §8.7.2.2
-    //
-    // "A Writer with TRANSIENT_LOCAL durability shall send all changes
-    //  in its HistoryCache to any newly-matched Reader."
-    //  — §8.7.2.2, p. 196
-    //
-    // replay_to_new_reader() yields each cached change in SN order
-    // for retransmission to a late-joining ReaderProxy.
-    //
-    // fn : void(const CacheChange&)
-    // ----------------------------------------------------------
+    /**
+     * @brief Calls `fn(const CacheChange&)` for each change in ascending
+     *   sequence-number order.
+     *
+     * A TRANSIENT_LOCAL writer uses this to send its history to a newly
+     * matched reader (§8.7.2.2). Sequence numbers absent from the cache are
+     * skipped.
+     *
+     * Verification:
+     * - Correct means: every held change is visited once, lowest number first.
+     * - Covered by: TC-HC-8.2.2-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.7.2.2 (TRANSIENT_LOCAL)
+     */
     template<typename Fn>
     void replay_to_new_reader(Fn&& fn) const noexcept {
-        // For KEEP_LAST(1) there is at most one change; iterate
-        // in SN order for correctness with N > 1 in future.
         SequenceNumber sn = get_seq_num_min();
         const SequenceNumber max = get_seq_num_max();
         while (!(sn == SEQUENCENUMBER_UNKNOWN) && sn <= max) {
@@ -307,32 +258,57 @@ public:
         }
     }
 
+protected:
+    /**
+     * @brief Binds the cache to slot storage owned by the derived object.
+     *
+     * The slots must already be constructed (HistoryCacheStorage<N> holds
+     * them in a base class initialized before this one) and outlive the
+     * cache. The constructor does not touch them.
+     *
+     * @param[in] slots    First of `capacity` default-constructed (empty) slots.
+     * @param[in] capacity Number of slots, at least 1.
+     */
+    HistoryCache(CacheChange* slots, uint8_t capacity) noexcept
+        : slots_(slots), capacity_(capacity) {}
+
+    ~HistoryCache() = default;
+
 private:
+    /// @brief The held change with the lowest sequence number from `guid`, or null.
+    CacheChange* find_oldest_for_writer(const Guid& guid) noexcept;
 
-    CacheChange slots_[N];
+    /// @brief The held change with the lowest sequence number, or null.
+    CacheChange* find_globally_oldest() noexcept;
 
-    /// Find the valid slot with the lowest SN belonging to writerGuid.
-    CacheChange* find_oldest_for_writer(const Guid& guid) noexcept {
-        CacheChange* oldest = nullptr;
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!slots_[i].is_valid()) continue;
-            if (slots_[i].writerGuid != guid) continue;
-            if (!oldest || slots_[i].sequenceNumber < oldest->sequenceNumber)
-                oldest = &slots_[i];
-        }
-        return oldest;
-    }
+    CacheChange* slots_;
+    uint8_t capacity_;
+};
 
-    /// Find the valid slot with the globally lowest SN.
-    CacheChange* find_globally_oldest() noexcept {
-        CacheChange* oldest = nullptr;
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!slots_[i].is_valid()) continue;
-            if (!oldest || slots_[i].sequenceNumber < oldest->sequenceNumber)
-                oldest = &slots_[i];
-        }
-        return oldest;
-    }
+namespace detail {
+/// @brief The slot array of a HistoryCacheStorage, as a base class so it is
+/// constructed before the HistoryCache base that points into it.
+template<uint8_t N>
+struct HistoryCacheSlots {
+    CacheChange slots[N];
+};
+}  // namespace detail
+
+/**
+ * @brief A HistoryCache with storage for N changes.
+ *
+ * Holds only the slot array; every operation is HistoryCache's. Use it
+ * wherever a cache is owned (a writer's history, a test); pass it as
+ * `HistoryCache&` everywhere else.
+ *
+ * @tparam N Number of slots (the writer's KEEP_LAST depth), at least 1.
+ */
+template<uint8_t N>
+class HistoryCacheStorage : private detail::HistoryCacheSlots<N>, public HistoryCache {
+    static_assert(N >= 1, "HistoryCache must have at least one slot");
+
+public:
+    HistoryCacheStorage() noexcept : HistoryCache(this->slots, N) {}
 };
 
 } // namespace rtps
