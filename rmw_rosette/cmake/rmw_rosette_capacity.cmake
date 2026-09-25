@@ -45,7 +45,7 @@ set(RMW_ROSETTE_MAX_DATAGRAM_SIZE 65507 CACHE STRING
 set(RMW_ROSETTE_MAX_SAMPLE_SIZE 65532 CACHE STRING
     "Largest serialized message (publish, service request or reply) in octets; sizes the largest buffer-pool class (at most 65532)")
 set(RMW_ROSETTE_LARGE_BUFFERS 48 CACHE STRING
-    "Blocks in each of the two largest pool classes (16 KiB and RMW_ROSETTE_MAX_SAMPLE_SIZE): samples held in writer histories, reassembly, and take rings")
+    "Blocks of RMW_ROSETTE_MAX_SAMPLE_SIZE (and, in the host pool profile, of 16 KiB): samples held in writer histories, reassembly, and take rings")
 
 math(EXPR _rr_publishers
      "${RMW_ROSETTE_MAX_PUBLISHERS} + ${RMW_ROSETTE_MAX_NODES} * ${RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE}")
@@ -78,28 +78,69 @@ if(RMW_ROSETTE_MAX_DATAGRAM_SIZE LESS 512 OR RMW_ROSETTE_MAX_DATAGRAM_SIZE GREAT
 endif()
 
 # Buffer pools (rosette/rtps/buf_pool.hpp): five size classes, chosen so
-# each use lands in a block near its size.
-#   class 0  256 B       control messages (HEARTBEAT, ACKNACK, GAP, NACK_FRAG)
-#   class 1  512 B       SPDP/SEDP announcements; one per live local endpoint
-#   class 2  2 KiB       one datagram (DATA/DATA_FRAG framing); small samples
-#   class 3  16 KiB      medium samples
-#   class 4  MAX_SAMPLE  large samples: writer histories, reassembly, take rings
-# Counts are uint8_t. Large-sample blocks are the scarce resource: a writer
-# keeps up to its history depth of samples until acknowledged, and a reader
-# holds one per in-flight reassembly plus each unread take-ring entry.
+# each use lands in a block near its size. A sample is stored whole in one
+# block (fragmented only on the wire) and alloc() takes the smallest class
+# that fits. Counts are uint8_t. Large-sample blocks are the scarce resource:
+# a writer keeps up to its history depth of samples until acknowledged, and a
+# reader holds one per in-flight reassembly plus each unread take-ring entry.
+#
+# RMW_ROSETTE_POOL_PROFILE picks the layout:
+#   host      class 0  256 B       control messages (HEARTBEAT, ACKNACK, GAP)
+#             class 1  512 B       SPDP/SEDP announcements
+#             class 2  2 KiB       DATA/DATA_FRAG framing; small samples
+#             class 3  16 KiB      medium samples
+#             class 4  MAX_SAMPLE  large samples
+#   firmware  class 0  256 B       control messages and short samples
+#             class 1  512 B       one announcement per local endpoint plus
+#                                  one disposal, per SEDP builtin writer
+#             class 2  1 KiB       received discovery data, mid-size samples
+#             class 3  datagram    one datagram plus its RTPS headers (44
+#                                  octets), rounded to 8: received DATA,
+#                                  built messages, unfragmented samples
+#             class 4  MAX_SAMPLE  samples larger than one datagram
+#   The firmware counts follow what a board holds at once; the host counts
+#   leave room for many peers and deep histories.
+set(RMW_ROSETTE_POOL_PROFILE host CACHE STRING
+    "Buffer-pool layout: host (large, many peers) or firmware (sized by role for a microcontroller)")
+set_property(CACHE RMW_ROSETTE_POOL_PROFILE PROPERTY STRINGS host firmware)
+
 function(_rr_clamp_count out value)
   if(value GREATER 255)
     set(value 255)
   endif()
   set(${out} ${value} PARENT_SCOPE)
 endfunction()
-math(EXPR _rr_pool0 "32 + ${_rr_local_endpoints}")
-math(EXPR _rr_pool1 "32 + 2 * ${_rr_local_endpoints}")
-math(EXPR _rr_pool2 "64 + ${_rr_local_endpoints}")
+
+if(RMW_ROSETTE_POOL_PROFILE STREQUAL "host")
+  set(_rr_size0 256)
+  set(_rr_size1 512)
+  set(_rr_size2 2048)
+  set(_rr_size3 16384)
+  math(EXPR _rr_pool0 "32 + ${_rr_local_endpoints}")
+  math(EXPR _rr_pool1 "32 + 2 * ${_rr_local_endpoints}")
+  math(EXPR _rr_pool2 "64 + ${_rr_local_endpoints}")
+  set(_rr_pool3 ${RMW_ROSETTE_LARGE_BUFFERS})
+elseif(RMW_ROSETTE_POOL_PROFILE STREQUAL "firmware")
+  set(_rr_size0 256)
+  set(_rr_size1 512)
+  set(_rr_size2 1024)
+  math(EXPR _rr_size3 "((${RMW_ROSETTE_MAX_DATAGRAM_SIZE} + 44 + 7) / 8) * 8")
+  if(NOT RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER _rr_size3)
+    message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_MAX_SAMPLE_SIZE (${RMW_ROSETTE_MAX_SAMPLE_SIZE}) must "
+                        "exceed the datagram class (${_rr_size3} octets) in the firmware profile")
+  endif()
+  math(EXPR _rr_pool0 "16 + ${_rr_local_endpoints}")
+  math(EXPR _rr_pool1 "2 * (${_rr_local_endpoints} + 1)")
+  set(_rr_pool2 8)
+  set(_rr_pool3 4)
+else()
+  message(FATAL_ERROR "RMW_ROSETTE_POOL_PROFILE='${RMW_ROSETTE_POOL_PROFILE}' is not host or firmware")
+endif()
 _rr_clamp_count(_rr_pool0 ${_rr_pool0})
 _rr_clamp_count(_rr_pool1 ${_rr_pool1})
 _rr_clamp_count(_rr_pool2 ${_rr_pool2})
-_rr_clamp_count(_rr_pool34 ${RMW_ROSETTE_LARGE_BUFFERS})
+_rr_clamp_count(_rr_pool3 ${_rr_pool3})
+_rr_clamp_count(_rr_pool4 ${RMW_ROSETTE_LARGE_BUFFERS})
 
 message(STATUS "rmw_rosette capacity: ${_rr_publishers} publishers, "
                "${RMW_ROSETTE_MAX_SUBSCRIPTIONS} subscriptions, ${_rr_services} services, "
@@ -133,15 +174,15 @@ function(rmw_rosette_apply_capacity target)
     RTPS_MAX_DISCOVERED_WRITERS=${_rr_known_writers}
     RTPS_MAX_DISCOVERED_READERS=${_rr_known_readers}
     RTPS_MAX_MATCH_RECORDS=${_rr_match_records}
-    RTPS_POOL_CLASS0_SIZE=256u
+    RTPS_POOL_CLASS0_SIZE=${_rr_size0}u
     RTPS_POOL_CLASS0_COUNT=${_rr_pool0}u
-    RTPS_POOL_CLASS1_SIZE=512u
+    RTPS_POOL_CLASS1_SIZE=${_rr_size1}u
     RTPS_POOL_CLASS1_COUNT=${_rr_pool1}u
-    RTPS_POOL_CLASS2_SIZE=2048u
+    RTPS_POOL_CLASS2_SIZE=${_rr_size2}u
     RTPS_POOL_CLASS2_COUNT=${_rr_pool2}u
-    RTPS_POOL_CLASS3_SIZE=16384u
-    RTPS_POOL_CLASS3_COUNT=${_rr_pool34}u
+    RTPS_POOL_CLASS3_SIZE=${_rr_size3}u
+    RTPS_POOL_CLASS3_COUNT=${_rr_pool3}u
     RTPS_POOL_CLASS4_SIZE=${RMW_ROSETTE_MAX_SAMPLE_SIZE}u
-    RTPS_POOL_CLASS4_COUNT=${_rr_pool34}u
+    RTPS_POOL_CLASS4_COUNT=${_rr_pool4}u
   )
 endfunction()

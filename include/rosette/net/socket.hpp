@@ -192,6 +192,19 @@ public:
     }
 
     /**
+     * @brief The event registered with set_receive_event(), or null.
+     *
+     * Receive interrupt handlers read it on every interrupt, so the event can
+     * be registered after the interrupt is attached, and by whichever driver
+     * owns the provider at the time (an rmw context creates its participant
+     * driver inside rcl_init()). The pointer is one aligned word, written only
+     * from thread context and read whole by the handler.
+     *
+     * @return The event to signal on receive, or null when none is registered.
+     */
+    rosette::platform::Event* receive_event() const noexcept { return receive_event_; }
+
+    /**
      * @brief Sleeps until one of `sockets` is readable, `wake` is signaled,
      * or `timeout_ms` passes.
      *

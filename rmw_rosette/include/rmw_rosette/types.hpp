@@ -29,7 +29,7 @@
 
 #pragma once
 
-#include "rosette/net/posix/socket.hpp"
+#include "rosette/net/socket.hpp"
 #include "rosette/rtps/buf_pool.hpp"
 #include "rosette/rtps/participant.hpp"
 #include "rosette/rtps/participant_driver.hpp"
@@ -77,7 +77,8 @@ struct Context {
     alignas(rtps::RTPSParticipant) unsigned char participant_storage[sizeof(rtps::RTPSParticipant)];
     alignas(rtps::ParticipantDriver) unsigned char driver_storage[sizeof(rtps::ParticipantDriver)];
 
-    rosette::net::posix::PosixSocketProvider provider{};
+    /// Socket backend from the build's network port (network_port.hpp).
+    rosette::net::SocketProvider* provider = nullptr;
     rtps::SocketUdpTransport* transport   = nullptr;  ///< placement-new'd into transport_storage
     rtps::RTPSParticipant*    participant = nullptr;  ///< placement-new'd into participant_storage
     /// Runs the participant and owns its lock; every rmw entry point that

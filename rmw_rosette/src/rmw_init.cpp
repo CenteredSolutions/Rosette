@@ -4,10 +4,9 @@
  */
 
 #include "rmw_rosette/identifier.h"
+#include "rmw_rosette/network_port.hpp"
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/types.hpp"
-
-#include "rosette/platform/host_runtime.hpp"  // rosette_platform_get_ipv4_addr
 
 #include <cstdio>
 #include <cstdlib>
@@ -125,7 +124,7 @@ rmw_rosette::Pool<rmw_context_impl_s, RMW_ROSETTE_MAX_CONTEXTS>& context_pool() 
 bool open_transport_on_free_ports(rmw_rosette::Context& ctx, uint8_t& participant_id) noexcept {
     for (uint8_t id = 0; id <= kMaxParticipantId; ++id) {
         ctx.transport = new (ctx.transport_storage) rtps::SocketUdpTransport(
-            ctx.provider,
+            *ctx.provider,
             metatraffic_unicast_port(ctx.domain_id, id),
             default_unicast_port(ctx.domain_id, id),
             kSpdpMulticastAddr,
@@ -253,12 +252,12 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * node/publisher/subscription can be created against it.
  *
  * Draws a context slot from context_pool(), opens a `SocketUdpTransport`
- * over `rosette::net::posix::PosixSocketProvider` on the first free
- * participant ID (open_transport_on_free_ports()), then placement-news the
- * `RTPSParticipant` that borrows it. The participant advertises the host's
- * primary IPv4 address (`rosette_platform_get_ipv4_addr()`, overridable with
- * `ROSETTE_LOCAL_IP`) rather than loopback: stock DDS implementations
- * ignore loopback locators from participants they cannot prove are local.
+ * over the build's socket backend (network_socket_provider()) on the first
+ * free participant ID (open_transport_on_free_ports()), then placement-news
+ * the `RTPSParticipant` that borrows it. The participant advertises the
+ * network port's IPv4 address (network_ipv4_address()) rather than loopback:
+ * stock DDS implementations ignore loopback locators from participants they
+ * cannot prove are local.
  *
  * @param[in] options Init options; `domain_id` and `instance_id` are used.
  * @param[out] context Context to initialize.
@@ -287,6 +286,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
 
     rmw_rosette::Context& ctx = impl->rosette_context;
     ctx.domain_id = static_cast<uint8_t>(options->domain_id);
+    ctx.provider = &rmw_rosette::network_socket_provider();
     uint8_t participant_id = 0;
     if (!open_transport_on_free_ports(ctx, participant_id)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: no free RTPS participant ports "
@@ -305,9 +305,9 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     // RMW_ROSETTE_STRICT_LINK rehearses such a link's losses on a host: every
     // received datagram above the limit is discarded, as the wire would.
     ctx.transport->set_strict_link(std::getenv("RMW_ROSETTE_STRICT_LINK") != nullptr);
-    ctx.participant->add_ipv4_address(rosette_platform_get_ipv4_addr());
+    ctx.participant->add_ipv4_address(rmw_rosette::network_ipv4_address());
     ctx.driver = new (ctx.driver_storage) rtps::ParticipantDriver(
-        *ctx.participant, *ctx.transport, ctx.provider, ctx.rx_buffer, sizeof(ctx.rx_buffer));
+        *ctx.participant, *ctx.transport, *ctx.provider, ctx.rx_buffer, sizeof(ctx.rx_buffer));
     ctx.constructed = true;
 
     context->instance_id = options->instance_id;

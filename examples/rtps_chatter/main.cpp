@@ -192,8 +192,9 @@ int main() {
                                  (uint32_t{addr[2]} << 8) | uint32_t{addr[3]});
     static rtps::ParticipantDriver driver(participant, transport, sockets, g_rx_buffer,
                                           sizeof(g_rx_buffer));
-    // INT pin -> driver wake event: the driver sleeps until a datagram arrives.
-    wiz::attach_rx_interrupt(ROSETTE_PIN_W5100S_INT, driver.wake_event());
+    // INT pin -> the driver's wake event, which the driver registered with the
+    // provider: the driver sleeps until a datagram arrives.
+    wiz::attach_rx_interrupt(ROSETTE_PIN_W5100S_INT, sockets);
 
     rtps::IStatefulWriter* writer = nullptr;
     rtps::StatefulReader* reader = nullptr;

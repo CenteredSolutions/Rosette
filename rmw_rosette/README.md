@@ -20,6 +20,7 @@ Verified against stock ROS 2 Humble (`rmw_fastrtps_cpp`) on one host:
 | Guard conditions, wait sets, matched counts, actual QoS | `test/test_guard_condition.cpp`, `test/test_pub_sub_loopback.cpp` |
 | Unconfigured stock Fast DDS through a link that drops datagrams over 1472 octets: discovery, topics and services both ways; Rosette's messages up to 64 KB | `tests/ros2/run_rmw_frag_loopback.sh` (default `stock` mode) |
 | Messages up to 64 KB both ways when the peer caps `maxMessageSize` at the link limit | `ROSETTE_PEER_MODE=capped tests/ros2/run_rmw_frag_loopback.sh` |
+| A stock `rclc` node on an RP2350 WIZnet board, topics both ways with stock Fast DDS; rcl heap steady at about 4 KB | `examples/rclc_chatter` on the W5100S-EVB-Pico2 |
 
 ### Serialization
 
@@ -97,8 +98,8 @@ the same relationships.
    rosette node report unsupported until then.
 3. **QoS events and listeners.** Event initialization reports
    `RMW_RET_UNSUPPORTED`, which both client libraries accept.
-4. **Board transports.** `rmw_init.cpp` uses POSIX sockets; FreeRTOS+TCP and
-   WIZnet targets take the socket provider from board configuration.
+4. **FreeRTOS+TCP network port.** Hosts and WIZnet boards have one
+   (`network_port.hpp`); FreeRTOS+TCP boards need their own definition.
 
 ## Verification
 
@@ -129,6 +130,29 @@ way to see discovery and reliability exchanges without packet-capture rights.
 
 The package compiles the RTPS core and its POSIX platform glue from the
 repository root (`ROSETTE_ROOT`, defaulting to `..`), so `librmw_rosette.so` is
-self-contained. For micro-ROS firmware, add this package to the workspace
-`.repos` alongside `rcl`/`rclc` and select it as the RMW; the board supplies its
-socket provider (gap 4), and the capacity limits are set for the board.
+self-contained.
+
+### Firmware
+
+A firmware image links stock `rcl`, `rclc`, and the message type supports as
+static libraries, cross-compiled once by micro_ros_setup's `generate_lib` flow,
+and compiles `rmw_rosette` itself with the board's toolchain
+(`cmake/rmw_rosette_firmware.cmake` at the repository root). Only the
+per-package libraries from `mcu_ws/install/lib` are used; the micro-ROS
+middleware (`rmw_microxrcedds`, `microxrcedds_client`) is never linked, and
+rcl calls `rmw_rosette` directly. Rebuilding after an `rmw_rosette` or RTPS
+change compiles only those sources.
+
+The image defines the network port (`include/rmw_rosette/network_port.hpp`):
+the socket provider and IPv4 address `rmw_init()` uses. Hosts compile
+`src/network_port_posix.cpp`; a firmware defines both functions beside its
+network bring-up and calls `rcl_init()` once the address is assigned.
+Firmware capacity defaults to one rclc node with no parameter server and
+`RMW_ROSETTE_POOL_PROFILE=firmware`.
+
+```bash
+cmake -S . -B build-hw/pico2 -DROSETTE_BOARD=w5100s-evb-pico2 \
+      -DROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD=OFF \
+      -DROSETTE_ROS2_C_STACK_DIR=<micro-ROS workspace>/firmware/mcu_ws/install
+cmake --build build-hw/pico2 --target rclc_chatter
+```

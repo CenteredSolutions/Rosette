@@ -212,6 +212,7 @@ add_subdirectory(examples/rosette_smoke)
 add_subdirectory(examples/storage_demo)
 add_subdirectory(examples/led_files)
 add_subdirectory(examples/rtps_chatter)
+add_subdirectory(examples/rclc_chatter)
 
 message(STATUS "")
 message(STATUS "Rosette build configuration")

@@ -67,6 +67,7 @@ add_library(rmw_rosette SHARED
   src/rmw_qos_event.cpp
   src/rmw_serialize.cpp
   src/service_endpoints.cpp
+  src/network_port_posix.cpp
   ${ROSETTE_RTPS_SOURCES}
 )
 
