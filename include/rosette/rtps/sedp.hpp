@@ -138,7 +138,7 @@ public:
     static constexpr uint8_t kSedpHistoryDepth =
         static_cast<uint8_t>(RTPS_MAX_LOCAL_ENDPOINTS + 1);
 
-    using BuiltinWriter = StatefulWriter<kSedpHistoryDepth, RTPS_MAX_PEERS>;
+    using BuiltinWriter = StatefulWriterStorage<kSedpHistoryDepth, RTPS_MAX_PEERS>;
 
     explicit SedpWriter(const GuidPrefix& local_prefix,
                         ITransport&       transport) noexcept

@@ -44,7 +44,7 @@ Guid make_guid(Octet p0, Octet p1, Octet p2, const EntityId& eid) {
 static bool tc_swr_8_4_1_4_001(std::string& err) {
     NullTransport tx{};
     const Guid writer_guid = make_guid(0x10u, 0x20u, 0x30u, make_entity(1u, 2u, 3u, 0xC2u));
-    StatefulWriter<2, 1> w(writer_guid,
+    StatefulWriterStorage<2, 1> w(writer_guid,
                            ReliabilityKind::BEST_EFFORT,
                            DurabilityKind::VOLATILE,
                            tx);
@@ -74,7 +74,7 @@ static bool tc_swr_8_4_1_4_002(std::string& err) {
     const Guid writer_guid = make_guid(0x40u, 0x41u, 0x42u, make_entity(4u, 5u, 6u, 0xC2u));
     const Guid reader_guid = make_guid(0x70u, 0x71u, 0x72u, make_entity(7u, 8u, 9u, 0xC7u));
     const Locator loc = make_udpv4_locator(0xC0A80101u, 7411u);
-    StatefulWriter<1, 2> w(writer_guid,
+    StatefulWriterStorage<1, 2> w(writer_guid,
                            ReliabilityKind::RELIABLE,
                            DurabilityKind::VOLATILE,
                            tx);
@@ -122,7 +122,7 @@ static bool tc_swr_8_4_1_4_003(std::string& err) {
     const Guid writer_guid = make_guid(0x80u, 0x81u, 0x82u, make_entity(1u, 1u, 1u, 0xC2u));
     const Guid reader_guid = make_guid(0x90u, 0x91u, 0x92u, make_entity(2u, 2u, 2u, 0xC7u));
     const Locator loc = make_udpv4_locator(0xC0A80122u, 7411u);
-    StatefulWriter<2, 1> w(writer_guid,
+    StatefulWriterStorage<2, 1> w(writer_guid,
                            ReliabilityKind::BEST_EFFORT,
                            DurabilityKind::TRANSIENT_LOCAL,
                            tx);

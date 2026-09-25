@@ -48,7 +48,7 @@ static bool tc_swr_8_4_9_004(std::string& err) {
     reader.prefix.value[0] = 0x66u;
     reader.entityId = make_entity(4u, 5u, 6u, 0x07u);
     const Locator loc = make_udpv4_locator(0xC0A80179u, 7411u);
-    StatefulWriter<2, 1> w(writer, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx, 5u, 1000u);
+    StatefulWriterStorage<2, 1> w(writer, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx, 5u, 1000u);
     CHECK(w.matched_reader_add(reader, &loc, 1u, false), "match");
 
     w.tick(1000u);

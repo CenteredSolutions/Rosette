@@ -83,7 +83,7 @@ static bool tc_swr_8_4_9_001(std::string& err) {
     const Guid writer = make_guid(0x11u, make_entity(1u, 2u, 3u, 0x02u));
     const Guid reader = make_guid(0x22u, make_entity(4u, 5u, 6u, 0x07u));
     const Locator loc = make_udpv4_locator(0xC0A80177u, 7411u);
-    StatefulWriter<4, 1> w(writer, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx, 5u, 1000u);
+    StatefulWriterStorage<4, 1> w(writer, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx, 5u, 1000u);
 
     const Octet payload[1] = {0x42u};
     for (int i = 0; i < 3; ++i) CHECK(w.write_async(ChangeKind::ALIVE, payload, 1u), "write before match");
@@ -116,7 +116,7 @@ static bool tc_swr_8_4_9_002(std::string& err) {
     const Guid writer = make_guid(0x33u, make_entity(1u, 2u, 3u, 0x02u));
     const Guid reader = make_guid(0x44u, make_entity(4u, 5u, 6u, 0x07u));
     const Locator loc = make_udpv4_locator(0xC0A80178u, 7411u);
-    StatefulWriter<1, 1> w(writer, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx, 5u, 1000u);
+    StatefulWriterStorage<1, 1> w(writer, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx, 5u, 1000u);
     CHECK(w.matched_reader_add(reader, &loc, 1u, false), "match");
 
     const Octet payload[1] = {0x42u};

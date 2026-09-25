@@ -37,7 +37,7 @@ Guid make_guid(Octet p0, Octet p1, Octet p2, const EntityId& eid) {
     return g;
 }
 
-bool add_one_change(StatefulWriter<2, 1>& w, Octet byte) {
+bool add_one_change(StatefulWriterStorage<2, 1>& w, Octet byte) {
     BufRef payload{};
     CacheChange* ch = w.new_change(ChangeKind::ALIVE, payload, 16u);
     if (ch == nullptr || !payload.valid()) return false;
@@ -55,7 +55,7 @@ static bool tc_swr_8_2_2_001(std::string& err) {
     const Guid reader_guid = make_guid(0x20u, 0x21u, 0x22u, make_entity(2u, 2u, 2u, 0xC7u));
     const Locator loc = make_udpv4_locator(0xC0A80112u, 7411u);
 
-    StatefulWriter<2, 1> w(writer_guid,
+    StatefulWriterStorage<2, 1> w(writer_guid,
                            ReliabilityKind::RELIABLE,
                            DurabilityKind::VOLATILE,
                            tx);
@@ -85,7 +85,7 @@ static bool tc_swr_8_2_2_002(std::string& err) {
     const Guid reader_guid = make_guid(0x40u, 0x41u, 0x42u, make_entity(4u, 4u, 4u, 0xC7u));
     const Locator loc = make_udpv4_locator(0xC0A80134u, 7411u);
 
-    StatefulWriter<2, 1> w(writer_guid,
+    StatefulWriterStorage<2, 1> w(writer_guid,
                            ReliabilityKind::RELIABLE,
                            DurabilityKind::VOLATILE,
                            tx,
@@ -144,7 +144,7 @@ static bool tc_swr_8_2_2_003(std::string& err) {
     const Guid reader_guid = make_guid(0x60u, 0x61u, 0x62u, make_entity(6u, 6u, 6u, 0xC7u));
     const Locator loc = make_udpv4_locator(0xC0A80156u, 7411u);
 
-    StatefulWriter<2, 1> w(writer_guid,
+    StatefulWriterStorage<2, 1> w(writer_guid,
                            ReliabilityKind::RELIABLE,
                            DurabilityKind::VOLATILE,
                            tx,

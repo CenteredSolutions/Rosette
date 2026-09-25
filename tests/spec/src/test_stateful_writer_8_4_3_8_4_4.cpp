@@ -57,7 +57,7 @@ static bool tc_swr_8_4_3_001(std::string& err) {
     const Guid reader_guid = make_guid(0xD1u, 0xD2u, 0xD3u, make_entity(2u, 2u, 2u, 0xC7u));
     const Locator loc = make_udpv4_locator(0xC0A80144u, 7411u);
 
-    StatefulWriter<1, 1> w(writer_guid,
+    StatefulWriterStorage<1, 1> w(writer_guid,
                            ReliabilityKind::RELIABLE,
                            DurabilityKind::VOLATILE,
                            tx);
@@ -97,7 +97,7 @@ static bool tc_swr_8_4_4_001(std::string& err) {
     const Guid reader_guid = make_guid(0xF1u, 0xF2u, 0xF3u, make_entity(2u, 4u, 6u, 0xC7u));
     const Locator loc = make_udpv4_locator(0xC0A80155u, 7411u);
 
-    StatefulWriter<1, 1> w(writer_guid,
+    StatefulWriterStorage<1, 1> w(writer_guid,
                            ReliabilityKind::RELIABLE,
                            DurabilityKind::VOLATILE,
                            tx,
@@ -188,7 +188,7 @@ static bool tc_swr_8_4_3_002(std::string& err) {
     const Guid writer_guid = make_guid(0xE1u, 0xE2u, 0xE3u, make_entity(1u, 1u, 1u, 0x03u));
     const Guid reader_guid = make_guid(0xF1u, 0xF2u, 0xF3u, make_entity(2u, 2u, 2u, 0x04u));
     const Locator loc = make_udpv4_locator(0xC0A80145u, 7411u);
-    StatefulWriter<2, 1> w(writer_guid, ReliabilityKind::RELIABLE,
+    StatefulWriterStorage<2, 1> w(writer_guid, ReliabilityKind::RELIABLE,
                            DurabilityKind::VOLATILE, tx);
     const Octet payload[1] = {0x42u};
     CHECK(w.write_async(ChangeKind::ALIVE, payload, 1u), "write_async should succeed");
@@ -224,7 +224,7 @@ static bool tc_swr_8_4_7_001(std::string& err) {
     const Guid writer_guid = make_guid(0xA1u, 0xA2u, 0xA3u, make_entity(1u, 1u, 1u, 0x03u));
     const Guid reader_guid = make_guid(0xB1u, 0xB2u, 0xB3u, make_entity(2u, 2u, 2u, 0x04u));
     const Locator loc = make_udpv4_locator(0xC0A80146u, 7411u);
-    StatefulWriter<2, 1> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx);
+    StatefulWriterStorage<2, 1> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx);
     CHECK(w.acknowledged_by_all(), "an empty history is trivially acknowledged");
     CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
     const Octet payload[1] = {0x42u};
@@ -241,7 +241,7 @@ static bool tc_swr_8_4_7_001(std::string& err) {
     w.on_acknack(ctx, ack);
     CHECK(w.acknowledged_by_all(), "a cumulative ACK of every SN completes the wait");
 
-    StatefulWriter<2, 1> be(writer_guid, ReliabilityKind::BEST_EFFORT, DurabilityKind::VOLATILE, tx);
+    StatefulWriterStorage<2, 1> be(writer_guid, ReliabilityKind::BEST_EFFORT, DurabilityKind::VOLATILE, tx);
     CHECK(be.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
     CHECK(be.write_async(ChangeKind::ALIVE, payload, 1u), "write_async should succeed");
     CHECK(be.acknowledged_by_all(), "a BEST_EFFORT writer never waits for acknowledgments");
@@ -254,7 +254,7 @@ static bool tc_swr_8_4_7_002(std::string& err) {
     const Guid writer_guid = make_guid(0xC1u, 0xC2u, 0xC3u, make_entity(1u, 1u, 1u, 0x03u));
     const Guid reader_guid = make_guid(0xD1u, 0xD2u, 0xD3u, make_entity(2u, 2u, 2u, 0x04u));
     const Locator loc = make_udpv4_locator(0xC0A80147u, 7411u);
-    StatefulWriter<2, 1> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx,
+    StatefulWriterStorage<2, 1> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx,
                            /*nack_delay_ms=*/200u, /*hb_period_ms=*/2000u);
     CHECK(w.ms_until_next_timer(500u) == UINT32_MAX,
           "without matched readers there is nothing to heartbeat or repair");
@@ -302,7 +302,7 @@ static bool tc_swr_8_4_14_001(std::string& err) {
     const Guid writer_guid = make_guid(0xE1u, 0xE2u, 0xE3u, make_entity(1u, 1u, 1u, 0x03u));
     const Guid reader_guid = make_guid(0xF1u, 0xF2u, 0xF3u, make_entity(2u, 2u, 2u, 0x04u));
     const Locator loc = make_udpv4_locator(0xC0A80148u, 7411u);
-    StatefulWriter<1, 1> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx);
+    StatefulWriterStorage<1, 1> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx);
     CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
 
     std::vector<Octet> payload(1800u);
@@ -401,7 +401,7 @@ static bool tc_swr_8_4_9_005(std::string& err) {
     const Guid mute_guid = make_guid(0xF8u, 0xF9u, 0xFAu, make_entity(2u, 7u, 7u, 0x04u));
     const Locator loc = make_udpv4_locator(0xC0A80156u, 7411u);
 
-    StatefulWriter<2, 2> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE,
+    StatefulWriterStorage<2, 2> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE,
                            tx, 5u, 1000u);
     CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
     CHECK(w.matched_reader_add(mute_guid, nullptr, 0u, false),

@@ -40,7 +40,7 @@ static bool tc_swr_8_4_2_2_001(std::string& err) {
     const Guid reader_guid = make_guid(0xB1u, 0xB2u, 0xB3u, make_entity(4u, 5u, 6u, 0xC7u));
     const Locator loc = make_udpv4_locator(0xC0A80133u, 7411u);
 
-    StatefulWriter<1, 1> w(writer_guid,
+    StatefulWriterStorage<1, 1> w(writer_guid,
                            ReliabilityKind::RELIABLE,
                            DurabilityKind::VOLATILE,
                            tx,

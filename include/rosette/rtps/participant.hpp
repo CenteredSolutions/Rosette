@@ -2,34 +2,31 @@
  * @file rtps/participant.hpp
  * @brief RTPSParticipant — §8.5.1 (OMG formal/2022-04-01).
  *
- * Changes from the previous version
- * -----------------------------------
- * create_writer() is now a function template:
+ * Writers
+ * -------
+ * create_writer() is a function template over the writer's storage:
  *
  *   template<uint8_t CacheDepth = 1, uint8_t MaxReaders = RTPS_MAX_MATCHED_READERS>
- *   StatefulWriter<CacheDepth, MaxReaders>* create_writer(const WriterConfig&);
+ *   StatefulWriter* create_writer(const WriterConfig&);
  *
- * This lets each writer carry its own history depth at zero runtime cost:
+ * so each writer carries its own history depth:
  *
  *   auto* w1 = participant.create_writer<1>(cfg);  // KEEP_LAST(1)
  *   auto* w8 = participant.create_writer<8>(cfg);  // KEEP_LAST(8)
  *
- * Writers of different depths are stored in the participant's internal
- * table as IStatefulWriter* (type-erased virtual base), which provides
- * on_acknack(), on_nack_frag(), tick(), guid(), matched_reader_add/remove()
- * — the only operations the participant needs without knowing the depth.
- *
- * The concrete StatefulWriter<D,R>* is what the application holds and uses
- * for new_change() / add_change() / write_async() / cache().
+ * It constructs a StatefulWriterStorage<CacheDepth, MaxReaders>; the depth
+ * changes the writer's data layout only, and every writer runs the one
+ * compiled StatefulWriter. The participant keeps its writers in one table as
+ * IStatefulWriter* for on_acknack(), on_nack_frag(), tick(), guid(), and
+ * matched_reader_add/remove(); the application uses the returned
+ * StatefulWriter* for write_async() / cache().
  *
  * Storage model
  * -------------
  * Writer slots are opaque byte arrays (aligned storage) constructed via
- * placement-new.  Each slot is large enough for the largest possible
- * instantiation of StatefulWriter (bounded by
- * RTPS_PARTICIPANT_MAX_WRITER_BYTES per slot).  If a specific
- * StatefulWriter<D,R> does not fit, create_writer() returns nullptr and
- * a static_assert fires at compile time.
+ * placement-new, each RTPS_PARTICIPANT_MAX_WRITER_BYTES long. A
+ * StatefulWriterStorage<D,R> that does not fit a slot fails a static_assert
+ * at compile time.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -96,11 +93,11 @@ GuidPrefix make_participant_guid_prefix(uint8_t participant_id) noexcept;
 #endif
 
 /// Maximum byte size of one writer slot in the participant's storage table.
-/// Must be >= sizeof(StatefulWriter<D,R>) for all D and R you intend to use.
-/// Default covers StatefulWriter<8, RTPS_MAX_MATCHED_READERS>.
+/// Must be >= sizeof(StatefulWriterStorage<D,R>) for all D and R you intend to use.
+/// Default covers StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>.
 #ifndef RTPS_PARTICIPANT_MAX_WRITER_BYTES
 #  define RTPS_PARTICIPANT_MAX_WRITER_BYTES \
-       (sizeof(StatefulWriter<8, RTPS_MAX_MATCHED_READERS>))
+       (sizeof(StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>))
 #endif
 
 // ============================================================
@@ -143,34 +140,36 @@ public:
     RTPSParticipant(const RTPSParticipant&)            = delete;
     RTPSParticipant& operator=(const RTPSParticipant&) = delete;
 
-    // ----------------------------------------------------------
-    // create_writer<CacheDepth, MaxReaders>()
-    //
-    // Factory template: construct a StatefulWriter<CacheDepth, MaxReaders>
-    // in the participant's pre-allocated writer storage and return a
-    // typed pointer to it.
-    //
-    // §8.5.1, p. 150:
-    //   "The Participant creates Writer endpoints and associates them
-    //    with the DDS layer."
-    //
-    // Usage:
-    //   auto* w = participant.create_writer<1>(cfg);   // KEEP_LAST(1)
-    //   auto* w = participant.create_writer<8,4>(cfg); // KEEP_LAST(8), 4 readers
-    //
-    // @returns Typed pointer, or nullptr if the slot table is full or
-    //          sizeof(StatefulWriter<D,R>) > RTPS_PARTICIPANT_MAX_WRITER_BYTES.
-    // ----------------------------------------------------------
+    /**
+     * @brief Creates a writer with a KEEP_LAST(CacheDepth) history in a free writer slot.
+     *
+     * Constructs a StatefulWriterStorage<CacheDepth, MaxReaders> in the
+     * participant's writer storage, assigns its entity ID, and registers the
+     * endpoint so SEDP announces it (§8.5.4).
+     *
+     * @tparam CacheDepth KEEP_LAST depth of the writer's history (§8.3.3).
+     * @tparam MaxReaders Most readers matched at once.
+     * @param[in] cfg Topic, type, QoS, and timing of the writer.
+     * @return The writer, owned by the participant until delete_writer();
+     *   null when the slot table is full or a name exceeds the name limit.
+     *
+     * Verification:
+     * - Covered by: TC-PART-8.5.1-* (tests/spec/src/test_participant_8_5_1.cpp).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.1 (the participant creates its endpoints)
+     */
     template<uint8_t CacheDepth = 1,
              uint8_t MaxReaders = RTPS_MAX_MATCHED_READERS>
-    StatefulWriter<CacheDepth, MaxReaders>* create_writer(
-            const WriterConfig& cfg) noexcept
+    StatefulWriter* create_writer(const WriterConfig& cfg) noexcept
     {
-        using W = StatefulWriter<CacheDepth, MaxReaders>;
+        using W = StatefulWriterStorage<CacheDepth, MaxReaders>;
 
         static_assert(sizeof(W) <= RTPS_PARTICIPANT_MAX_WRITER_BYTES,
-            "StatefulWriter<D,R> exceeds RTPS_PARTICIPANT_MAX_WRITER_BYTES. "
+            "StatefulWriterStorage<D,R> exceeds RTPS_PARTICIPANT_MAX_WRITER_BYTES. "
             "Increase RTPS_PARTICIPANT_MAX_WRITER_BYTES in your config.");
+        static_assert(alignof(W) <= alignof(StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>),
+            "writer storage is aligned for StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>");
 
         if (!endpoint_names_fit(cfg.topicName, cfg.typeName)) return nullptr;
 
@@ -413,7 +412,7 @@ private:
 
     // Writer storage: opaque byte arrays, aligned for StatefulWriter.
     // IStatefulWriter* overlay allows virtual dispatch without knowing D.
-    alignas(alignof(StatefulWriter<8, RTPS_MAX_MATCHED_READERS>))
+    alignas(alignof(StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>))
     Octet writer_storage_[RTPS_MAX_USER_WRITERS]
                          [RTPS_PARTICIPANT_MAX_WRITER_BYTES];
 
