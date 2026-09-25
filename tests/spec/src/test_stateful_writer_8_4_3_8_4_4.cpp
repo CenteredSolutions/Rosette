@@ -370,6 +370,73 @@ static bool tc_swr_8_4_14_001(std::string& err) {
     return true;
 }
 
+namespace {
+
+// Refuses every send until `up` is set, as a link that is down or a pool
+// that is exhausted would.
+struct FlakyTransport : ITransport {
+    bool up = false;
+    int attempts = 0;
+    std::vector<std::vector<Octet>> delivered{};
+
+    bool send_unicast(const BufRef& buf, const Locator&) noexcept override {
+        ++attempts;
+        if (!up) return false;
+        delivered.emplace_back(buf.data, buf.data + buf.size);
+        return true;
+    }
+    bool send_multicast(const BufRef&, const Locator&) noexcept override { return false; }
+};
+
+}  // namespace
+
+// §8.4.9.2: a change the transport refused is a lost datagram. It leaves
+// UNSENT at once, so the writer never retries it in a loop, and a reliable
+// reader still gets it through NACK repair. A reader with no locator is the
+// same case: nothing can be sent to it, and writing must still return.
+static bool tc_swr_8_4_9_005(std::string& err) {
+    FlakyTransport tx{};
+    const Guid writer_guid = make_guid(0xE5u, 0xE6u, 0xE7u, make_entity(1u, 5u, 5u, 0x03u));
+    const Guid reader_guid = make_guid(0xF5u, 0xF6u, 0xF7u, make_entity(2u, 6u, 6u, 0x04u));
+    const Guid mute_guid = make_guid(0xF8u, 0xF9u, 0xFAu, make_entity(2u, 7u, 7u, 0x04u));
+    const Locator loc = make_udpv4_locator(0xC0A80156u, 7411u);
+
+    StatefulWriter<2, 2> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE,
+                           tx, 5u, 1000u);
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+    CHECK(w.matched_reader_add(mute_guid, nullptr, 0u, false),
+          "a reader without locators can still be matched");
+
+    const Octet payload[2] = {0x12u, 0x34u};
+    CHECK(w.write_async(ChangeKind::ALIVE, payload, 2u), "write_async returns despite the failed send");
+    CHECK(tx.attempts == 1, "the failed send is attempted once, not retried in a loop");
+
+    tx.up = true;
+    ParsedAckNack ack{};
+    ack.readerId = reader_guid.entityId;
+    ack.writerId = writer_guid.entityId;
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(1));
+    ack.readerSNState.add(SequenceNumber::from_int64(1));
+    ack.count = 1;
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = reader_guid.prefix;
+    g_stateful_writer_test_now_ms = 300u;
+    w.on_acknack(ctx, ack);
+    w.tick(310u);
+    int data_packets = 0;
+    for (const auto& pkt : tx.delivered) {
+        PacketCap cap{};
+        ParseOps ops{};
+        ops.on_data = [](const ParseContext& c, const ParsedData&) noexcept {
+            static_cast<PacketCap*>(c.user_data)->data_calls++;
+        };
+        (void)parse_message(pkt.data(), static_cast<uint32_t>(pkt.size()), GuidPrefix{}, ops, &cap);
+        data_packets += cap.data_calls;
+    }
+    CHECK(data_packets == 1, "the NACKed change is repaired once the transport works");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_3_8_4_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.3-001",
                      "§8.4.3: ACKNACK cumulative ACK updates ReaderProxy acknowledgment state; duplicate ACKNACK counts are ignored.",
@@ -389,6 +456,9 @@ void append_stateful_writer_tests_8_4_3_8_4_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.4-001",
                      "§8.4.4/§8.4.1.1: NACK_FRAG requests arm nackResponseDelay and trigger deferred retransmit plus directed final HEARTBEAT.",
                      tc_swr_8_4_4_001});
+    tests.push_back({"TC-SWR-8.4.9-005",
+                     "§8.4.9.2: a change the transport refuses, or that has no locator to go to, leaves UNSENT at once: write_async returns, the send is not retried in a loop, and NACK repair delivers it later.",
+                     tc_swr_8_4_9_005});
 }
 
 } // namespace spec_test

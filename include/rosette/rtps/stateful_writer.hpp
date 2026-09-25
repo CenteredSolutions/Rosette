@@ -886,6 +886,20 @@ private:
             if (!proxies_[i].is_matched()) return &proxies_[i];
         return nullptr;
     }
+    /**
+     * @brief Sends one change to one matched reader, as DATA or DATA_FRAGs.
+     *
+     * The change's ChangeForReader status is the caller's to update: a
+     * send the transport refuses, or a reader with no locator, is treated
+     * as a datagram lost on the wire, which reliable repair recovers.
+     *
+     * @param[in] ch    Change from the writer history.
+     * @param[in] proxy Reader to send to, at its best unicast locator.
+     * @return `true` when every datagram was handed to the transport.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.9.2 (reliable StatefulWriter), §8.4.14.1
+     */
     bool send_data_to(const CacheChange& ch, Proxy& proxy) noexcept {
         const Locator& dest = proxy.best_locator();
         if (dest == LOCATOR_INVALID) return false;
@@ -967,7 +981,6 @@ private:
 
             bool sent = transport_.send_unicast(view, dest);
             view.reset();   // Release the extra retain() taken above.
-            if (sent) proxy.mark_sent(ch.sequenceNumber);
             return sent;
         }
 
@@ -983,7 +996,6 @@ private:
         BufRef buf = builder_.finish();
         bool sent = transport_.send_unicast(buf, dest);
         buf.reset();
-        if (sent) proxy.mark_sent(ch.sequenceNumber);
         return sent;
     }
     /// Octets of the CDR encapsulation header (§10.2) prepended to samples
@@ -1048,10 +1060,27 @@ private:
             all_sent = transport_.send_unicast(buf, dest) && all_sent;
             buf.reset();
         }
-        if (all_sent) proxy.mark_sent(ch.sequenceNumber);
         return all_sent;
     }
 
+    /**
+     * @brief Sends every UNSENT change to every matched reader.
+     *
+     * Each change is marked sent before it goes to the transport, as the
+     * repair path marks a change underway before resending it. A send that
+     * fails (pool exhausted, transport refused, reader without a locator)
+     * is thereby a lost datagram: a reliable reader requests it again, a
+     * best-effort reader loses it, and the loop always terminates.
+     *
+     * Verification:
+     * - Correct means: every UNSENT change is attempted once per reader and
+     *   leaves UNSENT whether or not the send succeeds.
+     * - Covered by: TC-SWR-8.4.9-005.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.9.2 (reliable StatefulWriter, UNSENT ->
+     *   UNACKNOWLEDGED), §8.4.8.1 (best-effort)
+     */
     void send_unsent_changes() noexcept {
         for (uint8_t i = 0; i < MaxReaders; ++i) {
             Proxy& proxy = proxies_[i];
@@ -1059,9 +1088,10 @@ private:
             while (true) {
                 const ChangeForReader* u = proxy.next_unsent_change();
                 if (!u) break;
-                const CacheChange* ch =
-                    writer_cache_.get_change(u->sequenceNumber);
-                if (!ch) { proxy.acked_changes_set(u->sequenceNumber); continue; }
+                const SequenceNumber sn = u->sequenceNumber;
+                const CacheChange* ch = writer_cache_.get_change(sn);
+                if (!ch) { proxy.acked_changes_set(sn); continue; }
+                proxy.mark_sent(sn);
                 send_data_to(*ch, proxy);
             }
         }
