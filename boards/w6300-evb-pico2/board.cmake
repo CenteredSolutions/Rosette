@@ -11,6 +11,8 @@ set(ROSETTE_BOARD_NET_STACK "wiznet_iolib" PARENT_SCOPE)
 set(ROSETTE_BOARD_BUILD_BSP ON PARENT_SCOPE)
 
 set(PICO_BOARD "wiznet_w6300_evb_pico2" CACHE STRING "" FORCE)
+# The Pico SDK has no header for this board; <PICO_BOARD>.h lives beside this file.
+set(PICO_BOARD_HEADER_DIRS "${CMAKE_CURRENT_LIST_DIR}" CACHE STRING "Directories holding <PICO_BOARD>.h" FORCE)
 set(ROSETTE_PROCESSOR  "RP2350"   PARENT_SCOPE)
 
 # W6300 QSPI wiring. The EVB routes the chip onto pins that are NOT a
