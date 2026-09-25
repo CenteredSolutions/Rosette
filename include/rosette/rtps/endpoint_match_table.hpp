@@ -1,17 +1,30 @@
 /**
  * @file rtps/endpoint_match_table.hpp
- * @brief Endpoint discovery data types and matching — §8.5.4–§8.5.5
+ * @brief Endpoint discovery data and matching — §8.5.4–§8.5.5
  *        (OMG formal/2022-04-01).
  *
- * Defines the discovered endpoint data structures and the EndpointMatchTable
- * which implements the QoS-compatibility-based matching rules from §8.5.5.1.
+ * DiscoveredWriterData and DiscoveredReaderData (§8.5.4.2) carry an
+ * endpoint's attributes as SEDP announces them, or as the participant
+ * describes one of its own endpoints. EndpointMatchTable keeps what matching
+ * needs and reports every compatible (writer, reader) pair that involves a
+ * local endpoint.
  *
- * Discovered endpoint data (§8.5.4)
- * -----------------------------------
- * DiscoveredWriterData (§8.5.4.2, Table 8.78, p. 166) and
- * DiscoveredReaderData (§8.5.4.2, Table 8.79, p. 166) carry the endpoint
- * attributes announced via SEDP.  Only the fields needed for matching and
- * proxy wiring on this embedded target are stored.
+ * Storage
+ * -------
+ * Only pairs with a local endpoint are ever wired, so the table keeps two
+ * kinds of record:
+ *
+ *   Local endpoints   full topic and type names, QoS. At most
+ *                     RTPS_MAX_LOCAL_ENDPOINTS writers and as many readers.
+ *   Remote endpoints  GUID, QoS, the locators the endpoint announced (none
+ *                     means its participant's defaults), and a 64-bit hash
+ *                     of topic and type (topic_type_key()). No names.
+ *
+ * A remote endpoint is compared by name, exactly, against the local
+ * endpoints when it is announced, while its full names are at hand. A local
+ * endpoint created later is compared against stored remote endpoints by
+ * hash; with a 64-bit FNV-1a key a false match needs a collision between
+ * two distinct topic/type pairs (about 2^-64 per pair).
  *
  * Matching rules (§8.5.5.1, p. 169)
  * ------------------------------------
@@ -29,13 +42,9 @@
  *
  * Callbacks
  * ---------
- * on_match(writer_guid, reader_guid):
- *   Fired when a compatible (writer, reader) pair is identified.
- *   The caller uses this to call StatefulWriter::matched_reader_add()
- *   and StatefulReader::matched_writer_add().
- *
- * on_unmatch(writer_guid, reader_guid):
- *   Fired when a previously matched pair is broken (peer removed).
+ * on_match(writer, reader, topic): a compatible pair was found; the owner
+ *   (RTPSParticipant) adds the matching proxies.
+ * on_unmatch(writer_guid, reader_guid): a reported pair was dissolved.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -49,7 +58,6 @@
 
 #pragma once
 
-#include "log.hpp"
 #include "types.hpp"
 #include <string.h>
 
@@ -131,69 +139,60 @@ struct DiscoveredReaderData {
     bool is_valid() const noexcept { return readerGuid != GUID_UNKNOWN; }
 };
 
-// ============================================================
-// QoS compatibility check — §8.5.5.1, p. 169
-//
-// Returns true when the offered (writer) QoS is compatible with
-// the requested (reader) QoS.
-//
-// Rule 1 — Reliability (§7.6.3.3, p. 83):
-//   RELIABLE reader requires RELIABLE writer.
-//   BEST_EFFORT reader accepts any writer.
-//
-// Rule 2 — Durability (§7.6.3.4, p. 84):
-//   writer.durability >= reader.durability
-//   (VOLATILE < TRANSIENT_LOCAL < TRANSIENT < PERSISTENT)
-// ============================================================
-
-inline bool qos_compatible(const DiscoveredWriterData& writer,
-                            const DiscoveredReaderData& reader) noexcept
+/**
+ * @brief True when an offered (writer) QoS satisfies a requested (reader) QoS.
+ *
+ * @param[in] writer_reliability Writer's reliability kind.
+ * @param[in] writer_durability  Writer's durability kind.
+ * @param[in] reader_reliability Reader's reliability kind.
+ * @param[in] reader_durability  Reader's durability kind.
+ * @return `false` when a RELIABLE reader meets a BEST_EFFORT writer, or the
+ *   writer's durability is below the reader's; `true` otherwise.
+ *
+ * Verification:
+ * - Correct means: the request/offer rules of DDS 1.4 §2.2.3 hold.
+ * - Covered by: TC-SEDP-8.5.5.1-002, TC-SEDP-8.5.5.1-003.
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §8.5.5.1; OMG DDS 1.4 §2.2.3.4 (DURABILITY),
+ *   §2.2.3.14 (RELIABILITY)
+ */
+inline bool qos_compatible(ReliabilityKind writer_reliability,
+                           DurabilityKind  writer_durability,
+                           ReliabilityKind reader_reliability,
+                           DurabilityKind  reader_durability) noexcept
 {
-    // Reliability — §7.6.3.3.
-    if (reader.reliabilityKind == ReliabilityKind::RELIABLE &&
-        writer.reliabilityKind != ReliabilityKind::RELIABLE) {
+    if (reader_reliability == ReliabilityKind::RELIABLE &&
+        writer_reliability != ReliabilityKind::RELIABLE) {
         return false;
     }
-
-    // Durability — §7.6.3.4.
-    if (static_cast<uint32_t>(writer.durabilityKind) <
-        static_cast<uint32_t>(reader.durabilityKind)) {
-        return false;
-    }
-
-    return true;
+    return static_cast<uint32_t>(writer_durability) >=
+           static_cast<uint32_t>(reader_durability);
 }
 
-// ============================================================
-// EndpointMatchTable
-//
-// §8.5.5.1, p. 169 — maintains tables of known writers and readers
-// and evaluates compatibility when either side is added.
-//
-// Matching algorithm:
-//   On add_writer(wd):
-//     for each known reader rd:
-//       if wd.topicName == rd.topicName
-//          && wd.typeName == rd.typeName
-//          && qos_compatible(wd, rd):
-//             fire on_match(wd.writerGuid, rd.readerGuid)
-//
-//   On add_reader(rd):
-//     for each known writer wd:
-//       if wd.topicName == rd.topicName  (symmetric)
-//          && qos_compatible(wd, rd):
-//             fire on_match(wd.writerGuid, rd.readerGuid)
-//
-//   On remove_writer(guid) / remove_reader(guid):
-//     for each currently matched pair involving guid:
-//       fire on_unmatch(writer_guid, reader_guid)
-//
-// Callbacks
-// ---------
-// on_match and on_unmatch are plain function pointers.  The caller
-// (RTPSParticipant) wires StatefulWriter::matched_reader_add() and
-// StatefulReader::matched_writer_add() from these callbacks.
-// ============================================================
+/// @brief qos_compatible() for two discovered endpoints.
+inline bool qos_compatible(const DiscoveredWriterData& writer,
+                           const DiscoveredReaderData& reader) noexcept
+{
+    return qos_compatible(writer.reliabilityKind, writer.durabilityKind,
+                          reader.reliabilityKind, reader.durabilityKind);
+}
+
+/**
+ * @brief 64-bit FNV-1a hash of a topic name and a type name.
+ *
+ * The key a remote endpoint is remembered by (see the file comment). The
+ * two names are hashed with a zero octet between them, so ("ab", "c") and
+ * ("a", "bc") differ.
+ *
+ * @param[in] topic Null-terminated topic name.
+ * @param[in] type  Null-terminated type name.
+ * @return The key; equal names always give equal keys.
+ *
+ * References:
+ * - Fowler, Noll, Vo: FNV-1a, 64-bit parameters (IETF draft-eastlake-fnv)
+ */
+uint64_t topic_type_key(const char* topic, const char* type) noexcept;
 
 #ifndef RTPS_MAX_DISCOVERED_WRITERS
 #  define RTPS_MAX_DISCOVERED_WRITERS 8
@@ -201,22 +200,49 @@ inline bool qos_compatible(const DiscoveredWriterData& writer,
 #ifndef RTPS_MAX_DISCOVERED_READERS
 #  define RTPS_MAX_DISCOVERED_READERS 8
 #endif
-// Writer-reader pairs tracked at once. With a local prefix set, only pairs
-// that involve a local endpoint are tracked, so this scales with local
-// endpoints times their matched peers rather than with the whole graph.
+#ifndef RTPS_MAX_LOCAL_ENDPOINTS
+#  define RTPS_MAX_LOCAL_ENDPOINTS 8
+#endif
+/// Locators kept per remote endpoint, as a WriterProxy or ReaderProxy keeps.
+#ifndef RTPS_MAX_REMOTE_ENDPOINT_LOCATORS
+#  define RTPS_MAX_REMOTE_ENDPOINT_LOCATORS 2
+#endif
+// Writer-reader pairs tracked at once. Only pairs that involve a local
+// endpoint are tracked, so this scales with local endpoints times their
+// matched peers rather than with the whole graph.
 #ifndef RTPS_MAX_MATCH_RECORDS
 #  define RTPS_MAX_MATCH_RECORDS (RTPS_MAX_DISCOVERED_WRITERS * RTPS_MAX_DISCOVERED_READERS)
 #endif
 
+/// One side of a matched pair, as on_match reports it.
+struct MatchedEndpoint {
+    Guid           guid             = GUID_UNKNOWN;
+    /// Announced unicast locators; none (count 0) means the endpoint is
+    /// reached at its participant's default unicast locators (§8.5.3.2).
+    const Locator* locators         = nullptr;
+    uint8_t        locatorCount     = 0;
+    bool           expectsInlineQos = false;   ///< Readers only.
+};
+
+/**
+ * @brief Endpoints known to a participant, and the pairs among them that match.
+ *
+ * See the file comment for what is stored and how matching works. The
+ * table is filled by SEDP (remote endpoints) and by the participant (its
+ * own endpoints); it tells local from remote by the participant's GUID
+ * prefix (set_local_prefix()), and matches nothing until that is set.
+ */
 class EndpointMatchTable {
 public:
 
-    /// Called when a writer–reader pair is found to be compatible.
-    using OnMatch   = void (*)(const DiscoveredWriterData&,
-                               const DiscoveredReaderData&,
-                               void* user_data) noexcept;
+    /// A writer-reader pair became compatible. `topic` is the topic name of
+    /// the pair's local endpoint.
+    using OnMatch   = void (*)(const MatchedEndpoint& writer,
+                               const MatchedEndpoint& reader,
+                               const TopicName&       topic,
+                               void*                  user_data) noexcept;
 
-    /// Called when a previously matched pair is dissolved.
+    /// A previously reported pair was dissolved.
     using OnUnmatch = void (*)(const Guid& writer_guid,
                                const Guid& reader_guid,
                                void* user_data) noexcept;
@@ -229,181 +255,83 @@ public:
         , user_data_(user_data)
     {}
 
-    // ----------------------------------------------------------
-    // set_local_prefix()
-    // Restrict matching to pairs in which at least one endpoint belongs
-    // to the participant with this prefix. Remote-to-remote pairs are
-    // still discovered but neither recorded nor reported, since no local
-    // proxy exists to wire. RTPSParticipant sets its own prefix.
-    // ----------------------------------------------------------
+    /// @brief Sets the GUID prefix that marks an endpoint as local.
     void set_local_prefix(const GuidPrefix& prefix) noexcept {
         local_prefix_ = prefix;
         has_local_prefix_ = true;
     }
 
-    // ----------------------------------------------------------
-    // add_writer()
-    //
-    // Register a newly discovered remote writer and check for
-    // compatible local readers.
-    //
-    // §8.5.5.1, p. 169:
-    //   "When a Writer is discovered, the Participant checks its
-    //    Reader endpoints for compatibility."
-    //
-    // @param wd  Discovered writer data from SEDP.
-    // ----------------------------------------------------------
-    void add_writer(const DiscoveredWriterData& wd) noexcept {
-        if (!wd.is_valid()) return;
+    /**
+     * @brief Records a writer and reports every local pair it now completes.
+     *
+     * A local writer is compared with every local reader by name and with
+     * every remote reader by topic_type_key(); a remote writer is compared
+     * with every local reader by name. Adding a known GUID updates its
+     * record and reports only pairs not reported before.
+     *
+     * @param[in] wd The writer; for a remote writer, as SEDP announced it.
+     *
+     * Verification:
+     * - Correct means: every compatible pair with a local endpoint is
+     *   reported exactly once until it is dissolved; remote-remote pairs
+     *   never are.
+     * - Covered by: TC-SEDP-8.5.5.1-001..005, TC-SEDP-8.5.4-002.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.5.1
+     */
+    void add_writer(const DiscoveredWriterData& wd) noexcept;
 
-        // Insert or update in writer table.
-        DiscoveredWriterData* slot = find_writer(wd.writerGuid);
-        if (!slot) slot = alloc_writer_slot();
-        if (!slot) return;
-        *slot = wd;
+    /// @brief As add_writer(), for a reader.
+    void add_reader(const DiscoveredReaderData& rd) noexcept;
 
-        // Match against all known readers.
-        if (!on_match_) return;
-        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i) {
-            if (!readers_[i].is_valid()) continue;
-            if (!topics_match(wd, readers_[i])) continue;
-            if (!qos_compatible(wd, readers_[i])) continue;
-            if (!involves_local(wd.writerGuid, readers_[i].readerGuid)) continue;
-            if (!record_match(wd.writerGuid, readers_[i].readerGuid)) continue;
-            on_match_(wd, readers_[i], user_data_);
-        }
-    }
+    /// @brief Forgets a writer and reports every pair it was part of as dissolved.
+    void remove_writer(const Guid& writer_guid) noexcept;
 
-    // ----------------------------------------------------------
-    // add_reader()
-    //
-    // Register a newly discovered remote reader and check for
-    // compatible local or remote writers.
-    //
-    // §8.5.5.1, p. 169:
-    //   "When a Reader is discovered, the Participant checks its
-    //    Writer endpoints for compatibility."
-    //
-    // @param rd  Discovered reader data from SEDP.
-    // ----------------------------------------------------------
-    void add_reader(const DiscoveredReaderData& rd) noexcept {
-        if (!rd.is_valid()) return;
+    /// @brief Forgets a reader and reports every pair it was part of as dissolved.
+    void remove_reader(const Guid& reader_guid) noexcept;
 
-        DiscoveredReaderData* slot = find_reader(rd.readerGuid);
-        if (!slot) slot = alloc_reader_slot();
-        if (!slot) return;
-        *slot = rd;
-
-        if (!on_match_) return;
-        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i) {
-            if (!writers_[i].is_valid()) continue;
-            if (!topics_match(writers_[i], rd)) continue;
-            if (!qos_compatible(writers_[i], rd)) continue;
-            if (!involves_local(writers_[i].writerGuid, rd.readerGuid)) continue;
-            if (!record_match(writers_[i].writerGuid, rd.readerGuid)) continue;
-            on_match_(writers_[i], rd, user_data_);
-        }
-    }
-
-    // ----------------------------------------------------------
-    // remove_writer()
-    //
-    // Evict a writer and fire on_unmatch for all pairs it was part of.
-    //
-    // §8.5.5.1, p. 169:
-    //   "When a Writer is removed, all matched Reader-Writer pairs
-    //    involving that Writer are dissolved."
-    // ----------------------------------------------------------
-    void remove_writer(const Guid& writer_guid) noexcept {
-        // Fire on_unmatch for every recorded match involving this writer.
-        if (on_unmatch_) {
-            for (uint32_t i = 0; i < kMaxMatches; ++i) {
-                if (matches_[i].writer_guid == writer_guid &&
-                    matches_[i].reader_guid != GUID_UNKNOWN) {
-                    on_unmatch_(writer_guid, matches_[i].reader_guid, user_data_);
-                    matches_[i] = MatchRecord{};
-                }
-            }
-        }
-        // Remove from writer table.
-        DiscoveredWriterData* slot = find_writer(writer_guid);
-        if (slot) *slot = DiscoveredWriterData{};
-    }
-
-    // ----------------------------------------------------------
-    // remove_reader()
-    // ----------------------------------------------------------
-    void remove_reader(const Guid& reader_guid) noexcept {
-        if (on_unmatch_) {
-            for (uint32_t i = 0; i < kMaxMatches; ++i) {
-                if (matches_[i].reader_guid == reader_guid &&
-                    matches_[i].writer_guid != GUID_UNKNOWN) {
-                    on_unmatch_(matches_[i].writer_guid, reader_guid, user_data_);
-                    matches_[i] = MatchRecord{};
-                }
-            }
-        }
-        DiscoveredReaderData* slot = find_reader(reader_guid);
-        if (slot) *slot = DiscoveredReaderData{};
-    }
-
-    // ----------------------------------------------------------
-    // remove_participant()
-    //
-    // Bulk-remove all endpoints (writers and readers) whose GUID
-    // prefix matches gone_prefix.  Fires on_unmatch for every
-    // affected match record before clearing the endpoint entries.
-    //
-    // Called from RTPSParticipant::on_spdp_peer_removed() when a
-    // remote participant's leaseDuration expires — §8.5.3.2, p. 160:
-    //   "If a participant does not receive a refresh within
-    //    leaseDuration, the Participant removes all information about
-    //    the remote Participant and its endpoints."
-    //
-    // @param gone_prefix  GuidPrefix of the departed participant.
-    // ----------------------------------------------------------
-    void remove_participant(const GuidPrefix& gone_prefix) noexcept {
-        // Collect all writer GUIDs belonging to this participant.
-        // We must fire on_unmatch before clearing the endpoint entries
-        // so the callback can still read the match record.
-        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i) {
-            if (!writers_[i].is_valid()) continue;
-            if (writers_[i].writerGuid.prefix != gone_prefix) continue;
-            remove_writer(writers_[i].writerGuid);
-        }
-        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i) {
-            if (!readers_[i].is_valid()) continue;
-            if (readers_[i].readerGuid.prefix != gone_prefix) continue;
-            remove_reader(readers_[i].readerGuid);
-        }
-    }
-
-    // ----------------------------------------------------------
-    // Lookup helpers — used by RTPSParticipant to retrieve locators
-    // for proxy initialisation.
-    // ----------------------------------------------------------
-    const DiscoveredWriterData* lookup_writer(const Guid& g) const noexcept {
-        return const_cast<EndpointMatchTable*>(this)->find_writer(g);
-    }
-    const DiscoveredReaderData* lookup_reader(const Guid& g) const noexcept {
-        return const_cast<EndpointMatchTable*>(this)->find_reader(g);
-    }
+    /**
+     * @brief Forgets every endpoint of a departed participant (§8.5.3.2).
+     *
+     * @param[in] gone_prefix GUID prefix of the participant whose lease
+     *   expired or that disposed itself.
+     */
+    void remove_participant(const GuidPrefix& gone_prefix) noexcept;
 
 private:
 
-    // ----------------------------------------------------------
-    // Topic / type name comparison — §8.5.5.1, p. 169.
-    // Both must be equal (case-sensitive string comparison).
-    // ----------------------------------------------------------
-    static bool topics_match(const DiscoveredWriterData& w,
-                             const DiscoveredReaderData& r) noexcept {
-        return (w.topicName == r.topicName) &&
-               (w.typeName  == r.typeName);
-    }
+    struct LocalEndpoint {
+        Guid            guid        = GUID_UNKNOWN;
+        TopicName       topicName   = {};
+        TopicName       typeName    = {};
+        uint64_t        key         = 0;
+        ReliabilityKind reliability = ReliabilityKind::BEST_EFFORT;
+        DurabilityKind  durability  = DurabilityKind::VOLATILE;
+        bool            expectsInlineQos = false;
+        bool valid() const noexcept { return guid != GUID_UNKNOWN; }
+    };
 
-    // ----------------------------------------------------------
-    // Match recording: avoid firing on_match twice for the same pair.
-    // ----------------------------------------------------------
+    struct RemoteEndpoint {
+        Guid     guid             = GUID_UNKNOWN;
+        uint64_t key              = 0;
+        uint8_t  reliability      = 0;   ///< ReliabilityKind.
+        uint8_t  durability       = 0;   ///< DurabilityKind.
+        bool     expectsInlineQos = false;
+        uint8_t  locatorCount     = 0;
+        Locator  locators[RTPS_MAX_REMOTE_ENDPOINT_LOCATORS] = {};
+        bool valid() const noexcept { return guid != GUID_UNKNOWN; }
+        ReliabilityKind reliability_kind() const noexcept {
+            return static_cast<ReliabilityKind>(reliability);
+        }
+        DurabilityKind durability_kind() const noexcept {
+            return static_cast<DurabilityKind>(durability);
+        }
+        MatchedEndpoint matched() const noexcept {
+            return MatchedEndpoint{guid, locators, locatorCount, expectsInlineQos};
+        }
+    };
+
     struct MatchRecord {
         Guid writer_guid = GUID_UNKNOWN;
         Guid reader_guid = GUID_UNKNOWN;
@@ -412,62 +340,28 @@ private:
 
     static constexpr uint32_t kMaxMatches = RTPS_MAX_MATCH_RECORDS;
 
-    MatchRecord matches_[kMaxMatches] = {};
-
-    bool already_matched(const Guid& wg, const Guid& rg) const noexcept {
-        for (uint32_t i = 0; i < kMaxMatches; ++i) {
-            if (matches_[i].writer_guid == wg &&
-                matches_[i].reader_guid == rg) return true;
-        }
-        return false;
+    bool is_local(const Guid& g) const noexcept {
+        return has_local_prefix_ && g.prefix == local_prefix_;
     }
 
-    // Returns true when the pair is newly recorded; false when it was
-    // already matched or the record table is full (the pair is then not
-    // reported, so every reported match has a matching unmatch).
-    bool record_match(const Guid& wg, const Guid& rg) noexcept {
-        if (already_matched(wg, rg)) return false;
-        for (uint32_t i = 0; i < kMaxMatches; ++i) {
-            if (!matches_[i].active()) {
-                matches_[i].writer_guid = wg;
-                matches_[i].reader_guid = rg;
-                return true;
-            }
-        }
-        RTPS_LOG_W("match", "match record table full (RTPS_MAX_MATCH_RECORDS=%lu)",
-                   (unsigned long)kMaxMatches);
-        return false;
-    }
+    static LocalEndpoint* find(LocalEndpoint* table, uint32_t n, const Guid& g) noexcept;
+    static RemoteEndpoint* find(RemoteEndpoint* table, uint32_t n, const Guid& g) noexcept;
+    static void store_remote(RemoteEndpoint& slot, const Guid& guid, uint64_t key,
+                             ReliabilityKind reliability, DurabilityKind durability,
+                             bool expects_inline_qos, const Locator* locators,
+                             uint8_t locator_count) noexcept;
 
-    bool involves_local(const Guid& wg, const Guid& rg) const noexcept {
-        return !has_local_prefix_ ||
-               wg.prefix == local_prefix_ || rg.prefix == local_prefix_;
-    }
+    /// Reports the pair unless it was reported before or no record is free.
+    void report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
+                const TopicName& topic) noexcept;
+    /// Reports every recorded pair involving `guid` as dissolved and forgets it.
+    void dissolve(const Guid& guid, bool is_writer) noexcept;
 
-    // Tables
-    DiscoveredWriterData writers_[RTPS_MAX_DISCOVERED_WRITERS] = {};
-    DiscoveredReaderData readers_[RTPS_MAX_DISCOVERED_READERS] = {};
-
-    DiscoveredWriterData* find_writer(const Guid& g) noexcept {
-        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i)
-            if (writers_[i].writerGuid == g) return &writers_[i];
-        return nullptr;
-    }
-    DiscoveredWriterData* alloc_writer_slot() noexcept {
-        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i)
-            if (!writers_[i].is_valid()) return &writers_[i];
-        return nullptr;
-    }
-    DiscoveredReaderData* find_reader(const Guid& g) noexcept {
-        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i)
-            if (readers_[i].readerGuid == g) return &readers_[i];
-        return nullptr;
-    }
-    DiscoveredReaderData* alloc_reader_slot() noexcept {
-        for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i)
-            if (!readers_[i].is_valid()) return &readers_[i];
-        return nullptr;
-    }
+    LocalEndpoint  local_writers_[RTPS_MAX_LOCAL_ENDPOINTS]     = {};
+    LocalEndpoint  local_readers_[RTPS_MAX_LOCAL_ENDPOINTS]     = {};
+    RemoteEndpoint remote_writers_[RTPS_MAX_DISCOVERED_WRITERS] = {};
+    RemoteEndpoint remote_readers_[RTPS_MAX_DISCOVERED_READERS] = {};
+    MatchRecord    matches_[kMaxMatches]                        = {};
 
     OnMatch    on_match_;
     OnUnmatch  on_unmatch_;

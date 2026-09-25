@@ -19,8 +19,9 @@ struct Obs {
     int match_calls = 0;
 };
 
-static void on_match(const DiscoveredWriterData&,
-                     const DiscoveredReaderData&,
+static void on_match(const MatchedEndpoint&,
+                     const MatchedEndpoint&,
+                     const TopicName&,
                      void* user) noexcept {
     auto* o = static_cast<Obs*>(user);
     o->match_calls++;
@@ -93,6 +94,7 @@ static bool tc_sedp_9_6_3_2_001(std::string& err) {
     SedpReader reader(GuidPrefix{}, tx, table);
 
     const Guid local_reader = make_guid(0x10u, 0x11u, 0x12u, make_entity(1u, 1u, 1u, 0xC7u));
+    table.set_local_prefix(local_reader.prefix);
     table.add_reader(make_local_reader(local_reader));
 
     std::vector<Octet> payload{};
@@ -112,6 +114,7 @@ static bool tc_sedp_9_6_3_2_002(std::string& err) {
     SedpReader reader(GuidPrefix{}, tx, table);
 
     const Guid local_reader = make_guid(0x20u, 0x21u, 0x22u, make_entity(2u, 2u, 2u, 0xC7u));
+    table.set_local_prefix(local_reader.prefix);
     table.add_reader(make_local_reader(local_reader));
 
     std::vector<Octet> payload{};

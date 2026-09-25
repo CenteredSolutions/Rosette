@@ -106,13 +106,14 @@ struct MatchObs {
     Guid last_r = GUID_UNKNOWN;
 };
 
-static void on_match(const DiscoveredWriterData& wd,
-                     const DiscoveredReaderData& rd,
+static void on_match(const MatchedEndpoint& writer,
+                     const MatchedEndpoint& reader,
+                     const TopicName&,
                      void* user) noexcept {
     auto* o = static_cast<MatchObs*>(user);
     o->calls++;
-    o->last_w = wd.writerGuid;
-    o->last_r = rd.readerGuid;
+    o->last_w = writer.guid;
+    o->last_r = reader.guid;
 }
 
 static bool build_publication_payload(const DiscoveredWriterData& wd, std::vector<Octet>& out) {
@@ -236,8 +237,9 @@ static bool tc_sedp_8_5_4_002(std::string& err) {
     EndpointMatchTable table(on_match, nullptr, &obs);
     const GuidPrefix local_prefix = make_guid(0x11u, 0x12u, 0x13u, entity_id::PARTICIPANT).prefix;
     SedpReader reader(local_prefix, tx, table);
+    table.set_local_prefix(local_prefix);
 
-    const Guid local_reader = make_guid(0x21u, 0x22u, 0x23u, make_entity(8u, 8u, 8u, 0xC7u));
+    const Guid local_reader = make_guid(0x11u, 0x12u, 0x13u, make_entity(8u, 8u, 8u, 0xC7u));
     table.add_reader(make_reader_data(local_reader, "scan", "sensor_msgs::msg::LaserScan"));
 
     const Guid remote_writer = make_guid(0x31u, 0x32u, 0x33u, make_entity(9u, 9u, 9u, 0xC2u));
@@ -259,6 +261,7 @@ static bool tc_sedp_8_5_4_003(std::string& err) {
     EndpointMatchTable table(on_match, nullptr, &obs);
     const GuidPrefix local_prefix = make_guid(0x41u, 0x42u, 0x43u, entity_id::PARTICIPANT).prefix;
     SedpReader reader(local_prefix, tx, table);
+    table.set_local_prefix(local_prefix);
 
     const Guid local_writer = make_guid(0x41u, 0x42u, 0x43u, make_entity(7u, 7u, 7u, 0xC2u));
     table.add_writer(make_writer_data(local_writer, "odom", "nav_msgs::msg::Odometry"));
@@ -440,7 +443,7 @@ static bool tc_sedp_8_5_4_009(std::string& err) {
     UnmatchObs obs{};
     FakeTransport tx{};
     EndpointMatchTable table(
-        [](const DiscoveredWriterData&, const DiscoveredReaderData&, void* u) noexcept {
+        [](const MatchedEndpoint&, const MatchedEndpoint&, const TopicName&, void* u) noexcept {
             static_cast<UnmatchObs*>(u)->matches++;
         },
         [](const Guid&, const Guid&, void* u) noexcept {
@@ -449,6 +452,7 @@ static bool tc_sedp_8_5_4_009(std::string& err) {
         &obs);
     const GuidPrefix local_prefix = make_guid(0x11u, 0x22u, 0x33u, entity_id::PARTICIPANT).prefix;
     SedpReader reader(local_prefix, tx, table);
+    table.set_local_prefix(local_prefix);
     const Guid local_reader = make_guid(0x11u, 0x22u, 0x33u, make_entity(1u, 1u, 1u, 0x04u));
     table.add_reader(make_reader_data(local_reader, "scan", "sensor_msgs::msg::LaserScan"));
 
@@ -505,6 +509,7 @@ static bool tc_sedp_8_5_4_006(std::string& err) {
     EndpointMatchTable table(nullptr, nullptr, nullptr);
     const GuidPrefix local_prefix = make_guid(0xA1u, 0xA2u, 0xA3u, entity_id::PARTICIPANT).prefix;
     SedpReader reader(local_prefix, tx, table);
+    table.set_local_prefix(local_prefix);
 
     const EntityId pubs = entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER;
     const SedpPeer peer{make_guid(0xB1u, 0xB2u, 0xB3u, entity_id::PARTICIPANT).prefix,
@@ -555,6 +560,7 @@ static bool tc_sedp_8_5_4_013(std::string& err) {
     EndpointMatchTable table(on_match, nullptr, &obs);
     const GuidPrefix local_prefix = make_guid(0x13u, 0x14u, 0x15u, entity_id::PARTICIPANT).prefix;
     SedpReader reader(local_prefix, tx, table);
+    table.set_local_prefix(local_prefix);
 
     const Guid local_reader = make_guid(0x13u, 0x14u, 0x15u, make_entity(8u, 8u, 8u, 0x04u));
     table.add_reader(make_reader_data(local_reader, "scan", "sensor_msgs::msg::LaserScan"));

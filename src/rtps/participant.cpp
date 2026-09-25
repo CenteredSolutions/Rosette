@@ -514,33 +514,33 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
     p->sedp_reader_.on_peer_removed(peer.data.guidPrefix);
 }
 
-void RTPSParticipant::on_endpoint_match(const DiscoveredWriterData& wd,
-                                        const DiscoveredReaderData& rd,
-                                        void*                       self) noexcept
+void RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
+                                        const MatchedEndpoint& reader,
+                                        const TopicName&       topic,
+                                        void*                  self) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(self);
-    RTPS_LOG_I("participant", "endpoint match: topic=%s type=%s",
-               wd.topicName.str, wd.typeName.str);
+    RTPS_LOG_I("participant", "endpoint match: topic=%s", topic.str);
 
-    // Local writer matched to a remote reader.
-    if (wd.writerGuid.prefix == p->participant_guid_.prefix) {
-        IStatefulWriter* iw = p->find_writer_iface(wd.writerGuid.entityId);
+    // Local writer matched to a reader.
+    if (writer.guid.prefix == p->participant_guid_.prefix) {
+        IStatefulWriter* iw = p->find_writer_iface(writer.guid.entityId);
         if (iw) {
-            const Locator* locs = rd.unicastLocatorList;
-            uint8_t count = rd.unicastLocatorCount;
-            p->resolve_endpoint_locators(rd.readerGuid.prefix, locs, count);
-            iw->matched_reader_add(rd.readerGuid, locs, count, rd.expectsInlineQos);
+            const Locator* locs = reader.locators;
+            uint8_t count = reader.locatorCount;
+            p->resolve_endpoint_locators(reader.guid.prefix, locs, count);
+            iw->matched_reader_add(reader.guid, locs, count, reader.expectsInlineQos);
         }
     }
 
-    // Local reader matched to a remote writer.
-    if (rd.readerGuid.prefix == p->participant_guid_.prefix) {
-        StatefulReader* r = p->find_reader(rd.readerGuid.entityId);
+    // Local reader matched to a writer.
+    if (reader.guid.prefix == p->participant_guid_.prefix) {
+        StatefulReader* r = p->find_reader(reader.guid.entityId);
         if (r) {
-            const Locator* locs = wd.unicastLocatorList;
-            uint8_t count = wd.unicastLocatorCount;
-            p->resolve_endpoint_locators(wd.writerGuid.prefix, locs, count);
-            r->matched_writer_add(wd.writerGuid, locs, count);
+            const Locator* locs = writer.locators;
+            uint8_t count = writer.locatorCount;
+            p->resolve_endpoint_locators(writer.guid.prefix, locs, count);
+            r->matched_writer_add(writer.guid, locs, count);
         }
     }
 }
@@ -550,6 +550,11 @@ void RTPSParticipant::resolve_endpoint_locators(const GuidPrefix& remote_prefix,
                                                 uint8_t&          count) const noexcept
 {
     if (count > 0u) return;
+    if (remote_prefix == participant_guid_.prefix) {
+        locators = local_participant_data_.defaultUnicastLocatorList;
+        count    = local_participant_data_.defaultUnicastLocatorCount;
+        return;
+    }
     spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
         if (peer.data.guidPrefix != remote_prefix) return;
         locators = peer.data.defaultUnicastLocatorList;

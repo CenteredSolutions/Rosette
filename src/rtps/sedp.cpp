@@ -327,18 +327,15 @@ uint32_t SedpWriter::serialise_reader(const DiscoveredReaderData& rd,
 
 bool SedpWriter::register_writer(const DiscoveredWriterData& wd) noexcept
 {
-    for (uint8_t i = 0; i < RTPS_MAX_LOCAL_ENDPOINTS; ++i) {
-        if (local_writers_[i].is_valid()) continue;
-        local_writers_[i] = wd;
-        local_writer_sn_[i] = write_announcement(
+    for (Announced& slot : local_writers_) {
+        if (slot.guid != GUID_UNKNOWN) continue;
+        const SequenceNumber sn = write_announcement(
             publications_writer_, wd, wd.writerGuid, writer_payload_size_estimate(wd),
             [this](const DiscoveredWriterData& d, Octet* buf, uint32_t cap) noexcept {
                 return serialise_writer(d, buf, cap);
             });
-        if (local_writer_sn_[i] == SEQUENCENUMBER_UNKNOWN) {
-            local_writers_[i] = DiscoveredWriterData{};
-            return false;
-        }
+        if (sn == SEQUENCENUMBER_UNKNOWN) return false;
+        slot = Announced{wd.writerGuid, sn};
         return true;
     }
     RTPS_LOG_E("sedp", "local writer table full (RTPS_MAX_LOCAL_ENDPOINTS=%d)",
@@ -348,18 +345,15 @@ bool SedpWriter::register_writer(const DiscoveredWriterData& wd) noexcept
 
 bool SedpWriter::register_reader(const DiscoveredReaderData& rd) noexcept
 {
-    for (uint8_t i = 0; i < RTPS_MAX_LOCAL_ENDPOINTS; ++i) {
-        if (local_readers_[i].is_valid()) continue;
-        local_readers_[i] = rd;
-        local_reader_sn_[i] = write_announcement(
+    for (Announced& slot : local_readers_) {
+        if (slot.guid != GUID_UNKNOWN) continue;
+        const SequenceNumber sn = write_announcement(
             subscriptions_writer_, rd, rd.readerGuid, reader_payload_size_estimate(rd),
             [this](const DiscoveredReaderData& d, Octet* buf, uint32_t cap) noexcept {
                 return serialise_reader(d, buf, cap);
             });
-        if (local_reader_sn_[i] == SEQUENCENUMBER_UNKNOWN) {
-            local_readers_[i] = DiscoveredReaderData{};
-            return false;
-        }
+        if (sn == SEQUENCENUMBER_UNKNOWN) return false;
+        slot = Announced{rd.readerGuid, sn};
         return true;
     }
     RTPS_LOG_E("sedp", "local reader table full (RTPS_MAX_LOCAL_ENDPOINTS=%d)",
@@ -369,12 +363,10 @@ bool SedpWriter::register_reader(const DiscoveredReaderData& rd) noexcept
 
 bool SedpWriter::unregister_writer(const Guid& writer_guid) noexcept
 {
-    for (uint8_t i = 0; i < RTPS_MAX_LOCAL_ENDPOINTS; ++i) {
-        if (!local_writers_[i].is_valid() || local_writers_[i].writerGuid != writer_guid)
-            continue;
-        const bool ok = write_disposal(publications_writer_, writer_guid, local_writer_sn_[i]);
-        local_writers_[i] = DiscoveredWriterData{};
-        local_writer_sn_[i] = SEQUENCENUMBER_UNKNOWN;
+    for (Announced& slot : local_writers_) {
+        if (slot.guid != writer_guid || writer_guid == GUID_UNKNOWN) continue;
+        const bool ok = write_disposal(publications_writer_, writer_guid, slot.sn);
+        slot = Announced{};
         return ok;
     }
     return false;
@@ -382,12 +374,10 @@ bool SedpWriter::unregister_writer(const Guid& writer_guid) noexcept
 
 bool SedpWriter::unregister_reader(const Guid& reader_guid) noexcept
 {
-    for (uint8_t i = 0; i < RTPS_MAX_LOCAL_ENDPOINTS; ++i) {
-        if (!local_readers_[i].is_valid() || local_readers_[i].readerGuid != reader_guid)
-            continue;
-        const bool ok = write_disposal(subscriptions_writer_, reader_guid, local_reader_sn_[i]);
-        local_readers_[i] = DiscoveredReaderData{};
-        local_reader_sn_[i] = SEQUENCENUMBER_UNKNOWN;
+    for (Announced& slot : local_readers_) {
+        if (slot.guid != reader_guid || reader_guid == GUID_UNKNOWN) continue;
+        const bool ok = write_disposal(subscriptions_writer_, reader_guid, slot.sn);
+        slot = Announced{};
         return ok;
     }
     return false;

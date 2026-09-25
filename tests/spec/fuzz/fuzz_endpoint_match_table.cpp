@@ -12,8 +12,9 @@ struct Obs {
     int unmatch_calls = 0;
 };
 
-static void on_match(const DiscoveredWriterData&,
-                     const DiscoveredReaderData&,
+static void on_match(const MatchedEndpoint&,
+                     const MatchedEndpoint&,
+                     const TopicName&,
                      void* user) noexcept {
     auto* o = static_cast<Obs*>(user);
     o->match_calls++;

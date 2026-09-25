@@ -308,8 +308,9 @@ private:
     // ── Discovery callbacks ───────────────────────────────────
     static void on_spdp_new_peer    (const PeerEntry&, void*) noexcept;
     static void on_spdp_peer_removed(const PeerEntry&, void*) noexcept;
-    static void on_endpoint_match   (const DiscoveredWriterData&,
-                                     const DiscoveredReaderData&,
+    static void on_endpoint_match   (const MatchedEndpoint&,
+                                     const MatchedEndpoint&,
+                                     const TopicName&,
                                      void*) noexcept;
     static void on_endpoint_unmatch (const Guid&, const Guid&, void*) noexcept;
 
@@ -328,16 +329,19 @@ private:
     StatefulReader*  find_reader(const EntityId& eid) noexcept;
 
     /**
-     * @brief Resolves where a remote endpoint is reached.
+     * @brief Resolves where a matched endpoint is reached.
      *
      * An endpoint's announcement may omit its unicast locators; it is then
-     * reached at its participant's defaultUnicastLocatorList from SPDP.
-     * Locators the endpoint announced are used as they are.
+     * reached at its participant's defaultUnicastLocatorList from SPDP. This
+     * participant's own endpoints are always resolved this way, to its own
+     * default unicast locators. Locators an endpoint announced are used as
+     * they are.
      *
-     * @param[in]     remote_prefix GUID prefix of the endpoint's participant.
+     * @param[in]     remote_prefix GUID prefix of the endpoint's participant
+     *   (this participant's own prefix for a local endpoint).
      * @param[in,out] locators      The announced list; replaced by the
-     *   participant's defaults (owned by the SPDP peer table, valid until
-     *   the next SPDP update) when `count` is 0.
+     *   participant's defaults (owned by the SPDP peer table or this
+     *   participant, valid until they next change) when `count` is 0.
      * @param[in,out] count         Entries in `locators`; stays 0 when the
      *   participant is unknown or announced no defaults either.
      *

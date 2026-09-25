@@ -12,6 +12,7 @@ add_executable(rtps_loopback_smoke
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/participant.cpp
     ../../src/rtps/sedp.cpp
+    ../../src/rtps/endpoint_match_table.cpp
     ../../src/rtps/spdp.cpp
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/sn_window.cpp

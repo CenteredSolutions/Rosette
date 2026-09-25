@@ -41,6 +41,15 @@
       "test_ids": ["TC-SEDP-8.5.4-003"]
     },
     {
+      "id": "REQ-SEDP-8.5.5.1-LOCAL-PAIRS-ONLY",
+      "section": "8.5.5.1",
+      "page": 169,
+      "normativity": "shall",
+      "statement": "Every compatible writer-reader pair that involves a local endpoint is reported once, including a remote endpoint announced before the local one existed; pairs of two remote endpoints are never reported.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.5.1-005"]
+    },
+    {
       "id": "REQ-SEDP-8.5.4.1-RELIABLE-BUILTIN-READERS",
       "section": "8.5.4.1",
       "page": 165,

@@ -229,11 +229,14 @@ private:
     BuiltinWriter publications_writer_;
     BuiltinWriter subscriptions_writer_;
 
-    DiscoveredWriterData local_writers_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
-    DiscoveredReaderData local_readers_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
-    /// SN of each slot's live announcement in its builtin writer's history.
-    SequenceNumber       local_writer_sn_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
-    SequenceNumber       local_reader_sn_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
+    /// A registered local endpoint: the change announcing it lives in the
+    /// builtin writer's history, so only its GUID and SN are kept here.
+    struct Announced {
+        Guid           guid = GUID_UNKNOWN;
+        SequenceNumber sn   = SEQUENCENUMBER_UNKNOWN;
+    };
+    Announced local_writers_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
+    Announced local_readers_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
 
     /// Serialise one DiscoveredWriterData as PL_CDR_LE.
     uint32_t serialise_writer(const DiscoveredWriterData& wd,
