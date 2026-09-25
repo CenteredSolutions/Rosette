@@ -53,6 +53,8 @@ add_library(rmw_rosette SHARED
   src/rmw_guard_condition.cpp
   src/rmw_wait_set.cpp
   src/rmw_graph.cpp
+  src/local_node_entities.cpp
+  src/ros_discovery_info_writer.cpp
   src/rmw_implementation_info.cpp
   src/rmw_loaned_message.cpp
   src/rmw_qos.cpp
@@ -126,12 +128,14 @@ ament_export_include_directories(include)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(geometry_msgs REQUIRED)
+  find_package(rmw_dds_common REQUIRED)
   find_package(sensor_msgs REQUIRED)
   find_package(std_msgs REQUIRED)
 
   # Each test binary links librmw_rosette directly, so it exercises this
   # implementation without going through rmw_implementation's loader.
-  foreach(test_name test_introspection_c_codec test_guard_condition test_pub_sub_loopback)
+  foreach(test_name test_introspection_c_codec test_guard_condition test_pub_sub_loopback
+                    test_local_node_entities)
     ament_add_gtest(${test_name} test/${test_name}.cpp TIMEOUT 60)
     target_link_libraries(${test_name} rmw_rosette)
     # Tests include rmw_rosette headers whose layouts depend on the capacity model.
@@ -140,7 +144,7 @@ if(BUILD_TESTING)
     # Same platform selection as the library, without a second copy of its state.
     target_compile_definitions(${test_name} PRIVATE
       $<TARGET_PROPERTY:rosette_platform,INTERFACE_COMPILE_DEFINITIONS>)
-    ament_target_dependencies(${test_name} geometry_msgs sensor_msgs std_msgs)
+    ament_target_dependencies(${test_name} geometry_msgs rmw_dds_common sensor_msgs std_msgs)
   endforeach()
 endif()
 

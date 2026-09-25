@@ -2,8 +2,10 @@
 # Runs a single-host rmw interop session: rmw_interop_probe.py as role alpha on
 # the RMW under test and as role beta on a stock RMW, in the same DDS domain.
 # Passes only when both sides load their requested RMW, each receives at
-# least EXPECT_RX samples from the other, and each completes at least
-# EXPECT_CALLS correlated calls to each of the other's services.
+# least EXPECT_RX samples from the other, each completes at least
+# EXPECT_CALLS correlated calls to each of the other's services, and the stock
+# side lists alpha's node, with alpha's echo service under it (alpha's
+# ros_discovery_info reached it).
 #
 # Prerequisite: a sourced ROS 2 environment plus the colcon overlay that
 # contains rmw_rosette.
@@ -52,7 +54,7 @@ run_probe() {
     >"${LOG_DIR}/${role}.log" 2>&1
 }
 
-run_probe beta "${PEER_RMW}" &
+run_probe beta "${PEER_RMW}" --expect-peer-graph &
 BETA_PID=$!
 run_probe alpha "${RMW_UNDER_TEST}" "${CAPTURE_ARGS[@]+"${CAPTURE_ARGS[@]}"}" &
 ALPHA_PID=$!

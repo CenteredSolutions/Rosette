@@ -15,7 +15,9 @@
  *     and rclpy, 0 for rclc without rclc_parameter_server);
  *   - RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE publishers (/rosout,
  *     /parameter_events).
- * Each service and client is one RTPS writer plus one RTPS reader.
+ * Each service and client is one RTPS writer plus one RTPS reader, and the
+ * participant adds one writer on `ros_discovery_info`
+ * (ros_discovery_info_writer.hpp).
  */
 
 #pragma once
@@ -72,9 +74,13 @@ constexpr uint32_t kServiceCapacity =
 /// Client pool.
 constexpr uint32_t kClientCapacity = RMW_ROSETTE_MAX_CLIENTS;
 
+/// Participant-level writers: the `ros_discovery_info` writer.
+constexpr uint32_t kParticipantWriters = 1;
+
 /// RTPS writers the participant must hold: publishers, service replies,
-/// client requests.
-constexpr uint32_t kRtpsWriterCapacity = kPublisherCapacity + kServiceCapacity + kClientCapacity;
+/// client requests, and the participant's own.
+constexpr uint32_t kRtpsWriterCapacity =
+    kPublisherCapacity + kServiceCapacity + kClientCapacity + kParticipantWriters;
 
 /// RTPS readers the participant must hold: subscriptions, service requests,
 /// client replies.

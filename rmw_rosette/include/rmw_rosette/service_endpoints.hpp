@@ -38,6 +38,7 @@ enum class ServiceEndpointsStatus : uint8_t {
     Ok,           ///< Both endpoints exist.
     NameTooLong,  ///< A topic or type name exceeds RTPS_MAX_TOPIC_NAME_LEN - 1.
     TablesFull,   ///< The participant has no free writer or reader slot.
+    NotAnnounced, ///< The updated `ros_discovery_info` message could not be written.
 };
 
 /**
@@ -47,8 +48,11 @@ enum class ServiceEndpointsStatus : uint8_t {
  * with a depth chosen from `qos` (create_writer_for_qos()) and the reader
  * with `on_change` as its delivery callback. A server's reply writer is
  * TRANSIENT_LOCAL whatever `qos` requests, so a reply written before the
- * calling client's reply reader has matched is still delivered once it does. On any failure, whatever was
- * created is deleted again, so the participant tables are left unchanged.
+ * calling client's reply reader has matched is still delivered once it does.
+ * Both endpoints are then associated with `node` on `ros_discovery_info`
+ * (ros_discovery_info_writer.hpp), which is how stock peers attribute the
+ * service or client to its node. On any failure, whatever was created is
+ * deleted again, so the participant tables are left unchanged.
  *
  * @param[in]  node        Node the entity belongs to; supplies the participant.
  * @param[in]  role        Server or client.
@@ -85,7 +89,8 @@ ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
 /**
  * @brief Deletes a service's or client's endpoints from the participant.
  *
- * Each deletion withdraws the endpoint through SEDP, so peers unmatch it.
+ * The endpoints are dissociated from `node` on `ros_discovery_info`, and each
+ * deletion withdraws the endpoint through SEDP, so peers unmatch it.
  *
  * @param[in]     node   Node the entity belongs to.
  * @param[in,out] writer Writer to delete; set to null.

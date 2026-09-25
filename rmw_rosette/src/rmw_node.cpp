@@ -79,13 +79,25 @@ extern "C" {
  * Draws a slot from node_pool(), copies `name`/`namespace_` into the
  * slot's fixed buffers via copy_bounded(), and fills the `rmw_node_t`
  * fields to point at those buffers. The node's graph guard condition lives
- * in the same slot, so it shares the node's lifetime.
+ * in the same slot, so it shares the node's lifetime. Finally the node is
+ * published on `ros_discovery_info`, which is how stock peers learn that it
+ * exists; a node that cannot be published is not created.
  *
  * @param[in] context Context whose participant this node is scoped to.
  * @param[in] name Node name.
  * @param[in] namespace_ Node namespace.
- * @return The new node, or `nullptr` if any argument is null or the node
- *   pool is exhausted.
+ * @return The new node, or `nullptr` if any argument is null, the node
+ *   pool is exhausted, or the updated `ros_discovery_info` message cannot
+ *   be written.
+ *
+ * Verification:
+ * - Correct means: a stock `ros2 node list` shows `<namespace>/<name>` for
+ *   as long as the node exists.
+ * - Covered by: tests/ros2/run_rmw_interop_loopback.sh (node list check).
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_create_node`
+ * - rmw_dds_common/msg/ParticipantEntitiesInfo.msg (Humble)
  */
 rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name,
                              const char* namespace_) {
@@ -116,17 +128,29 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name,
     slot->impl.graph_guard_handle.data = &slot->impl.graph_guard;
     slot->impl.graph_guard_handle.context = context;
 
+    rmw_rosette::ContextLock lock(*slot->impl.context);
+    if (!slot->impl.context->discovery_info.add_node(slot->impl)) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_node: cannot publish ros_discovery_info "
+                          "(buffer pool exhausted)");
+        node_pool().release(slot);
+        return nullptr;
+    }
     return &slot->node;
 }
 
 /**
- * @brief Destroys a node and returns its slot to the pool.
+ * @brief Withdraws a node from `ros_discovery_info` and returns its slot to the pool.
  *
  * @param[in] node Node to destroy.
- * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `node` is null.
+ * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `node` or its data is null.
  */
 rmw_ret_t rmw_destroy_node(rmw_node_t* node) {
-    if (!node) return RMW_RET_INVALID_ARGUMENT;
+    if (!node || !node->data) return RMW_RET_INVALID_ARGUMENT;
+    auto* impl = static_cast<rmw_rosette::Node*>(node->data);
+    {
+        rmw_rosette::ContextLock lock(*impl->context);
+        impl->context->discovery_info.remove_node(*impl);
+    }
     node_pool().release(slot_from(node));
     return RMW_RET_OK;
 }

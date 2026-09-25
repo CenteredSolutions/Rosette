@@ -103,6 +103,8 @@ add_library(rmw_rosette_static STATIC
   ${_rr_dir}/src/rmw_guard_condition.cpp
   ${_rr_dir}/src/rmw_wait_set.cpp
   ${_rr_dir}/src/rmw_graph.cpp
+  ${_rr_dir}/src/local_node_entities.cpp
+  ${_rr_dir}/src/ros_discovery_info_writer.cpp
   ${_rr_dir}/src/rmw_implementation_info.cpp
   ${_rr_dir}/src/rmw_loaned_message.cpp
   ${_rr_dir}/src/rmw_qos.cpp

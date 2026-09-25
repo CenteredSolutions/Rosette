@@ -15,6 +15,7 @@ Verified against stock ROS 2 Humble (`rmw_fastrtps_cpp`) on one host:
 | Default stock nodes, including their parameter services | `tests/ros2/run_rmw_interop_loopback.sh` |
 | Reliable pub/sub with Fast DDS, both directions | same |
 | Services and clients with Fast DDS, both directions, correlated per call | same (`std_srvs/SetBool` echo and `get_parameters`) |
+| Stock `ros2 node list`, `ros2 node info`, and `*_by_node` queries show rosette nodes with their publishers, subscriptions, services, and clients, updated as they are created and destroyed | `tests/ros2/run_rmw_interop_loopback.sh` (stock side lists alpha's node and its echo service), `test/test_local_node_entities.cpp` |
 | Endpoints created after discovery are announced; destroyed ones are withdrawn | TC-SEDP-8.5.4-007/008/009, TC-PART-8.5.1-005, live check against Fast DDS |
 | CDR for any installed message type, byte-compatible with Fast DDS | `tests/ros2/rmw_serialization_parity.py`, `test/test_introspection_c_codec.cpp` |
 | Guard conditions, wait sets, matched counts, actual QoS | `test/test_guard_condition.cpp`, `test/test_pub_sub_loopback.cpp` |
@@ -91,11 +92,12 @@ the same relationships.
 1. **Storage.** Flash access still lives in the Pico runtime files; it
    becomes a `storage::BlockDevice` (host file, RP2 flash via
    `flash_safe_execute()`) that LittleFS takes by reference.
-2. **Graph introspection.** `rmw_count_*`, `rmw_get_*_names_and_types*`, and
-   `rmw_get_node_names*` need a `GraphCache` fed by SEDP and the
-   `ros_discovery_info` topic (`rmw_dds_common/msg/ParticipantEntitiesInfo`)
-   that carries node identity; `ros2 node list` and `count_publishers()` on a
-   rosette node report unsupported until then.
+2. **Graph introspection on rosette nodes.** Each context publishes its nodes
+   on `ros_discovery_info` (`rmw_dds_common/msg/ParticipantEntitiesInfo`,
+   `ros_discovery_info_writer.hpp`), so stock peers see them. Rosette's own
+   `rmw_count_*`, `rmw_get_*_names_and_types*`, and `rmw_get_node_names*` need
+   a graph cache fed by SEDP and by other participants' `ros_discovery_info`;
+   they report unsupported until then.
 3. **QoS events and listeners.** Event initialization reports
    `RMW_RET_UNSUPPORTED`, which both client libraries accept.
 4. **FreeRTOS+TCP network port.** Hosts and WIZnet boards have one
@@ -106,11 +108,12 @@ the same relationships.
 | Test | Scope |
 | --- | --- |
 | `test/test_introspection_c_codec.cpp` | type resolution, DDS type names, golden bytes, round trips, malformed-input rejection |
+| `test/test_local_node_entities.cpp` | `ParticipantEntitiesInfo` encoding, decoded through `rmw_dds_common`'s own type support; node and endpoint removal |
 | `test/test_guard_condition.cpp` | trigger semantics and cross-thread wakeup of `rmw_wait()` |
 | `test/test_pub_sub_loopback.cpp` | publish → wait → take through one participant over UDP |
 | `tests/spec` (`TC-SEDP-*`, `TC-PART-8.5.1-005`, `TC-SPDP-8.5.3-005/006`, `TC-SWR-8.4.3-002`) | endpoint lifecycle, disposals, SPDP numbering, preemptive ACKNACK |
 | `tests/ros2/rmw_serialization_parity.py` | CDR layout and cross-decoding against a live stock RMW |
-| `tests/ros2/run_rmw_interop_loopback.sh` | acceptance: stock `rclpy` default nodes on both sides, topics and services |
+| `tests/ros2/run_rmw_interop_loopback.sh` | acceptance: stock `rclpy` default nodes on both sides, topics and services, and the stock side's view of rosette's node |
 | `tests/spec`, `tests/loopback` | the RTPS core this package is built on |
 
 Build and test in a colcon workspace:

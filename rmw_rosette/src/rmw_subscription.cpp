@@ -68,7 +68,10 @@ extern "C" {
  * `ReaderConfig` from `qos_policies`, and creates the reader with
  * on_change_available() registered as its change callback so incoming
  * data lands in the pooled `Subscription`'s pending ring
- * (ChangeRing, change_ring.hpp) ahead of any `rmw_take()` call.
+ * (ChangeRing, change_ring.hpp) ahead of any `rmw_take()` call. The reader
+ * is associated with `node` on `ros_discovery_info`
+ * (ros_discovery_info_writer.hpp), so stock peers list the subscription
+ * under its node.
  *
  * @param[in] node Node to scope this subscription to.
  * @param[in] type_support Message type support from rosidl-generated code.
@@ -78,8 +81,8 @@ extern "C" {
  *   `rmw_subscription_t::options`.
  * @return The new subscription, or `nullptr` if any required argument is
  *   null, the type support offers no supported typesupport family, the
- *   subscription pool is exhausted, or the participant's reader table is
- *   full.
+ *   subscription pool is exhausted, the participant's reader table is
+ *   full, or the updated `ros_discovery_info` message cannot be written.
  */
 rmw_subscription_t* rmw_create_subscription(
     const rmw_node_t* node,
@@ -131,6 +134,13 @@ rmw_subscription_t* rmw_create_subscription(
         subscription_pool().release(slot);
         return nullptr;
     }
+    if (!node_impl->context->discovery_info.add_endpoints(*node_impl, &reader->guid(), nullptr)) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_subscription: cannot publish "
+                          "ros_discovery_info (buffer pool exhausted)");
+        node_impl->context->participant->delete_reader(reader);
+        subscription_pool().release(slot);
+        return nullptr;
+    }
 
     slot->impl.node = node_impl;
     slot->impl.reader = reader;
@@ -151,8 +161,9 @@ rmw_subscription_t* rmw_create_subscription(
 /**
  * @brief Destroys a subscription, its RTPS reader, and its pool slot.
  *
- * Deleting the reader through the participant withdraws it from SEDP, so
- * remote publishers stop sending to it, and frees its reader-table slot.
+ * The reader is dissociated from its node on `ros_discovery_info`, and
+ * deleting it through the participant withdraws it from SEDP, so remote
+ * publishers stop sending to it, and frees its reader-table slot.
  *
  * @param[in] node Unused; kept for ABI symmetry with `rmw_create_subscription()`.
  * @param[in] subscription Subscription to destroy.
@@ -167,6 +178,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     auto* impl = static_cast<rmw_rosette::Subscription*>(subscription->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     if (impl->node && impl->reader) {
+        impl->node->context->discovery_info.remove_endpoints(&impl->reader->guid(), nullptr);
         impl->node->context->participant->delete_reader(impl->reader);
     }
     subscription_pool().release(slot_from(subscription));

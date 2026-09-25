@@ -58,12 +58,21 @@ ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
         writer = nullptr;
         return ServiceEndpointsStatus::TablesFull;
     }
+    if (!node.context->discovery_info.add_endpoints(node, &reader->guid(), &writer->guid())) {
+        participant.delete_reader(reader);
+        participant.delete_writer(writer);
+        reader = nullptr;
+        writer = nullptr;
+        return ServiceEndpointsStatus::NotAnnounced;
+    }
     return ServiceEndpointsStatus::Ok;
 }
 
 void destroy_service_endpoints(Node& node, rtps::StatefulWriter*& writer,
                                rtps::StatefulReader*& reader) noexcept {
     rtps::RTPSParticipant& participant = *node.context->participant;
+    node.context->discovery_info.remove_endpoints(reader ? &reader->guid() : nullptr,
+                                                  writer ? &writer->guid() : nullptr);
     if (reader) participant.delete_reader(reader);
     if (writer) participant.delete_writer(writer);
     reader = nullptr;

@@ -49,7 +49,9 @@ extern "C" {
  * create_writer_for_qos() so its `CacheDepth` matches the requested
  * history depth. The resulting `StatefulWriter*` and codec are
  * stored in a pooled `Publisher`, and the `rmw_publisher_t` returned to
- * the caller points at it.
+ * the caller points at it. The writer is associated with `node` on
+ * `ros_discovery_info` (ros_discovery_info_writer.hpp), so stock peers list
+ * the publisher under its node.
  *
  * @param[in] node Node to scope this publisher to.
  * @param[in] type_support Message type support from rosidl-generated code.
@@ -59,8 +61,8 @@ extern "C" {
  *   `rmw_publisher_t::options`.
  * @return The new publisher, or `nullptr` if any required argument is
  *   null, the type support offers no supported typesupport family, the
- *   participant's writer table is full, or the publisher pool is
- *   exhausted.
+ *   participant's writer table is full, the publisher pool is exhausted,
+ *   or the updated `ros_discovery_info` message cannot be written.
  */
 rmw_publisher_t* rmw_create_publisher(
     const rmw_node_t* node,
@@ -112,6 +114,13 @@ rmw_publisher_t* rmw_create_publisher(
         publisher_pool().release(slot);
         return nullptr;
     }
+    if (!node_impl->context->discovery_info.add_endpoints(*node_impl, nullptr, &writer->guid())) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_publisher: cannot publish ros_discovery_info "
+                          "(buffer pool exhausted)");
+        node_impl->context->participant->delete_writer(writer);
+        publisher_pool().release(slot);
+        return nullptr;
+    }
 
     slot->impl.node = node_impl;
     slot->impl.writer = writer;
@@ -133,7 +142,8 @@ rmw_publisher_t* rmw_create_publisher(
 /**
  * @brief Destroys a publisher, its RTPS writer, and its pool slot.
  *
- * Deleting the writer through the participant withdraws it from SEDP, so
+ * The writer is dissociated from its node on `ros_discovery_info`, and
+ * deleting it through the participant withdraws it from SEDP, so
  * remote subscriptions unmatch it promptly instead of at lease expiry, and
  * frees its writer-table slot for reuse.
  *
@@ -155,6 +165,7 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     if (impl->node && impl->writer) {
+        impl->node->context->discovery_info.remove_endpoints(nullptr, &impl->writer->guid());
         impl->node->context->participant->delete_writer(impl->writer);
     }
     publisher_pool().release(slot_from(publisher));

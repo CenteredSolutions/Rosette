@@ -16,6 +16,12 @@ Architecture:
     DATA/HEARTBEAT/ACKNACK exchange, and request/reply correlation through
     PID_RELATED_SAMPLE_IDENTITY to all work across the two middlewares.
 
+    With `--expect-peer-graph`, the side must also see the peer's node in its
+    node list and the peer's echo service listed under that node. Node
+    identity travels only in the peer's `ros_discovery_info` messages
+    (rmw_dds_common/msg/ParticipantEntitiesInfo), so this checks that the
+    peer publishes them and that their GIDs match its SEDP endpoints.
+
     Run the two roles on one host with `run_rmw_interop_loopback.sh`, or on two
     hosts by hand to put a real network between them.
 
@@ -100,6 +106,9 @@ class InteropProbeNode(Node):
         self.rx_count = 0
         self.echo_ok = 0
         self.param_ok = 0
+        self.peer_graph_ok = False
+        self._peer_node = peer_node
+        self._peer_echo = f"/{session}/{self._peer}_echo"
         self._call_seq = 0
         self._inflight: list = []
 
@@ -142,6 +151,19 @@ class InteropProbeNode(Node):
         response.success = request.data
         response.message = f"{self._role}:{int(request.data)}"
         return response
+
+    def check_peer_graph(self) -> None:
+        """Records whether the graph lists the peer's node and its echo service under it."""
+        if self.peer_graph_ok:
+            return
+        namespace, _, name = self._peer_node.rpartition("/")
+        namespace = namespace or "/"
+        if (name, namespace) not in self.get_node_names_and_namespaces():
+            return
+        services = self.get_service_names_and_types_by_node(name, namespace)
+        if any(service == self._peer_echo for service, _ in services):
+            self.peer_graph_ok = True
+            self.get_logger().info(f"peer graph ok: {self._peer_node} serves {self._peer_echo}")
 
     def _call_peer(self) -> None:
         """Calls the peer's echo and get_parameters services once each, when reachable."""
@@ -192,6 +214,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expect-rx", type=int, default=1)
     parser.add_argument("--expect-calls", type=int, default=1,
                         help="Minimum correlated calls per peer service (echo and get_parameters).")
+    parser.add_argument("--expect-peer-graph", action="store_true",
+                        help="Require the peer's node, and its echo service under it, in the graph.")
     parser.add_argument("--namespace", default="")
     parser.add_argument("--node-name", default=None)
     parser.add_argument(
@@ -227,8 +251,10 @@ def main() -> int:
 
     Returns:
         0 when the expected RMW was loaded, at least `--expect-rx` samples
-        arrived, and at least `--expect-calls` calls to each peer service
-        returned correctly correlated replies before the deadline; 1 otherwise.
+        arrived, at least `--expect-calls` calls to each peer service
+        returned correctly correlated replies, and (with `--expect-peer-graph`)
+        the peer's node and echo service appeared in the graph before the
+        deadline; 1 otherwise.
     """
     args = parse_args()
     os.environ["ROS_DOMAIN_ID"] = str(args.domain)
@@ -281,9 +307,12 @@ def main() -> int:
     try:
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.1)
+            if args.expect_peer_graph:
+                node.check_peer_graph()
     finally:
         tx_count, rx_count = node.tx_count, node.rx_count
         echo_ok, param_ok = node.echo_ok, node.param_ok
+        peer_graph_ok = node.peer_graph_ok
         node.get_logger().info(f"summary rmw={loaded_rmw} tx={tx_count} rx={rx_count} "
                                f"echo_calls={echo_ok} param_calls={param_ok}")
         node.destroy_node()
@@ -300,6 +329,10 @@ def main() -> int:
     if min(echo_ok, param_ok) < args.expect_calls:
         print(f"{_LOG_PREFIX} expected at least {args.expect_calls} correlated calls per "
               f"peer service, got echo={echo_ok} get_parameters={param_ok}", file=sys.stderr)
+        ok = False
+    if args.expect_peer_graph and not peer_graph_ok:
+        print(f"{_LOG_PREFIX} peer node {peer_node} or its echo service never appeared in "
+              f"the graph", file=sys.stderr)
         ok = False
     return 0 if ok else 1
 

@@ -111,10 +111,14 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node,
             impl.request_codec, impl.response_codec, on_reply, &impl, impl.request_writer,
             impl.reply_reader);
     if (status != rmw_rosette::ServiceEndpointsStatus::Ok) {
-        RMW_SET_ERROR_MSG(status == rmw_rosette::ServiceEndpointsStatus::NameTooLong
-                              ? "rmw_rosette: rmw_create_client: topic or type name longer than "
-                                "RTPS_MAX_TOPIC_NAME_LEN - 1"
-                              : "rmw_rosette: rmw_create_client: participant endpoint tables full");
+        RMW_SET_ERROR_MSG(
+            status == rmw_rosette::ServiceEndpointsStatus::NameTooLong
+                ? "rmw_rosette: rmw_create_client: topic or type name longer than "
+                  "RTPS_MAX_TOPIC_NAME_LEN - 1"
+            : status == rmw_rosette::ServiceEndpointsStatus::TablesFull
+                ? "rmw_rosette: rmw_create_client: participant endpoint tables full"
+                : "rmw_rosette: rmw_create_client: cannot publish ros_discovery_info "
+                  "(buffer pool exhausted)");
         client_pool().release(slot);
         return nullptr;
     }

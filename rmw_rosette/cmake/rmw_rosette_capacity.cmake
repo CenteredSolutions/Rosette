@@ -15,7 +15,9 @@
 #     rclpy nodes publish /parameter_events.
 # Those per-node entities are added on top of the application's own counts.
 #
-# Each ROS 2 service or client uses one RTPS writer and one RTPS reader.
+# Each ROS 2 service or client uses one RTPS writer and one RTPS reader. The
+# participant adds one writer of its own on ros_discovery_info, the topic that
+# tells stock peers which nodes it hosts.
 #
 # include/rmw_rosette/capacity.hpp states the same relationships and
 # static_asserts them, so an inconsistent override fails to compile.
@@ -51,7 +53,7 @@ math(EXPR _rr_publishers
      "${RMW_ROSETTE_MAX_PUBLISHERS} + ${RMW_ROSETTE_MAX_NODES} * ${RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE}")
 math(EXPR _rr_services
      "${RMW_ROSETTE_MAX_SERVICES} + ${RMW_ROSETTE_MAX_NODES} * ${RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE}")
-math(EXPR _rr_rtps_writers "${_rr_publishers} + ${_rr_services} + ${RMW_ROSETTE_MAX_CLIENTS}")
+math(EXPR _rr_rtps_writers "${_rr_publishers} + ${_rr_services} + ${RMW_ROSETTE_MAX_CLIENTS} + 1")
 math(EXPR _rr_rtps_readers
      "${RMW_ROSETTE_MAX_SUBSCRIPTIONS} + ${_rr_services} + ${RMW_ROSETTE_MAX_CLIENTS}")
 if(_rr_rtps_writers GREATER _rr_rtps_readers)

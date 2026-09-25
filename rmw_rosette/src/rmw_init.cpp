@@ -177,6 +177,22 @@ void report_transport_stats(const rtps::SocketUdpTransport& transport) noexcept 
                  st.oversize_rx, st.truncated_rx, st.dropped_rx);
 }
 
+/**
+ * @brief Destroys a context's driver, participant, and transport, in that order.
+ *
+ * rmw_context_fini() and rmw_init()'s failure path share this one teardown,
+ * so the participant's destructor, which is large on firmware, is emitted once.
+ *
+ * @param[in,out] ctx Context whose objects were constructed by rmw_init();
+ *   `constructed` is cleared on return.
+ */
+void destroy_participant(rmw_rosette::Context& ctx) noexcept {
+    ctx.driver->~ParticipantDriver();
+    ctx.participant->~RTPSParticipant();
+    ctx.transport->~SocketUdpTransport();
+    ctx.constructed = false;
+}
+
 }  // namespace
 
 extern "C" {
@@ -257,13 +273,16 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * the `RTPSParticipant` that borrows it. The participant advertises the
  * network port's IPv4 address (network_ipv4_address()) rather than loopback:
  * stock DDS implementations ignore loopback locators from participants they
- * cannot prove are local.
+ * cannot prove are local. The participant's first user writer is the
+ * `ros_discovery_info` writer (ros_discovery_info_writer.hpp), which every
+ * node created on this context reports to.
  *
  * @param[in] options Init options; `domain_id` and `instance_id` are used.
  * @param[out] context Context to initialize.
  * @return `RMW_RET_OK` on success; `RMW_RET_INVALID_ARGUMENT` if either
- *   argument is null; `RMW_RET_ERROR` if the context pool is exhausted or
- *   no participant ID with free ports was found.
+ *   argument is null; `RMW_RET_ERROR` if the context pool is exhausted,
+ *   no participant ID with free ports was found, or the participant cannot
+ *   hold the `ros_discovery_info` writer.
  *
  * Verification:
  * - Correct means: a stock RMW in the same domain discovers this
@@ -309,6 +328,13 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     ctx.driver = new (ctx.driver_storage) rtps::ParticipantDriver(
         *ctx.participant, *ctx.transport, *ctx.provider, ctx.rx_buffer, sizeof(ctx.rx_buffer));
     ctx.constructed = true;
+    if (!ctx.discovery_info.create(*ctx.participant)) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: cannot create the ros_discovery_info writer "
+                          "(participant writer table full)");
+        destroy_participant(ctx);
+        context_pool().release(impl);
+        return RMW_RET_ERROR;
+    }
 
     context->instance_id = options->instance_id;
     context->implementation_identifier = rmw_rosette_identifier;
@@ -350,10 +376,7 @@ rmw_ret_t rmw_context_fini(rmw_context_t* context) {
     rmw_rosette::Context& ctx = impl->rosette_context;
     if (ctx.constructed) {
         report_transport_stats(*ctx.transport);
-        ctx.driver->~ParticipantDriver();
-        ctx.participant->~RTPSParticipant();
-        ctx.transport->~SocketUdpTransport();
-        ctx.constructed = false;
+        destroy_participant(ctx);
     }
     context_pool().release(impl);
     context->impl = nullptr;

@@ -29,6 +29,7 @@
 #include "capacity.hpp"
 #include "change_ring.hpp"
 #include "message_codec.hpp"
+#include "ros_discovery_info_writer.hpp"
 
 #include <rmw/init.h>
 #include <rmw/types.h>
@@ -70,6 +71,9 @@ struct Context {
     /// Runs the participant and owns its lock; every rmw entry point that
     /// touches RTPS state or a ChangeRing holds driver->mutex().
     rtps::ParticipantDriver*  driver      = nullptr;  ///< placement-new'd into driver_storage
+    /// Publishes this participant's nodes on `ros_discovery_info`; every
+    /// node and endpoint creation and destruction reports to it.
+    RosDiscoveryInfoWriter discovery_info;
     uint8_t domain_id = 0;
     bool constructed = false;
     /// Receive buffer the driver drains sockets into; one full datagram.
