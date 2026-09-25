@@ -168,6 +168,7 @@ add_executable(sedp_spec_tests
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/sn_window.cpp
     ../../src/rtps/history_cache.cpp
+    ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
 )
@@ -195,6 +196,7 @@ add_executable(history_cache_spec_tests
     src/spec_history_cache_test_registry.cpp
     src/test_history_cache_8_2_2_8_3_1.cpp
     ../../src/rtps/history_cache.cpp
+    ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/buf_pool.cpp
 )
 
@@ -222,6 +224,7 @@ add_executable(stateful_writer_spec_tests
     src/test_stateful_writer_clock_stub.cpp
     src/test_stateful_writer_8_2_2_history_cache.cpp
     ../../src/rtps/history_cache.cpp
+    ../../src/rtps/reader_proxy.cpp
     src/test_stateful_writer_8_4_1_4.cpp
     src/test_stateful_writer_8_4_2_2.cpp
     src/test_stateful_writer_8_4_3_8_4_4.cpp
@@ -260,6 +263,7 @@ add_executable(stateful_reader_spec_tests
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/sn_window.cpp
     ../../src/rtps/history_cache.cpp
+    ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
@@ -292,6 +296,7 @@ add_executable(participant_spec_tests
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/sn_window.cpp
     ../../src/rtps/history_cache.cpp
+    ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/spdp.cpp
     ../../src/rtps/sedp.cpp
@@ -453,7 +458,9 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         ../../src/rtps/endpoint_match_table.cpp
         ../../src/rtps/sn_window.cpp
         ../../src/rtps/history_cache.cpp
+        ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/history_cache.cpp
+    ../../src/rtps/reader_proxy.cpp
         ../../src/rtps/buf_pool.cpp
     )
     target_include_directories(sedp_fuzz_replay PRIVATE
@@ -625,7 +632,9 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
             ../../src/rtps/endpoint_match_table.cpp
             ../../src/rtps/sn_window.cpp
         ../../src/rtps/history_cache.cpp
+        ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/history_cache.cpp
+    ../../src/rtps/reader_proxy.cpp
             ../../src/rtps/buf_pool.cpp
         )
         target_include_directories(sedp_fuzz PRIVATE

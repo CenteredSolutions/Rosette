@@ -34,12 +34,13 @@
  *                               used by StatefulWriter::tick() to fire
  *                               the deferred retransmit.
  *
- * KEEP_LAST(1) constraint
- * -----------------------
- * The target platform uses KEEP_LAST(1), so the writer history cache
- * holds at most one CacheChange at a time.  ReaderProxy therefore tracks
- * at most one ChangeForReader entry.  The ChangeForReader array is
- * templated on N = 1 for this target; N > 1 is reserved for future use.
+ * Change tracking storage
+ * ------------------------
+ * A ReaderProxy tracks one ChangeForReader per change in its writer's
+ * HistoryCache, so it needs as many slots as the writer's KEEP_LAST depth.
+ * It does not own them: the StatefulWriter holds one row of `depth` slots per
+ * proxy and binds each proxy to its row (bind_changes()), so ReaderProxy is
+ * one compiled class (src/rtps/reader_proxy.cpp) for every writer depth.
  *
  * nackResponseDelay (§8.4.1.1, p. 104)
  * ---------------------------------------
@@ -98,21 +99,27 @@ struct ChangeForReader {
 // ReaderProxy
 //
 // §8.4.1.1, Table 8.49, p. 103.
-//
-// Template parameter N is the maximum number of simultaneously
-// tracked ChangeForReader entries.  For KEEP_LAST(1) set N = 1.
 // ============================================================
 
-#ifndef RTPS_READER_PROXY_CHANGE_DEPTH
-#  define RTPS_READER_PROXY_CHANGE_DEPTH 1
+#ifndef RTPS_MAX_READER_PROXY_LOCATORS
+#  define RTPS_MAX_READER_PROXY_LOCATORS 2
 #endif
 
-template<uint8_t N = RTPS_READER_PROXY_CHANGE_DEPTH>
+/**
+ * @brief A StatefulWriter's record of one matched remote reader (§8.4.1.1).
+ *
+ * The writer keeps one ReaderProxy per matched reader and moves each change's
+ * ChangeForReader through UNSENT → UNACKNOWLEDGED → (REQUESTED → UNDERWAY →)
+ * ACKNOWLEDGED as it sends DATA and receives ACKNACKs (§8.4.9.2).
+ *
+ * Change slots come from the writer (bind_changes()); a proxy that is not
+ * bound tracks nothing. Proxies are array elements of their writer and are
+ * never copied: the row pointer refers into the writer that owns it.
+ *
+ * Thread safety: not thread-safe; the caller holds the participant lock.
+ */
 class ReaderProxy {
-    static_assert(N >= 1, "ReaderProxy must track at least one change");
-
 public:
-
     // ----------------------------------------------------------
     // §8.4.1.1, Table 8.49, p. 103 — spec attributes
     // ----------------------------------------------------------
@@ -122,9 +129,6 @@ public:
     bool    isActive           = false;         ///< §8.4.1.1
 
     /// Unicast locators used to address this reader — §8.4.1.1.
-#ifndef RTPS_MAX_READER_PROXY_LOCATORS
-#  define RTPS_MAX_READER_PROXY_LOCATORS 2
-#endif
     Locator unicastLocatorList[RTPS_MAX_READER_PROXY_LOCATORS]   = {};
     uint8_t unicastLocatorCount                                   = 0;
 
@@ -143,79 +147,78 @@ public:
     int32_t lastAcknackCount = 0;
 
     /// True when a NACK has been received and nackResponseDelay is pending.
-    /// Set by on_acknack(); cleared by StatefulWriter::tick() after firing.
-    /// — §8.4.1.1 nackResponseDelay, p. 104.
+    /// Set by requested_changes_set(); cleared by StatefulWriter::tick()
+    /// after firing. — §8.4.1.1 nackResponseDelay, p. 104.
     bool nackPending = false;
 
     /// Millisecond timestamp at which the pending NACK was first recorded.
     /// Used by tick() to compute elapsed time vs. nackResponseDelay.
     uint32_t nackPendingSinceMs = 0;
 
-    // ----------------------------------------------------------
-    // Construction / reset
-    // ----------------------------------------------------------
+    ReaderProxy() noexcept = default;
+    ReaderProxy(const ReaderProxy&) = delete;
+    ReaderProxy& operator=(const ReaderProxy&) = delete;
 
-    ReaderProxy() noexcept { clear(); }
-
-    /// Initialise proxy for a newly matched reader.
-    ///
-    /// "When a new reader is matched, the Writer creates a ReaderProxy
-    ///  and associates with it a ChangeForReader for every change in the
-    ///  HistoryCache that has not yet been acknowledged by that reader."
-    ///  — §8.4.1.4, p. 107
-    void init(const Guid& reader_guid, const Locator* unicast_locs,
-              uint8_t unicast_count, bool expects_inline_qos = false) noexcept {
+    /**
+     * @brief Gives this proxy its ChangeForReader slots.
+     *
+     * The owning StatefulWriter calls this once, before the proxy is used,
+     * with the row of its per-proxy change table that belongs to this proxy.
+     *
+     * @param[in] row   First of `depth` slots; owned by the writer and valid
+     *   for the proxy's lifetime.
+     * @param[in] depth Number of slots: the writer's HistoryCache capacity.
+     */
+    void bind_changes(ChangeForReader* row, uint8_t depth) noexcept {
+        changes_ = row;
+        depth_ = depth;
         clear();
-        remoteReaderGuid  = reader_guid;
-        expectsInlineQos  = expects_inline_qos;
-        isActive          = true;
-        uint8_t n = unicast_count < RTPS_MAX_READER_PROXY_LOCATORS
-                    ? unicast_count
-                    : RTPS_MAX_READER_PROXY_LOCATORS;
-        for (uint8_t i = 0; i < n; ++i)
-            unicastLocatorList[i] = unicast_locs[i];
-        unicastLocatorCount = n;
     }
 
-    void clear() noexcept {
-        remoteReaderGuid    = GUID_UNKNOWN;
-        expectsInlineQos    = false;
-        isActive            = false;
-        unicastLocatorCount    = 0;
-        highestAckedSN      = SEQUENCENUMBER_ZERO;
-        lastAcknackCount    = 0;
-        nackPending         = false;
-        nackPendingSinceMs  = 0;
-        for (uint8_t i = 0; i < N; ++i) changes_[i].clear();
-    }
+    /**
+     * @brief Starts tracking a newly matched reader.
+     *
+     * Resets every attribute and change slot, then records the reader's GUID,
+     * inline-QoS expectation, and up to RTPS_MAX_READER_PROXY_LOCATORS unicast
+     * locators. The writer then adds a ChangeForReader for each change the
+     * reader is to receive (§8.4.1.4, "matched_reader_add").
+     *
+     * @param[in] reader_guid        The remote reader's GUID.
+     * @param[in] unicast_locs       Its unicast locators; `unicast_count` entries.
+     * @param[in] unicast_count      Number of locators; extra ones are dropped.
+     * @param[in] expects_inline_qos Its expectsInlineQos (§8.4.1.1).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.4.1.1
+     */
+    void init(const Guid& reader_guid, const Locator* unicast_locs,
+              uint8_t unicast_count, bool expects_inline_qos = false) noexcept;
 
-    bool is_matched() const noexcept {
-        return remoteReaderGuid != GUID_UNKNOWN;
-    }
+    /// @brief Unmatches the proxy: resets every attribute and change slot.
+    void clear() noexcept;
 
-    // ----------------------------------------------------------
-    // add_change()
-    //
-    // Records a new CacheChange in the proxy's tracking table with
-    // status UNSENT.  Called by StatefulWriter::add_change() after
-    // inserting into the HistoryCache.
-    //
-    // "When add_change is called, the change is associated with a
-    //  ChangeForReader object with status UNSENT."
-    //  — §8.4.1.4, p. 107; §8.4.6, p. 128.
-    //
-    // @param sn  SequenceNumber of the new CacheChange.
-    // @returns   true if a slot was available.
-    // ----------------------------------------------------------
-    bool add_change(const SequenceNumber& sn) noexcept {
-        // For KEEP_LAST(1) evict the oldest slot if full.
-        ChangeForReader* slot = find_slot(sn);
-        if (!slot) slot = evict_oldest();
-        if (!slot) return false;
-        slot->sequenceNumber = sn;
-        slot->status         = ChangeForReaderStatus::UNSENT;
-        return true;
-    }
+    /// @brief True while the proxy represents a matched reader.
+    bool is_matched() const noexcept { return remoteReaderGuid != GUID_UNKNOWN; }
+
+    /**
+     * @brief Tracks a newly written change with status UNSENT.
+     *
+     * Reuses the slot already holding `sn`, else an empty slot, else evicts
+     * the lowest sequence number (the writer's KEEP_LAST eviction removed it
+     * from the HistoryCache too).
+     *
+     * @param[in] sn Sequence number of the new change.
+     * @return `true` when the change is tracked; `false` only for an unbound proxy.
+     *
+     * Verification:
+     * - Correct means: after add_change(sn), next_unsent_change() is the
+     *   lowest UNSENT number and tracks(sn) holds.
+     * - Covered by: TC-SWR-8.2.2-001, TC-SWR-8.4.1.4-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (new change is UNSENT), §8.4.6
+     */
+    bool add_change(const SequenceNumber& sn) noexcept;
 
     /**
      * @brief True when this proxy tracks a ChangeForReader for `sn`.
@@ -227,195 +230,78 @@ public:
      *
      * @param[in] sn Sequence number the reader requested.
      * @return `true` when the change is tracked in any status.
+     *
+     * Verification:
+     * - Covered by: TC-SWR-8.4.9-001 (irrelevant changes are GAPped).
      */
-    bool tracks(const SequenceNumber& sn) const noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].is_valid() && changes_[i].sequenceNumber == sn) return true;
-        }
-        return false;
-    }
+    bool tracks(const SequenceNumber& sn) const noexcept;
 
-    // ----------------------------------------------------------
-    // remove_change()
-    //
-    // Removes a ChangeForReader entry once the change has been
-    // evicted from the HistoryCache (KEEP_LAST eviction or explicit
-    // remove_change on the writer).
-    //
-    // — §8.4.1.4 remove_change, p. 108.
-    //
-    // @param sn  SequenceNumber to remove.
-    // ----------------------------------------------------------
-    void remove_change(const SequenceNumber& sn) noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].sequenceNumber == sn) {
-                changes_[i].clear();
-                return;
-            }
-        }
-    }
+    /**
+     * @brief Stops tracking `sn` after the writer removed it from its history.
+     *
+     * @param[in] sn Sequence number removed; untracked numbers are ignored.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (remove_change)
+     */
+    void remove_change(const SequenceNumber& sn) noexcept;
 
-    // ----------------------------------------------------------
-    // acked_changes_set()
-    //
-    // Marks all changes with SN <= committed_sn as ACKNOWLEDGED,
-    // and advances highestAckedSN.
-    //
-    // "acked_changes_set(committed_seq_num) — Transition all changes
-    //  with sequenceNumber <= committed_seq_num to ACKNOWLEDGED."
-    //  — §8.4.6, p. 128
-    //
-    // Called from StatefulWriter::on_acknack() after validating the
-    // ACKNACK count and extracting the cumulative ACK point.
-    //
-    // @param committed_sn  All SNs <= this are now acknowledged.
-    // ----------------------------------------------------------
-    void acked_changes_set(const SequenceNumber& committed_sn) noexcept {
-        if (committed_sn > highestAckedSN) {
-            highestAckedSN = committed_sn;
-        }
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!changes_[i].is_valid()) continue;
-            if (changes_[i].sequenceNumber <= committed_sn) {
-                changes_[i].status = ChangeForReaderStatus::ACKNOWLEDGED;
-            }
-        }
-    }
+    /**
+     * @brief Marks every tracked change up to `committed_sn` ACKNOWLEDGED.
+     *
+     * Also raises highestAckedSN to `committed_sn` (never lowers it).
+     *
+     * @param[in] committed_sn The reader has every change with a number at or
+     *   below this (the ACKNACK readerSNState base minus one).
+     *
+     * Verification:
+     * - Correct means: no tracked change at or below `committed_sn` remains
+     *   in any other status.
+     * - Covered by: TC-SWR-8.4.2.2-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.6 (acked_changes_set)
+     */
+    void acked_changes_set(const SequenceNumber& committed_sn) noexcept;
 
-    // ----------------------------------------------------------
-    // requested_changes_set()
-    //
-    // Marks a set of specific SNs as REQUESTED (NACKed by the reader).
-    // Records nackPendingSinceMs for the nackResponseDelay timer.
-    //
-    // "requested_changes_set(req_sn_set) — For each change in the
-    //  req_sn_set, set the status of the ChangeForReader to REQUESTED."
-    //  — §8.4.6, p. 128
-    //
-    // Called from StatefulWriter::on_acknack() for each SN in the
-    // ACKNACK's readerSNState bitmap.
-    //
-    // @param sn_set          Bitmap of SNs being NACKed.
-    // @param now_ms          Current rosette::platform::monotonic_ms() value.
-    // ----------------------------------------------------------
-    void requested_changes_set(const SequenceNumberSet& sn_set,
-                               uint32_t now_ms) noexcept {
-        bool any_requested = false;
-        sn_set.for_each([&](const SequenceNumber& sn) noexcept {
-            for (uint8_t i = 0; i < N; ++i) {
-                if (changes_[i].sequenceNumber == sn &&
-                    changes_[i].status != ChangeForReaderStatus::ACKNOWLEDGED) {
-                    changes_[i].status = ChangeForReaderStatus::REQUESTED;
-                    any_requested = true;
-                }
-            }
-        });
-        if (any_requested && !nackPending) {
-            nackPending        = true;
-            nackPendingSinceMs = now_ms;
-        }
-    }
+    /**
+     * @brief Marks the NACKed changes REQUESTED and starts nackResponseDelay.
+     *
+     * Changes already ACKNOWLEDGED keep that status. When at least one change
+     * became REQUESTED and no NACK is pending yet, records `now_ms` so tick()
+     * retransmits after nackResponseDelay.
+     *
+     * @param[in] sn_set The ACKNACK's readerSNState: numbers the reader lacks.
+     * @param[in] now_ms Current rosette::platform::monotonic_ms().
+     *
+     * Verification:
+     * - Covered by: TC-SWR-8.4.2.2-001, TC-SWR-8.4.3-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.6 (requested_changes_set), §8.4.1.1 (nackResponseDelay)
+     */
+    void requested_changes_set(const SequenceNumberSet& sn_set, uint32_t now_ms) noexcept;
 
-    // ----------------------------------------------------------
-    // mark_underway()
-    //
-    // Transitions a REQUESTED change to UNDERWAY when the writer
-    // begins retransmitting it.
-    //
-    // "The status of the ChangeForReader is set to UNDERWAY when
-    //  the Writer begins sending the change."
-    //  — §8.4.1.1, p. 103 (ChangeForReaderStatus description)
-    //
-    // @param sn  SequenceNumber being retransmitted.
-    // ----------------------------------------------------------
-    void mark_underway(const SequenceNumber& sn) noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].sequenceNumber == sn &&
-                changes_[i].status == ChangeForReaderStatus::REQUESTED) {
-                changes_[i].status = ChangeForReaderStatus::UNDERWAY;
-            }
-        }
-    }
+    /// @brief REQUESTED → UNDERWAY for `sn` as its retransmission starts (§8.4.1.1).
+    void mark_underway(const SequenceNumber& sn) noexcept;
 
-    // ----------------------------------------------------------
-    // mark_sent()
-    //
-    // Transitions an UNSENT change to UNACKNOWLEDGED after the
-    // writer dispatches it to the transport for this reader.
-    //
-    // "The status transitions from UNSENT to UNACKNOWLEDGED when
-    //  the change is sent."
-    //  — §8.4.1.1, p. 103
-    //
-    // @param sn  SequenceNumber that was just sent.
-    // ----------------------------------------------------------
-    void mark_sent(const SequenceNumber& sn) noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].sequenceNumber == sn &&
-                changes_[i].status == ChangeForReaderStatus::UNSENT) {
-                changes_[i].status = ChangeForReaderStatus::UNACKNOWLEDGED;
-            }
-        }
-    }
+    /// @brief UNSENT → UNACKNOWLEDGED for `sn` once it is sent (§8.4.1.1).
+    void mark_sent(const SequenceNumber& sn) noexcept;
 
-    // ----------------------------------------------------------
-    // §8.4.6  unsent_changes()
-    //
-    // Returns whether any ChangeForReader has status UNSENT.
-    //
-    // "unsent_changes() — Returns the set of changes for the reader
-    //  that have not been sent yet."
-    //  — §8.4.6, p. 128
-    // ----------------------------------------------------------
-    bool has_unsent_changes() const noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].is_valid() &&
-                changes_[i].status == ChangeForReaderStatus::UNSENT)
-                return true;
-        }
-        return false;
-    }
+    /// @brief True when some tracked change is UNSENT (§8.4.6 unsent_changes()).
+    bool has_unsent_changes() const noexcept;
 
-    // ----------------------------------------------------------
-    // §8.4.6  next_unsent_change()
-    //
-    // "next_unsent_change() — Returns the next unsent CacheChange
-    //  for the reader."  — §8.4.6, p. 128
-    //
-    // Returns the UNSENT ChangeForReader with the lowest SN, or
-    // nullptr if none.
-    // ----------------------------------------------------------
-    const ChangeForReader* next_unsent_change() const noexcept {
-        const ChangeForReader* best = nullptr;
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!changes_[i].is_valid()) continue;
-            if (changes_[i].status != ChangeForReaderStatus::UNSENT) continue;
-            if (!best || changes_[i].sequenceNumber < best->sequenceNumber)
-                best = &changes_[i];
-        }
-        return best;
-    }
+    /**
+     * @brief The UNSENT change with the lowest sequence number, or null.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.6 (next_unsent_change)
+     */
+    const ChangeForReader* next_unsent_change() const noexcept;
 
-    // ----------------------------------------------------------
-    // §8.4.6  unacked_changes()
-    //
-    // "unacked_changes() — Returns the set of changes for the reader
-    //  that have not been acknowledged."  — §8.4.6, p. 128
-    //
-    // Returns true if any change is UNACKNOWLEDGED, REQUESTED, or
-    // UNDERWAY.
-    // ----------------------------------------------------------
-    bool has_unacked_changes() const noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!changes_[i].is_valid()) continue;
-            auto s = changes_[i].status;
-            if (s == ChangeForReaderStatus::UNACKNOWLEDGED ||
-                s == ChangeForReaderStatus::REQUESTED      ||
-                s == ChangeForReaderStatus::UNDERWAY)
-                return true;
-        }
-        return false;
-    }
+    /// @brief True when some tracked change is UNACKNOWLEDGED, REQUESTED, or
+    /// UNDERWAY (§8.4.6 unacked_changes()).
+    bool has_unacked_changes() const noexcept;
 
     /**
      * @brief True while some tracked change is not yet acknowledged by this reader.
@@ -436,136 +322,76 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.9.2 (transitions T5-T7), §8.4.7.5 (unacked_changes)
      */
-    bool is_announcing() const noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].is_valid() &&
-                changes_[i].status != ChangeForReaderStatus::ACKNOWLEDGED)
-                return true;
-        }
-        return false;
-    }
+    bool is_announcing() const noexcept;
 
-    // ----------------------------------------------------------
-    // §8.4.6  requested_changes()
-    //
-    // Returns true if any change has status REQUESTED.
-    // ----------------------------------------------------------
-    bool has_requested_changes() const noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].is_valid() &&
-                changes_[i].status == ChangeForReaderStatus::REQUESTED)
-                return true;
-        }
-        return false;
-    }
+    /// @brief True when some tracked change is REQUESTED (§8.4.6 requested_changes()).
+    bool has_requested_changes() const noexcept;
 
-    // ----------------------------------------------------------
-    // §8.4.6  next_requested_change()
-    //
-    // "next_requested_change() — Returns the next change that has
-    //  been requested by the Reader."  — §8.4.6, p. 128
-    //
-    // Returns the REQUESTED ChangeForReader with the lowest SN, or
-    // nullptr if none.
-    // ----------------------------------------------------------
-    const ChangeForReader* next_requested_change() const noexcept {
-        const ChangeForReader* best = nullptr;
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!changes_[i].is_valid()) continue;
-            if (changes_[i].status != ChangeForReaderStatus::REQUESTED) continue;
-            if (!best || changes_[i].sequenceNumber < best->sequenceNumber)
-                best = &changes_[i];
-        }
-        return best;
-    }
+    /**
+     * @brief The REQUESTED change with the lowest sequence number, or null.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.6 (next_requested_change)
+     */
+    const ChangeForReader* next_requested_change() const noexcept;
 
-    // ----------------------------------------------------------
-    // Iteration over all tracked changes.
-    // fn : void(const ChangeForReader&)
-    // ----------------------------------------------------------
+    /// @brief Calls `fn(const ChangeForReader&)` for each tracked change.
     template<typename Fn>
     void for_each_change(Fn&& fn) const noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].is_valid()) fn(changes_[i]);
+        for (uint8_t i = 0; i < depth_; ++i) {
+            if (changes_[i].is_valid()) fn(static_cast<const ChangeForReader&>(changes_[i]));
         }
     }
 
+    /// @brief Calls `fn(ChangeForReader&)` for each tracked change.
     template<typename Fn>
     void for_each_change(Fn&& fn) noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
+        for (uint8_t i = 0; i < depth_; ++i) {
             if (changes_[i].is_valid()) fn(changes_[i]);
         }
     }
 
-    // ----------------------------------------------------------
-    // nack_delay_elapsed()
-    //
-    // Returns true when a pending NACK's nackResponseDelay has elapsed.
-    // Called from StatefulWriter::tick() every tick period.
-    //
-    // §8.4.1.1, p. 104:
-    //   "nackResponseDelay: the duration of time that the Writer will
-    //    wait for an ACKNACK response before retransmitting."
-    //
-    // @param now_ms         Current rosette::platform::monotonic_ms().
-    // @param delay_ms       Configured nackResponseDelay in milliseconds.
-    // ----------------------------------------------------------
+    /**
+     * @brief True when a pending NACK has waited at least `delay_ms`.
+     *
+     * @param[in] now_ms   Current rosette::platform::monotonic_ms().
+     * @param[in] delay_ms The writer's nackResponseDelay in milliseconds.
+     * @return `false` when no NACK is pending.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.1 (nackResponseDelay)
+     */
     bool nack_delay_elapsed(uint32_t now_ms, uint32_t delay_ms) const noexcept {
         if (!nackPending) return false;
         return (now_ms - nackPendingSinceMs) >= delay_ms;
     }
 
-    /// Clear the nackPending flag after retransmission is dispatched.
+    /// @brief Clears the pending NACK once its retransmission is dispatched.
     void clear_nack_pending() noexcept {
         nackPending        = false;
         nackPendingSinceMs = 0;
     }
 
-    // ----------------------------------------------------------
-    // Best locator for addressing this reader.
-    // Prefer a UDP locator; some peers advertise other transports
-    // (for example SHM) ahead of UDP in SEDP.
-    // ----------------------------------------------------------
-    const Locator& best_locator() const noexcept {
-        for (uint8_t i = 0; i < unicastLocatorCount; ++i) {
-            const Long kind = unicastLocatorList[i].kind;
-            if (kind == locator_kind::UDPv4 ||
-                kind == locator_kind::UDPv6) {
-                return unicastLocatorList[i];
-            }
-        }
-        if (unicastLocatorCount > 0) return unicastLocatorList[0];
-        return LOCATOR_INVALID;
-    }
+    /**
+     * @brief The locator to send this reader's traffic to.
+     *
+     * Prefers a UDP locator, because some peers advertise other transports
+     * (for example shared memory) ahead of UDP in SEDP.
+     *
+     * @return The first UDPv4/UDPv6 locator, else the first locator, else
+     *   LOCATOR_INVALID.
+     */
+    const Locator& best_locator() const noexcept;
 
 private:
+    /// @brief The slot tracking `sn`, else an empty slot, else null.
+    ChangeForReader* find_slot(const SequenceNumber& sn) noexcept;
 
-    ChangeForReader changes_[N];
+    /// @brief Clears and returns the slot with the lowest sequence number.
+    ChangeForReader* evict_oldest() noexcept;
 
-    /// Find an existing slot for sn, or an empty slot.
-    ChangeForReader* find_slot(const SequenceNumber& sn) noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!changes_[i].is_valid() ||
-                changes_[i].sequenceNumber == sn)
-                return &changes_[i];
-        }
-        return nullptr;
-    }
-
-    /// Evict the slot with the lowest SN — KEEP_LAST(1) eviction.
-    ChangeForReader* evict_oldest() noexcept {
-        ChangeForReader* oldest = nullptr;
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!oldest ||
-                changes_[i].sequenceNumber < oldest->sequenceNumber)
-                oldest = &changes_[i];
-        }
-        if (oldest) oldest->clear();
-        return oldest;
-    }
+    ChangeForReader* changes_ = nullptr;  ///< Row of depth_ slots owned by the writer.
+    uint8_t depth_ = 0;
 };
-
-/// Default alias used by StatefulWriter.
-using DefaultReaderProxy = ReaderProxy<RTPS_READER_PROXY_CHANGE_DEPTH>;
 
 } // namespace rtps

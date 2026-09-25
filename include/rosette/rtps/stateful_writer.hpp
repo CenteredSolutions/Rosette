@@ -21,7 +21,7 @@
  *  maintains a ChangeForReader object."
  *
  * Therefore the proxy's change-tracking depth must equal CacheDepth.
- * ReaderProxy<CacheDepth> is instantiated for all proxies automatically.
+ * The writer owns one row of CacheDepth ChangeForReader slots per proxy.
  *
  * IStatefulWriter — type erasure for participant storage
  * -------------------------------------------------------
@@ -158,8 +158,8 @@ struct IStatefulWriter {
 // MaxReaders  — maximum simultaneously matched readers.
 //               Default = RTPS_MAX_MATCHED_READERS.
 //
-// ReaderProxy<CacheDepth> is used for all proxies so that each proxy
-// can track exactly one ChangeForReader per cache slot (§8.4.1.1).
+// Each ReaderProxy is bound to a row of CacheDepth ChangeForReader slots,
+// so it tracks exactly one ChangeForReader per cache slot (§8.4.1.1).
 // ============================================================
 
 template<uint8_t CacheDepth = 1,
@@ -176,8 +176,8 @@ public:
     /// History storage sized for this writer's depth.
     using Cache = HistoryCacheStorage<CacheDepth>;
 
-    /// Proxy depth equals cache depth — §8.4.1.1, p. 103.
-    using Proxy = ReaderProxy<CacheDepth>;
+    /// Per-reader state; each proxy tracks one ChangeForReader per history slot.
+    using Proxy = ReaderProxy;
 
     // ----------------------------------------------------------
     // Constructor
@@ -201,7 +201,11 @@ public:
         , transport_(transport)
         , nack_delay_ms_(nack_delay_ms)
         , hb_period_ms_(hb_period_ms)
-    {}
+    {
+        // Each proxy tracks the changes of this writer's history, so it gets
+        // one row of CacheDepth slots (§8.4.1.1).
+        for (uint8_t i = 0; i < MaxReaders; ++i) proxies_[i].bind_changes(proxy_changes_[i], CacheDepth);
+    }
 
     ~StatefulWriter() noexcept override = default;
 
@@ -1112,7 +1116,9 @@ private:
     ITransport&     transport_;
 
     Cache  writer_cache_;          ///< HistoryCacheStorage<CacheDepth>
-    Proxy  proxies_[MaxReaders];   ///< ReaderProxy<CacheDepth>[MaxReaders]
+    Proxy  proxies_[MaxReaders];   ///< One per matched reader.
+    /// ChangeForReader slots, one row per proxy (bound in the constructor).
+    ChangeForReader proxy_changes_[MaxReaders][CacheDepth];
 
     CacheChange    staging_{};     ///< Staging area for new_change().
     int32_t        heartbeatCount_ = 0;
