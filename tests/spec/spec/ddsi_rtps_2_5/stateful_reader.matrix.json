@@ -42,6 +42,14 @@
       "test_ids": ["TC-SRR-8.4.8-003"]
     },
     {
+      "id": "REQ-SRR-8.4.12.2-UNSTORABLE-SAMPLE-LOST",
+      "section": "8.4.12.2",
+      "normativity": "should",
+      "statement": "A sample larger than the largest pool block is resolved as LOST on its first fragment, so it is not requested forever and later changes keep flowing.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.8-004"]
+    },
+    {
       "id": "REQ-SRR-8.3.7.5-8.4.9-HEARTBEAT-ACKNACK",
       "section": "8.3.7.5",
       "page": 91,

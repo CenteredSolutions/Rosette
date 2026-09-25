@@ -401,6 +401,48 @@ void heartbeat(StatefulReader& r, const Guid& reader_guid, const Guid& writer_gu
 
 }  // namespace
 
+// A sample larger than the largest pool block can never be stored. A
+// reliable reader resolves it as LOST on its first fragment, so it is neither
+// delivered nor requested again, and delivery of later changes continues.
+static bool tc_srr_8_4_8_004(std::string& err) {
+    CaptureTransport tx{};
+    ChangeCapture cap{};
+    const Guid reader_guid = make_guid(0x3Bu, 0x3Cu, 0x3Du, make_entity(1u, 1u, 1u, 0x04u));
+    const Guid writer_guid = make_guid(0x4Bu, 0x4Cu, 0x4Du, make_entity(2u, 2u, 2u, 0x03u));
+    const Locator loc = make_udpv4_locator(0xC0A80125u, 7411u);
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, on_change_capture, &cap,
+                            0u);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+
+    static Octet fragment[1024] = {};
+    ParsedDataFrag frag{};
+    frag.readerId = reader_guid.entityId;
+    frag.writerId = writer_guid.entityId;
+    frag.writerSN = SequenceNumber::from_int64(1);
+    frag.fragmentStartingNum = 1u;
+    frag.fragmentsInSubmessage = 1u;
+    frag.fragmentSize = sizeof(fragment);
+    frag.dataSize = kPoolMaxBlockSize + 4u;
+    frag.fragmentPayload = fragment;
+    frag.fragmentPayloadSize = sizeof(fragment);
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+    r.on_data_frag(ctx, frag);
+    frag.fragmentStartingNum = 2u;
+    r.on_data_frag(ctx, frag);
+    CHECK(cap.calls == 0, "an oversize sample is not delivered");
+
+    deliver(r, reader_guid, writer_guid, 2);
+    CHECK(cap.calls == 1 && cap.last_sn.to_int64() == 2, "the next change is delivered");
+
+    heartbeat(r, reader_guid, writer_guid, 2, 1);
+    ParsedAckNack ack{};
+    CHECK(last_acknack(tx, ack), "HEARTBEAT is answered");
+    CHECK(ack.readerSNState.empty() && ack.readerSNState.bitmapBase == SequenceNumber::from_int64(3),
+          "the oversize sample is acknowledged as LOST, not requested again");
+    return true;
+}
+
 // §8.4.12.1: on an unrestricted link the ACKNACK lists every missing change,
 // and a repair does not trigger another ACKNACK before the next HEARTBEAT.
 static bool tc_srr_8_4_7_002(std::string& err) {
@@ -472,6 +514,9 @@ void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.8-003",
                      "§9.6.3.3: a DATA whose StatusInfo withdraws the instance is delivered as NOT_ALIVE with its key hash, even without payload; inline QoS alone otherwise is not delivered.",
                      tc_srr_8_4_8_003});
+    tests.push_back({"TC-SRR-8.4.8-004",
+                     "A sample larger than the largest pool block is resolved as LOST on its first fragment: never delivered, never requested again, and later changes still delivered.",
+                     tc_srr_8_4_8_004});
     tests.push_back({"TC-SRR-8.4.9-001",
                      "§8.3.7.5/§8.4.9: on_heartbeat schedules ACKNACK when missing changes exist; with heartbeatResponseDelay=0 it is sent immediately.",
                      tc_srr_8_4_9_001});

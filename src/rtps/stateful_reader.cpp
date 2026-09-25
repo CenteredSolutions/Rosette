@@ -147,11 +147,17 @@ void StatefulReader::on_data(const ParseContext& ctx,
     // deliver unless it withdraws an instance; its sequence number is
     // accounted for either way so it is never requested again.
     if (!msg.dataFlag && !msg.keyFlag && kind == ChangeKind::ALIVE) {
-        if (proxy) {
-            const bool repair = proxy->is_missing(msg.writerSN);
-            record_change(*proxy, msg.writerSN);
-            if (repair) request_next_repair(*proxy);
-        }
+        if (proxy) account_undelivered(*proxy, msg.writerSN);
+        return;
+    }
+
+    // A payload no pool block can hold is never deliverable; see
+    // account_undelivered().
+    if (msg.serializedPayloadSize > kPoolMaxBlockSize) {
+        RTPS_LOG_W("reader", "DATA SN=%d:%lu of %lu octets exceeds the largest pool block, lost",
+                   msg.writerSN.high, (unsigned long)msg.writerSN.low,
+                   (unsigned long)msg.serializedPayloadSize);
+        if (proxy) account_undelivered(*proxy, msg.writerSN);
         return;
     }
 
@@ -231,6 +237,16 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     // samples on NACK_FRAG) must not assemble and deliver it again.
     if (proxy && !is_new_change(*proxy, msg.writerSN)) {
         assembler_.discard(writer_guid, msg.writerSN);
+        return;
+    }
+
+    // Every fragment carries the sample's total size, so a sample no pool
+    // block can hold is recognized on the first fragment that arrives.
+    if (msg.dataSize > kPoolMaxBlockSize) {
+        RTPS_LOG_W("reader", "DATA_FRAG SN=%d:%lu of %lu octets exceeds the largest pool block, lost",
+                   msg.writerSN.high, (unsigned long)msg.writerSN.low,
+                   (unsigned long)msg.dataSize);
+        if (proxy) account_undelivered(*proxy, msg.writerSN);
         return;
     }
 
@@ -542,6 +558,13 @@ void StatefulReader::record_change(WriterProxy& proxy, const SequenceNumber& sn)
 {
     if (reliability_ != ReliabilityKind::RELIABLE) proxy.lost_changes_update(sn);
     proxy.received_change_set(sn);
+}
+
+void StatefulReader::account_undelivered(WriterProxy& proxy, const SequenceNumber& sn) noexcept
+{
+    const bool repair = proxy.is_missing(sn);
+    record_change(proxy, sn);
+    if (repair) request_next_repair(proxy);
 }
 
 void StatefulReader::deliver(const CacheChange& change) noexcept
