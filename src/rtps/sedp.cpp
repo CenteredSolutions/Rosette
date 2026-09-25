@@ -516,26 +516,13 @@ bool SedpReader::read_plcdr_fields(const Octet*  payload,
                 break;
 
             case pid::TOPIC_NAME:
-                if (param_len >= 5u) {
-                    // String: uint32 len prefix + chars.
-                    const uint32_t slen = read_u32_wire(val, little_endian);
-                    if (slen > 0 && slen <= param_len - 4u) {
-                        uint32_t copy = slen < RTPS_MAX_TOPIC_NAME_LEN
-                                        ? slen : RTPS_MAX_TOPIC_NAME_LEN - 1u;
-                        memcpy(topic_out.str, val + 4, copy);
-                        topic_out.str[copy] = '\0';
-                    }
-                }
-                break;
-
             case pid::TYPE_NAME:
+                // String: uint32 length (NUL included) + octets (§9.4.2.11).
                 if (param_len >= 5u) {
                     const uint32_t slen = read_u32_wire(val, little_endian);
                     if (slen > 0 && slen <= param_len - 4u) {
-                        uint32_t copy = slen < RTPS_MAX_TOPIC_NAME_LEN
-                                        ? slen : RTPS_MAX_TOPIC_NAME_LEN - 1u;
-                        memcpy(type_out.str, val + 4, copy);
-                        type_out.str[copy] = '\0';
+                        TopicName& out = pid_val == pid::TOPIC_NAME ? topic_out : type_out;
+                        out.assign(reinterpret_cast<const char*>(val + 4), slen - 1u);
                     }
                 }
                 break;

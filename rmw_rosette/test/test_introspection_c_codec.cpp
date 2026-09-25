@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "rmw_rosette/message_codec.hpp"
+#include "rmw_rosette/topic_naming.hpp"
 
 namespace {
 
@@ -55,13 +56,26 @@ TEST(MessageCodec, ComposesDdsTypeName) {
     rmw_rosette::MessageCodec codec;
     ASSERT_TRUE(rmw_rosette::resolve_message_codec(string_ts(), codec));
     char name[128];
-    rmw_rosette::compose_codec_type_name(codec, name, sizeof(name));
+    EXPECT_TRUE(rmw_rosette::compose_codec_type_name(codec, name, sizeof(name)));
     EXPECT_STREQ(name, "std_msgs::msg::dds_::String_");
 
     ASSERT_TRUE(rmw_rosette::resolve_message_codec(
         ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, PoseStamped), codec));
-    rmw_rosette::compose_codec_type_name(codec, name, sizeof(name));
+    EXPECT_TRUE(rmw_rosette::compose_codec_type_name(codec, name, sizeof(name)));
     EXPECT_STREQ(name, "geometry_msgs::msg::dds_::PoseStamped_");
+
+    char small[8];
+    EXPECT_FALSE(rmw_rosette::compose_codec_type_name(codec, small, sizeof(small)))
+        << "a type name that does not fit is reported, not silently truncated";
+}
+
+TEST(TopicNaming, ReportsNamesThatDoNotFit) {
+    char out[8];
+    EXPECT_TRUE(rmw_rosette::compose_topic_name(out, sizeof(out), "/abcd"));
+    EXPECT_STREQ(out, "rt/abcd");
+    EXPECT_FALSE(rmw_rosette::compose_topic_name(out, sizeof(out), "/abcde"));
+    EXPECT_FALSE(rmw_rosette::compose_service_request_topic(out, sizeof(out), "/a"));
+    EXPECT_FALSE(rmw_rosette::compose_service_reply_topic(out, sizeof(out), "/ab"));
 }
 
 TEST(MessageCodec, StringGoldenBytes) {

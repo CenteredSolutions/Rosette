@@ -120,6 +120,8 @@ bool resolve_service_codecs(const rosidl_service_type_support_t* handle,
  * @param[in]  codec Resolved codec.
  * @param[out] out   Destination buffer, always NUL-terminated when `cap > 0`.
  * @param[in]  cap   Capacity of `out` in bytes.
+ * @return `false` when the name did not fit `cap` and was truncated, or the
+ *   codec is unresolved.
  *
  * Verification:
  * - Correct means: output equals the type name rmw_fastrtps_cpp announces.
@@ -130,7 +132,7 @@ bool resolve_service_codecs(const rosidl_service_type_support_t* handle,
  * - ROS 2 design, "Topic and Service name mapping to DDS"
  *   (design.ros2.org/articles/topic_and_service_names.html)
  */
-void compose_codec_type_name(const MessageCodec& codec, char* out, size_t cap) noexcept;
+bool compose_codec_type_name(const MessageCodec& codec, char* out, size_t cap) noexcept;
 
 /**
  * @brief Encodes a ROS message as a CDR body for an RTPS writer.

@@ -233,6 +233,8 @@ StatefulReader* RTPSParticipant::create_reader(
         StatefulReader::OnChangeAvailable on_change_avail,
         void*                             user_data) noexcept
 {
+    if (!endpoint_names_fit(cfg.topicName, cfg.typeName)) return nullptr;
+
     int slot = -1;
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i)
         if (!reader_alive_[i]) { slot = i; break; }
@@ -729,6 +731,15 @@ void RTPSParticipant::dispatch_gap(const ParseContext& ctx,
 // ============================================================
 // Internal helpers
 // ============================================================
+
+bool RTPSParticipant::endpoint_names_fit(const TopicName& topic,
+                                         const TopicName& type) noexcept
+{
+    if (topic.fits() && type.fits()) return true;
+    RTPS_LOG_E("participant", "endpoint name longer than %d octets refused: topic=%s type=%s",
+               RTPS_MAX_TOPIC_NAME_LEN - 1, topic.str, type.str);
+    return false;
+}
 
 int RTPSParticipant::find_free_writer_slot() const noexcept {
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)

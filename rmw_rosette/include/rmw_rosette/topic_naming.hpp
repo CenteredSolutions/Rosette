@@ -19,7 +19,9 @@
  *   <pkg>::msg::dds_::<Type>_
  *
  * All composition is bounded-buffer, no heap, no std::string, matching the
- * rest of rosette::rtps.
+ * rest of rosette::rtps. Every compose function reports whether the whole
+ * name fit: a truncated name would be announced and matched by its prefix,
+ * so callers refuse to create the entity instead.
  */
 
 #pragma once
@@ -33,11 +35,17 @@ namespace rmw_rosette {
 
 namespace detail {
 
-/// @brief Appends `src` at `pos`, truncating to keep `dst` NUL-terminated within `cap`.
-inline void str_append(char* dst, size_t cap, size_t& pos, const char* src) noexcept {
-    if (!dst || !src || cap == 0) return;
+/**
+ * @brief Appends `src` at `pos`, keeping `dst` NUL-terminated within `cap`.
+ *
+ * @return `false` when `src` did not fit whole (it is truncated) or `dst`
+ *   is unusable.
+ */
+inline bool str_append(char* dst, size_t cap, size_t& pos, const char* src) noexcept {
+    if (!dst || !src || cap == 0) return false;
     while (*src && pos + 1 < cap) { dst[pos++] = *src++; }
     dst[pos] = '\0';
+    return *src == '\0';
 }
 
 /**
@@ -48,14 +56,15 @@ inline void str_append(char* dst, size_t cap, size_t& pos, const char* src) noex
  * @param[in]  prefix Two-letter mangling prefix without a slash (`"rt"`, `"rq"`, `"rr"`).
  * @param[in]  fqn    Fully-qualified ROS name; its leading `/` becomes the separator.
  * @param[in]  suffix Appended verbatim (`""`, `"Request"`, `"Reply"`).
+ * @return `false` when the name was truncated to fit `cap`.
  */
-inline void compose_mangled(char* out, size_t cap, const char* prefix, const char* fqn,
+inline bool compose_mangled(char* out, size_t cap, const char* prefix, const char* fqn,
                             const char* suffix) noexcept {
     size_t pos = 0;
-    str_append(out, cap, pos, prefix);
-    if (!fqn || fqn[0] != '/') str_append(out, cap, pos, "/");
-    str_append(out, cap, pos, fqn ? fqn : "");
-    str_append(out, cap, pos, suffix);
+    bool fits = str_append(out, cap, pos, prefix);
+    if (!fqn || fqn[0] != '/') fits = str_append(out, cap, pos, "/") && fits;
+    fits = str_append(out, cap, pos, fqn ? fqn : "") && fits;
+    return str_append(out, cap, pos, suffix) && fits;
 }
 
 }  // namespace detail
@@ -70,6 +79,7 @@ inline void compose_mangled(char* out, size_t cap, const char* prefix, const cha
  * @param[in]  cap   Capacity of `out`, including the terminating NUL.
  * @param[in]  topic Fully-qualified ROS 2 topic name as rcl passes it
  *   (for example `/chatter` or `/robot1/cmd_vel`).
+ * @return `false` when the name did not fit `cap` and was truncated.
  *
  * Verification:
  * - Correct means: `/chatter` maps to `rt/chatter` and `/ns/chatter` to
@@ -82,8 +92,8 @@ inline void compose_mangled(char* out, size_t cap, const char* prefix, const cha
  *   (design.ros2.org/articles/topic_and_service_names.html), "ROS Specific
  *   Namespace Prefix"
  */
-inline void compose_topic_name(char* out, size_t cap, const char* topic) noexcept {
-    detail::compose_mangled(out, cap, "rt", topic, "");
+inline bool compose_topic_name(char* out, size_t cap, const char* topic) noexcept {
+    return detail::compose_mangled(out, cap, "rt", topic, "");
 }
 
 /**
@@ -92,6 +102,7 @@ inline void compose_topic_name(char* out, size_t cap, const char* topic) noexcep
  * @param[out] out     Destination buffer; truncated rather than overflowed.
  * @param[in]  cap     Capacity of `out`, including the terminating NUL.
  * @param[in]  service Fully-qualified ROS 2 service name.
+ * @return `false` when the name did not fit `cap` and was truncated.
  *
  * Verification:
  * - Correct means: `/add_two` maps to `rq/add_twoRequest`.
@@ -99,8 +110,8 @@ inline void compose_topic_name(char* out, size_t cap, const char* topic) noexcep
  * References:
  * - ROS 2 design, "Topic and Service name mapping to DDS"
  */
-inline void compose_service_request_topic(char* out, size_t cap, const char* service) noexcept {
-    detail::compose_mangled(out, cap, "rq", service, "Request");
+inline bool compose_service_request_topic(char* out, size_t cap, const char* service) noexcept {
+    return detail::compose_mangled(out, cap, "rq", service, "Request");
 }
 
 /**
@@ -109,6 +120,7 @@ inline void compose_service_request_topic(char* out, size_t cap, const char* ser
  * @param[out] out     Destination buffer; truncated rather than overflowed.
  * @param[in]  cap     Capacity of `out`, including the terminating NUL.
  * @param[in]  service Fully-qualified ROS 2 service name.
+ * @return `false` when the name did not fit `cap` and was truncated.
  *
  * Verification:
  * - Correct means: `/add_two` maps to `rr/add_twoReply`.
@@ -116,8 +128,8 @@ inline void compose_service_request_topic(char* out, size_t cap, const char* ser
  * References:
  * - ROS 2 design, "Topic and Service name mapping to DDS"
  */
-inline void compose_service_reply_topic(char* out, size_t cap, const char* service) noexcept {
-    detail::compose_mangled(out, cap, "rr", service, "Reply");
+inline bool compose_service_reply_topic(char* out, size_t cap, const char* service) noexcept {
+    return detail::compose_mangled(out, cap, "rr", service, "Reply");
 }
 
 /**
@@ -137,6 +149,7 @@ inline void compose_service_reply_topic(char* out, size_t cap, const char* servi
  * @param[in] cap Capacity of `out`, including the terminating NUL.
  * @param[in] message_namespace Package and subfolder, `"__"`- or `"::"`-separated.
  * @param[in] message_name Bare message type name.
+ * @return `false` when the name did not fit `cap` and was truncated.
  *
  * Verification:
  * - Correct means: output equals the type name rmw_fastrtps_cpp announces.
@@ -146,22 +159,23 @@ inline void compose_service_reply_topic(char* out, size_t cap, const char* servi
  * References:
  * - ROS 2 design, "Topic and Service name mapping to DDS"
  */
-inline void compose_dds_type_name(char* out, size_t cap,
-                                   const char* message_namespace,
-                                   const char* message_name) noexcept {
+inline bool compose_dds_type_name(char* out, size_t cap,
+                                  const char* message_namespace,
+                                  const char* message_name) noexcept {
     size_t pos = 0;
+    bool fits = true;
     for (const char* p = message_namespace ? message_namespace : ""; *p; ++p) {
         if (p[0] == '_' && p[1] == '_') {
-            detail::str_append(out, cap, pos, "::");
+            fits = detail::str_append(out, cap, pos, "::") && fits;
             ++p;
         } else {
             const char c[2] = {*p, '\0'};
-            detail::str_append(out, cap, pos, c);
+            fits = detail::str_append(out, cap, pos, c) && fits;
         }
     }
-    detail::str_append(out, cap, pos, "::dds_::");
-    detail::str_append(out, cap, pos, message_name ? message_name : "");
-    detail::str_append(out, cap, pos, "_");
+    fits = detail::str_append(out, cap, pos, "::dds_::") && fits;
+    fits = detail::str_append(out, cap, pos, message_name ? message_name : "") && fits;
+    return detail::str_append(out, cap, pos, "_") && fits;
 }
 
 }  // namespace rmw_rosette

@@ -33,6 +33,13 @@ enum class ServiceRole : uint8_t {
     Client,  ///< Writes requests, reads replies.
 };
 
+/// Outcome of create_service_endpoints().
+enum class ServiceEndpointsStatus : uint8_t {
+    Ok,           ///< Both endpoints exist.
+    NameTooLong,  ///< A topic or type name exceeds RTPS_MAX_TOPIC_NAME_LEN - 1.
+    TablesFull,   ///< The participant has no free writer or reader slot.
+};
+
 /**
  * @brief Creates the RTPS writer and reader for one service or client.
  *
@@ -53,8 +60,8 @@ enum class ServiceRole : uint8_t {
  * @param[in]  user_data   Owning Service or Client.
  * @param[out] writer      Receives the created writer.
  * @param[out] reader      Receives the created reader.
- * @return `true` when both endpoints exist; `false` with `writer` and
- *   `reader` null otherwise (participant table full).
+ * @return ServiceEndpointsStatus::Ok when both endpoints exist; otherwise
+ *   `writer` and `reader` are null and the status says why.
  *
  * Verification:
  * - Correct means: the endpoints' SEDP announcements carry the names
@@ -66,12 +73,14 @@ enum class ServiceRole : uint8_t {
  * - ROS 2 design, "Topic and Service name mapping to DDS"
  * - rmw_fastrtps_shared_cpp (Humble), rmw_service.cpp / rmw_client.cpp
  */
-bool create_service_endpoints(Node& node, ServiceRole role, const char* service,
-                              const rmw_qos_profile_t& qos, const MessageCodec& request,
-                              const MessageCodec& response,
-                              rtps::StatefulReader::OnChangeAvailable on_change,
-                              void* user_data, PublisherWriter*& writer,
-                              rtps::StatefulReader*& reader) noexcept;
+ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
+                                                const char* service,
+                                                const rmw_qos_profile_t& qos,
+                                                const MessageCodec& request,
+                                                const MessageCodec& response,
+                                                rtps::StatefulReader::OnChangeAvailable on_change,
+                                                void* user_data, PublisherWriter*& writer,
+                                                rtps::StatefulReader*& reader) noexcept;
 
 /**
  * @brief Deletes a service's or client's endpoints from the participant.

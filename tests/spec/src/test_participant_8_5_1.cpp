@@ -916,6 +916,29 @@ static bool tc_part_8_5_1_007(std::string& err) {
     return true;
 }
 
+// A local endpoint whose name does not fit RTPS_MAX_TOPIC_NAME_LEN is
+// refused rather than announced under a truncated name.
+static bool tc_part_8_5_1_008(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+
+    std::string fits(RTPS_MAX_TOPIC_NAME_LEN - 1u, 'x');
+    const std::string too_long = fits + "y";
+    WriterConfig wcfg{};
+    wcfg.typeName.assign("pkg::msg::dds_::T_");
+    wcfg.topicName.assign(too_long.c_str());
+    CHECK(p.create_writer<1>(wcfg) == nullptr, "a writer with a truncated topic name is refused");
+    ReaderConfig rcfg{};
+    rcfg.topicName.assign("rt/ok");
+    rcfg.typeName.assign(too_long.c_str());
+    CHECK(p.create_reader(rcfg) == nullptr, "a reader with a truncated type name is refused");
+
+    wcfg.topicName.assign(fits.c_str());
+    CHECK(p.create_writer<1>(wcfg) != nullptr, "a name of exactly the limit is accepted");
+    return true;
+}
+
 // §8.5.3.2/§8.5.3.3: the participant's next timer is the soonest of its
 // SPDP announcement, peer leases, and endpoint timers, so a driver that
 // sleeps until then misses none of them.
@@ -976,6 +999,9 @@ void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-007",
                      "§8.5.3.2: an endpoint announced without unicast locators is reached at its participant's default unicast locators, for DATA and ACKNACK alike.",
                      tc_part_8_5_1_007});
+    tests.push_back({"TC-PART-8.5.1-008",
+                     "A local endpoint whose topic or type name exceeds RTPS_MAX_TOPIC_NAME_LEN - 1 is refused, not announced truncated.",
+                     tc_part_8_5_1_008});
     tests.push_back({"TC-PART-8.5.1-006",
                      "§8.5.3.2/§8.5.3.3: ms_until_next_timer() is unbounded without addresses, zero before the first SPDP announcement, and bounded by the SPDP period and peer lease expiry.",
                      tc_part_8_5_1_006});

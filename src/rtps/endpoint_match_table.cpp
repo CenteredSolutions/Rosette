@@ -77,6 +77,10 @@ void EndpointMatchTable::store_remote(RemoteEndpoint& slot, const Guid& guid, ui
 void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
 {
     if (!wd.is_valid()) return;
+    if (!wd.topicName.fits() || !wd.typeName.fits()) {
+        RTPS_LOG_W("match", "writer name longer than RTPS_MAX_TOPIC_NAME_LEN - 1, ignored");
+        return;
+    }
     const uint64_t key = topic_type_key(wd.topicName.str, wd.typeName.str);
 
     if (is_local(wd.writerGuid)) {
@@ -125,6 +129,10 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
 void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
 {
     if (!rd.is_valid()) return;
+    if (!rd.topicName.fits() || !rd.typeName.fits()) {
+        RTPS_LOG_W("match", "reader name longer than RTPS_MAX_TOPIC_NAME_LEN - 1, ignored");
+        return;
+    }
     const uint64_t key = topic_type_key(rd.topicName.str, rd.typeName.str);
 
     if (is_local(rd.readerGuid)) {

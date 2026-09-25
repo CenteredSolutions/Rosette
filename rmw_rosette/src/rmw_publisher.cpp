@@ -87,11 +87,14 @@ rmw_publisher_t* rmw_create_publisher(
     rmw_rosette::fill_writer_config(cfg, *qos_policies);
 
     char mangled_topic[RTPS_MAX_TOPIC_NAME_LEN];
-    rmw_rosette::compose_topic_name(mangled_topic, sizeof(mangled_topic), topic_name);
-    cfg.topicName.assign(mangled_topic);
-
     char type_name[RTPS_MAX_TOPIC_NAME_LEN];
-    rmw_rosette::compose_codec_type_name(codec, type_name, sizeof(type_name));
+    if (!rmw_rosette::compose_topic_name(mangled_topic, sizeof(mangled_topic), topic_name) ||
+        !rmw_rosette::compose_codec_type_name(codec, type_name, sizeof(type_name))) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_publisher: topic or type name longer than "
+                          "RTPS_MAX_TOPIC_NAME_LEN - 1");
+        return nullptr;
+    }
+    cfg.topicName.assign(mangled_topic);
     cfg.typeName.assign(type_name);
 
     PublisherSlot* slot = publisher_pool().acquire();

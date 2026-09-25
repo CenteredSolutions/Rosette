@@ -96,6 +96,14 @@
       "statement": "An endpoint announced without unicast locators is reached at its participant's defaultUnicastLocatorList.",
       "status": "implemented",
       "test_ids": ["TC-PART-8.5.1-007"]
+    },
+    {
+      "id": "REQ-PART-8.5.5.1-LOCAL-NAMES-WHOLE",
+      "section": "8.5.5.1",
+      "normativity": "shall",
+      "statement": "A local endpoint whose topic or type name exceeds RTPS_MAX_TOPIC_NAME_LEN - 1 is refused rather than announced under a truncated name.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-008"]
     }
   ]
 }

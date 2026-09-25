@@ -96,21 +96,19 @@ bool resolve_service_codecs(const rosidl_service_type_support_t* handle,
     return false;
 }
 
-void compose_codec_type_name(const MessageCodec& codec, char* out, size_t cap) noexcept {
+bool compose_codec_type_name(const MessageCodec& codec, char* out, size_t cap) noexcept {
     switch (codec.kind) {
         case CodecKind::IntrospectionC:
-            compose_dds_type_name(out, cap, as_introspection(codec)->message_namespace_,
-                                  as_introspection(codec)->message_name_);
-            return;
+            return compose_dds_type_name(out, cap, as_introspection(codec)->message_namespace_,
+                                         as_introspection(codec)->message_name_);
 #ifdef RMW_ROSETTE_HAVE_MICROXRCEDDS_TYPESUPPORT
         case CodecKind::MicroXrceDds:
-            compose_dds_type_name(out, cap, as_microxrcedds(codec)->message_namespace_,
-                                  as_microxrcedds(codec)->message_name_);
-            return;
+            return compose_dds_type_name(out, cap, as_microxrcedds(codec)->message_namespace_,
+                                         as_microxrcedds(codec)->message_name_);
 #endif
         default:
             if (cap) out[0] = '\0';
-            return;
+            return false;
     }
 }
 

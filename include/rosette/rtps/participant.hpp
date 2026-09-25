@@ -172,6 +172,8 @@ public:
             "StatefulWriter<D,R> exceeds RTPS_PARTICIPANT_MAX_WRITER_BYTES. "
             "Increase RTPS_PARTICIPANT_MAX_WRITER_BYTES in your config.");
 
+        if (!endpoint_names_fit(cfg.topicName, cfg.typeName)) return nullptr;
+
         // Find a free slot.
         int slot = find_free_writer_slot();
         if (slot < 0) return nullptr;
@@ -325,6 +327,23 @@ private:
 
     // ── Internal helpers ─────────────────────────────────────
     int find_free_writer_slot() const noexcept;
+
+    /**
+     * @brief True when a local endpoint's names were stored whole.
+     *
+     * An endpoint announced under a truncated name would be matched by
+     * whatever shares the prefix, so create_writer() and create_reader()
+     * refuse it instead (and log why).
+     *
+     * @param[in] topic The endpoint's topic name.
+     * @param[in] type  The endpoint's type name.
+     * @return `false` when either name did not fit a TopicName.
+     *
+     * Verification:
+     * - Correct means: no local endpoint with a truncated name is created.
+     * - Covered by: TC-PART-8.5.1-008.
+     */
+    static bool endpoint_names_fit(const TopicName& topic, const TopicName& type) noexcept;
     IStatefulWriter* find_writer_iface(const EntityId& eid) noexcept;
     StatefulReader*  find_reader(const EntityId& eid) noexcept;
 

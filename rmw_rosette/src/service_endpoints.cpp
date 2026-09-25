@@ -10,12 +10,14 @@
 
 namespace rmw_rosette {
 
-bool create_service_endpoints(Node& node, ServiceRole role, const char* service,
-                              const rmw_qos_profile_t& qos, const MessageCodec& request,
-                              const MessageCodec& response,
-                              rtps::StatefulReader::OnChangeAvailable on_change,
-                              void* user_data, PublisherWriter*& writer,
-                              rtps::StatefulReader*& reader) noexcept {
+ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
+                                                const char* service,
+                                                const rmw_qos_profile_t& qos,
+                                                const MessageCodec& request,
+                                                const MessageCodec& response,
+                                                rtps::StatefulReader::OnChangeAvailable on_change,
+                                                void* user_data, PublisherWriter*& writer,
+                                                rtps::StatefulReader*& reader) noexcept {
     writer = nullptr;
     reader = nullptr;
     rtps::RTPSParticipant& participant = *node.context->participant;
@@ -25,10 +27,12 @@ bool create_service_endpoints(Node& node, ServiceRole role, const char* service,
     char reply_topic[RTPS_MAX_TOPIC_NAME_LEN];
     char request_type[RTPS_MAX_TOPIC_NAME_LEN];
     char reply_type[RTPS_MAX_TOPIC_NAME_LEN];
-    compose_service_request_topic(request_topic, sizeof(request_topic), service);
-    compose_service_reply_topic(reply_topic, sizeof(reply_topic), service);
-    compose_codec_type_name(request, request_type, sizeof(request_type));
-    compose_codec_type_name(response, reply_type, sizeof(reply_type));
+    if (!compose_service_request_topic(request_topic, sizeof(request_topic), service) ||
+        !compose_service_reply_topic(reply_topic, sizeof(reply_topic), service) ||
+        !compose_codec_type_name(request, request_type, sizeof(request_type)) ||
+        !compose_codec_type_name(response, reply_type, sizeof(reply_type))) {
+        return ServiceEndpointsStatus::NameTooLong;
+    }
 
     rtps::WriterConfig wcfg{};
     fill_writer_config(wcfg, qos);
@@ -47,14 +51,14 @@ bool create_service_endpoints(Node& node, ServiceRole role, const char* service,
     rcfg.typeName.assign(server ? request_type : reply_type);
 
     writer = create_writer_for_qos(participant, wcfg, qos);
-    if (!writer) return false;
+    if (!writer) return ServiceEndpointsStatus::TablesFull;
     reader = participant.create_reader(rcfg, on_change, user_data);
     if (!reader) {
         participant.delete_writer(writer);
         writer = nullptr;
-        return false;
+        return ServiceEndpointsStatus::TablesFull;
     }
-    return true;
+    return ServiceEndpointsStatus::Ok;
 }
 
 void destroy_service_endpoints(Node& node, PublisherWriter*& writer,

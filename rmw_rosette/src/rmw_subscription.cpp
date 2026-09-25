@@ -111,12 +111,16 @@ rmw_subscription_t* rmw_create_subscription(
 
     rtps::ReaderConfig cfg{};
     rmw_rosette::fill_reader_config(cfg, *qos_policies);
-    rmw_rosette::compose_topic_name(slot->impl.mangled_topic_name,
-                                     sizeof(slot->impl.mangled_topic_name), topic_name);
-    cfg.topicName.assign(slot->impl.mangled_topic_name);
-
     char type_name[RTPS_MAX_TOPIC_NAME_LEN];
-    rmw_rosette::compose_codec_type_name(codec, type_name, sizeof(type_name));
+    if (!rmw_rosette::compose_topic_name(slot->impl.mangled_topic_name,
+                                         sizeof(slot->impl.mangled_topic_name), topic_name) ||
+        !rmw_rosette::compose_codec_type_name(codec, type_name, sizeof(type_name))) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_subscription: topic or type name longer than "
+                          "RTPS_MAX_TOPIC_NAME_LEN - 1");
+        subscription_pool().release(slot);
+        return nullptr;
+    }
+    cfg.topicName.assign(slot->impl.mangled_topic_name);
     cfg.typeName.assign(type_name);
 
     auto* reader = node_impl->context->participant->create_reader(

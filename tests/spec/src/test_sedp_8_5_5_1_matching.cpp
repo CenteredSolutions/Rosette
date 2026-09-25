@@ -207,7 +207,36 @@ static bool tc_sedp_8_5_5_1_005(std::string& err) {
     return true;
 }
 
+// A name longer than RTPS_MAX_TOPIC_NAME_LEN - 1 cannot be stored whole. A
+// remote endpoint announced with one must not match a local endpoint whose
+// name equals its stored prefix: it is ignored.
+static bool tc_sedp_8_5_5_1_006(std::string& err) {
+    Obs obs{};
+    EndpointMatchTable t(on_match, on_unmatch, &obs);
+    const Guid local_reader = make_guid(0x61u, 0x62u, 0x63u, make_entity(1u, 1u, 1u, 0x04u));
+    t.set_local_prefix(local_reader.prefix);
+
+    std::string fits(RTPS_MAX_TOPIC_NAME_LEN - 1u, 'a');
+    fits[0] = 'r'; fits[1] = 't'; fits[2] = '/';
+    const std::string too_long = fits + "_and_more";
+    t.add_reader(make_reader(local_reader, fits.c_str(), "pkg::msg::dds_::T_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    t.add_writer(make_writer(make_guid(0x71u, 0x72u, 0x73u, make_entity(2u, 2u, 2u, 0x03u)),
+                             too_long.c_str(), "pkg::msg::dds_::T_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    CHECK(obs.match_calls == 0, "a remote name longer than the limit never matches a local prefix of it");
+
+    t.add_writer(make_writer(make_guid(0x71u, 0x72u, 0x73u, make_entity(3u, 3u, 3u, 0x03u)),
+                             fits.c_str(), "pkg::msg::dds_::T_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    CHECK(obs.match_calls == 1, "a name of exactly the limit matches");
+    return true;
+}
+
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests) {
+    tests.push_back({"TC-SEDP-8.5.5.1-006",
+                     "§8.5.5.1: an endpoint whose topic or type name exceeds RTPS_MAX_TOPIC_NAME_LEN - 1 is ignored, never matched by its truncated prefix.",
+                     tc_sedp_8_5_5_1_006});
     tests.push_back({"TC-SEDP-8.5.5.1-005",
                      "§8.5.5.1: a remote endpoint stored by topic/type key matches a local endpoint created later, with its announced locators; remote-remote pairs never match.",
                      tc_sedp_8_5_5_1_005});

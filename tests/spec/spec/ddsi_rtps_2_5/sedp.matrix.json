@@ -50,6 +50,15 @@
       "test_ids": ["TC-SEDP-8.5.5.1-005"]
     },
     {
+      "id": "REQ-SEDP-8.5.5.1-NO-TRUNCATED-NAMES",
+      "section": "8.5.5.1",
+      "page": 169,
+      "normativity": "shall",
+      "statement": "Topic and type names are compared whole: an endpoint whose name does not fit RTPS_MAX_TOPIC_NAME_LEN - 1 is ignored rather than matched by its truncated prefix.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.5.1-006"]
+    },
+    {
       "id": "REQ-SEDP-8.5.4.1-RELIABLE-BUILTIN-READERS",
       "section": "8.5.4.1",
       "page": 165,

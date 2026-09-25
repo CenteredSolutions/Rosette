@@ -95,11 +95,15 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node,
         service_pool().release(slot);
         return nullptr;
     }
-    if (!rmw_rosette::create_service_endpoints(
+    const rmw_rosette::ServiceEndpointsStatus status = rmw_rosette::create_service_endpoints(
             *node_impl, rmw_rosette::ServiceRole::Server, service_name, *qos_policies,
             impl.request_codec, impl.response_codec, on_request, &impl, impl.reply_writer,
-            impl.request_reader)) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_service: participant endpoint tables full");
+            impl.request_reader);
+    if (status != rmw_rosette::ServiceEndpointsStatus::Ok) {
+        RMW_SET_ERROR_MSG(status == rmw_rosette::ServiceEndpointsStatus::NameTooLong
+                              ? "rmw_rosette: rmw_create_service: topic or type name longer than "
+                                "RTPS_MAX_TOPIC_NAME_LEN - 1"
+                              : "rmw_rosette: rmw_create_service: participant endpoint tables full");
         service_pool().release(slot);
         return nullptr;
     }
