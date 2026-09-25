@@ -52,7 +52,7 @@
 #include "endpoint_match_table.hpp"
 #include "message_builder.hpp"
 #include "message_parser.hpp"   // ParseContext, ParsedHeartbeat, ParsedGap
-#include "sn_receive_window.hpp"
+#include "sn_window.hpp"
 #include "spdp.hpp"   // pid namespace, plcdr_write_param
 #include "stateful_writer.hpp"
 
@@ -334,7 +334,7 @@ public:
      *
      * The builtin readers are reliable (§8.5.4.1), so the ACKNACK names
      * every endpoint announcement still missing from that writer, from the
-     * per-writer SnReceiveWindow: out-of-order arrivals and lost bursts leave
+     * per-writer SequenceNumberWindow: out-of-order arrivals and lost bursts leave
      * holes, which are requested until DATA or GAP resolves them. firstSN
      * resolves everything the writer no longer holds. On a link whose
      * repairs must fit one datagram (repairs_must_fit_datagram()) only the
@@ -387,7 +387,7 @@ private:
 
     /// Reliability state for one remote SEDP announcer (§8.4.10 WriterProxy).
     struct SedpWriterState {
-        SnReceiveWindow window;
+        SequenceNumberWindow window;
         SequenceNumber  last_sn;          ///< Highest lastSN heard in a HEARTBEAT.
         SequenceNumber  pending_repair;   ///< Sole change requested by a narrow ACKNACK.
         uint32_t        acknack_count = 0;

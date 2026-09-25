@@ -60,7 +60,7 @@ datagram, work over it unmodified:
   retry. On a limited transport every Rosette reader, SEDP included, requests
   one missing change per ACKNACK and asks for the next as soon as it lands
   (`repairs_must_fit_datagram()`), so each repair is a single DATA. Readers
-  track holes per writer (`SnReceiveWindow`) and honor GAP and HEARTBEAT
+  track holes per writer (`SequenceNumberWindow`) and honor GAP and HEARTBEAT
   firstSN, so lost or reordered announcements are always recovered.
 - Samples: Rosette fragments to the limit, so it can send anything. A stock
   peer sends a sample larger than the link limit as one IP-fragmented

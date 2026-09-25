@@ -13,7 +13,7 @@
 #include "spec_test_common.hpp"
 
 #include "rosette/rtps/sedp.hpp"
-#include "rosette/rtps/sn_receive_window.hpp"
+#include "rosette/rtps/sn_window.hpp"
 #include "rosette/rtps/transport.hpp"
 
 namespace spec_test {
@@ -66,18 +66,18 @@ ParsedHeartbeat pub_heartbeat(int64_t first, int64_t last, int32_t count) {
 // §8.4.12.1: the window reports each change new once, closes holes in any
 // order, and a NACK always starts at the lowest unresolved change.
 static bool tc_sedp_8_5_4_010(std::string& err) {
-    SnReceiveWindow w{};
+    SequenceNumberWindow w{};
     CHECK(w.resolve(SequenceNumber::from_int64(3)), "SN 3 is new");
     CHECK(!w.resolve(SequenceNumber::from_int64(3)), "SN 3 again is a duplicate");
     CHECK(w.base() == SequenceNumber::from_int64(1), "holes 1-2 keep base at 1");
 
     SequenceNumberSet set{};
-    w.missing(SequenceNumber::from_int64(5), 256u, set);
+    w.unresolved(SequenceNumber::from_int64(5), 256u, set);
     CHECK(set.bitmapBase == SequenceNumber::from_int64(1), "NACK starts at the lowest hole");
     CHECK(set.test(0) && set.test(1) && !set.test(2) && set.test(3) && set.test(4),
           "NACK names 1, 2, 4, 5 but not the received 3");
 
-    w.missing(SequenceNumber::from_int64(5), 1u, set);
+    w.unresolved(SequenceNumber::from_int64(5), 1u, set);
     CHECK(set.numBits == 1u && set.test(0), "a one-change NACK names only SN 1");
 
     CHECK(w.resolve(SequenceNumber::from_int64(1)), "SN 1 is new");
@@ -86,12 +86,13 @@ static bool tc_sedp_8_5_4_010(std::string& err) {
 
     w.resolve_below(SequenceNumber::from_int64(6));
     CHECK(w.base() == SequenceNumber::from_int64(6), "firstSN resolves what the writer dropped");
-    w.missing(SequenceNumber::from_int64(5), 256u, set);
+    w.unresolved(SequenceNumber::from_int64(5), 256u, set);
     CHECK(set.empty() && set.bitmapBase == SequenceNumber::from_int64(6),
           "nothing missing: a pure ACK of everything below 6");
 
-    CHECK(w.resolve(SequenceNumber::from_int64(6 + 100)), "beyond the window is accepted");
-    CHECK(w.is_missing(SequenceNumber::from_int64(6 + 100)), "but not recorded, so it is re-requested");
+    CHECK(!w.covers(SequenceNumber::from_int64(6 + 100)) &&
+          !w.resolve(SequenceNumber::from_int64(6 + 100)), "beyond the window cannot be recorded");
+    CHECK(!w.is_resolved(SequenceNumber::from_int64(6 + 100)), "so it is still unresolved");
     return true;
 }
 
@@ -161,12 +162,12 @@ static bool tc_sedp_8_5_4_011(std::string& err) {
 // §8.3.7.4.5: a GAP run with an empty bitmap resolves every announcement in
 // it, whether the run starts at the window base or inside the window.
 static bool tc_sedp_8_5_4_012(std::string& err) {
-    SnReceiveWindow w{};
+    SequenceNumberWindow w{};
     w.resolve_range(SequenceNumber::from_int64(1), SequenceNumber::from_int64(4));
     CHECK(w.base() == SequenceNumber::from_int64(4), "run 1-3 at the base advances it");
     w.resolve_range(SequenceNumber::from_int64(6), SequenceNumber::from_int64(8));
-    CHECK(w.base() == SequenceNumber::from_int64(4) && w.is_missing(SequenceNumber::from_int64(5)) &&
-          !w.is_missing(SequenceNumber::from_int64(6)) && !w.is_missing(SequenceNumber::from_int64(7)),
+    CHECK(w.base() == SequenceNumber::from_int64(4) && !w.is_resolved(SequenceNumber::from_int64(5)) &&
+          w.is_resolved(SequenceNumber::from_int64(6)) && w.is_resolved(SequenceNumber::from_int64(7)),
           "run 6-7 inside the window leaves 4-5 missing");
     w.resolve_range(SequenceNumber::from_int64(4), SequenceNumber::from_int64(100000));
     CHECK(w.base() == SequenceNumber::from_int64(100000), "a long run from the base jumps it");
@@ -195,7 +196,7 @@ static bool tc_sedp_8_5_4_012(std::string& err) {
 
 void append_sedp_tests_8_5_4_repairs(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-8.5.4-010",
-                     "§8.4.12.1: SnReceiveWindow reports each SN new once, tracks holes in any order, honors HEARTBEAT firstSN, and NACKs from the lowest hole.",
+                     "§8.4.10.4: SequenceNumberWindow reports each SN resolved once, tracks holes in any order, honors HEARTBEAT firstSN, and NACKs from the lowest hole.",
                      tc_sedp_8_5_4_010});
     tests.push_back({"TC-SEDP-8.5.4-011",
                      "§8.4.12.1/§8.3.7.4: SEDP readers request lost announcements until DATA or GAP resolves them; on a datagram-limited link one per ACKNACK, the next requested as each repair lands.",

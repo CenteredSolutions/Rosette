@@ -29,7 +29,7 @@
       "section": "8.4.8",
       "page": 142,
       "normativity": "shall",
-      "statement": "on_data accepts new DATA samples and suppresses duplicates with sequence numbers not newer than highestSNReceived.",
+      "statement": "on_data accepts new DATA samples and suppresses duplicates: every change is delivered at most once.",
       "status": "implemented",
       "test_ids": ["TC-SRR-8.4.8-001"]
     },
@@ -50,6 +50,30 @@
       "statement": "on_heartbeat_frag identifies missing fragments for a sample and sends NACK_FRAG with the missing fragment bitmap.",
       "status": "implemented",
       "test_ids": ["TC-SRR-8.4.9-002"]
+    },
+    {
+      "id": "REQ-SRR-8.4.10.4-MISSING-NEVER-FORGOTTEN",
+      "section": "8.4.10.4",
+      "normativity": "shall",
+      "statement": "A reliable reader keeps every MISSING change requested until DATA or GAP resolves it, however many later changes arrive, and delivers every change exactly once.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.10-001", "TC-SRR-8.4.10-002"]
+    },
+    {
+      "id": "REQ-SRR-8.3.7.2-DATA-WITHOUT-PAYLOAD",
+      "section": "8.3.7.2",
+      "normativity": "shall",
+      "statement": "A DATA carrying neither serialized payload nor key still accounts for its sequence number.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.10-003"]
+    },
+    {
+      "id": "REQ-SRR-8.4.12.1-BEST-EFFORT-ORDER",
+      "section": "8.4.12.1",
+      "normativity": "shall",
+      "statement": "A best-effort reader delivers a change only when it is newer than every change already seen from that writer.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.12-001"]
     }
   ]
 }

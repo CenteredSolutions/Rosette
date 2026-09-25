@@ -4,6 +4,7 @@
  */
 
 #include "stateful_reader.hpp"
+#include "gap_encoding.hpp"
 #include "stateful_writer.hpp"   // ITransport
 #include "log.hpp"
 #include <string.h>
@@ -44,7 +45,7 @@ bool StatefulReader::matched_writer_add(const Guid&    writer_guid,
                                         uint8_t        locator_count) noexcept
 {
     if (find_proxy(writer_guid)) return false;
-    DefaultWriterProxy* slot = find_free_slot();
+    WriterProxy* slot = find_free_slot();
     if (!slot) {
         RTPS_LOG_W("reader", "writer proxy table full (max=%d)",
                    RTPS_MAX_MATCHED_WRITERS);
@@ -71,14 +72,14 @@ bool StatefulReader::matched_writer_add(const Guid&    writer_guid,
 // ============================================================
 
 void StatefulReader::matched_writer_remove(const Guid& writer_guid) noexcept {
-    DefaultWriterProxy* proxy = find_proxy(writer_guid);
+    WriterProxy* proxy = find_proxy(writer_guid);
     if (proxy) proxy->clear();
 
     // Release partial assembly buffers for this writer — §8.4.14.
     assembler_.discard_writer(writer_guid);
 }
 
-DefaultWriterProxy* StatefulReader::matched_writer_lookup(
+WriterProxy* StatefulReader::matched_writer_lookup(
         const Guid& writer_guid) noexcept
 {
     return find_proxy(writer_guid);
@@ -93,7 +94,7 @@ DefaultWriterProxy* StatefulReader::matched_writer_lookup(
 void StatefulReader::on_data(const ParseContext& ctx,
                              const ParsedData&   msg) noexcept
 {
-    DefaultWriterProxy* proxy = find_proxy_by_sender(
+    WriterProxy* proxy = find_proxy_by_sender(
         ctx.senderGuidPrefix, msg.writerId);
 
     if (!proxy && reliability_ == ReliabilityKind::RELIABLE) {
@@ -103,16 +104,25 @@ void StatefulReader::on_data(const ParseContext& ctx,
         return;
     }
 
-    // Duplicate check — §8.4.8, p. 142: deliver new SNs and gap repairs.
-    if (proxy && !proxy->is_new_change(msg.writerSN)) {
-        RTPS_LOG_T("reader", "duplicate DATA SN=%d:%lu from %02x%02x%02x%02x, dropped",
+    if (proxy && !is_new_change(*proxy, msg.writerSN)) {
+        RTPS_LOG_T("reader", "DATA SN=%d:%lu from %02x%02x%02x%02x not new, dropped",
                    msg.writerSN.high, (unsigned long)msg.writerSN.low,
                    ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
                    ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
         return;
     }
 
-    if (!msg.dataFlag && !msg.keyFlag) return;
+    // A DATA without payload or key (inline QoS only) carries nothing to
+    // deliver, but its sequence number is accounted for so it is never
+    // requested again.
+    if (!msg.dataFlag && !msg.keyFlag) {
+        if (proxy) {
+            const bool repair = proxy->is_missing(msg.writerSN);
+            record_change(*proxy, msg.writerSN);
+            if (repair) request_next_repair(*proxy);
+        }
+        return;
+    }
 
     // Allocate the smallest pool class that fits the payload.
     BufRef payload = buf_alloc(msg.serializedPayloadSize);
@@ -147,7 +157,7 @@ void StatefulReader::on_data(const ParseContext& ctx,
 
     if (proxy) {
         const bool repair = proxy->is_missing(msg.writerSN);
-        proxy->received_change_set(msg.writerSN);
+        record_change(*proxy, msg.writerSN);
         accept_change(static_cast<CacheChange&&>(change), *proxy);
         if (repair) request_next_repair(*proxy);
     } else {
@@ -170,7 +180,7 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
 {
     const Guid writer_guid{ ctx.senderGuidPrefix, msg.writerId };
 
-    DefaultWriterProxy* proxy = find_proxy(writer_guid);
+    WriterProxy* proxy = find_proxy(writer_guid);
     if (!proxy && reliability_ == ReliabilityKind::RELIABLE) {
         RTPS_LOG_D("reader", "DATA_FRAG from unmatched writer, dropped (RELIABLE)");
         return;
@@ -187,7 +197,7 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
 
     // A fragment of a sample already delivered (the writer resends whole
     // samples on NACK_FRAG) must not assemble and deliver it again.
-    if (proxy && !proxy->is_new_change(msg.writerSN)) {
+    if (proxy && !is_new_change(*proxy, msg.writerSN)) {
         assembler_.discard(writer_guid, msg.writerSN);
         return;
     }
@@ -220,7 +230,7 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     // Sample is complete — treat identically to a full DATA reception.
     if (proxy) {
         const bool repair = proxy->is_missing(msg.writerSN);
-        proxy->received_change_set(msg.writerSN);
+        record_change(*proxy, msg.writerSN);
         accept_change(static_cast<CacheChange&&>(out_change), *proxy);
         if (repair) request_next_repair(*proxy);
     } else {
@@ -242,7 +252,7 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
 void StatefulReader::on_heartbeat(const ParseContext&    ctx,
                                   const ParsedHeartbeat& msg) noexcept
 {
-    DefaultWriterProxy* proxy = find_proxy_by_sender(
+    WriterProxy* proxy = find_proxy_by_sender(
         ctx.senderGuidPrefix, msg.writerId);
     if (!proxy) {
         RTPS_LOG_T("reader", "HEARTBEAT from unknown writer %02x%02x%02x%02x, ignored",
@@ -266,7 +276,7 @@ void StatefulReader::on_heartbeat(const ParseContext&    ctx,
 
     if (needs_acknack && hb_response_ms_ == 0) {
         send_acknack(*proxy, !proxy->has_missing_changes());
-        proxy->on_acknack_sent(proxy->highestSNReceived);
+        proxy->on_acknack_sent();
     }
 }
 
@@ -289,7 +299,7 @@ void StatefulReader::on_heartbeat_frag(const ParseContext&       ctx,
                                        const ParsedHeartbeatFrag& msg) noexcept
 {
     const Guid writer_guid{ ctx.senderGuidPrefix, msg.writerId };
-    DefaultWriterProxy* proxy = find_proxy(writer_guid);
+    WriterProxy* proxy = find_proxy(writer_guid);
     if (!proxy) return;
 
     if (msg.readerId != entity_id::UNKNOWN &&
@@ -340,7 +350,7 @@ void StatefulReader::on_heartbeat_frag(const ParseContext&       ctx,
 void StatefulReader::on_gap(const ParseContext& ctx,
                             const ParsedGap&   msg) noexcept
 {
-    DefaultWriterProxy* proxy = find_proxy_by_sender(
+    WriterProxy* proxy = find_proxy_by_sender(
         ctx.senderGuidPrefix, msg.writerId);
     if (!proxy) {
         RTPS_LOG_T("reader", "GAP from unknown writer, ignored");
@@ -365,14 +375,14 @@ void StatefulReader::on_gap(const ParseContext& ctx,
     });
 
     const bool had_missing = proxy->has_missing_changes();
-    proxy->on_gap(msg.gapStart, msg.gapList);
+    proxy->irrelevant_change_set(msg.gapStart, msg.gapList);
     if (had_missing) request_next_repair(*proxy);
 
     // If all previously missing changes are now LOST, send a pure ACK.
     if (proxy->acknackPending && !proxy->has_missing_changes()) {
         if (hb_response_ms_ == 0) {
             send_acknack(*proxy, /*final=*/true);
-            proxy->on_acknack_sent(proxy->highestSNReceived);
+            proxy->on_acknack_sent();
         }
     }
 }
@@ -383,24 +393,15 @@ void StatefulReader::on_gap(const ParseContext& ctx,
 // "Sends an ACKNACK to the matched writer."  — §8.4.7.3, p. 140
 // ============================================================
 
-void StatefulReader::send_acknack(DefaultWriterProxy& proxy,
-                                  bool                final_flag) noexcept
+void StatefulReader::send_acknack(WriterProxy& proxy,
+                                  bool         final_flag) noexcept
 {
     const Locator& dest = proxy.best_locator();
     if (dest == LOCATOR_INVALID) return;
 
     SequenceNumberSet sn_state{};
-    SequenceNumber first_missing{};
-    if (narrow_repairs() && proxy.lowest_missing_change(first_missing)) {
-        sn_state.add(first_missing);
-    } else {
-        proxy.missing_changes(sn_state);
-    }
-
-    if (sn_state.numBits == 0) {
-        sn_state.bitmapBase = proxy.highestSNReceived + 1;
-        final_flag = true;
-    }
+    proxy.missing_changes(sn_state, narrow_repairs() ? 1u : SequenceNumberSet::kMaxBits);
+    if (sn_state.empty()) final_flag = true;
 
     if (!builder_.begin(guid_.prefix)) return;
 
@@ -431,11 +432,11 @@ bool StatefulReader::narrow_repairs() const noexcept
     return repairs_must_fit_datagram(transport_);
 }
 
-void StatefulReader::request_next_repair(DefaultWriterProxy& proxy) noexcept
+void StatefulReader::request_next_repair(WriterProxy& proxy) noexcept
 {
     if (!narrow_repairs() || !proxy.has_missing_changes()) return;
     send_acknack(proxy, /*final=*/false);
-    proxy.on_acknack_sent(proxy.highestSNReceived);
+    proxy.on_acknack_sent();
 }
 
 // ============================================================
@@ -444,15 +445,13 @@ void StatefulReader::request_next_repair(DefaultWriterProxy& proxy) noexcept
 
 void StatefulReader::tick(uint32_t now_ms) noexcept {
     for (uint8_t i = 0; i < RTPS_MAX_MATCHED_WRITERS; ++i) {
-        DefaultWriterProxy& proxy = proxies_[i];
+        WriterProxy& proxy = proxies_[i];
         if (!proxy.is_matched()) continue;
 
         if (proxy.acknack_response_due(now_ms)) {
             send_acknack(proxy, !proxy.has_missing_changes());
-            proxy.on_acknack_sent(proxy.highestSNReceived);
+            proxy.on_acknack_sent();
         }
-
-        proxy.evict_stale(proxy.highestSNAcknowledged);
     }
 }
 
@@ -463,7 +462,7 @@ void StatefulReader::tick(uint32_t now_ms) noexcept {
 uint32_t StatefulReader::ms_until_next_timer(uint32_t now_ms) const noexcept {
     uint32_t next = UINT32_MAX;
     for (uint8_t i = 0; i < RTPS_MAX_MATCHED_WRITERS; ++i) {
-        const DefaultWriterProxy& proxy = proxies_[i];
+        const WriterProxy& proxy = proxies_[i];
         if (!proxy.is_matched() || !proxy.acknackPending) continue;
         // Wrap-safe "is the deadline in the past" test, as in acknack_response_due().
         const uint32_t left = proxy.heartbeatResponseDeadlineMs - now_ms;
@@ -480,7 +479,7 @@ uint8_t StatefulReader::matched_writer_count() const noexcept {
     return n;
 }
 
-DefaultWriterProxy* StatefulReader::find_proxy(const Guid& guid) noexcept {
+WriterProxy* StatefulReader::find_proxy(const Guid& guid) noexcept {
     for (uint8_t i = 0; i < RTPS_MAX_MATCHED_WRITERS; ++i)
         if (proxies_[i].is_matched() &&
             proxies_[i].remoteWriterGuid == guid)
@@ -488,20 +487,33 @@ DefaultWriterProxy* StatefulReader::find_proxy(const Guid& guid) noexcept {
     return nullptr;
 }
 
-DefaultWriterProxy* StatefulReader::find_proxy_by_sender(
+WriterProxy* StatefulReader::find_proxy_by_sender(
         const GuidPrefix& prefix, const EntityId& writer_eid) noexcept
 {
     return find_proxy(Guid{ prefix, writer_eid });
 }
 
-DefaultWriterProxy* StatefulReader::find_free_slot() noexcept {
+WriterProxy* StatefulReader::find_free_slot() noexcept {
     for (uint8_t i = 0; i < RTPS_MAX_MATCHED_WRITERS; ++i)
         if (!proxies_[i].is_matched()) return &proxies_[i];
     return nullptr;
 }
 
-void StatefulReader::accept_change(CacheChange&&       change,
-                                   DefaultWriterProxy& /*proxy*/) noexcept
+bool StatefulReader::is_new_change(const WriterProxy&    proxy,
+                                   const SequenceNumber& sn) const noexcept
+{
+    if (reliability_ == ReliabilityKind::RELIABLE) return proxy.is_new_change(sn);
+    return proxy.available_changes_max() < sn;
+}
+
+void StatefulReader::record_change(WriterProxy& proxy, const SequenceNumber& sn) noexcept
+{
+    if (reliability_ != ReliabilityKind::RELIABLE) proxy.lost_changes_update(sn);
+    proxy.received_change_set(sn);
+}
+
+void StatefulReader::accept_change(CacheChange&& change,
+                                   WriterProxy&  /*proxy*/) noexcept
 {
     // With a callback the change is handed over: the application sees the
     // payload during the call and retains the buffer if it needs it longer

@@ -163,6 +163,7 @@ add_executable(sedp_spec_tests
     src/test_sedp_8_5_5_1_matching.cpp
     src/test_sedp_9_6_3_2_plcdr.cpp
     ../../src/rtps/sedp.cpp
+    ../../src/rtps/sn_window.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
 )
@@ -249,7 +250,10 @@ add_executable(stateful_reader_spec_tests
     src/test_stateful_reader_8_4_7_4.cpp
     src/test_stateful_reader_8_4_8_8_4_9.cpp
     src/test_stateful_reader_8_4_9_gap_ranges.cpp
+    src/test_stateful_reader_8_4_10_4_changes_from_writer.cpp
     ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/sn_window.cpp
+    ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
 )
@@ -279,6 +283,8 @@ add_executable(participant_spec_tests
     src/test_participant_8_5_1.cpp
     ../../src/rtps/participant.cpp
     ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/sn_window.cpp
+    ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/spdp.cpp
     ../../src/rtps/sedp.cpp
     ../../src/rtps/message_parser.cpp
@@ -435,6 +441,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
     add_executable(sedp_fuzz_replay
         fuzz/replay_sedp_corpus.cpp
         ../../src/rtps/sedp.cpp
+        ../../src/rtps/sn_window.cpp
         ../../src/rtps/buf_pool.cpp
     )
     target_include_directories(sedp_fuzz_replay PRIVATE
@@ -603,6 +610,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         add_executable(sedp_fuzz
             fuzz/fuzz_sedp.cpp
             ../../src/rtps/sedp.cpp
+            ../../src/rtps/sn_window.cpp
             ../../src/rtps/buf_pool.cpp
         )
         target_include_directories(sedp_fuzz PRIVATE

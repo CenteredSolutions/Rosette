@@ -411,7 +411,7 @@ static bool tc_srr_8_4_7_003(std::string& err) {
 
 void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.8-001",
-                     "§8.4.8: on_data accepts new DATA as CacheChange and ignores duplicates whose writerSN is not newer than highestSNReceived.",
+                     "§8.4.8: on_data accepts new DATA as CacheChange and ignores duplicate DATA.",
                      tc_srr_8_4_8_001});
     tests.push_back({"TC-SRR-8.4.8-002",
                      "§8.4.12.2: a retransmitted change filling a gap below the highest received SN is delivered; repeats of delivered SNs are dropped.",

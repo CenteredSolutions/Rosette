@@ -686,7 +686,11 @@ bool SedpReader::accept_announcement(const GuidPrefix&     sender_prefix,
     SedpBuiltinAckState* state = find_or_alloc_ack_state(sender_prefix);
     if (!state) return true;
     SedpWriterState& writer = is_pub ? state->pub : state->sub;
-    if (!writer.window.resolve(writer_sn)) return false;
+    // An announcement beyond the window cannot be recorded; it is processed
+    // anyway (discovery data is idempotent) and requested again later.
+    const bool is_new = writer.window.covers(writer_sn) ? writer.window.resolve(writer_sn)
+                                                        : !writer.window.is_resolved(writer_sn);
+    if (!is_new) return false;
     if (writer_sn > writer.last_sn) writer.last_sn = writer_sn;
     if (writer_sn == writer.pending_repair && repairs_must_fit_datagram(transport_)) {
         send_acknack(*state, is_pub);
@@ -701,7 +705,7 @@ void SedpReader::send_acknack(SedpBuiltinAckState& state, bool is_pub) noexcept
 
     const bool narrow = repairs_must_fit_datagram(transport_);
     SequenceNumberSet sn_state{};
-    writer.window.missing(writer.last_sn, narrow ? 1u : 256u, sn_state);
+    writer.window.unresolved(writer.last_sn, narrow ? 1u : 256u, sn_state);
     // bitmapBase is the window's lowest unresolved number, so a narrow
     // request names exactly that change.
     writer.pending_repair = (narrow && !sn_state.empty()) ? sn_state.bitmapBase
@@ -776,7 +780,7 @@ void SedpReader::on_gap(const ParseContext& ctx, const ParsedGap& msg) noexcept
         writer.window.resolve(sn);
     });
     if (repairs_must_fit_datagram(transport_) && writer.pending_repair != SequenceNumber{} &&
-        !writer.window.is_missing(writer.pending_repair)) {
+        writer.window.is_resolved(writer.pending_repair)) {
         send_acknack(*state, is_pub);
     }
 }

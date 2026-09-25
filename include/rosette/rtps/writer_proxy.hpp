@@ -1,642 +1,297 @@
 /**
  * @file rtps/writer_proxy.hpp
- * @brief WriterProxy — per-writer state maintained by a StatefulReader.
+ * @brief WriterProxy: a StatefulReader's state for one matched remote writer.
  *
- * A WriterProxy represents a remote RTPS Writer that has been matched to
- * a local StatefulReader.  The reader maintains one WriterProxy per
- * matched writer and uses it to:
- *   - Track the reception status of each expected sequence number.
- *   - Drive the HEARTBEAT→ACKNACK response logic.
- *   - Detect writer liveliness failure.
+ * A StatefulReader keeps one WriterProxy per matched writer (DDSI-RTPS 2.5
+ * §8.4.10.4) and uses it to decide which arriving changes to deliver, which
+ * changes to request in an ACKNACK, and when a HEARTBEAT must be answered.
  *
- * Spec mapping
- * ------------
- * Implements the WriterProxy entity defined in §8.4.7.1, Table 8.61,
- * p. 134 of OMG formal/2022-04-01.
+ * changes_from_writer
+ * -------------------
+ * The spec gives every change from the writer a ChangeFromWriterStatus:
  *
- * Attributes (§8.4.7.1, Table 8.61, p. 134):
- *   remoteWriterGuid          — GUID of the matched remote writer.
- *   remoteGroupEntityId       — group entity (unused for non-group).
- *   unicastLocatorList        — locators used to reach this writer.
- *   multicastLocatorList      — multicast locators.
+ *   RECEIVED / LOST  resolved: received, declared irrelevant by GAP, or no
+ *                    longer held by the writer (HEARTBEAT firstSN)
+ *   MISSING          unresolved, and the writer is known to hold it
+ *   UNKNOWN          unresolved, and the writer has not announced it yet
  *
- * Additional implementation attributes (§8.4.7.1, p. 134-135):
- *   changes_from_writer[]     — per-SN reception status.
- *   highestSNReceived         — highest SN ever received from this writer.
- *   highestSNAcknowledged     — highest SN covered by our last ACKNACK.
- *   lastHBCount               — count from the last processed HEARTBEAT
- *                               (de-duplicates retransmitted HBs).
- *   acknackCount              — our own monotone ACKNACK counter.
- *   isAlive                   — liveliness state; cleared on lease expiry.
- *   heartbeatResponseDeadlineMs — when to send the pending ACKNACK.
+ * The proxy stores the resolved set in a SequenceNumberWindow and the
+ * boundary between MISSING and UNKNOWN as the highest sequence number the
+ * writer is known to hold (HEARTBEAT lastSN, or any change or GAP it sent).
+ * Nothing about a MISSING change is ever discarded to make room, so a hole
+ * is requested until DATA or GAP closes it, however many later changes
+ * arrive meanwhile. A change more than SequenceNumberWindow::kCapacity past
+ * the lowest hole cannot be recorded; a reliable reader does not deliver it
+ * on arrival and requests it once the hole closes, so every change is
+ * delivered exactly once.
  *
- * heartbeatResponseDelay (§8.4.7.1, p. 135)
- * ------------------------------------------
- * "After receiving a HEARTBEAT the Reader waits heartbeatResponseDelay
- *  before sending an ACKNACK."  The delay is enforced in
- *  StatefulReader::tick(); WriterProxy stores the deadline timestamp.
- *
- * KEEP_LAST(1) constraint
- * -----------------------
- * With KEEP_LAST(1) the reader only needs to track one live sample
- * per writer at a time.  The ChangeFromWriter array is templated on
- * N = RTPS_WRITER_PROXY_WINDOW_DEPTH (default 8); a depth of 1 would
- * suffice for KEEP_LAST(1) but a small window gives better duplicate
- * detection and correct MISSING/LOST accounting across sparse GAPs.
- *
- * Spec references (all OMG formal/2022-04-01)
- * -------------------------------------------
- *   WriterProxy attributes      — §8.4.7.1, Table 8.61, p. 134
- *   ChangeFromWriter            — §8.4.7.1, p. 134
- *   ChangeFromWriterStatus      — §8.4.7.1, p. 134
- *   heartbeatResponseDelay      — §8.4.7.1, p. 135
- *   missing_changes()           — §8.4.11,  p. 150
- *   missing_changes_update()    — §8.4.11,  p. 150
- *   lost_changes_update()       — §8.4.11,  p. 150
- *   received_change_set()       — §8.4.11,  p. 150
- *   HEARTBEAT processing        — §8.4.9,   p. 145
- *   HEARTBEAT final-flag rule   — §8.3.7.5, p. 91
- *   GAP processing              — §8.4.9,   p. 145
+ * Spec mapping (OMG DDSI-RTPS 2.5, formal/2022-04-01)
+ * ---------------------------------------------------
+ *   WriterProxy attributes             §8.4.10.4
+ *   available_changes_max()            §8.4.10.4
+ *   irrelevant_change_set()            §8.4.10.4
+ *   lost_changes_update()              §8.4.10.4
+ *   missing_changes()                  §8.4.10.4
+ *   missing_changes_update()           §8.4.10.4
+ *   received_change_set()              §8.4.10.4
+ *   heartbeatResponseDelay             §8.4.10.1
+ *   HEARTBEAT final-flag rule          §8.3.7.5
+ *   reliable reader behavior           §8.4.12.2
  */
 
 #pragma once
 
-#include "gap_encoding.hpp"
+#include "sn_window.hpp"
 #include "types.hpp"
-#include <string.h>
 
 namespace rtps {
-
-// ============================================================
-// ChangeFromWriter
-//
-// "For each expected sample the WriterProxy maintains a
-//  ChangeFromWriter object."
-//  — §8.4.7.1, Table 8.61, p. 134
-// ============================================================
-
-struct ChangeFromWriter {
-    SequenceNumber        sequenceNumber = SEQUENCENUMBER_UNKNOWN;
-    ChangeFromWriterStatus status        = ChangeFromWriterStatus::UNKNOWN;
-
-    bool is_valid() const noexcept {
-        return sequenceNumber != SEQUENCENUMBER_UNKNOWN;
-    }
-
-    void clear() noexcept {
-        sequenceNumber = SEQUENCENUMBER_UNKNOWN;
-        status         = ChangeFromWriterStatus::UNKNOWN;
-    }
-};
-
-// ============================================================
-// WriterProxy
-//
-// §8.4.7.1, Table 8.61, p. 134.
-//
-// Template parameter N: depth of the ChangeFromWriter tracking
-// window.  Must be >= 1; a depth of 8 handles typical GAP spans.
-// ============================================================
-
-#ifndef RTPS_WRITER_PROXY_WINDOW_DEPTH
-#  define RTPS_WRITER_PROXY_WINDOW_DEPTH 8
-#endif
-
-template<uint8_t N = RTPS_WRITER_PROXY_WINDOW_DEPTH>
-class WriterProxy {
-    static_assert(N >= 1, "WriterProxy window depth must be at least 1");
-
-public:
-
-    // ----------------------------------------------------------
-    // §8.4.7.1, Table 8.61, p. 134 — spec attributes
-    // ----------------------------------------------------------
-
-    Guid remoteWriterGuid    = GUID_UNKNOWN;  ///< §8.4.7.1
-    Guid remoteGroupEntityId = GUID_UNKNOWN;  ///< §8.4.7.1 (unused)
 
 #ifndef RTPS_MAX_WRITER_PROXY_LOCATORS
 #  define RTPS_MAX_WRITER_PROXY_LOCATORS 2
 #endif
+
+class WriterProxy {
+public:
+
+    // ----------------------------------------------------------
+    // Spec attributes (§8.4.10.4)
+    // ----------------------------------------------------------
+
+    Guid remoteWriterGuid    = GUID_UNKNOWN;
+    Guid remoteGroupEntityId = GUID_UNKNOWN;  ///< Unused: no group writers.
+
     Locator unicastLocatorList[RTPS_MAX_WRITER_PROXY_LOCATORS]   = {};
     uint8_t unicastLocatorCount                                   = 0;
     Locator multicastLocatorList[RTPS_MAX_WRITER_PROXY_LOCATORS] = {};
     uint8_t multicastLocatorCount                                 = 0;
 
     // ----------------------------------------------------------
-    // Implementation tracking attributes
+    // Reader-side protocol state
     // ----------------------------------------------------------
 
-    /// Highest SN ever received from this writer (DATA or DATA_FRAG).
-    SequenceNumber highestSNReceived = SEQUENCENUMBER_ZERO;
-
-    /// Highest SN covered by the most recent ACKNACK we sent.
-    /// Used to avoid resending an identical ACKNACK bitmap.
-    SequenceNumber highestSNAcknowledged = SEQUENCENUMBER_ZERO;
-
-    /// Count from the last HEARTBEAT we processed.
-    /// Duplicate HBs (same count) are ignored — §8.3.7.5, p. 91.
+    /// Count of the last HEARTBEAT processed; older counts are ignored (§8.3.7.5).
     int32_t lastHBCount = 0;
 
-    /// Our own ACKNACK count, incremented before each send.
-    /// — §8.4.7.3, p. 140.
+    /// Count of the last ACKNACK or NACK_FRAG sent to this writer (§8.3.7.1).
     int32_t acknackCount = 0;
 
-    /// Liveliness state.  Cleared when the writer lease expires.
-    /// — §8.4.7.1, p. 134.
+    /// Liveliness of the remote writer.
     bool isAlive = false;
 
-    /// True while we owe a pending ACKNACK response to a HEARTBEAT.
+    /// True while an ACKNACK answering a HEARTBEAT is owed.
     bool acknackPending = false;
 
-    /// Deadline by which we must send the pending ACKNACK (ms).
-    /// Set when a HEARTBEAT is processed; cleared when ACKNACK is sent.
-    /// — §8.4.7.1 heartbeatResponseDelay, p. 135.
+    /// monotonic_ms() at which the owed ACKNACK is due (heartbeatResponseDelay).
     uint32_t heartbeatResponseDeadlineMs = 0;
 
-    // ----------------------------------------------------------
-    // Construction / reset
-    // ----------------------------------------------------------
+    WriterProxy() noexcept = default;
 
-    WriterProxy() noexcept { clear(); }
-
-    /// Initialise proxy for a newly matched writer.
-    ///
-    /// "When a new writer is matched, the Reader creates a WriterProxy."
-    ///  — §8.4.7.4, p. 141.
+    /**
+     * @brief Starts tracking a newly matched writer from a clean state.
+     *
+     * @param[in] writer_guid   GUID of the remote writer.
+     * @param[in] unicast_locs  Locators ACKNACKs are sent to; at most
+     *   RTPS_MAX_WRITER_PROXY_LOCATORS are kept. May be null when
+     *   `unicast_count` is 0.
+     * @param[in] unicast_count Number of entries in `unicast_locs`.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4, §8.4.7.4 (matched_writer_add)
+     */
     void init(const Guid& writer_guid, const Locator* unicast_locs,
-              uint8_t unicast_count) noexcept {
-        clear();
-        remoteWriterGuid  = writer_guid;
-        isAlive           = true;
-        uint8_t n = unicast_count < RTPS_MAX_WRITER_PROXY_LOCATORS
-                    ? unicast_count
-                    : RTPS_MAX_WRITER_PROXY_LOCATORS;
-        for (uint8_t i = 0; i < n; ++i)
-            unicastLocatorList[i] = unicast_locs[i];
-        unicastLocatorCount = n;
-    }
+              uint8_t unicast_count) noexcept;
 
-    void clear() noexcept {
-        remoteWriterGuid       = GUID_UNKNOWN;
-        remoteGroupEntityId    = GUID_UNKNOWN;
-        unicastLocatorCount    = 0;
-        multicastLocatorCount  = 0;
-        highestSNReceived      = SEQUENCENUMBER_ZERO;
-        highestSNAcknowledged  = SEQUENCENUMBER_ZERO;
-        lastHBCount            = 0;
-        acknackCount           = 0;
-        isAlive                = false;
-        acknackPending         = false;
-        heartbeatResponseDeadlineMs = 0;
-        for (uint8_t i = 0; i < N; ++i) changes_[i].clear();
-    }
+    /// @brief Returns the proxy to the unmatched state.
+    void clear() noexcept { *this = WriterProxy{}; }
 
-    bool is_matched() const noexcept {
-        return remoteWriterGuid != GUID_UNKNOWN;
-    }
+    /// @brief True while the proxy represents a matched writer.
+    bool is_matched() const noexcept { return remoteWriterGuid != GUID_UNKNOWN; }
 
-    // ----------------------------------------------------------
-    // received_change_set()
-    //
-    // Records a successfully received DATA/DATA_FRAG.
-    //
-    // "received_change_set(a_change) — Modifies the status of the
-    //  ChangeFromWriter with sequenceNumber equal to a_change to
-    //  RECEIVED."
-    //  — §8.4.11, p. 150
-    //
-    // If the SN is new (not yet in the window) an entry is inserted.
-    // Any SNs between highestSNReceived and this SN that have no
-    // entry are recorded as MISSING by missing_changes_update().
-    //
-    // @param sn  SequenceNumber of the received sample.
-    // ----------------------------------------------------------
-    void received_change_set(const SequenceNumber& sn) noexcept {
-        if (sn > highestSNReceived) {
-            // Mark all intermediate SNs as MISSING before recording receipt.
-            missing_changes_update(sn - 1);
-            highestSNReceived = sn;
-        }
-        ChangeFromWriter* slot = find_or_insert(sn);
-        if (slot) slot->status = ChangeFromWriterStatus::RECEIVED;
-    }
+    /**
+     * @brief Highest sequence number below which every change is resolved.
+     *
+     * @return base of the resolved window minus one; an ACKNACK's bitmapBase
+     *   is this plus one.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (available_changes_max)
+     */
+    SequenceNumber available_changes_max() const noexcept { return changes_.base() - 1; }
 
-    // ----------------------------------------------------------
-    // is_new_change()
-    //
-    // True when a change with this SN should be delivered: it is beyond
-    // everything received so far, or it fills a gap still tracked as
-    // MISSING (a repair retransmission). Anything else was already
-    // received, or was given up as LOST/irrelevant, and is a duplicate.
-    //
-    // Comparing against highestSNReceived alone is wrong under loss or
-    // reordering: after SN 6 arrives ahead of a lost SN 5, the
-    // retransmitted SN 5 is below the frontier yet still needed, and
-    // dropping it leaves a hole the reader NACKs forever.
-    //
-    // §8.4.10.4 (ChangeFromWriter status), §8.4.12.2 (reliable reader).
-    // Verification: TC-SRR-8.4.8-002.
-    // ----------------------------------------------------------
+    /**
+     * @brief True when a reliable reader should deliver the change `sn`.
+     *
+     * @param[in] sn Sequence number of an arriving DATA or DATA_FRAG.
+     * @return `true` when `sn` is unresolved and can be recorded; `false`
+     *   for a duplicate, for a change a GAP or HEARTBEAT resolved, and for a
+     *   change too far past the lowest hole to record (it is requested again
+     *   once the hole closes).
+     *
+     * Verification:
+     * - Correct means: every change is delivered exactly once, including
+     *   repairs that fill a hole below later changes.
+     * - Covered by: TC-SRR-8.4.8-001, TC-SRR-8.4.8-002, TC-SRR-8.4.10-002.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.12.2
+     */
     bool is_new_change(const SequenceNumber& sn) const noexcept {
-        if (sn > highestSNReceived) return true;
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].is_valid() && changes_[i].sequenceNumber == sn) {
-                return changes_[i].status == ChangeFromWriterStatus::MISSING;
-            }
-        }
-        return false;
-    }
-
-    // ----------------------------------------------------------
-    // missing_changes_update()
-    //
-    // Ensures that all SNs in [highestSNReceived+1 .. last_available_sn]
-    // that have no existing entry are tracked as MISSING.
-    //
-    // "missing_changes_update(last_available_seq_num) — Sets the status
-    //  of any ChangeFromWriter with SN <= last_available_seq_num that
-    //  is not RECEIVED or LOST to MISSING."
-    //  — §8.4.11, p. 150
-    //
-    // Called from on_heartbeat() with lastSN, and from
-    // received_change_set() as a side-effect of advancing the frontier.
-    //
-    // @param last_available_sn  The writer's lastSN from a HEARTBEAT,
-    //                           or (received_sn - 1) from received_change_set().
-    // ----------------------------------------------------------
-    void missing_changes_update(const SequenceNumber& last_available_sn) noexcept {
-        // Walk from one above highestSNReceived to last_available_sn.
-        SequenceNumber sn = highestSNReceived + 1;
-        while (sn <= last_available_sn) {
-            // Only insert MISSING if we don't already know about this SN.
-            ChangeFromWriter* slot = find_slot(sn);
-            if (!slot) {
-                slot = insert_new(sn);
-            }
-            if (slot && slot->status == ChangeFromWriterStatus::UNKNOWN) {
-                slot->status = ChangeFromWriterStatus::MISSING;
-            }
-            sn += 1;
-        }
-    }
-
-    // ----------------------------------------------------------
-    // lost_changes_update()
-    //
-    // Marks all MISSING SNs < first_available_sn as LOST.
-    //
-    // "lost_changes_update(first_available_seq_num) — Sets the status
-    //  of any ChangeFromWriter with SN < first_available_seq_num that
-    //  is MISSING to LOST."
-    //  — §8.4.11, p. 150
-    //
-    // Called from on_heartbeat() with firstSN: the writer is declaring
-    // it no longer holds those samples.
-    //
-    // @param first_available_sn  The writer's firstSN from a HEARTBEAT.
-    // ----------------------------------------------------------
-    void lost_changes_update(const SequenceNumber& first_available_sn) noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!changes_[i].is_valid()) continue;
-            if (changes_[i].sequenceNumber < first_available_sn &&
-                changes_[i].status == ChangeFromWriterStatus::MISSING) {
-                changes_[i].status = ChangeFromWriterStatus::LOST;
-            }
-        }
-        // Also advance highestSNReceived past lost SNs so the MISSING
-        // range doesn't grow backwards.
-        if (first_available_sn > highestSNReceived + 1) {
-            highestSNReceived = first_available_sn - 1;
-        }
+        return changes_.covers(sn) && !changes_.is_resolved(sn);
     }
 
     /**
-     * @brief Records the changes a GAP declares irrelevant as LOST.
+     * @brief Records that the change `sn` arrived.
      *
-     * A reliable writer sends GAP for changes it will never deliver to
-     * this reader: changes written before a VOLATILE reader matched, or
-     * evicted from its history. Each becomes LOST, so the reader stops
-     * requesting it and delivers what follows.
+     * The change is resolved, and every change below it is known to exist:
+     * those still unresolved become MISSING.
      *
-     * The contiguous run [gap_start, gap_list.bitmapBase) may span
-     * thousands of changes, so it is applied by tracked state: tracked
-     * changes inside it become LOST, and a run reaching past the receive
-     * frontier moves the frontier to its end (changes between the old
-     * frontier and the run's start are recorded MISSING first). Bitmap
-     * entries, at most 256, are applied one by one in ascending order.
+     * @param[in] sn Sequence number of a delivered or accounted-for change.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (received_change_set)
+     */
+    void received_change_set(const SequenceNumber& sn) noexcept;
+
+    /**
+     * @brief Records the changes a GAP declares irrelevant.
+     *
+     * A writer sends GAP for changes it will never deliver to this reader:
+     * changes written before a VOLATILE reader matched, or evicted from its
+     * history. Each is resolved, so the reader stops requesting it and never
+     * delivers it. The contiguous run is applied in constant time however
+     * long it is; bitmap entries (at most 256) one by one.
      *
      * @param[in] gap_start First sequence number of the contiguous run.
      * @param[in] gap_list  bitmapBase ends the run; each set bit names one
      *   more irrelevant change.
      *
      * Verification:
-     * - Correct means: every change named by the GAP ends up LOST or
-     *   RECEIVED (never MISSING), no change outside it changes status, and
-     *   later DATA for a named change is not delivered.
-     * - Covered by: TC-SRR-8.4.9-003, TC-SRR-8.4.9-004.
+     * - Correct means: every change named by the GAP is resolved, no other
+     *   change changes state, and later DATA for a named change is not
+     *   delivered.
+     * - Covered by: TC-SRR-8.4.9-003, TC-SRR-8.4.9-004, TC-SRR-8.4.7-003.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.3.7.4.5, §8.4.12.2 (irrelevant_change_set)
+     * - OMG DDSI-RTPS 2.5 §8.3.7.4.5, §8.4.10.4 (irrelevant_change_set)
      */
-    void on_gap(const SequenceNumber& gap_start,
-                const SequenceNumberSet& gap_list) noexcept {
-        const SequenceNumber run_end = gap_run_end(gap_start, gap_list);
-        if (gap_start < run_end) {
-            for (uint8_t i = 0; i < N; ++i) {
-                if (changes_[i].is_valid() &&
-                    changes_[i].status != ChangeFromWriterStatus::RECEIVED &&
-                    !(changes_[i].sequenceNumber < gap_start) &&
-                    changes_[i].sequenceNumber < run_end) {
-                    changes_[i].status = ChangeFromWriterStatus::LOST;
-                }
-            }
-            if (run_end - 1 > highestSNReceived) {
-                missing_changes_update(gap_start - 1);
-                highestSNReceived = run_end - 1;
-            }
-        }
-        gap_list.for_each([&](const SequenceNumber& sn) noexcept {
-            if (sn > highestSNReceived) {
-                missing_changes_update(sn - 1);
-                highestSNReceived = sn;
-                mark_lost(sn);
-            } else if (ChangeFromWriter* slot = find_slot(sn);
-                       slot && slot->status != ChangeFromWriterStatus::RECEIVED) {
-                slot->status = ChangeFromWriterStatus::LOST;
-            }
-        });
-    }
+    void irrelevant_change_set(const SequenceNumber&    gap_start,
+                               const SequenceNumberSet& gap_list) noexcept;
 
-    // ----------------------------------------------------------
-    // on_heartbeat()
-    //
-    // Processes a HEARTBEAT and determines whether an ACKNACK must
-    // be sent, per the final-flag rules.
-    //
-    // §8.3.7.5, p. 91 — HEARTBEAT final-flag semantics:
-    //   F == 0: Reader MUST send an ACKNACK in response.
-    //   F == 1 and reader is up-to-date: reader MAY suppress ACKNACK.
-    //   F == 1 and reader has missing changes: reader MUST still NACK.
-    //
-    // §8.4.9, p. 145: also calls lost_changes_update(firstSN) and
-    //   missing_changes_update(lastSN) to update proxy state.
-    //
-    // Duplicate detection: if hb_count <= lastHBCount the HEARTBEAT is
-    // stale and silently ignored.  — §8.4.9, p. 145.
-    //
-    // @param first_sn        firstSN from the HEARTBEAT.
-    // @param last_sn         lastSN from the HEARTBEAT.
-    // @param hb_count        count from the HEARTBEAT.
-    // @param final_flag      true when the F-flag is set.
-    // @param now_ms          Current rosette::platform::monotonic_ms().
-    // @param response_delay_ms  heartbeatResponseDelay in milliseconds.
-    //
-    // @returns  true  if an ACKNACK should be sent (after the deadline).
-    //           false if the HEARTBEAT was duplicate or suppressed.
-    // ----------------------------------------------------------
-    bool on_heartbeat(const SequenceNumber& first_sn,
-                      const SequenceNumber& last_sn,
-                      int32_t              hb_count,
-                      bool                 final_flag,
-                      uint32_t             now_ms,
-                      uint32_t             response_delay_ms) noexcept
-    {
-        // Duplicate / reordered heartbeat — §8.4.9, p. 145.
-        if (hb_count <= lastHBCount) return false;
-        lastHBCount = hb_count;
-
-        // Update missing / lost windows.
-        lost_changes_update(first_sn);
-        missing_changes_update(last_sn);
-
-        // Decide whether to schedule an ACKNACK.
-        //
-        // §8.3.7.5, p. 91:
-        //   "If the FinalFlag is not set, the Reader must send an ACKNACK."
-        //   "If the FinalFlag is set and the Reader has missing changes,
-        //    the Reader must send an ACKNACK."
-        //   "If the FinalFlag is set and the Reader has no missing changes,
-        //    the Reader need not send an ACKNACK."
-        const bool has_missing = has_missing_changes();
-        const bool must_reply  = !final_flag || has_missing;
-
-        if (must_reply) {
-            acknackPending = true;
-            heartbeatResponseDeadlineMs = now_ms + response_delay_ms;
-        }
-
-        return must_reply;
-    }
-
-    // ----------------------------------------------------------
-    // missing_changes()
-    //
-    // "missing_changes() — Returns the set of SNs that are MISSING."
-    //  — §8.4.11, p. 150
-    //
-    // Builds a SequenceNumberSet covering all MISSING SNs in the
-    // tracking window.  Used by StatefulReader to populate the
-    // ACKNACK readerSNState bitmap.
-    //
-    // The ACKNACK bitmapBase is set to highestSNAcknowledged + 1
-    // (the first SN the reader is not sure it has), with bits set
-    // for each MISSING SN above that base.  — §8.4.7.3, p. 140.
-    //
-    // @param out  Output SequenceNumberSet to populate.
-    // ----------------------------------------------------------
-    void missing_changes(SequenceNumberSet& out) const noexcept {
-        out.clear();
-        // bitmapBase = one past the highest cumulatively acknowledged SN.
-        out.bitmapBase = highestSNAcknowledged + 1;
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!changes_[i].is_valid()) continue;
-            if (changes_[i].status != ChangeFromWriterStatus::MISSING) continue;
-            out.add(changes_[i].sequenceNumber);
-        }
-    }
-
-    /// @brief True when `sn` is tracked with status MISSING (a repair is owed).
-    bool is_missing(const SequenceNumber& sn) const noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].is_valid() && changes_[i].sequenceNumber == sn)
-                return changes_[i].status == ChangeFromWriterStatus::MISSING;
-        }
-        return false;
+    /**
+     * @brief Resolves every change below `first_available_sn` as LOST.
+     *
+     * Applies a HEARTBEAT's firstSN, below which the writer holds nothing,
+     * and a best-effort reader's acceptance of a newer change.
+     *
+     * @param[in] first_available_sn Lowest sequence number still expected.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (lost_changes_update), §8.4.12.1
+     */
+    void lost_changes_update(const SequenceNumber& first_available_sn) noexcept {
+        changes_.resolve_below(first_available_sn);
     }
 
     /**
-     * @brief Finds the lowest sequence number still MISSING.
+     * @brief Records that the writer holds changes up to `last_available_sn`.
      *
-     * StatefulReader narrows its ACKNACK to this one change on links that
-     * cannot carry large datagrams, so the writer's repair is a single DATA.
+     * Unresolved changes up to it become MISSING rather than UNKNOWN.
      *
-     * @param[out] out Lowest MISSING sequence number; written only on success.
-     * @return `true` when some change is MISSING, `false` when none is.
+     * @param[in] last_available_sn A HEARTBEAT's lastSN, or the sequence
+     *   number of a change the writer sent.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (missing_changes_update)
+     */
+    void missing_changes_update(const SequenceNumber& last_available_sn) noexcept {
+        if (last_available_ < last_available_sn) last_available_ = last_available_sn;
+    }
+
+    /**
+     * @brief Builds the readerSNState of an ACKNACK to this writer.
+     *
+     * @param[out] out       bitmapBase = available_changes_max() + 1 (which
+     *   acknowledges every change below it) with one bit per MISSING change,
+     *   lowest first; empty when nothing is MISSING.
+     * @param[in]  max_count Most changes to request (1 on a link whose
+     *   repairs must each fit one datagram).
      *
      * Verification:
-     * - Correct means: returns the minimum over all MISSING slots regardless
-     *   of slot order.
-     * - Covered by: TC-SRR-8.4.7-003.
+     * - Correct means: every set bit is MISSING, bitmapBase is never above a
+     *   MISSING change, and the lowest MISSING changes are requested first.
+     * - Covered by: TC-SRR-8.4.9-001, TC-SRR-8.4.7-002, TC-SRR-8.4.7-003,
+     *   TC-SRR-8.4.10-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (missing_changes), §8.3.7.1 (ACKNACK)
      */
-    bool lowest_missing_change(SequenceNumber& out) const noexcept {
-        bool found = false;
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!changes_[i].is_valid() ||
-                changes_[i].status != ChangeFromWriterStatus::MISSING) continue;
-            if (!found || changes_[i].sequenceNumber < out) {
-                out = changes_[i].sequenceNumber;
-                found = true;
-            }
-        }
-        return found;
+    void missing_changes(SequenceNumberSet& out, uint32_t max_count) const noexcept {
+        changes_.unresolved(last_available_, max_count, out);
     }
 
-    // ----------------------------------------------------------
-    // has_missing_changes()
-    //
-    // Returns true if any ChangeFromWriter has status MISSING.
-    // — §8.4.11, p. 150.
-    // ----------------------------------------------------------
-    bool has_missing_changes() const noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].is_valid() &&
-                changes_[i].status == ChangeFromWriterStatus::MISSING)
-                return true;
-        }
-        return false;
+    /// @brief True when some change is MISSING.
+    bool has_missing_changes() const noexcept { return !(last_available_ < changes_.base()); }
+
+    /// @brief True when `sn` is MISSING, so its arrival is a repair.
+    bool is_missing(const SequenceNumber& sn) const noexcept {
+        return !(last_available_ < sn) && !changes_.is_resolved(sn);
     }
 
-    // ----------------------------------------------------------
-    // acknack_response_due()
-    //
-    // Returns true when the heartbeatResponseDelay has elapsed and
-    // a pending ACKNACK should be sent.
-    //
-    // — §8.4.7.1 heartbeatResponseDelay, p. 135.
-    //
-    // @param now_ms  Current rosette::platform::monotonic_ms().
-    // ----------------------------------------------------------
+    /**
+     * @brief Applies a HEARTBEAT and decides whether it must be answered.
+     *
+     * A HEARTBEAT whose count is not newer than lastHBCount is a duplicate
+     * and is ignored. Otherwise firstSN resolves everything the writer no
+     * longer holds, lastSN makes the rest MISSING, and an ACKNACK is owed
+     * when the F-flag is clear or something is MISSING (§8.3.7.5). An owed
+     * ACKNACK is due `response_delay_ms` from now.
+     *
+     * @param[in] first_sn          HEARTBEAT firstSN.
+     * @param[in] last_sn           HEARTBEAT lastSN.
+     * @param[in] hb_count          HEARTBEAT count.
+     * @param[in] final_flag        HEARTBEAT F-flag.
+     * @param[in] now_ms            rosette::platform::monotonic_ms().
+     * @param[in] response_delay_ms heartbeatResponseDelay in milliseconds.
+     * @return `true` when an ACKNACK is now owed; `false` for a duplicate or
+     *   a final HEARTBEAT to an up-to-date reader.
+     *
+     * Verification:
+     * - Correct means: duplicates change nothing; F=0 always owes an
+     *   ACKNACK; F=1 owes one only while something is MISSING.
+     * - Covered by: TC-SRR-8.4.9-001, TC-SRR-8.4.7-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.7.5, §8.4.12.2
+     */
+    bool on_heartbeat(const SequenceNumber& first_sn,
+                      const SequenceNumber& last_sn,
+                      int32_t               hb_count,
+                      bool                  final_flag,
+                      uint32_t              now_ms,
+                      uint32_t              response_delay_ms) noexcept;
+
+    /**
+     * @brief True when the owed ACKNACK's heartbeatResponseDelay has elapsed.
+     *
+     * @param[in] now_ms rosette::platform::monotonic_ms(); compared wrap-safely.
+     */
     bool acknack_response_due(uint32_t now_ms) const noexcept {
-        if (!acknackPending) return false;
-        return (now_ms >= heartbeatResponseDeadlineMs) ||
-               // Wrap-safe: also fire if the ms counter has wrapped
-               // and the difference is > half the uint32 space.
-               ((heartbeatResponseDeadlineMs - now_ms) > 0x80000000u);
+        return acknackPending && (now_ms - heartbeatResponseDeadlineMs) < 0x80000000u;
     }
 
-    /// Called after the ACKNACK is sent; clears the pending flag and
-    /// advances highestSNAcknowledged to the current frontier.
-    void on_acknack_sent(const SequenceNumber& acked_up_to) noexcept {
+    /// @brief Records that an ACKNACK was sent: advances its count and clears the owed response.
+    void on_acknack_sent() noexcept {
         ++acknackCount;
         acknackPending = false;
         heartbeatResponseDeadlineMs = 0;
-        if (acked_up_to > highestSNAcknowledged) {
-            highestSNAcknowledged = acked_up_to;
-        }
     }
 
-    // ----------------------------------------------------------
-    // Iteration
-    // ----------------------------------------------------------
-    template<typename Fn>
-    void for_each_change(Fn&& fn) const noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].is_valid()) fn(changes_[i]);
-        }
-    }
-
-    // ----------------------------------------------------------
-    // Best locator for sending ACKNACK to the remote writer.
-    // ----------------------------------------------------------
-    const Locator& best_locator() const noexcept {
-        for (uint8_t i = 0; i < unicastLocatorCount; ++i) {
-            const Long kind = unicastLocatorList[i].kind;
-            if (kind == locator_kind::UDPv4 ||
-                kind == locator_kind::UDPv6) {
-                return unicastLocatorList[i];
-            }
-        }
-        if (unicastLocatorCount > 0) return unicastLocatorList[0];
-        return LOCATOR_INVALID;
-    }
-
-    // ----------------------------------------------------------
-    // Evict changes that are no longer useful to track:
-    // ACKNOWLEDGED, LOST, or RECEIVED with SN <= retention_floor.
-    //
-    // Called periodically by StatefulReader::tick() to prevent the
-    // window from filling with stale entries.
-    //
-    // @param retention_floor  SNs <= this may be evicted if RECEIVED.
-    // ----------------------------------------------------------
-    void evict_stale(const SequenceNumber& retention_floor) noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!changes_[i].is_valid()) continue;
-            auto s = changes_[i].status;
-            if (s == ChangeFromWriterStatus::LOST) {
-                changes_[i].clear();
-                continue;
-            }
-            if (s == ChangeFromWriterStatus::RECEIVED &&
-                changes_[i].sequenceNumber <= retention_floor) {
-                changes_[i].clear();
-            }
-        }
-    }
+    /// @brief Locator for ACKNACKs: the first UDP unicast locator, or LOCATOR_INVALID.
+    const Locator& best_locator() const noexcept;
 
 private:
-
-    ChangeFromWriter changes_[N];
-
-    /// Find the slot for a given SN, or nullptr.
-    ChangeFromWriter* find_slot(const SequenceNumber& sn) noexcept {
-        for (uint8_t i = 0; i < N; ++i) {
-            if (changes_[i].sequenceNumber == sn) return &changes_[i];
-        }
-        return nullptr;
-    }
-
-    /// Find an existing slot for sn, or allocate a new empty one.
-    ChangeFromWriter* find_or_insert(const SequenceNumber& sn) noexcept {
-        ChangeFromWriter* slot = find_slot(sn);
-        if (slot) return slot;
-        return insert_new(sn);
-    }
-
-    /// Allocate a new slot.  Evicts the oldest entry if the window is full.
-    ChangeFromWriter* insert_new(const SequenceNumber& sn) noexcept {
-        // First try an empty slot.
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!changes_[i].is_valid()) {
-                changes_[i].sequenceNumber = sn;
-                changes_[i].status         = ChangeFromWriterStatus::UNKNOWN;
-                return &changes_[i];
-            }
-        }
-        // Window full: evict the entry with the lowest SN.
-        ChangeFromWriter* oldest = nullptr;
-        for (uint8_t i = 0; i < N; ++i) {
-            if (!oldest || changes_[i].sequenceNumber < oldest->sequenceNumber)
-                oldest = &changes_[i];
-        }
-        if (oldest) {
-            oldest->sequenceNumber = sn;
-            oldest->status         = ChangeFromWriterStatus::UNKNOWN;
-        }
-        return oldest;
-    }
-
-    /// Set an SN's status to LOST; insert an entry if it doesn't exist.
-    void mark_lost(const SequenceNumber& sn) noexcept {
-        ChangeFromWriter* slot = find_or_insert(sn);
-        if (slot && slot->status != ChangeFromWriterStatus::RECEIVED) {
-            slot->status = ChangeFromWriterStatus::LOST;
-        }
-    }
+    SequenceNumberWindow changes_;          ///< Resolved changes (changes_from_writer).
+    SequenceNumber       last_available_ = SEQUENCENUMBER_ZERO;  ///< Highest SN the writer holds.
 };
-
-/// Default alias used by StatefulReader.
-using DefaultWriterProxy = WriterProxy<RTPS_WRITER_PROXY_WINDOW_DEPTH>;
 
 } // namespace rtps

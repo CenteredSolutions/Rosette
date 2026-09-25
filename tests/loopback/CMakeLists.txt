@@ -14,6 +14,8 @@ add_executable(rtps_loopback_smoke
     ../../src/rtps/sedp.cpp
     ../../src/rtps/spdp.cpp
     ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/sn_window.cpp
+    ../../src/rtps/writer_proxy.cpp
     ../../src/platform/wall_clock.cpp
     ../../src/platform/chip/host/chip_host.cpp
 )

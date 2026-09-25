@@ -5,26 +5,20 @@
  * Implements the StatefulReader behaviour model defined in §8.4.7–§8.4.9
  * of the DDSI-RTPS 2.5 specification (OMG formal/2022-04-01).
  *
+ * Delivery
+ * --------
+ * Each matched writer has a WriterProxy (writer_proxy.hpp) recording which of
+ * its changes are resolved. A RELIABLE reader delivers every change exactly
+ * once, repairs included, and requests MISSING changes in ACKNACKs until DATA
+ * or GAP resolves them (§8.4.12.2). A BEST_EFFORT reader delivers only
+ * changes newer than every change it has seen from that writer (§8.4.12.1).
+ *
  * Fragment reassembly
  * -------------------
- * DATA_FRAG handling is delegated entirely to a DefaultFragmentAssembler
- * member (fragment_assembler.hpp, §8.4.14).  The old inline FragSlot with
- * its 32-fragment bitmask limit is removed; FragmentAssembler supports up
- * to 256 fragments per sample using the full FragmentNumberSet bitmap
- * encoding from §9.4.2.8.
- *
- * on_data_frag() passes each incoming fragment to assembler_.on_data_frag().
- * When the assembler signals completion it returns a fully-populated
- * CacheChange which is then accepted identically to a directly-received
- * DATA — proxy bookkeeping, cache insertion, and application callback all
- * follow the same path.
- *
- * on_heartbeat_frag() calls assembler_.missing_fragments() to build the
- * NACK_FRAG bitmap, then sends it via the transport.
- *
- * matched_writer_remove() now also calls assembler_.discard_writer() so
- * that partial assembly buffers are returned to the pool when a writer
- * is un-matched.
+ * DATA_FRAG submessages go to a DefaultFragmentAssembler (§8.4.14). A
+ * completed sample is accepted exactly as a DATA would be; HEARTBEAT_FRAG is
+ * answered with a NACK_FRAG built from the assembler's missing fragments,
+ * and un-matching a writer discards its partial samples.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -120,21 +114,30 @@ public:
     void matched_writer_remove(const Guid& writer_guid) noexcept;
 
     /// §8.4.7.4 — returns nullptr if not found.
-    DefaultWriterProxy* matched_writer_lookup(const Guid& writer_guid) noexcept;
+    WriterProxy* matched_writer_lookup(const Guid& writer_guid) noexcept;
 
-    // ----------------------------------------------------------
-    // §8.4.8  on_data()
-    //
-    // "Process an incoming DATA submessage."  — §8.4.8, p. 142
-    //
-    // Steps:
-    //   1. Resolve WriterProxy by (guidPrefix + writerId).
-    //      RELIABLE readers ignore unmatched writers.
-    //   2. Duplicate check: discard if writerSN <= highestSNReceived.
-    //   3. Allocate pool block; copy serialized payload.
-    //   4. proxy.received_change_set(writerSN).
-    //   5. accept_change() → cache insert + callback.
-    // ----------------------------------------------------------
+    /**
+     * @brief Processes a DATA submessage addressed to this reader.
+     *
+     * The change is delivered (to the OnChangeAvailable callback, or the
+     * reader history without one) when its writer's proxy says it is new:
+     * see is_new_change(). A RELIABLE reader drops DATA from writers it has
+     * not matched. A DATA with neither payload nor key is accounted for but
+     * not delivered. When the DATA repairs a MISSING change on a narrow link,
+     * the next MISSING change is requested at once.
+     *
+     * @param[in] ctx Parse context; senderGuidPrefix and sourceTimestamp.
+     * @param[in] msg The DATA; its payload is copied into a pool buffer.
+     *
+     * Verification:
+     * - Correct means: each change is delivered at most once; a reliable
+     *   reader delivers every change the writer does not GAP.
+     * - Covered by: TC-SRR-8.4.8-001, TC-SRR-8.4.8-002, TC-SRR-8.4.10-001,
+     *   TC-SRR-8.4.10-002, TC-SRR-8.4.10-003, TC-SRR-8.4.12-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.7.2 (DATA), §8.4.12.1, §8.4.12.2
+     */
     void on_data(const ParseContext& ctx,
                  const ParsedData&   msg) noexcept;
 
@@ -189,7 +192,7 @@ public:
     //
     // "Process an incoming GAP submessage."  — §8.4.9, p. 145
     //
-    // Delegates to proxy.on_gap().  Also calls
+    // Delegates to proxy.irrelevant_change_set().  Also calls
     // assembler_.discard(writer_guid, sn) for each irrelevant SN that
     // has a partial assembly in progress — those fragments will never
     // complete.
@@ -224,15 +227,14 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.7.3, §8.4.12 (reader behavior), §8.3.7.1 (ACKNACK)
      */
-    void send_acknack(DefaultWriterProxy& proxy,
-                      bool                final_flag = false) noexcept;
+    void send_acknack(WriterProxy& proxy,
+                      bool         final_flag = false) noexcept;
 
     // ----------------------------------------------------------
     // tick()
     //
-    // Periodic maintenance.  Call every RTPS_TICK_PERIOD_MS.
-    //   1. Fire deferred ACKNACKs for proxies whose deadline has passed.
-    //   2. Evict stale ChangeFromWriter entries.
+    // Periodic maintenance: sends the ACKNACKs whose heartbeatResponseDelay
+    // has elapsed. Call at least as often as ms_until_next_timer() asks.
     // ----------------------------------------------------------
     void tick(uint32_t now_ms) noexcept;
 
@@ -269,10 +271,10 @@ public:
 
 private:
 
-    DefaultWriterProxy* find_proxy(const Guid& guid) noexcept;
-    DefaultWriterProxy* find_proxy_by_sender(const GuidPrefix& prefix,
-                                             const EntityId&   writer_eid) noexcept;
-    DefaultWriterProxy* find_free_slot() noexcept;
+    WriterProxy* find_proxy(const Guid& guid) noexcept;
+    WriterProxy* find_proxy_by_sender(const GuidPrefix& prefix,
+                                      const EntityId&   writer_eid) noexcept;
+    WriterProxy* find_free_slot() noexcept;
 
     /**
      * @brief True when repairs must be requested one change at a time.
@@ -298,11 +300,46 @@ private:
      *   others are MISSING sends exactly one ACKNACK naming the lowest one.
      * - Covered by: TC-SRR-8.4.7-003.
      */
-    void request_next_repair(DefaultWriterProxy& proxy) noexcept;
+    void request_next_repair(WriterProxy& proxy) noexcept;
+
+    /**
+     * @brief True when the change `sn` from `proxy`'s writer should be delivered.
+     *
+     * RELIABLE: the change is unresolved and within the proxy's window
+     * (WriterProxy::is_new_change()). BEST_EFFORT: the change is newer than
+     * every change seen from that writer.
+     *
+     * @param[in] proxy Matched writer the change came from.
+     * @param[in] sn    Sequence number of the arriving change.
+     * @return `true` to deliver, `false` to drop.
+     *
+     * Verification:
+     * - Correct means: no change is delivered twice; a best-effort reader
+     *   never delivers a change older than one it delivered.
+     * - Covered by: TC-SRR-8.4.10-002, TC-SRR-8.4.12-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.12.1, §8.4.12.2
+     */
+    bool is_new_change(const WriterProxy& proxy, const SequenceNumber& sn) const noexcept;
+
+    /**
+     * @brief Records an accepted change in `proxy`.
+     *
+     * A BEST_EFFORT reader also resolves every older change as LOST, so the
+     * next change it accepts must be newer still.
+     *
+     * @param[in,out] proxy Matched writer the change came from.
+     * @param[in]     sn    Sequence number of the accepted change.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.12.1 (best-effort), §8.4.10.4 (received_change_set)
+     */
+    void record_change(WriterProxy& proxy, const SequenceNumber& sn) noexcept;
 
     /// Insert a complete CacheChange into the history cache and fire callback.
-    void accept_change(CacheChange&&       change,
-                       DefaultWriterProxy& proxy) noexcept;
+    void accept_change(CacheChange&& change,
+                       WriterProxy&  proxy) noexcept;
 
     // ── Data members ─────────────────────────────────────────
 
@@ -312,8 +349,8 @@ private:
     OnChangeAvailable on_change_avail_ = nullptr;
     void*             user_data_       = nullptr;
 
-    ReaderHistoryCache    reader_cache_;
-    DefaultWriterProxy    proxies_[RTPS_MAX_MATCHED_WRITERS];
+    ReaderHistoryCache reader_cache_;
+    WriterProxy        proxies_[RTPS_MAX_MATCHED_WRITERS];
 
     /// Fragment reassembler — §8.4.14, p. 156.
     /// One slot per matched writer; 256-fragment bitmap; pool-backed.

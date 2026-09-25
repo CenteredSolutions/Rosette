@@ -39,6 +39,8 @@ add_library(rosette_rtps STATIC
   ${ROSETTE_ROOT}/src/rtps/sedp.cpp
   ${ROSETTE_ROOT}/src/rtps/spdp.cpp
   ${ROSETTE_ROOT}/src/rtps/stateful_reader.cpp
+  ${ROSETTE_ROOT}/src/rtps/sn_window.cpp
+  ${ROSETTE_ROOT}/src/rtps/writer_proxy.cpp
   ${ROSETTE_ROOT}/src/rtps/transport.cpp
   ${ROSETTE_ROOT}/src/rtps/rtps_stdio_log.cpp
 )
