@@ -140,7 +140,7 @@ static bool tc_swr_8_4_1_4_003(std::string& err) {
           "matched_reader_add should succeed");
     auto* proxy = w.matched_reader_lookup(reader_guid);
     CHECK(proxy != nullptr, "matched_reader_lookup should find added proxy");
-    CHECK(proxy->next_unsent_change() == nullptr,
+    CHECK(proxy->next_unsent_change(w.cache()) == SEQUENCENUMBER_UNKNOWN,
           "TRANSIENT_LOCAL replay should be sent at match time, leaving nothing unsent");
     CHECK(tx.unicast_msgs.size() == 1u && tx.unicast_dests[0] == loc,
           "the cached change should be replayed to the new reader's locator");

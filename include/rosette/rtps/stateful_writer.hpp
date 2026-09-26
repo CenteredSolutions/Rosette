@@ -6,14 +6,17 @@
  * History depth and matched readers
  * ---------------------------------
  * A writer keeps KEEP_LAST(depth) changes (§8.3.3) and one ReaderProxy per
- * matched reader (§8.4.1.1), and each proxy tracks one ChangeForReader per
- * history slot. All of that storage is fixed-size and chosen at build time.
+ * matched reader (§8.4.1.1). A proxy records a reader's progress as
+ * sequence-number bounds over the history (reader_proxy.hpp), so its size
+ * does not depend on the depth: a writer costs depth × CacheChange plus
+ * readers × ReaderProxy. All of that storage is fixed-size and chosen at
+ * build time.
  *
  * One compiled writer, storage by template
  * ----------------------------------------
  * StatefulWriter is a plain class: every operation lives once in
  * src/rtps/stateful_writer.cpp and works on storage it is handed (a
- * HistoryCache, an array of ReaderProxy, and their ChangeForReader rows).
+ * HistoryCache and an array of ReaderProxy).
  * StatefulWriterStorage<Depth, MaxReaders> owns exactly that storage and
  * derives from StatefulWriter, so writers of different depths differ only in
  * their data layout, never in their code:
@@ -114,17 +117,19 @@ public:
     /**
      * @brief Assigns the next sequence number and adds the change to the history.
      *
-     * When the history is full, KEEP_LAST evicts its oldest change, and every
-     * matched proxy stops tracking it first. The added change becomes UNSENT
-     * on every matched proxy; add_change() itself sends nothing.
+     * When the history is full, KEEP_LAST evicts its oldest change; a reader
+     * that later NACKs it is sent a GAP. The added change is UNSENT on every
+     * matched proxy, since each proxy's highest sent change is below it;
+     * add_change() itself sends nothing.
      *
      * @param[in] change Change from new_change() (or built by the caller);
      *   the history takes ownership of its payload.
      * @return `true` on success.
      *
      * Verification:
-     * - Correct means: sequence numbers increase by one per change, and no
-     *   proxy tracks a change the history no longer holds.
+     * - Correct means: sequence numbers increase by one per change, and the
+     *   new change is the next UNSENT change of every matched proxy that has
+     *   been sent everything before it.
      * - Covered by: TC-SWR-8.4.1.4-001, TC-SWR-8.2.2-001, TC-SWR-8.2.2-002.
      *
      * References:
@@ -133,7 +138,9 @@ public:
     bool add_change(CacheChange&& change) noexcept;
 
     /**
-     * @brief Removes a change from the history and from every matched proxy.
+     * @brief Removes a change from the history.
+     *
+     * No proxy sends it afterwards, and a reader that NACKs it is sent a GAP.
      *
      * @param[in] sn Sequence number to remove; absent numbers are ignored.
      *
@@ -225,9 +232,9 @@ public:
     /**
      * @brief Matches a remote reader.
      *
-     * A TRANSIENT_LOCAL writer then marks every cached change UNSENT for the
-     * new reader and sends them at once, in sequence order (§8.7.2.2). A
-     * VOLATILE writer sends the new reader only changes written after this.
+     * A TRANSIENT_LOCAL writer then sends the new reader every cached change
+     * at once, in sequence order (§8.7.2.2). A VOLATILE writer makes only
+     * changes written after this relevant to the new reader.
      *
      * @param[in] reader_guid        The remote reader's GUID.
      * @param[in] unicast_locators   Its unicast locators.
@@ -278,8 +285,9 @@ public:
      *
      * Ignores unknown readers and non-increasing counts. Marks everything
      * below readerSNState.bitmapBase acknowledged, marks the NACKed numbers
-     * REQUESTED (repaired by tick() after nackResponseDelay), GAPs NACKed
-     * numbers the reader never had a ChangeForReader for, and answers a
+     * that are relevant to the reader and still in the history REQUESTED
+     * (repaired by tick() after nackResponseDelay), GAPs the other NACKed
+     * numbers the writer has assigned, and answers a
      * preemptive ACKNACK (no NACK bits, base below the next number) with a
      * directed HEARTBEAT.
      *
@@ -382,7 +390,6 @@ protected:
     /**
      * @brief Binds the writer to storage owned by the derived object.
      *
-     * Gives every proxy its row of `history.capacity()` ChangeForReader slots.
      * The storage must be constructed before this constructor runs
      * (StatefulWriterStorage holds it in a base class initialized first) and
      * outlive the writer.
@@ -393,15 +400,13 @@ protected:
      * @param[in] transport     Transport the writer sends on; outlives the writer.
      * @param[in] history       The writer's history; its capacity is the KEEP_LAST depth.
      * @param[in] proxies       `max_readers` proxies.
-     * @param[in] proxy_changes `max_readers` rows of `history.capacity()` slots.
      * @param[in] max_readers   Number of proxies, at least 1.
      * @param[in] nack_delay_ms nackResponseDelay (§8.4.1.1).
      * @param[in] hb_period_ms  heartbeatPeriod (§8.4.1.1).
      */
     StatefulWriter(const Guid& guid, ReliabilityKind reliability, DurabilityKind durability,
                    ITransport& transport, HistoryCache& history, ReaderProxy* proxies,
-                   ChangeForReader* proxy_changes, uint8_t max_readers,
-                   uint32_t nack_delay_ms, uint32_t hb_period_ms) noexcept;
+                   uint8_t max_readers, uint32_t nack_delay_ms, uint32_t hb_period_ms) noexcept;
 
 private:
     /**
@@ -421,30 +426,34 @@ private:
     void send_gap(const ReaderProxy& proxy, const SequenceNumberSet& irrelevant) noexcept;
 
     /**
-     * @brief Answers the NACKed changes that are irrelevant to `proxy` with one GAP.
+     * @brief Sorts NACKed changes into repairs for `proxy` and one GAP.
      *
-     * A VOLATILE writer's HEARTBEAT advertises its whole history, so a
-     * reader that matched mid-stream NACKs changes written before it
-     * matched. Those changes have no ChangeForReader in its proxy and are
-     * never sent to it; without a GAP the reader requests them until
-     * HEARTBEAT firstSN passes them and then reports them as lost samples
-     * (Fast DDS raises SAMPLE_LOST, which rclpy prints as "A message was
-     * lost"). Sequence numbers not yet written are ignored.
+     * A NACKed change that is relevant to the reader and still in the
+     * history becomes REQUESTED, repaired by tick() after nackResponseDelay.
+     * Every other NACKed change the writer has assigned is irrelevant to the
+     * reader and is named in one GAP sent now: a change written before a
+     * VOLATILE reader matched (its HEARTBEAT advertises the whole history,
+     * so a reader that matched mid-stream NACKs those), and a change KEEP_LAST
+     * evicted or remove_change() dropped. Without that GAP the reader
+     * requests the change until HEARTBEAT firstSN passes it and then reports
+     * it as a lost sample (Fast DDS raises SAMPLE_LOST, which rclpy prints as
+     * "A message was lost"). Sequence numbers not yet written are ignored.
      *
-     * @param[in] proxy     Reader that sent the ACKNACK.
-     * @param[in] requested The ACKNACK's readerSNState.
+     * @param[in,out] proxy     Reader that sent the ACKNACK or NACK_FRAG.
+     * @param[in]     requested The sequence numbers it lacks.
+     * @param[in]     now_ms    Current rosette::platform::monotonic_ms().
      *
      * Verification:
-     * - Correct means: every requested SN below the next SN to be written
-     *   that the proxy does not track is named in one GAP; tracked SNs are
-     *   left to the nackResponseDelay repair path.
-     * - Covered by: TC-SWR-8.4.9-001.
+     * - Correct means: every requested SN below the next SN to be written is
+     *   either REQUESTED (relevant and held) or named in the GAP, never both.
+     * - Covered by: TC-SWR-8.4.9-001, TC-SWR-8.4.9-002.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.4.9.2.12 (irrelevant changes are sent as GAP),
-     *   §8.7.2.2.1 (VOLATILE durability)
+     * - OMG DDSI-RTPS 2.5 §8.4.9.2.8 (requested changes), §8.4.9.2.12
+     *   (irrelevant changes are sent as GAP), §8.7.2.2.1 (VOLATILE durability)
      */
-    void send_irrelevant_gap(const ReaderProxy& proxy, const SequenceNumberSet& requested) noexcept;
+    void answer_nack(ReaderProxy& proxy, const SequenceNumberSet& requested,
+                     uint32_t now_ms) noexcept;
 
     /// @brief The matched proxy for `g`, or null.
     ReaderProxy* find_proxy(const Guid& g) noexcept;
@@ -455,7 +464,7 @@ private:
     /**
      * @brief Sends one change to one matched reader, as DATA or DATA_FRAGs.
      *
-     * The change's ChangeForReader status is the caller's to update: a
+     * The proxy's sent and requested state is the caller's to update: a
      * send the transport refuses, or a reader with no locator, is treated
      * as a datagram lost on the wire, which reliable repair recovers.
      *
@@ -545,7 +554,6 @@ template<uint8_t Depth, uint8_t MaxReaders>
 struct StatefulWriterSlots {
     HistoryCacheStorage<Depth> history;
     ReaderProxy                proxies[MaxReaders];
-    ChangeForReader            proxy_changes[MaxReaders][Depth];
 };
 }  // namespace detail
 
@@ -580,7 +588,7 @@ public:
                           uint32_t nack_delay_ms = RTPS_NACK_RESPONSE_DELAY_MS,
                           uint32_t hb_period_ms  = RTPS_HEARTBEAT_PERIOD_MS) noexcept
         : StatefulWriter(guid, reliability, durability, transport, this->history, this->proxies,
-                         &this->proxy_changes[0][0], MaxReaders, nack_delay_ms, hb_period_ms) {}
+                         MaxReaders, nack_delay_ms, hb_period_ms) {}
 };
 
 } // namespace rtps

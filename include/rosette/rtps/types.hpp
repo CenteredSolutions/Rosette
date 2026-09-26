@@ -778,24 +778,6 @@ enum class ChangeKind : uint32_t {
 };
 
 // ============================================================
-// §8.4.1  ChangeForReaderStatus
-//
-// Used by ReaderProxy. WriterProxy derives ChangeFromWriterStatus from its
-// resolved-change window instead of storing it (writer_proxy.hpp).
-//  — §8.4.1.1, Table 8.49, p. 103
-// ============================================================
-
-/// Status of a CacheChange as seen by a ReaderProxy (writer side).
-/// — §8.4.1.1, p. 103
-enum class ChangeForReaderStatus : uint8_t {
-    UNSENT         = 0, ///< Change has not yet been sent.
-    UNACKNOWLEDGED = 1, ///< Change was sent but not yet acknowledged.
-    REQUESTED      = 2, ///< Reader has NACKed and is awaiting retransmit.
-    UNDERWAY       = 3, ///< Retransmit is in flight.
-    ACKNOWLEDGED   = 4, ///< Reader has acknowledged receipt.
-};
-
-// ============================================================
 // §8.4.2.1  TopicKind_t
 // ============================================================
 

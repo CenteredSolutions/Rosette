@@ -2,10 +2,9 @@
  * @file stateful_writer.cpp
  * @brief StatefulWriter behavior (§8.4.1–§8.4.9), compiled once for every depth.
  *
- * See rtps/stateful_writer.hpp. The writer's storage (history, proxies,
- * ChangeForReader rows) belongs to StatefulWriterStorage<Depth, MaxReaders>;
- * this file sees it only through the references and counts bound at
- * construction.
+ * See rtps/stateful_writer.hpp. The writer's storage (history and proxies)
+ * belongs to StatefulWriterStorage<Depth, MaxReaders>; this file sees it only
+ * through the references and counts bound at construction.
  */
 
 #include "rosette/rtps/stateful_writer.hpp"
@@ -27,8 +26,8 @@ constexpr uint16_t kEncapsulationSize = 4u;
 StatefulWriter::StatefulWriter(const Guid& guid, ReliabilityKind reliability,
                                DurabilityKind durability, ITransport& transport,
                                HistoryCache& history, ReaderProxy* proxies,
-                               ChangeForReader* proxy_changes, uint8_t max_readers,
-                               uint32_t nack_delay_ms, uint32_t hb_period_ms) noexcept
+                               uint8_t max_readers, uint32_t nack_delay_ms,
+                               uint32_t hb_period_ms) noexcept
     : guid_(guid),
       reliability_(reliability),
       durability_(durability),
@@ -37,14 +36,7 @@ StatefulWriter::StatefulWriter(const Guid& guid, ReliabilityKind reliability,
       proxies_(proxies),
       max_readers_(max_readers),
       nack_delay_ms_(nack_delay_ms),
-      hb_period_ms_(hb_period_ms) {
-    // Each proxy tracks the changes of this writer's history, so it gets one
-    // row of depth slots (§8.4.1.1).
-    const uint8_t depth = history.capacity();
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        proxies_[i].bind_changes(proxy_changes + static_cast<size_t>(i) * depth, depth);
-    }
-}
+      hb_period_ms_(hb_period_ms) {}
 
 CacheChange* StatefulWriter::new_change(ChangeKind kind, BufRef& out_payload,
                                         size_t payload_size) noexcept {
@@ -70,17 +62,9 @@ bool StatefulWriter::add_change(CacheChange&& change) noexcept {
     change.sequenceNumber = nextSN_;
     ++nextSN_;
 
-    // KEEP_LAST(N) evicts the oldest change (§8.3.3.1): proxies stop tracking
-    // it before the history drops it.
-    if (writer_cache_.size() == writer_cache_.capacity()) {
-        const SequenceNumber oldest = writer_cache_.get_seq_num_min();
-        if (oldest != SEQUENCENUMBER_UNKNOWN) {
-            for (uint8_t i = 0; i < max_readers_; ++i) {
-                if (proxies_[i].is_matched()) proxies_[i].remove_change(oldest);
-            }
-        }
-    }
-
+    // A full history evicts its oldest change (KEEP_LAST, §8.3.3.1). Every
+    // matched proxy has been sent less than the new change, so it is UNSENT
+    // everywhere without touching the proxies.
     CacheChange* inserted = writer_cache_.add_change(static_cast<CacheChange&&>(change));
     if (!inserted) {
         RTPS_LOG_E("writer", "cache add_change failed (SN=%ld:%lu)", change.sequenceNumber.high,
@@ -91,18 +75,11 @@ bool StatefulWriter::add_change(CacheChange&& change) noexcept {
     RTPS_LOG_D("writer", "add_change SN=%ld:%lu size=%lu depth=%d", inserted->sequenceNumber.high,
                (unsigned long)inserted->sequenceNumber.low, (unsigned long)inserted->payload.size,
                writer_cache_.size());
-
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        if (proxies_[i].is_matched()) proxies_[i].add_change(inserted->sequenceNumber);
-    }
     return true;
 }
 
 void StatefulWriter::remove_change(const SequenceNumber& sn) noexcept {
     writer_cache_.remove_change(sn);
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        if (proxies_[i].is_matched()) proxies_[i].remove_change(sn);
-    }
 }
 
 bool StatefulWriter::write_async(ChangeKind kind, const Octet* payload_data, uint32_t payload_size,
@@ -194,7 +171,12 @@ bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* 
         return false;
     }
 
-    slot->init(reader_guid, unicast_locators, locator_count, expects_inline_qos);
+    // TRANSIENT_LOCAL: every cached change is relevant to the new reader
+    // (§8.7.2.2). VOLATILE: only changes written from now on (§8.7.2.2.1).
+    const SequenceNumber first_relevant = durability_ == DurabilityKind::TRANSIENT_LOCAL
+                                              ? SequenceNumber::from_int64(1)
+                                              : nextSN_;
+    slot->init(reader_guid, unicast_locators, locator_count, expects_inline_qos, first_relevant);
 
     RTPS_LOG_I("writer", "reader matched %02x%02x%02x%02x entity=%02x%02x%02x%02x",
                reader_guid.prefix.value[0], reader_guid.prefix.value[1],
@@ -202,13 +184,9 @@ bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* 
                reader_guid.entityId.entityKey[0], reader_guid.entityId.entityKey[1],
                reader_guid.entityId.entityKey[2], reader_guid.entityId.entityKind);
 
-    // TRANSIENT_LOCAL: replay every cached change to the new reader, and push
-    // it now rather than waiting for the next write (§8.7.2.2).
-    if (durability_ == DurabilityKind::TRANSIENT_LOCAL) {
-        writer_cache_.replay_to_new_reader(
-            [&](const CacheChange& c) noexcept { slot->add_change(c.sequenceNumber); });
-        send_unsent_changes();
-    }
+    // TRANSIENT_LOCAL: push the cached changes now rather than waiting for
+    // the next write (§8.7.2.2).
+    if (durability_ == DurabilityKind::TRANSIENT_LOCAL) send_unsent_changes();
     return true;
 }
 
@@ -277,10 +255,9 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
                ctx.senderGuidPrefix.value[1], ctx.senderGuidPrefix.value[2],
                ctx.senderGuidPrefix.value[3]);
 
-    // NACKed SNs: arm the nackResponseDelay timer. NACKed SNs this reader
-    // never had a ChangeForReader for are irrelevant to it: GAP them now.
-    proxy->requested_changes_set(msg.readerSNState, rosette::platform::monotonic_ms());
-    send_irrelevant_gap(*proxy, msg.readerSNState);
+    // NACKed SNs: repair what the reader can have after nackResponseDelay,
+    // GAP the rest now.
+    answer_nack(*proxy, msg.readerSNState, rosette::platform::monotonic_ms());
 
     // An ACKNACK that requests nothing yet acknowledges less than this writer
     // has written is a reader announcing itself (Fast DDS and Cyclone DDS
@@ -297,17 +274,12 @@ void StatefulWriter::on_nack_frag(const ParseContext& ctx, const ParsedNackFrag&
     ReaderProxy* proxy = find_proxy(sg);
     if (!proxy) return;
 
-    const uint32_t now_ms = rosette::platform::monotonic_ms();
-    if (!proxy->nackPending) {
-        proxy->nackPending        = true;
-        proxy->nackPendingSinceMs = now_ms;
-    }
     // Treat as a whole-sample NACK for the affected SN.
     SequenceNumberSet sn_set{};
     sn_set.bitmapBase = msg.writerSN;
     sn_set.numBits    = 1;
     sn_set.bitmap[0]  = 0x80000000u;  // bit 0 = bitmapBase itself.
-    proxy->requested_changes_set(sn_set, now_ms);
+    answer_nack(*proxy, sn_set, rosette::platform::monotonic_ms());
 }
 
 void StatefulWriter::tick(uint32_t now_ms) noexcept {
@@ -318,22 +290,21 @@ void StatefulWriter::tick(uint32_t now_ms) noexcept {
         if (!proxy.nack_delay_elapsed(now_ms, nack_delay_ms_)) continue;
 
         bool any_sent = false;
+        SequenceNumberSet evicted{};
         while (true) {
-            const ChangeForReader* req = proxy.next_requested_change();
-            if (!req) break;
-            const CacheChange* ch = writer_cache_.get_change(req->sequenceNumber);
+            const SequenceNumber sn = proxy.next_requested_change();
+            if (sn == SEQUENCENUMBER_UNKNOWN) break;
+            proxy.mark_underway(sn);
+            const CacheChange* ch = writer_cache_.get_change(sn);
             if (ch) {
-                proxy.mark_underway(req->sequenceNumber);
                 send_data_to(*ch, proxy);
                 any_sent = true;
             } else {
-                // Change evicted from the history: it is irrelevant now.
-                SequenceNumberSet evicted{};
-                evicted.add(req->sequenceNumber);
-                send_gap(proxy, evicted);
-                proxy.acked_changes_set(req->sequenceNumber);
+                // Evicted or removed since it was requested: irrelevant now.
+                (void)evicted.add(sn);
             }
         }
+        send_gap(proxy, evicted);
         proxy.clear_nack_pending();
 
         // Post-retransmit directed HEARTBEAT (F=true), §8.4.2.2.
@@ -356,7 +327,7 @@ void StatefulWriter::tick(uint32_t now_ms) noexcept {
         ++heartbeatCount_;
         for (uint8_t i = 0; i < max_readers_; ++i) {
             ReaderProxy& proxy = proxies_[i];
-            if (!proxy.is_matched() || !proxy.is_announcing()) continue;
+            if (!proxy.is_matched() || !proxy.is_announcing(writer_cache_)) continue;
             const Locator& dest = proxy.best_locator();
             if (dest == LOCATOR_INVALID) continue;
             send_heartbeat_to(entity_id::UNKNOWN, dest, /*final=*/false);
@@ -377,7 +348,7 @@ uint32_t StatefulWriter::ms_until_next_timer(uint32_t now_ms) const noexcept {
     for (uint8_t i = 0; i < max_readers_; ++i) {
         const ReaderProxy& proxy = proxies_[i];
         if (!proxy.is_matched()) continue;
-        if (proxy.is_announcing()) any_announcing = true;
+        if (proxy.is_announcing(writer_cache_)) any_announcing = true;
         if (proxy.nackPending) {
             const uint32_t elapsed = now_ms - proxy.nackPendingSinceMs;
             const uint32_t left = elapsed >= nack_delay_ms_ ? 0u : nack_delay_ms_ - elapsed;
@@ -415,12 +386,19 @@ void StatefulWriter::send_gap(const ReaderProxy& proxy, const SequenceNumberSet&
     }
 }
 
-void StatefulWriter::send_irrelevant_gap(const ReaderProxy& proxy,
-                                         const SequenceNumberSet& requested) noexcept {
+void StatefulWriter::answer_nack(ReaderProxy& proxy, const SequenceNumberSet& requested,
+                                 uint32_t now_ms) noexcept {
+    SequenceNumberSet repairable{};
     SequenceNumberSet irrelevant{};
     requested.for_each([&](const SequenceNumber& sn) noexcept {
-        if (sn < nextSN_ && !proxy.tracks(sn)) (void)irrelevant.add(sn);
+        if (!(sn < nextSN_)) return;
+        if (proxy.is_relevant(sn) && writer_cache_.get_change(sn)) {
+            (void)repairable.add(sn);
+        } else {
+            (void)irrelevant.add(sn);
+        }
     });
+    proxy.requested_changes_set(repairable, now_ms);
     send_gap(proxy, irrelevant);
 }
 
@@ -582,16 +560,10 @@ void StatefulWriter::send_unsent_changes() noexcept {
         ReaderProxy& proxy = proxies_[i];
         if (!proxy.is_matched()) continue;
         while (true) {
-            const ChangeForReader* u = proxy.next_unsent_change();
-            if (!u) break;
-            const SequenceNumber sn = u->sequenceNumber;
-            const CacheChange* ch = writer_cache_.get_change(sn);
-            if (!ch) {
-                proxy.acked_changes_set(sn);
-                continue;
-            }
+            const SequenceNumber sn = proxy.next_unsent_change(writer_cache_);
+            if (sn == SEQUENCENUMBER_UNKNOWN) break;
             proxy.mark_sent(sn);
-            send_data_to(*ch, proxy);
+            send_data_to(*writer_cache_.get_change(sn), proxy);
         }
     }
 }

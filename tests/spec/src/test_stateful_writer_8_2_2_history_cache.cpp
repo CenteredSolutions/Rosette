@@ -66,16 +66,14 @@ static bool tc_swr_8_2_2_001(std::string& err) {
 
     auto* proxy = w.matched_reader_lookup(reader_guid);
     CHECK(proxy != nullptr, "proxy lookup should succeed");
-    CHECK(proxy->next_unsent_change() != nullptr &&
-          proxy->next_unsent_change()->sequenceNumber.to_int64() == 1,
+    CHECK(proxy->next_unsent_change(w.cache()).to_int64() == 1,
           "reader proxy should track lowest unsent SN first");
 
     w.remove_change(SequenceNumber::from_int64(1));
     CHECK(w.cache().get_change(SequenceNumber::from_int64(1)) == nullptr,
           "remove_change should erase SN from writer history cache");
-    CHECK(proxy->next_unsent_change() != nullptr &&
-          proxy->next_unsent_change()->sequenceNumber.to_int64() == 2,
-          "remove_change should also remove the SN from proxy change tracking");
+    CHECK(proxy->next_unsent_change(w.cache()).to_int64() == 2,
+          "a removed SN is no longer an unsent change of the proxy");
     return true;
 }
 

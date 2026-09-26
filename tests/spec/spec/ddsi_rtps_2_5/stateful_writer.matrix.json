@@ -13,6 +13,7 @@
     "8.4.2.2",
     "8.4.3",
     "8.4.4",
+    "8.4.6",
     "8.7.2.2"
   ],
   "statements": [
@@ -105,6 +106,24 @@
       "statement": "on_nack_frag arms deferred retransmit and tick() sends requested data after nackResponseDelay.",
       "status": "implemented",
       "test_ids": ["TC-SWR-8.4.4-001"]
+    },
+    {
+      "id": "REQ-SWR-8.4.6-REQUESTED-CHANGES",
+      "section": "8.4.6",
+      "page": 128,
+      "normativity": "shall",
+      "statement": "requested_changes_set marks NACKed changes REQUESTED, next_requested_change returns the lowest REQUESTED change, and acked_changes_set clears acknowledged requests.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.6-001"]
+    },
+    {
+      "id": "REQ-SWR-8.4.6-UNSENT-CHANGES",
+      "section": "8.4.6",
+      "page": 128,
+      "normativity": "shall",
+      "statement": "next_unsent_change returns the lowest UNSENT change relevant to the reader, and unacked_changes is non-empty until the newest relevant change is acknowledged.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.6-002"]
     }
   ]
 }
