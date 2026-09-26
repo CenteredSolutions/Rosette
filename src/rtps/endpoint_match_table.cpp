@@ -68,6 +68,48 @@ void EndpointMatchTable::store_remote(RemoteEndpoint& slot, const Guid& guid,
 }
 
 // ------------------------------------------------------------
+// Capacity: which remote records are kept when a table is full
+// ------------------------------------------------------------
+
+bool EndpointMatchTable::pairs_with_local(const TopicName& topic, const TopicName& type,
+                                          ReliabilityKind reliability, DurabilityKind durability,
+                                          bool remote_is_writer) const noexcept
+{
+    const LocalEndpoint* locals = remote_is_writer ? local_readers_ : local_writers_;
+    for (uint32_t i = 0; i < RTPS_MAX_LOCAL_ENDPOINTS; ++i) {
+        const LocalEndpoint& l = locals[i];
+        if (!l.valid() || l.topicName != topic || l.typeName != type) continue;
+        const bool compatible =
+            remote_is_writer ? qos_compatible(reliability, durability, l.reliability, l.durability)
+                             : qos_compatible(l.reliability, l.durability, reliability, durability);
+        if (compatible) return true;
+    }
+    return false;
+}
+
+bool EndpointMatchTable::in_match(const Guid& guid, bool is_writer) const noexcept
+{
+    for (const MatchRecord& m : matches_) {
+        if (m.active() && (is_writer ? m.writer_guid : m.reader_guid) == guid) return true;
+    }
+    return false;
+}
+
+EndpointMatchTable::RemoteEndpoint* EndpointMatchTable::displace_unmatched(RemoteEndpoint* table,
+                                                                           uint32_t n,
+                                                                           bool is_writer) noexcept
+{
+    for (uint32_t i = 0; i < n; ++i) {
+        if (!table[i].valid() || in_match(table[i].guid, is_writer)) continue;
+        // The caller stores the new record here and reports the change, which
+        // also covers the record forgotten.
+        table[i] = RemoteEndpoint{};
+        return &table[i];
+    }
+    return nullptr;
+}
+
+// ------------------------------------------------------------
 // Matching
 // ------------------------------------------------------------
 
@@ -111,9 +153,17 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
 
     RemoteEndpoint* w = find(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, wd.writerGuid);
     if (!w) w = find(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, GUID_UNKNOWN);
+    if (!w && pairs_with_local(wd.topicName, wd.typeName, wd.reliabilityKind,
+                               wd.durabilityKind, /*remote_is_writer=*/true)) {
+        w = displace_unmatched(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, /*is_writer=*/true);
+        if (!w) {
+            RTPS_LOG_W("match", "remote writer table full of matched writers "
+                       "(RTPS_MAX_DISCOVERED_WRITERS=%d), topic=%s not matched",
+                       RTPS_MAX_DISCOVERED_WRITERS, wd.topicName.str);
+        }
+    }
     if (!w) {
-        RTPS_LOG_W("match", "remote writer table full (RTPS_MAX_DISCOVERED_WRITERS=%d)",
-                   RTPS_MAX_DISCOVERED_WRITERS);
+        RTPS_LOG_D("match", "remote writer table full, topic=%s not kept", wd.topicName.str);
         return;
     }
     const bool is_change = !w->valid() || w->topicKey != topic_key || w->typeKey != type_key;
@@ -169,9 +219,17 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
 
     RemoteEndpoint* r = find(remote_readers_, RTPS_MAX_DISCOVERED_READERS, rd.readerGuid);
     if (!r) r = find(remote_readers_, RTPS_MAX_DISCOVERED_READERS, GUID_UNKNOWN);
+    if (!r && pairs_with_local(rd.topicName, rd.typeName, rd.reliabilityKind,
+                               rd.durabilityKind, /*remote_is_writer=*/false)) {
+        r = displace_unmatched(remote_readers_, RTPS_MAX_DISCOVERED_READERS, /*is_writer=*/false);
+        if (!r) {
+            RTPS_LOG_W("match", "remote reader table full of matched readers "
+                       "(RTPS_MAX_DISCOVERED_READERS=%d), topic=%s not matched",
+                       RTPS_MAX_DISCOVERED_READERS, rd.topicName.str);
+        }
+    }
     if (!r) {
-        RTPS_LOG_W("match", "remote reader table full (RTPS_MAX_DISCOVERED_READERS=%d)",
-                   RTPS_MAX_DISCOVERED_READERS);
+        RTPS_LOG_D("match", "remote reader table full, topic=%s not kept", rd.topicName.str);
         return;
     }
     const bool is_change = !r->valid() || r->topicKey != topic_key || r->typeKey != type_key;

@@ -30,6 +30,21 @@
  * count needs a 32-bit collision (about 2^-32 per pair of topic names); a
  * count can be wrong in that case, a match cannot.
  *
+ * Capacity
+ * --------
+ * A network can announce far more endpoints than a microcontroller can
+ * record, and the announcements a participant needs are rarely the first to
+ * arrive. While a remote table has room, every announcement is kept, so a
+ * local endpoint created later still finds its peers and count() sees the
+ * whole graph. When the table is full, an announcement that completes a
+ * match with a local endpoint takes the slot of a remote record that is in
+ * no match; an announcement that completes none is not kept. A record in a
+ * match is never displaced, so matching never loses a pair it reported.
+ * The table therefore needs room only for the remote endpoints the local
+ * ones match; beyond that, what it keeps of the rest decides only what
+ * count() sees and what a later local endpoint can match without a fresh
+ * announcement.
+ *
  * Matching rules (§8.5.5.1, p. 169)
  * ------------------------------------
  * Two endpoints match when ALL of the following hold:
@@ -229,6 +244,9 @@ inline bool qos_compatible(const DiscoveredWriterData& writer,
  */
 uint32_t name_key(const char* name) noexcept;
 
+// Remote writers and readers recorded from SEDP. When a table is full, only
+// an endpoint that completes a match with a local one is admitted, in place
+// of one that completes none (see Capacity in the file comment).
 #ifndef RTPS_MAX_DISCOVERED_WRITERS
 #  define RTPS_MAX_DISCOVERED_WRITERS 8
 #endif
@@ -309,6 +327,9 @@ public:
      * writer is compared with every local reader by name. Adding a known
      * GUID updates its record and reports only pairs not reported before.
      * A writer whose topic or type name did not fit a TopicName is ignored.
+     * When the remote writer table is full, a remote writer that pairs with
+     * a local reader displaces a remote writer in no match, and one that
+     * pairs with none is not kept (see Capacity in the file comment).
      * on_change fires when the writer is new or its topic or type changed.
      *
      * @param[in] wd The writer; for a remote writer, as SEDP announced it.
@@ -316,8 +337,10 @@ public:
      * Verification:
      * - Correct means: every compatible pair with a local endpoint is
      *   reported exactly once until it is dissolved; remote-remote pairs
-     *   never are.
-     * - Covered by: TC-SEDP-8.5.5.1-001..005, TC-SEDP-8.5.4-002.
+     *   never are; a full table still admits a remote endpoint that
+     *   completes a match unless every stored record is in one.
+     * - Covered by: TC-SEDP-8.5.5.1-001..005, TC-SEDP-8.5.5.1-008,
+     *   TC-SEDP-8.5.5.1-009, TC-SEDP-8.5.4-002.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.5.1
@@ -353,8 +376,10 @@ public:
      * @param[in] topic   Null-terminated topic name, as SEDP announces it
      *   (for ROS, the mangled name, e.g. "rt/chatter").
      * @param[in] writers `true` to count writers; `false` to count readers.
-     * @return Endpoints on `topic` in the table. Endpoints the table had no
-     *   room for (RTPS_MAX_DISCOVERED_WRITERS/READERS) are not counted.
+     * @return Endpoints on `topic` in the table. A remote endpoint the
+     *   table had no room for (RTPS_MAX_DISCOVERED_WRITERS/READERS), or
+     *   displaced to make room for one that completes a match, is not
+     *   counted.
      *
      * Verification:
      * - Correct means: local and remote endpoints on the topic are counted
@@ -420,6 +445,56 @@ private:
                              uint32_t type_key, ReliabilityKind reliability, DurabilityKind durability,
                              bool expects_inline_qos, const Locator* locators,
                              uint8_t locator_count) noexcept;
+
+    /**
+     * @brief True when a remote endpoint would complete a match with a local one.
+     *
+     * Decides whether an announcement may displace a stored remote record
+     * when its table is full (see Capacity in the file comment). The test is
+     * the one matching applies: equal topic and type names and compatible
+     * QoS (§8.5.5.1), against local endpoints of the opposite kind.
+     *
+     * @param[in] topic            The remote endpoint's topic name.
+     * @param[in] type             The remote endpoint's type name.
+     * @param[in] reliability      The remote endpoint's reliability kind.
+     * @param[in] durability       The remote endpoint's durability kind.
+     * @param[in] remote_is_writer `true` for a remote writer (compared with
+     *   local readers); `false` for a remote reader (with local writers).
+     * @return `true` when some local endpoint pairs with it.
+     *
+     * Verification:
+     * - Correct means: true exactly when adding the endpoint to a table with
+     *   room would report at least one pair.
+     * - Covered by: TC-SEDP-8.5.5.1-008.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.5.1
+     */
+    bool pairs_with_local(const TopicName& topic, const TopicName& type,
+                          ReliabilityKind reliability, DurabilityKind durability,
+                          bool remote_is_writer) const noexcept;
+
+    /// @brief True when a reported pair names `guid` as its writer (`is_writer`) or reader.
+    bool in_match(const Guid& guid, bool is_writer) const noexcept;
+
+    /**
+     * @brief Frees the first remote record that is in no match.
+     *
+     * The record is cleared without notifying anyone: the caller stores the
+     * announcement that needed the slot there, and the on_change that store
+     * fires covers the forgotten record too. No pair is dissolved, since a
+     * record in no match has none.
+     *
+     * @param[in,out] table     remote_writers_ or remote_readers_.
+     * @param[in]     n         Entries in `table`.
+     * @param[in]     is_writer `true` when `table` holds writers.
+     * @return The cleared slot, or null when every stored record is in a match.
+     *
+     * Verification:
+     * - Correct means: a record in a match is never cleared.
+     * - Covered by: TC-SEDP-8.5.5.1-008, TC-SEDP-8.5.5.1-009.
+     */
+    RemoteEndpoint* displace_unmatched(RemoteEndpoint* table, uint32_t n, bool is_writer) noexcept;
 
     /// Reports the pair unless it was reported before or no record is free.
     void report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,

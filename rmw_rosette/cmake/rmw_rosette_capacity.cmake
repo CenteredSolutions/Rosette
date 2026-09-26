@@ -41,7 +41,7 @@ set(RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS 32 CACHE STRING
 set(RMW_ROSETTE_MAX_MATCHED_ENDPOINTS 16 CACHE STRING
     "Remote readers per local writer and remote writers per local reader")
 set(RMW_ROSETTE_MAX_REMOTE_ENDPOINTS 128 CACHE STRING
-    "Remote writers (and, separately, remote readers) known from SEDP; a stock rclpy/rclcpp node has about 9 of each")
+    "Remote writers (and, separately, remote readers) known from SEDP; a stock rclpy/rclcpp node has about 9 of each. When full, an endpoint that matches a local one displaces one that matches none, so on a large network this need only cover the remote endpoints this process matches")
 set(RMW_ROSETTE_MAX_DATAGRAM_SIZE 65507 CACHE STRING
     "Largest UDP datagram sent or received: 65507 on hosts; 1472 (1500-byte MTU) where IP fragmentation is unavailable (WIZnet hardware UDP). Larger samples go out as DATA_FRAG; peers must cap their datagrams to this too")
 set(RMW_ROSETTE_MAX_SAMPLE_SIZE 65532 CACHE STRING

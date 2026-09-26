@@ -59,6 +59,15 @@
       "test_ids": ["TC-SEDP-8.5.5.1-006"]
     },
     {
+      "id": "REQ-SEDP-8.5.5.1-CAPACITY-KEEPS-MATCHES",
+      "section": "8.5.5.1",
+      "page": 169,
+      "normativity": "implementation-limit",
+      "statement": "When the remote endpoint table is full, an announced endpoint that completes a match with a local endpoint displaces a stored remote endpoint that is in no match; an endpoint that completes none is not kept, and a stored endpoint that is part of a match is never displaced.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.5.1-008", "TC-SEDP-8.5.5.1-009"]
+    },
+    {
       "id": "REQ-SEDP-8.5.4.1-RELIABLE-BUILTIN-READERS",
       "section": "8.5.4.1",
       "page": 165,

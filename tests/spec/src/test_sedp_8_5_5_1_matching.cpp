@@ -254,7 +254,122 @@ static bool tc_sedp_8_5_5_1_007(std::string& err) {
     return true;
 }
 
+// A remote table full of endpoints no local endpoint pairs with must still
+// admit the one that completes a match: on a network much larger than the
+// table, the first announcements to arrive are rarely the ones this
+// participant needs. The displaced record is one in no match.
+struct DisplaceObs {
+    int  match_calls   = 0;
+    int  unmatch_calls = 0;
+    int  change_calls  = 0;
+    Guid last_remote   = GUID_UNKNOWN;
+};
+
+static bool tc_sedp_8_5_5_1_008(std::string& err) {
+    DisplaceObs obs{};
+    EndpointMatchTable t(
+        [](const MatchedEndpoint& w, const MatchedEndpoint& r, const TopicName&,
+           void* u) noexcept {
+            auto* o = static_cast<DisplaceObs*>(u);
+            o->match_calls++;
+            o->last_remote = w.guid.prefix.value[0] == 0x10u ? r.guid : w.guid;
+        },
+        [](const Guid&, const Guid&, void* u) noexcept {
+            static_cast<DisplaceObs*>(u)->unmatch_calls++;
+        },
+        &obs,
+        [](void* u) noexcept { static_cast<DisplaceObs*>(u)->change_calls++; });
+
+    const Guid local_reader = make_guid(0x10u, 0x00u, 0x00u, make_entity(1u, 1u, 1u, 0x04u));
+    const Guid local_writer = make_guid(0x10u, 0x00u, 0x00u, make_entity(1u, 1u, 2u, 0x03u));
+    t.set_local_prefix(local_reader.prefix);
+    t.add_reader(make_reader(local_reader, "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    t.add_writer(make_writer(local_writer, "rt/mach/faults", "controller_msgs::msg::dds_::Fault_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+
+    for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i) {
+        t.add_writer(make_writer(make_guid(0x20u, static_cast<Octet>(i), 0x00u,
+                                           make_entity(0u, 0u, 1u, 0x03u)),
+                                 "rt/rosout", "rcl_interfaces::msg::dds_::Log_",
+                                 ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    }
+    for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i) {
+        t.add_reader(make_reader(make_guid(0x20u, static_cast<Octet>(i), 0x00u,
+                                           make_entity(0u, 0u, 2u, 0x04u)),
+                                 "rt/parameter_events",
+                                 "rcl_interfaces::msg::dds_::ParameterEvent_",
+                                 ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    }
+    CHECK(t.count("rt/rosout", true) == RTPS_MAX_DISCOVERED_WRITERS, "remote writer table full");
+    CHECK(t.count("rt/parameter_events", false) == RTPS_MAX_DISCOVERED_READERS,
+          "remote reader table full");
+
+    const int changes_before = obs.change_calls;
+    const Guid estop_writer = make_guid(0x30u, 0x00u, 0x00u, make_entity(0u, 0u, 3u, 0x03u));
+    t.add_writer(make_writer(estop_writer, "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    CHECK(obs.match_calls == 1 && obs.last_remote == estop_writer,
+          "a remote writer that completes a match displaces one that completes none");
+    CHECK(t.count("rt/rosout", true) == RTPS_MAX_DISCOVERED_WRITERS - 1u,
+          "exactly one unmatched remote writer is displaced");
+    CHECK(obs.change_calls > changes_before, "displacement is a graph change");
+
+    const Guid faults_reader = make_guid(0x31u, 0x00u, 0x00u, make_entity(0u, 0u, 4u, 0x04u));
+    t.add_reader(make_reader(faults_reader, "rt/mach/faults", "controller_msgs::msg::dds_::Fault_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    CHECK(obs.match_calls == 2 && obs.last_remote == faults_reader,
+          "a remote reader that completes a match displaces one that completes none");
+    CHECK(t.count("rt/parameter_events", false) == RTPS_MAX_DISCOVERED_READERS - 1u,
+          "exactly one unmatched remote reader is displaced");
+
+    t.add_writer(make_writer(make_guid(0x32u, 0x00u, 0x00u, make_entity(0u, 0u, 5u, 0x03u)),
+                             "rt/rosout", "rcl_interfaces::msg::dds_::Log_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    CHECK(t.count("rt/rosout", true) == RTPS_MAX_DISCOVERED_WRITERS - 1u,
+          "an announcement that completes no match never displaces a record");
+    CHECK(obs.unmatch_calls == 0, "no match is dissolved by displacement");
+    return true;
+}
+
+// A remote record that is part of a match is never displaced: when every
+// record is matched, a further announcement is refused, even one that would
+// complete a match of its own.
+static bool tc_sedp_8_5_5_1_009(std::string& err) {
+    Obs obs{};
+    EndpointMatchTable t(on_match, on_unmatch, &obs);
+    const Guid local_reader = make_guid(0x40u, 0x00u, 0x00u, make_entity(1u, 1u, 1u, 0x04u));
+    t.set_local_prefix(local_reader.prefix);
+    t.add_reader(make_reader(local_reader, "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+
+    for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i) {
+        t.add_writer(make_writer(make_guid(0x50u, static_cast<Octet>(i), 0x00u,
+                                           make_entity(0u, 0u, 1u, 0x03u)),
+                                 "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+                                 ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    }
+    CHECK(obs.match_calls == static_cast<int>(RTPS_MAX_DISCOVERED_WRITERS),
+          "every remote estop writer matches while there is room");
+
+    t.add_writer(make_writer(make_guid(0x60u, 0x00u, 0x00u, make_entity(0u, 0u, 1u, 0x03u)),
+                             "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    CHECK(obs.match_calls == static_cast<int>(RTPS_MAX_DISCOVERED_WRITERS),
+          "a full table of matched records admits no further writer");
+    CHECK(obs.unmatch_calls == 0, "no matched record is displaced");
+    CHECK(t.count("rt/mach/estop", true) == RTPS_MAX_DISCOVERED_WRITERS,
+          "the stored remote writers are unchanged");
+    return true;
+}
+
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests) {
+    tests.push_back({"TC-SEDP-8.5.5.1-009",
+                     "§8.5.5.1 capacity: a remote endpoint that is part of a match is never displaced; when every stored record is matched, further announcements are refused.",
+                     tc_sedp_8_5_5_1_009});
+    tests.push_back({"TC-SEDP-8.5.5.1-008",
+                     "§8.5.5.1 capacity: when the remote writer or reader table is full, an announcement that completes a match with a local endpoint displaces a record in no match; one that completes none is refused.",
+                     tc_sedp_8_5_5_1_008});
     tests.push_back({"TC-SEDP-8.5.5.1-007",
                      "§8.5.5.1: name_key() is 32-bit FNV-1a; a remote endpoint stored by key matches a later local endpoint only when topic and type keys both agree.",
                      tc_sedp_8_5_5_1_007});

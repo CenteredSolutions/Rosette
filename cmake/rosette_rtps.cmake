@@ -23,7 +23,9 @@
 #   ROSETTE_RTPS_MAX_PEERS          remote participants tracked (default 8)
 #   ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS remote writers, and separately readers,
 #                                   known from SEDP (default 64; a stock
-#                                   rclpy/rclcpp node announces about 9 each)
+#                                   rclpy/rclcpp node announces about 9 each).
+#                                   When full, an endpoint that matches a
+#                                   local one displaces one that matches none.
 #   ROSETTE_RTPS_LOG_LEVEL          0-5 (default 2, warnings)
 #
 # Output: STATIC library `rosette_rtps`, linked PUBLIC to rosette_platform and
@@ -38,7 +40,7 @@ set(ROSETTE_RTPS_MAX_DATAGRAM_SIZE 1472 CACHE STRING "Largest UDP payload the li
 set(ROSETTE_RTPS_MAX_SAMPLE_SIZE 4096 CACHE STRING "Largest serialized sample sent or received")
 set(ROSETTE_RTPS_MAX_SAMPLE_BLOCKS 2 CACHE STRING "Samples larger than one datagram held at once")
 set(ROSETTE_RTPS_MAX_PEERS 8 CACHE STRING "Remote participants tracked at once")
-set(ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS 64 CACHE STRING "Remote writers (and readers) known from SEDP")
+set(ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS 64 CACHE STRING "Remote writers (and readers) known from SEDP; when full, only those matching a local endpoint are admitted")
 set(ROSETTE_RTPS_LOG_LEVEL 2 CACHE STRING "rosette::rtps log level (0-5)")
 
 include(${ROSETTE_ROOT}/cmake/rosette_rtps_sources.cmake)

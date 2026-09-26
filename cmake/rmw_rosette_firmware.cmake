@@ -79,7 +79,7 @@ set(RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE 0 CACHE STRING "Parameter services p
 set(RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE 0 CACHE STRING "Publishers each node creates itself")
 set(RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS 8 CACHE STRING "Remote DDS participants tracked")
 set(RMW_ROSETTE_MAX_MATCHED_ENDPOINTS 8 CACHE STRING "Remote matches per local endpoint")
-set(RMW_ROSETTE_MAX_REMOTE_ENDPOINTS 64 CACHE STRING "Remote writers (and readers) known from SEDP")
+set(RMW_ROSETTE_MAX_REMOTE_ENDPOINTS 64 CACHE STRING "Remote writers (and readers) known from SEDP; when full, only those matching a local endpoint are admitted")
 set(RMW_ROSETTE_MAX_DATAGRAM_SIZE ${ROSETTE_RTPS_MAX_DATAGRAM_SIZE} CACHE STRING "Largest UDP datagram")
 set(RMW_ROSETTE_MAX_SAMPLE_SIZE 4096 CACHE STRING "Largest serialized message")
 set(RMW_ROSETTE_LARGE_BUFFERS 2 CACHE STRING "Blocks of RMW_ROSETTE_MAX_SAMPLE_SIZE")
