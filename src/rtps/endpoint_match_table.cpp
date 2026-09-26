@@ -37,34 +37,71 @@ EndpointMatchTable::LocalEndpoint* EndpointMatchTable::find(LocalEndpoint* table
     return g == GUID_UNKNOWN ? free_slot : nullptr;
 }
 
-EndpointMatchTable::RemoteEndpoint* EndpointMatchTable::find(RemoteEndpoint* table, uint32_t n,
-                                                             const Guid& g) noexcept
+EndpointMatchTable::RemoteEndpoint* EndpointMatchTable::find_remote(RemoteEndpoint* table,
+                                                                    uint32_t n,
+                                                                    const Guid& g) noexcept
 {
     RemoteEndpoint* free_slot = nullptr;
     for (uint32_t i = 0; i < n; ++i) {
-        if (table[i].guid == g) return &table[i];
-        if (!free_slot && !table[i].valid()) free_slot = &table[i];
+        if (!table[i].valid()) {
+            if (!free_slot) free_slot = &table[i];
+            continue;
+        }
+        if (table[i].entityId == g.entityId && origins_[table[i].origin].prefix == g.prefix) {
+            return &table[i];
+        }
     }
     return g == GUID_UNKNOWN ? free_slot : nullptr;
 }
 
-void EndpointMatchTable::store_remote(RemoteEndpoint& slot, const Guid& guid,
+uint8_t EndpointMatchTable::find_origin(const GuidPrefix& prefix, const Locator* locators,
+                                        uint8_t locator_count) const noexcept
+{
+    uint8_t free_origin = kNoOrigin;
+    for (uint8_t i = 0; i < RTPS_MAX_REMOTE_ORIGINS; ++i) {
+        const RemoteOrigin& o = origins_[i];
+        if (o.users == 0u) {
+            if (free_origin == kNoOrigin) free_origin = i;
+            continue;
+        }
+        if (o.prefix != prefix || o.locatorCount != locator_count) continue;
+        bool same = true;
+        for (uint8_t k = 0; k < locator_count && same; ++k) same = o.locators[k] == locators[k];
+        if (same) return i;
+    }
+    return free_origin;
+}
+
+void EndpointMatchTable::store_remote(RemoteEndpoint& slot, const Guid& guid, uint8_t origin,
+                                      const Locator* locators, uint8_t locator_count,
                                       uint32_t topic_key, uint32_t type_key,
                                       ReliabilityKind reliability, DurabilityKind durability,
-                                      bool expects_inline_qos, const Locator* locators,
-                                      uint8_t locator_count) noexcept
+                                      bool expects_inline_qos) noexcept
 {
-    slot = RemoteEndpoint{};
-    slot.guid             = guid;
+    RemoteOrigin& o = origins_[origin];
+    if (o.users == 0u) {
+        o.prefix       = guid.prefix;
+        o.locatorCount = locator_count;
+        for (uint8_t k = 0; k < locator_count; ++k) o.locators[k] = locators[k];
+    }
+    ++o.users;
+    // Claimed before the old origin is released, so re-storing an endpoint
+    // under the origin it already names never frees it in between.
+    const uint8_t previous = slot.origin;
+    slot.entityId         = guid.entityId;
     slot.topicKey         = topic_key;
     slot.typeKey          = type_key;
+    slot.origin           = origin;
     slot.reliability      = static_cast<uint8_t>(reliability);
     slot.durability       = static_cast<uint8_t>(durability);
     slot.expectsInlineQos = expects_inline_qos;
-    const uint8_t n = locator_count < RTPS_MAX_REMOTE_ENDPOINT_LOCATORS
-                      ? locator_count : RTPS_MAX_REMOTE_ENDPOINT_LOCATORS;
-    for (uint8_t i = 0; i < n; ++i) slot.locators[i] = locators[i];
-    slot.locatorCount = n;
+    if (previous != kNoOrigin) --origins_[previous].users;
+}
+
+void EndpointMatchTable::clear_remote(RemoteEndpoint& r) noexcept
+{
+    if (r.valid()) --origins_[r.origin].users;
+    r = RemoteEndpoint{};
 }
 
 // ------------------------------------------------------------
@@ -100,13 +137,58 @@ EndpointMatchTable::RemoteEndpoint* EndpointMatchTable::displace_unmatched(Remot
                                                                            bool is_writer) noexcept
 {
     for (uint32_t i = 0; i < n; ++i) {
-        if (!table[i].valid() || in_match(table[i].guid, is_writer)) continue;
+        if (!table[i].valid() || in_match(guid_of(table[i]), is_writer)) continue;
         // The caller stores the new record here and reports the change, which
         // also covers the record forgotten.
-        table[i] = RemoteEndpoint{};
+        clear_remote(table[i]);
         return &table[i];
     }
     return nullptr;
+}
+
+uint8_t EndpointMatchTable::evict_unmatched_origin() noexcept
+{
+    bool matched[RTPS_MAX_REMOTE_ORIGINS] = {};
+    for (const RemoteEndpoint& w : remote_writers_) {
+        if (w.valid() && in_match(guid_of(w), /*is_writer=*/true)) matched[w.origin] = true;
+    }
+    for (const RemoteEndpoint& r : remote_readers_) {
+        if (r.valid() && in_match(guid_of(r), /*is_writer=*/false)) matched[r.origin] = true;
+    }
+    for (uint8_t i = 0; i < RTPS_MAX_REMOTE_ORIGINS; ++i) {
+        if (origins_[i].users == 0u || matched[i]) continue;
+        // As in displace_unmatched(), the caller's store reports the change.
+        for (RemoteEndpoint& w : remote_writers_) {
+            if (w.origin == i) clear_remote(w);
+        }
+        for (RemoteEndpoint& r : remote_readers_) {
+            if (r.origin == i) clear_remote(r);
+        }
+        return i;
+    }
+    return kNoOrigin;
+}
+
+EndpointMatchTable::RemoteEndpoint* EndpointMatchTable::admit_remote(
+        RemoteEndpoint* table, uint32_t n, bool is_writer, const Guid& guid,
+        const Locator* locators, uint8_t locator_count, bool completes_match,
+        uint8_t& origin) noexcept
+{
+    RemoteEndpoint* slot = find_remote(table, n, guid);
+    if (!slot) slot = find_remote(table, n, GUID_UNKNOWN);
+    origin = find_origin(guid.prefix, locators, locator_count);
+    if (!completes_match) return origin == kNoOrigin ? nullptr : slot;
+
+    // Evicting an origin can free records in this table (and may clear the
+    // endpoint's own earlier record, whose slot then stays usable), so the
+    // origin is found first and the record second.
+    if (origin == kNoOrigin) origin = evict_unmatched_origin();
+    if (origin == kNoOrigin) return nullptr;
+    if (!slot) slot = find_remote(table, n, GUID_UNKNOWN);
+    if (!slot) slot = displace_unmatched(table, n, is_writer);
+    // Displacing a record can release the origin just found when that record
+    // was its only user; store_remote() then claims it again, as found.
+    return slot;
 }
 
 // ------------------------------------------------------------
@@ -146,35 +228,40 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
             if (!r.valid() || r.topicKey != topic_key || r.typeKey != type_key) continue;
             if (!qos_compatible(w->reliability, w->durability,
                                 r.reliability_kind(), r.durability_kind())) continue;
-            report(writer, r.matched(), w->topicName);
+            report(writer, matched(r), w->topicName);
         }
         return;
     }
 
-    RemoteEndpoint* w = find(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, wd.writerGuid);
-    if (!w) w = find(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, GUID_UNKNOWN);
-    if (!w && pairs_with_local(wd.topicName, wd.typeName, wd.reliabilityKind,
-                               wd.durabilityKind, /*remote_is_writer=*/true)) {
-        w = displace_unmatched(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, /*is_writer=*/true);
-        if (!w) {
-            RTPS_LOG_W("match", "remote writer table full of matched writers "
-                       "(RTPS_MAX_DISCOVERED_WRITERS=%d), topic=%s not matched",
-                       RTPS_MAX_DISCOVERED_WRITERS, wd.topicName.str);
-        }
-    }
+    Locator kept[RTPS_MAX_REMOTE_ENDPOINT_LOCATORS];
+    const uint8_t kept_count = copy_udp_locators(kept, RTPS_MAX_REMOTE_ENDPOINT_LOCATORS,
+                                                 wd.unicastLocatorList, wd.unicastLocatorCount);
+    const bool completes_match = pairs_with_local(wd.topicName, wd.typeName, wd.reliabilityKind,
+                                                  wd.durabilityKind, /*remote_is_writer=*/true);
+    uint8_t origin = kNoOrigin;
+    RemoteEndpoint* w = admit_remote(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS,
+                                     /*is_writer=*/true, wd.writerGuid, kept, kept_count,
+                                     completes_match, origin);
     if (!w) {
-        RTPS_LOG_D("match", "remote writer table full, topic=%s not kept", wd.topicName.str);
+        if (completes_match) {
+            RTPS_LOG_W("match", "no room for remote writer, topic=%s not matched: every "
+                       "stored writer (RTPS_MAX_DISCOVERED_WRITERS=%d) or origin "
+                       "(RTPS_MAX_REMOTE_ORIGINS=%d) is in a match",
+                       wd.topicName.str, RTPS_MAX_DISCOVERED_WRITERS, RTPS_MAX_REMOTE_ORIGINS);
+        } else {
+            RTPS_LOG_D("match", "remote writer table full, topic=%s not kept", wd.topicName.str);
+        }
         return;
     }
     const bool is_change = !w->valid() || w->topicKey != topic_key || w->typeKey != type_key;
-    store_remote(*w, wd.writerGuid, topic_key, type_key, wd.reliabilityKind,
-                 wd.durabilityKind, false, wd.unicastLocatorList, wd.unicastLocatorCount);
+    store_remote(*w, wd.writerGuid, origin, kept, kept_count, topic_key, type_key,
+                 wd.reliabilityKind, wd.durabilityKind, false);
     if (is_change) changed();
     for (const LocalEndpoint& r : local_readers_) {
         if (!r.valid() || r.topicName != wd.topicName || r.typeName != wd.typeName) continue;
         if (!qos_compatible(wd.reliabilityKind, wd.durabilityKind,
                             r.reliability, r.durability)) continue;
-        report(w->matched(), MatchedEndpoint{r.guid, nullptr, 0u, r.expectsInlineQos},
+        report(matched(*w), MatchedEndpoint{r.guid, nullptr, 0u, r.expectsInlineQos},
                r.topicName);
     }
 }
@@ -212,36 +299,40 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
             if (!w.valid() || w.topicKey != topic_key || w.typeKey != type_key) continue;
             if (!qos_compatible(w.reliability_kind(), w.durability_kind(),
                                 r->reliability, r->durability)) continue;
-            report(w.matched(), reader, r->topicName);
+            report(matched(w), reader, r->topicName);
         }
         return;
     }
 
-    RemoteEndpoint* r = find(remote_readers_, RTPS_MAX_DISCOVERED_READERS, rd.readerGuid);
-    if (!r) r = find(remote_readers_, RTPS_MAX_DISCOVERED_READERS, GUID_UNKNOWN);
-    if (!r && pairs_with_local(rd.topicName, rd.typeName, rd.reliabilityKind,
-                               rd.durabilityKind, /*remote_is_writer=*/false)) {
-        r = displace_unmatched(remote_readers_, RTPS_MAX_DISCOVERED_READERS, /*is_writer=*/false);
-        if (!r) {
-            RTPS_LOG_W("match", "remote reader table full of matched readers "
-                       "(RTPS_MAX_DISCOVERED_READERS=%d), topic=%s not matched",
-                       RTPS_MAX_DISCOVERED_READERS, rd.topicName.str);
-        }
-    }
+    Locator kept[RTPS_MAX_REMOTE_ENDPOINT_LOCATORS];
+    const uint8_t kept_count = copy_udp_locators(kept, RTPS_MAX_REMOTE_ENDPOINT_LOCATORS,
+                                                 rd.unicastLocatorList, rd.unicastLocatorCount);
+    const bool completes_match = pairs_with_local(rd.topicName, rd.typeName, rd.reliabilityKind,
+                                                  rd.durabilityKind, /*remote_is_writer=*/false);
+    uint8_t origin = kNoOrigin;
+    RemoteEndpoint* r = admit_remote(remote_readers_, RTPS_MAX_DISCOVERED_READERS,
+                                     /*is_writer=*/false, rd.readerGuid, kept, kept_count,
+                                     completes_match, origin);
     if (!r) {
-        RTPS_LOG_D("match", "remote reader table full, topic=%s not kept", rd.topicName.str);
+        if (completes_match) {
+            RTPS_LOG_W("match", "no room for remote reader, topic=%s not matched: every "
+                       "stored reader (RTPS_MAX_DISCOVERED_READERS=%d) or origin "
+                       "(RTPS_MAX_REMOTE_ORIGINS=%d) is in a match",
+                       rd.topicName.str, RTPS_MAX_DISCOVERED_READERS, RTPS_MAX_REMOTE_ORIGINS);
+        } else {
+            RTPS_LOG_D("match", "remote reader table full, topic=%s not kept", rd.topicName.str);
+        }
         return;
     }
     const bool is_change = !r->valid() || r->topicKey != topic_key || r->typeKey != type_key;
-    store_remote(*r, rd.readerGuid, topic_key, type_key, rd.reliabilityKind,
-                 rd.durabilityKind, rd.expectsInlineQos, rd.unicastLocatorList,
-                 rd.unicastLocatorCount);
+    store_remote(*r, rd.readerGuid, origin, kept, kept_count, topic_key, type_key,
+                 rd.reliabilityKind, rd.durabilityKind, rd.expectsInlineQos);
     if (is_change) changed();
     for (const LocalEndpoint& w : local_writers_) {
         if (!w.valid() || w.topicName != rd.topicName || w.typeName != rd.typeName) continue;
         if (!qos_compatible(w.reliability, w.durability,
                             rd.reliabilityKind, rd.durabilityKind)) continue;
-        report(MatchedEndpoint{w.guid, nullptr, 0u, false}, r->matched(), w.topicName);
+        report(MatchedEndpoint{w.guid, nullptr, 0u, false}, matched(*r), w.topicName);
     }
 }
 
@@ -289,8 +380,8 @@ void EndpointMatchTable::remove_writer(const Guid& writer_guid) noexcept
         *w = LocalEndpoint{};
         forgotten = true;
     }
-    if (RemoteEndpoint* w = find(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, writer_guid)) {
-        *w = RemoteEndpoint{};
+    if (RemoteEndpoint* w = find_remote(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, writer_guid)) {
+        clear_remote(*w);
         forgotten = true;
     }
     if (forgotten) changed();
@@ -305,8 +396,8 @@ void EndpointMatchTable::remove_reader(const Guid& reader_guid) noexcept
         *r = LocalEndpoint{};
         forgotten = true;
     }
-    if (RemoteEndpoint* r = find(remote_readers_, RTPS_MAX_DISCOVERED_READERS, reader_guid)) {
-        *r = RemoteEndpoint{};
+    if (RemoteEndpoint* r = find_remote(remote_readers_, RTPS_MAX_DISCOVERED_READERS, reader_guid)) {
+        clear_remote(*r);
         forgotten = true;
     }
     if (forgotten) changed();
@@ -316,14 +407,12 @@ void EndpointMatchTable::remove_participant(const GuidPrefix& gone_prefix) noexc
 {
     // Copy each GUID: removal clears the record it lives in.
     for (const RemoteEndpoint& w : remote_writers_) {
-        if (!w.valid() || w.guid.prefix != gone_prefix) continue;
-        const Guid guid = w.guid;
-        remove_writer(guid);
+        if (!w.valid() || origins_[w.origin].prefix != gone_prefix) continue;
+        remove_writer(guid_of(w));
     }
     for (const RemoteEndpoint& r : remote_readers_) {
-        if (!r.valid() || r.guid.prefix != gone_prefix) continue;
-        const Guid guid = r.guid;
-        remove_reader(guid);
+        if (!r.valid() || origins_[r.origin].prefix != gone_prefix) continue;
+        remove_reader(guid_of(r));
     }
 }
 

@@ -257,7 +257,9 @@ static bool tc_sedp_8_5_5_1_007(std::string& err) {
 // A remote table full of endpoints no local endpoint pairs with must still
 // admit the one that completes a match: on a network much larger than the
 // table, the first announcements to arrive are rarely the ones this
-// participant needs. The displaced record is one in no match.
+// participant needs. The displaced record is one in no match. The filler
+// endpoints all belong to one participant, as a busy stock ROS 2 process's
+// do, so only the record tables run out, not the origins.
 struct DisplaceObs {
     int  match_calls   = 0;
     int  unmatch_calls = 0;
@@ -289,14 +291,14 @@ static bool tc_sedp_8_5_5_1_008(std::string& err) {
                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
 
     for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i) {
-        t.add_writer(make_writer(make_guid(0x20u, static_cast<Octet>(i), 0x00u,
-                                           make_entity(0u, 0u, 1u, 0x03u)),
+        t.add_writer(make_writer(make_guid(0x20u, 0x00u, 0x00u,
+                                           make_entity(0u, 1u, static_cast<Octet>(i), 0x03u)),
                                  "rt/rosout", "rcl_interfaces::msg::dds_::Log_",
                                  ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
     }
     for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_READERS; ++i) {
-        t.add_reader(make_reader(make_guid(0x20u, static_cast<Octet>(i), 0x00u,
-                                           make_entity(0u, 0u, 2u, 0x04u)),
+        t.add_reader(make_reader(make_guid(0x20u, 0x00u, 0x00u,
+                                           make_entity(0u, 2u, static_cast<Octet>(i), 0x04u)),
                                  "rt/parameter_events",
                                  "rcl_interfaces::msg::dds_::ParameterEvent_",
                                  ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
@@ -363,7 +365,94 @@ static bool tc_sedp_8_5_5_1_009(std::string& err) {
     return true;
 }
 
+// §8.5.4.2: an endpoint lists the locators it is reached at. The table keeps
+// the UDP ones this stack can send to, in announced order, so a kind it
+// cannot send to (Fast DDS's shared-memory kind, 16) never occupies a slot
+// ahead of a reachable one.
+static bool tc_sedp_8_5_5_1_010(std::string& err) {
+    PairObs obs{};
+    EndpointMatchTable t(
+        [](const MatchedEndpoint&, const MatchedEndpoint& r, const TopicName&,
+           void* u) noexcept {
+            auto* o = static_cast<PairObs*>(u);
+            o->calls++;
+            o->last_r = r.guid;
+            o->reader_locators = r.locatorCount;
+            o->first_locator = r.locatorCount ? r.locators[0] : LOCATOR_INVALID;
+        },
+        nullptr, &obs);
+    const Guid local_writer = make_guid(0xA1u, 0xA2u, 0xA3u, make_entity(1u, 1u, 1u, 0x03u));
+    t.set_local_prefix(local_writer.prefix);
+    t.add_writer(make_writer(local_writer, "rt/mach/faults", "controller_msgs::msg::dds_::Fault_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+
+    Locator shm{};
+    shm.kind = 16;
+    shm.port = 7411u;
+    const Locator udp = make_udpv4_locator(0xC0A80190u, 7411u);
+    DiscoveredReaderData remote = make_reader(make_guid(0xB1u, 0xB2u, 0xB3u, make_entity(2u, 2u, 2u, 0x04u)),
+                                              "rt/mach/faults", "controller_msgs::msg::dds_::Fault_",
+                                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    remote.unicastLocatorList[0] = shm;
+    remote.unicastLocatorList[1] = udp;
+    remote.unicastLocatorCount = 2u;
+    t.add_reader(remote);
+    CHECK(obs.calls == 1 && obs.last_r == remote.readerGuid, "the remote reader matches");
+    CHECK(obs.reader_locators == 1u && obs.first_locator == udp,
+          "only the UDP locator is kept and reported");
+    return true;
+}
+
+// Remote endpoints share an origin (participant prefix and announced
+// locators). When every origin is taken, an endpoint that completes a match
+// frees an origin none of whose endpoints is in a match, forgetting those
+// endpoints, and never one with an endpoint in a match.
+static bool tc_sedp_8_5_5_1_011(std::string& err) {
+    Obs obs{};
+    EndpointMatchTable t(on_match, on_unmatch, &obs);
+    const Guid local_reader = make_guid(0xC0u, 0x00u, 0x00u, make_entity(1u, 1u, 1u, 0x04u));
+    t.set_local_prefix(local_reader.prefix);
+    t.add_reader(make_reader(local_reader, "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+
+    // Participant 0 has a matched estop writer and an unmatched rosout reader;
+    // every other origin holds one unmatched rosout reader.
+    t.add_writer(make_writer(make_guid(0xD0u, 0x00u, 0x00u, make_entity(0u, 0u, 1u, 0x03u)),
+                             "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    for (uint32_t i = 0; i < RTPS_MAX_REMOTE_ORIGINS; ++i) {
+        t.add_reader(make_reader(make_guid(0xD0u, static_cast<Octet>(i), 0x00u,
+                                           make_entity(0u, 0u, 2u, 0x04u)),
+                                 "rt/rosout", "rcl_interfaces::msg::dds_::Log_",
+                                 ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    }
+    CHECK(obs.match_calls == 1, "participant 0's estop writer matches");
+    CHECK(t.count("rt/rosout", false) == RTPS_MAX_REMOTE_ORIGINS, "every origin is taken");
+
+    t.add_reader(make_reader(make_guid(0xE0u, 0x00u, 0x00u, make_entity(0u, 0u, 2u, 0x04u)),
+                             "rt/rosout", "rcl_interfaces::msg::dds_::Log_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    CHECK(t.count("rt/rosout", false) == RTPS_MAX_REMOTE_ORIGINS,
+          "an endpoint that completes no match frees no origin");
+
+    t.add_writer(make_writer(make_guid(0xE1u, 0x00u, 0x00u, make_entity(0u, 0u, 1u, 0x03u)),
+                             "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+    CHECK(obs.match_calls == 2, "an estop writer from a new participant matches");
+    CHECK(t.count("rt/rosout", false) == RTPS_MAX_REMOTE_ORIGINS - 1u,
+          "exactly one unmatched origin's endpoints are forgotten");
+    CHECK(t.count("rt/mach/estop", true) == 2u && obs.unmatch_calls == 0,
+          "participant 0's matched writer is kept");
+    return true;
+}
+
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests) {
+    tests.push_back({"TC-SEDP-8.5.5.1-011",
+                     "§8.5.5.1 capacity: when every remote origin is taken, an endpoint that completes a match frees an origin with no endpoint in a match; an origin with a matched endpoint is kept.",
+                     tc_sedp_8_5_5_1_011});
+    tests.push_back({"TC-SEDP-8.5.5.1-010",
+                     "§8.5.4.2 implementation limit: a remote endpoint keeps at most RTPS_MAX_REMOTE_ENDPOINT_LOCATORS UDP locators, in announced order; locator kinds the stack cannot send to are not kept.",
+                     tc_sedp_8_5_5_1_010});
     tests.push_back({"TC-SEDP-8.5.5.1-009",
                      "§8.5.5.1 capacity: a remote endpoint that is part of a match is never displaced; when every stored record is matched, further announcements are refused.",
                      tc_sedp_8_5_5_1_009});

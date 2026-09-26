@@ -403,7 +403,7 @@ void SedpWriter::announce_to_peer(const GuidPrefix& peer_prefix,
     }
 }
 
-void SedpWriter::on_peer_discovered(const SPDPdiscoveredParticipantData& peer) noexcept
+void SedpWriter::on_peer_discovered(const DiscoveredParticipant& peer) noexcept
 {
     const Locator* locs = peer.metatrafficUnicastLocatorList;
     uint8_t count = peer.metatrafficUnicastLocatorCount;
@@ -573,10 +573,10 @@ namespace {
 
 // Matches (or, when the peer does not list it, unmatches) one of the peer's
 // SEDP announcers with the builtin reader that receives its announcements.
-void match_builtin_announcer(StatefulReader&                      reader,
-                             const SPDPdiscoveredParticipantData& peer,
-                             uint32_t                             announcer_bit,
-                             const EntityId&                      announcer_id) noexcept
+void match_builtin_announcer(StatefulReader&              reader,
+                             const DiscoveredParticipant& peer,
+                             uint32_t                     announcer_bit,
+                             const EntityId&              announcer_id) noexcept
 {
     const Guid announcer{peer.guidPrefix, announcer_id};
     if ((peer.availableBuiltinEndpoints & announcer_bit) == 0u) {
@@ -606,7 +606,7 @@ SedpReader::SedpReader(const GuidPrefix&   local_prefix,
           ReliabilityKind::RELIABLE, transport, subscription_trampoline, this)
 {}
 
-void SedpReader::on_peer_discovered(const SPDPdiscoveredParticipantData& peer) noexcept
+void SedpReader::on_peer_discovered(const DiscoveredParticipant& peer) noexcept
 {
     match_builtin_announcer(publications_reader_, peer,
                             builtin_endpoint::DISC_BUILTIN_ENDPOINT_PUBLICATIONS_ANNOUNCER,

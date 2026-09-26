@@ -25,9 +25,9 @@ struct SedpPeer {
     GuidPrefix prefix{};
     Locator    meta = LOCATOR_INVALID;   ///< Metatraffic unicast locator.
 
-    /// @brief The peer's SPDP data, listing both SEDP announcers and detectors.
-    SPDPdiscoveredParticipantData spdp() const {
-        SPDPdiscoveredParticipantData d{};
+    /// @brief What SPDP keeps of the peer, listing both SEDP announcers and detectors.
+    DiscoveredParticipant spdp() const {
+        DiscoveredParticipant d{};
         d.guidPrefix = prefix;
         d.metatrafficUnicastLocatorList[0] = meta;
         d.metatrafficUnicastLocatorCount = 1u;

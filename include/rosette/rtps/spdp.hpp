@@ -158,17 +158,64 @@ inline bool plcdr_write_sentinel(Octet* buf, uint32_t cap, uint32_t& off) noexce
 }
 
 // ============================================================
-// PeerEntry — one discovered remote participant
+// DiscoveredParticipant / PeerEntry — one discovered remote participant
 //
 // §8.5.3.2, Table 8.73, p. 160.
-// Maintained in SpdpReader::peer_table_.
+//
+// A peer's announcement carries more than discovery uses afterwards: four
+// locator lists of every kind on every interface, protocol and vendor
+// versions, liveliness counts. The peer table keeps, per participant, only
+// what SEDP and endpoint addressing read: the GUID prefix, the builtin
+// endpoint set, and the leading UDP locators of the metatraffic unicast,
+// metatraffic multicast and default unicast lists (copy_udp_locators()).
+// On a network of dozens of participants, the table is one of the largest
+// discovery structures a microcontroller holds, so every octet here is
+// multiplied by RTPS_MAX_PEERS.
 // ============================================================
 
+/// Locators kept per list of a discovered participant. Sending uses the
+/// first UDP locator of a list, as WriterProxy and ReaderProxy keep.
+#ifndef RTPS_MAX_PEER_LOCATORS
+#  define RTPS_MAX_PEER_LOCATORS 2
+#endif
+
+/// What discovery keeps of a remote participant's SPDPdiscoveredParticipantData.
+struct DiscoveredParticipant {
+    GuidPrefix guidPrefix                = {};
+    uint32_t   availableBuiltinEndpoints = 0;   ///< Bitmask — §8.5.4.3.
+
+    Locator metatrafficUnicastLocatorList[RTPS_MAX_PEER_LOCATORS]   = {};
+    Locator metatrafficMulticastLocatorList[RTPS_MAX_PEER_LOCATORS] = {};
+    Locator defaultUnicastLocatorList[RTPS_MAX_PEER_LOCATORS]       = {};
+    uint8_t metatrafficUnicastLocatorCount   = 0;
+    uint8_t metatrafficMulticastLocatorCount = 0;
+    uint8_t defaultUnicastLocatorCount       = 0;
+
+    /**
+     * @brief Keeps what discovery uses of one received SPDP announcement.
+     *
+     * @param[in] announced The decoded announcement.
+     * @return The prefix and builtin endpoint set as announced, and each
+     *   locator list reduced to its leading RTPS_MAX_PEER_LOCATORS UDP
+     *   locators (copy_udp_locators()).
+     *
+     * Verification:
+     * - Correct means: no locator of a kind the stack cannot send to is kept,
+     *   and kept locators stay in announced order.
+     * - Covered by: TC-SPDP-8.5.3-007.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2, Table 8.73
+     */
+    static DiscoveredParticipant from(const SPDPdiscoveredParticipantData& announced) noexcept;
+};
+
+/// A slot of SpdpReader's peer table.
 struct PeerEntry {
-    SPDPdiscoveredParticipantData data;         ///< Received participant data.
-    uint32_t                      leaseExpiryMs = 0; ///< rosette::platform::monotonic_ms() at expiry.
-    bool                          alive         = false;
-    bool                          sedp_announced = false; ///< SEDP sent for this peer.
+    DiscoveredParticipant data;                 ///< What discovery keeps of the peer.
+    uint32_t              leaseExpiryMs  = 0;   ///< rosette::platform::monotonic_ms() at expiry.
+    bool                  alive          = false;
+    bool                  sedp_announced = false; ///< SEDP sent for this peer.
 };
 
 // ============================================================
@@ -366,10 +413,6 @@ private:
 // on_peer_removed callback: fired when a participant's lease expires.
 // Both callbacks carry a const PeerEntry& valid for the call duration.
 // ============================================================
-
-#ifndef RTPS_MAX_PEERS
-#  define RTPS_MAX_PEERS 8
-#endif
 
 class SpdpReader {
 public:

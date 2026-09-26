@@ -60,6 +60,15 @@
       "test_ids": ["TC-SPDP-8.5.3-003"]
     },
     {
+      "id": "REQ-SPDP-8.5.3.2-UDP-LOCATORS-KEPT",
+      "section": "8.5.3.2",
+      "page": 160,
+      "normativity": "implementation-limit",
+      "statement": "A discovered participant keeps at most RTPS_MAX_PEER_LOCATORS locators per metatraffic unicast, metatraffic multicast and default unicast list: the leading UDP locators, in announced order; locator kinds the stack cannot send to are not kept.",
+      "status": "implemented",
+      "test_ids": ["TC-SPDP-8.5.3-007"]
+    },
+    {
       "id": "REQ-SPDP-9.6.1-WELLKNOWN-PORTS",
       "section": "9.6.1",
       "page": 254,

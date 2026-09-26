@@ -63,9 +63,18 @@
       "section": "8.5.5.1",
       "page": 169,
       "normativity": "implementation-limit",
-      "statement": "When the remote endpoint table is full, an announced endpoint that completes a match with a local endpoint displaces a stored remote endpoint that is in no match; an endpoint that completes none is not kept, and a stored endpoint that is part of a match is never displaced.",
+      "statement": "When the remote endpoint table or its origin table is full, an announced endpoint that completes a match with a local endpoint displaces stored remote endpoints that are in no match; an endpoint that completes none is not kept, and a stored endpoint that is part of a match is never displaced.",
       "status": "implemented",
-      "test_ids": ["TC-SEDP-8.5.5.1-008", "TC-SEDP-8.5.5.1-009"]
+      "test_ids": ["TC-SEDP-8.5.5.1-008", "TC-SEDP-8.5.5.1-009", "TC-SEDP-8.5.5.1-011"]
+    },
+    {
+      "id": "REQ-SEDP-8.5.4.2-UDP-LOCATORS-KEPT",
+      "section": "8.5.4.2",
+      "page": 166,
+      "normativity": "implementation-limit",
+      "statement": "A remote endpoint keeps at most RTPS_MAX_REMOTE_ENDPOINT_LOCATORS of the locators it announced: the leading UDP locators, in announced order; locator kinds the stack cannot send to are not kept.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.5.1-010"]
     },
     {
       "id": "REQ-SEDP-8.5.4.1-RELIABLE-BUILTIN-READERS",

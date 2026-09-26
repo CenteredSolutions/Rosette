@@ -16,10 +16,20 @@
  *
  *   Local endpoints   full topic and type names, QoS. At most
  *                     RTPS_MAX_LOCAL_ENDPOINTS writers and as many readers.
- *   Remote endpoints  GUID, QoS, the locators the endpoint announced (none
- *                     means its participant's defaults), and a 32-bit key
- *                     of the topic name and one of the type name
- *                     (name_key()). No names.
+ *   Remote endpoints  16 octets: EntityId, QoS, a 32-bit key of the topic
+ *                     name and one of the type name (name_key()), and the
+ *                     index of the endpoint's origin. No names.
+ *   Origins           a GUID prefix and the UDP locators an endpoint
+ *                     announced (none means its participant's defaults).
+ *                     At most RTPS_MAX_REMOTE_ORIGINS.
+ *
+ * The endpoints of one participant share its GUID prefix and, in every stack
+ * this one interoperates with, announce the same locators (Fast DDS and
+ * Rosette list the participant's defaults, Cyclone DDS lists none), so they
+ * share one origin, and a remote endpoint costs 16 octets however many
+ * locators its participant announced. An endpoint that announces locators of
+ * its own takes an origin of its own. Only UDP locators are kept, and at
+ * most RTPS_MAX_REMOTE_ENDPOINT_LOCATORS of them (copy_udp_locators()).
  *
  * A remote endpoint is compared by name, exactly, against the local
  * endpoints when it is announced, while its full names are at hand. A local
@@ -38,8 +48,10 @@
  * local endpoint created later still finds its peers and count() sees the
  * whole graph. When the table is full, an announcement that completes a
  * match with a local endpoint takes the slot of a remote record that is in
- * no match; an announcement that completes none is not kept. A record in a
- * match is never displaced, so matching never loses a pair it reported.
+ * no match; an announcement that completes none is not kept. Likewise, when
+ * it needs an origin and none is free, it frees an origin none of whose
+ * endpoints is in a match, forgetting those endpoints. A record in a match
+ * is never displaced, so matching never loses a pair it reported.
  * The table therefore needs room only for the remote endpoints the local
  * ones match; beyond that, what it keeps of the rest decides only what
  * count() sees and what a later local endpoint can match without a fresh
@@ -256,10 +268,18 @@ uint32_t name_key(const char* name) noexcept;
 #ifndef RTPS_MAX_LOCAL_ENDPOINTS
 #  define RTPS_MAX_LOCAL_ENDPOINTS 8
 #endif
-/// Locators kept per remote endpoint, as a WriterProxy or ReaderProxy keeps.
+/// UDP locators kept per origin, as a WriterProxy or ReaderProxy keeps.
 #ifndef RTPS_MAX_REMOTE_ENDPOINT_LOCATORS
 #  define RTPS_MAX_REMOTE_ENDPOINT_LOCATORS 2
 #endif
+/// Distinct (GUID prefix, announced locators) pairs among the stored remote
+/// endpoints. One per remote participant covers every stack this one
+/// interoperates with (see Storage in the file comment).
+#ifndef RTPS_MAX_REMOTE_ORIGINS
+#  define RTPS_MAX_REMOTE_ORIGINS RTPS_MAX_PEERS
+#endif
+static_assert(RTPS_MAX_REMOTE_ORIGINS >= 1 && RTPS_MAX_REMOTE_ORIGINS < 255,
+              "RTPS_MAX_REMOTE_ORIGINS must fit a one-octet index below the none value 0xFF");
 // Writer-reader pairs tracked at once. Only pairs that involve a local
 // endpoint are tracked, so this scales with local endpoints times their
 // matched peers rather than with the whole graph.
@@ -406,24 +426,32 @@ private:
         bool valid() const noexcept { return guid != GUID_UNKNOWN; }
     };
 
+    /// Origin index of a free RemoteEndpoint.
+    static constexpr uint8_t kNoOrigin = 0xFFu;
+
+    /// A remote endpoint's participant prefix and announced UDP locators,
+    /// shared by every stored endpoint that has both in common.
+    struct RemoteOrigin {
+        GuidPrefix prefix       = {};
+        uint16_t   users        = 0;   ///< Stored endpoints naming this origin; 0 = free.
+        uint8_t    locatorCount = 0;
+        Locator    locators[RTPS_MAX_REMOTE_ENDPOINT_LOCATORS] = {};
+    };
+
     struct RemoteEndpoint {
-        Guid     guid             = GUID_UNKNOWN;
+        EntityId entityId         = entity_id::UNKNOWN;
         uint32_t topicKey         = 0;   ///< name_key() of the topic name.
         uint32_t typeKey          = 0;   ///< name_key() of the type name.
+        uint8_t  origin           = kNoOrigin;   ///< Index into origins_.
         uint8_t  reliability      = 0;   ///< ReliabilityKind.
         uint8_t  durability       = 0;   ///< DurabilityKind.
         bool     expectsInlineQos = false;
-        uint8_t  locatorCount     = 0;
-        Locator  locators[RTPS_MAX_REMOTE_ENDPOINT_LOCATORS] = {};
-        bool valid() const noexcept { return guid != GUID_UNKNOWN; }
+        bool valid() const noexcept { return origin != kNoOrigin; }
         ReliabilityKind reliability_kind() const noexcept {
             return static_cast<ReliabilityKind>(reliability);
         }
         DurabilityKind durability_kind() const noexcept {
             return static_cast<DurabilityKind>(durability);
-        }
-        MatchedEndpoint matched() const noexcept {
-            return MatchedEndpoint{guid, locators, locatorCount, expectsInlineQos};
         }
     };
 
@@ -440,11 +468,79 @@ private:
     }
 
     static LocalEndpoint* find(LocalEndpoint* table, uint32_t n, const Guid& g) noexcept;
-    static RemoteEndpoint* find(RemoteEndpoint* table, uint32_t n, const Guid& g) noexcept;
-    static void store_remote(RemoteEndpoint& slot, const Guid& guid, uint32_t topic_key,
-                             uint32_t type_key, ReliabilityKind reliability, DurabilityKind durability,
-                             bool expects_inline_qos, const Locator* locators,
-                             uint8_t locator_count) noexcept;
+
+    /// @brief The record for `g` in `table`, or, when `g` is GUID_UNKNOWN, a free record; else null.
+    RemoteEndpoint* find_remote(RemoteEndpoint* table, uint32_t n, const Guid& g) noexcept;
+
+    /// @brief The full GUID of a stored remote endpoint.
+    Guid guid_of(const RemoteEndpoint& r) const noexcept {
+        return Guid{origins_[r.origin].prefix, r.entityId};
+    }
+
+    /// @brief A stored remote endpoint as on_match reports it; its locators
+    /// live in origins_ and stay valid while the record is stored.
+    MatchedEndpoint matched(const RemoteEndpoint& r) const noexcept {
+        const RemoteOrigin& o = origins_[r.origin];
+        return MatchedEndpoint{guid_of(r), o.locators, o.locatorCount, r.expectsInlineQos};
+    }
+
+    /**
+     * @brief Finds or makes room for a remote endpoint's record and origin.
+     *
+     * The record is the one already stored for `guid`, else a free one; the
+     * origin is the one already holding `guid`'s prefix and `locators`, else
+     * a free one. When either is missing and the endpoint completes a match
+     * (`completes_match`), room is made as the Capacity rule in the file
+     * comment says: evict_unmatched_origin() for an origin, then
+     * displace_unmatched() for a record.
+     *
+     * @param[in,out] table           remote_writers_ or remote_readers_.
+     * @param[in]     n               Entries in `table`.
+     * @param[in]     is_writer       `true` when `table` holds writers.
+     * @param[in]     guid            The announced endpoint's GUID.
+     * @param[in]     locators        Its kept UDP locators (copy_udp_locators()).
+     * @param[in]     locator_count   Entries in `locators`.
+     * @param[in]     completes_match pairs_with_local() for the endpoint.
+     * @param[out]    origin          The origin index to store, when a record is returned.
+     * @return The record to store the endpoint in, or null when it is not kept.
+     *
+     * Verification:
+     * - Correct means: a stored endpoint in a match is never cleared, and an
+     *   endpoint that completes a match is refused only when every record or
+     *   every origin it could take belongs to a match.
+     * - Covered by: TC-SEDP-8.5.5.1-008, TC-SEDP-8.5.5.1-009, TC-SEDP-8.5.5.1-011.
+     */
+    RemoteEndpoint* admit_remote(RemoteEndpoint* table, uint32_t n, bool is_writer,
+                                 const Guid& guid, const Locator* locators, uint8_t locator_count,
+                                 bool completes_match, uint8_t& origin) noexcept;
+
+    /// @brief The origin holding `prefix` and `locators`, else a free one, else kNoOrigin.
+    uint8_t find_origin(const GuidPrefix& prefix, const Locator* locators,
+                        uint8_t locator_count) const noexcept;
+
+    /**
+     * @brief Frees an origin none of whose stored endpoints is in a match.
+     *
+     * Every stored endpoint of that origin, writer or reader, is forgotten
+     * without notification; the caller's store fires on_change for them.
+     *
+     * @return The freed origin's index, or kNoOrigin when every origin in use
+     *   has an endpoint in a match.
+     *
+     * Verification:
+     * - Correct means: no endpoint in a match is forgotten.
+     * - Covered by: TC-SEDP-8.5.5.1-008, TC-SEDP-8.5.5.1-011.
+     */
+    uint8_t evict_unmatched_origin() noexcept;
+
+    /// @brief Stores an endpoint in `slot`, naming `origin`, and releases the origin it named before.
+    void store_remote(RemoteEndpoint& slot, const Guid& guid, uint8_t origin,
+                      const Locator* locators, uint8_t locator_count, uint32_t topic_key,
+                      uint32_t type_key, ReliabilityKind reliability, DurabilityKind durability,
+                      bool expects_inline_qos) noexcept;
+
+    /// @brief Frees a stored remote endpoint and releases its origin.
+    void clear_remote(RemoteEndpoint& r) noexcept;
 
     /**
      * @brief True when a remote endpoint would complete a match with a local one.
@@ -480,10 +576,10 @@ private:
     /**
      * @brief Frees the first remote record that is in no match.
      *
-     * The record is cleared without notifying anyone: the caller stores the
-     * announcement that needed the slot there, and the on_change that store
-     * fires covers the forgotten record too. No pair is dissolved, since a
-     * record in no match has none.
+     * The record is cleared, and its origin released, without notifying
+     * anyone: the caller stores the announcement that needed the slot there,
+     * and the on_change that store fires covers the forgotten record too. No
+     * pair is dissolved, since a record in no match has none.
      *
      * @param[in,out] table     remote_writers_ or remote_readers_.
      * @param[in]     n         Entries in `table`.
@@ -508,6 +604,7 @@ private:
     LocalEndpoint  local_readers_[RTPS_MAX_LOCAL_ENDPOINTS]     = {};
     RemoteEndpoint remote_writers_[RTPS_MAX_DISCOVERED_WRITERS] = {};
     RemoteEndpoint remote_readers_[RTPS_MAX_DISCOVERED_READERS] = {};
+    RemoteOrigin   origins_[RTPS_MAX_REMOTE_ORIGINS]            = {};
     MatchRecord    matches_[kMaxMatches]                        = {};
 
     OnMatch    on_match_;

@@ -340,7 +340,62 @@ static bool tc_spdp_8_5_3_006(std::string& err) {
     return true;
 }
 
+// §8.5.3.2: a participant lists every locator it can be reached at, of any
+// kind and on every interface. The peer table keeps the UDP locators this
+// stack can send to, in announced order, and no more than it uses: a kind it
+// cannot send to (here Fast DDS's shared-memory kind, 16) never occupies a
+// slot ahead of a reachable one.
+static bool tc_spdp_8_5_3_007(std::string& err) {
+    PeerObs obs{};
+    SpdpReader r(on_new_peer, on_peer_removed, &obs);
+    const GuidPrefix gp = make_prefix(0x71u, 0x72u, 0x73u);
+
+    Octet buf[512] = {};
+    uint32_t off = 0;
+    const uint16_t rep[2] = {0x0003u, 0x0000u};
+    memcpy(buf, rep, 4u); off = 4u;
+    Octet guid[16] = {};
+    memcpy(guid, gp.value, 12u);
+    guid[15] = 0xC1u;
+    CHECK(plcdr_write_param(buf, sizeof(buf), off, pid::PARTICIPANT_GUID, guid, 16u), "guid");
+
+    Locator shm{};
+    shm.kind = 16;
+    shm.port = 7410u;
+    const Locator meta_a = make_udpv4_locator(0xC0A80164u, 7410u);
+    const Locator meta_b = make_udpv4_locator(0xAC110001u, 7410u);
+    const Locator meta_c = make_udpv4_locator(0x0A000005u, 7410u);
+    const Locator user_d = make_udpv4_locator(0xC0A80164u, 7411u);
+    const Locator* metas[] = {&shm, &meta_a, &meta_b, &meta_c};
+    for (const Locator* l : metas) {
+        CHECK(plcdr_write_param(buf, sizeof(buf), off, pid::METATRAFFIC_UNICAST_LOCATOR, l, 24u),
+              "metatraffic locator");
+    }
+    const Locator* users[] = {&shm, &user_d};
+    for (const Locator* l : users) {
+        CHECK(plcdr_write_param(buf, sizeof(buf), off, pid::DEFAULT_UNICAST_LOCATOR, l, 24u),
+              "default locator");
+    }
+    CHECK(plcdr_write_sentinel(buf, sizeof(buf), off), "sentinel");
+
+    CHECK(r.on_data(gp, buf, off, 0u), "participant DATA should be accepted");
+    bool checked = false;
+    r.for_each_peer([&](const PeerEntry& peer) {
+        if (peer.data.guidPrefix != gp) return;
+        checked = peer.data.metatrafficUnicastLocatorCount == 2u &&
+                  peer.data.metatrafficUnicastLocatorList[0] == meta_a &&
+                  peer.data.metatrafficUnicastLocatorList[1] == meta_b &&
+                  peer.data.defaultUnicastLocatorCount == 1u &&
+                  peer.data.defaultUnicastLocatorList[0] == user_d;
+    });
+    CHECK(checked, "the peer keeps its first two UDP metatraffic locators and its UDP default");
+    return true;
+}
+
 void append_spdp_tests_8_5_3(std::vector<TestCase>& tests) {
+    tests.push_back({"TC-SPDP-8.5.3-007",
+                     "§8.5.3.2 implementation limit: a discovered participant keeps at most RTPS_MAX_PEER_LOCATORS UDP locators per list, in announced order; locator kinds the stack cannot send to are not kept.",
+                     tc_spdp_8_5_3_007});
     tests.push_back({"TC-SPDP-8.5.3-001",
                      "§8.5.3.3: SPDPbuiltinParticipantWriter sends a DATA Submessage carrying local SPDPdiscoveredParticipantData PL_CDR payload.",
                      tc_spdp_8_5_3_001});

@@ -206,7 +206,7 @@ public:
 
     // Match the peer's builtin SEDP readers from its SPDP data (using all
     // of its metatraffic unicast locators), which replays the history.
-    void on_peer_discovered(const SPDPdiscoveredParticipantData& peer) noexcept;
+    void on_peer_discovered(const DiscoveredParticipant& peer) noexcept;
 
     // Remove remote builtin SEDP readers when a peer expires.
     void on_peer_removed(const GuidPrefix& peer_prefix) noexcept;
@@ -295,7 +295,7 @@ public:
      * not list is unmatched. Matching an already matched announcer changes
      * nothing, so its reliability state survives SPDP refreshes.
      *
-     * @param[in] peer The peer's SPDPdiscoveredParticipantData.
+     * @param[in] peer What the SPDP peer table keeps of the participant.
      *
      * Verification:
      * - Correct means: after the call, DATA and HEARTBEAT from each listed
@@ -305,7 +305,7 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.4.1, §8.5.3.2 (availableBuiltinEndpoints)
      */
-    void on_peer_discovered(const SPDPdiscoveredParticipantData& peer) noexcept;
+    void on_peer_discovered(const DiscoveredParticipant& peer) noexcept;
 
     /// @brief Unmatches a departed participant's SEDP announcers.
     void on_peer_removed(const GuidPrefix& peer_prefix) noexcept;
