@@ -4,11 +4,24 @@ Be friendly, highly energetic, playful, and encouraging. Keep the tone lively, w
 Do not validate bad ideas, weak reasoning, or incorrect assumptions just to be agreeable. If something is wrong, say so clearly and directly. Act like a strong coach: correct the mistake, explain why it is wrong, and redirect toward the best path. If my reasoning is partially right, identify what is sound and help refine the rest. If my reasoning is strong, say so explicitly and, when useful, support it with references to respected industry practices, standards, papers, or prior art.
 
 ## Architecture Direction
-Rosette provides a DDSI-RTPS stack (`src/rtps`, `include/rosette/rtps`) and an rmw implementation on top of it
-(`rmw_rosette`). Applications use the stock ROS 2 client libraries (`rcl`, `rclc`, `rclcpp`, `rclpy`) with
-`RMW_IMPLEMENTATION=rmw_rosette`. Rosette does not provide its own ROS client API or emulate `rcl`; the legacy
-`milkros` name and its direct-RTPS `Context` API are retired. Interoperability is proven against stock ROS 2
-middleware (`rmw_fastrtps_cpp`, `rmw_cyclonedds_cpp`), not against Rosette itself.
+Rosette puts a microcontroller on a ROS 2 network. It supplies the networking layer (socket backends, the WIZnet
+driver, address providers) and the storage layer, and it supports two ROS 2 backends on top of them. A firmware
+designer picks one per project based on its constraints:
+
+- **`rmw_rosette`**: a DDSI-RTPS stack (`src/rtps`, `include/rosette/rtps`) and an rmw implementation on top of it
+  (`rmw_rosette/`). The board is a DDS participant and talks to every peer directly; no extra process is needed.
+  On a host, any `rclcpp` or `rclpy` program runs on it with `RMW_IMPLEMENTATION=rmw_rosette`.
+- **micro-ROS agent**: `rmw_microxrcedds` over XRCE-DDS to a `micro_ros_agent` on a host, which joins the DDS graph
+  on the board's behalf. It costs less flash and RAM on the board and needs the agent running on the network.
+
+Application code is stock `rclc` and builds against either backend unchanged. Only session setup differs: the agent
+backend discovers, pings, and reconnects to its agent, and `rmw_rosette` has no such step. Everything Rosette adds
+above the rmw layer stays consistent with both backends; a feature that works on only one of them is a defect in
+that feature. Rosette does not provide its own ROS client API or emulate `rcl`, and the legacy `milkros` name and its
+direct-RTPS `Context` API are retired.
+
+Interoperability is proven against stock ROS 2 middleware (`rmw_fastrtps_cpp`, `rmw_cyclonedds_cpp`) and the stock
+`micro_ros_agent`, not against Rosette itself.
 
 ## Function Documentation Style
 
@@ -72,10 +85,66 @@ Refrain from documenting things as interim, provisional, changed. Code and docum
 Add clear module-level architecture notes where helpful. Add comments to non-obvious code to explain rationale, especially where the design may not be immediately intuitive.
 
 ## Coding Style
-Strive for smaller files so it's clear to simple humans where code is and how to find it. Aim to keep code files shorter rather than longer with great intros and docstrings. Filenames should not be generic but should be specific an indicate what the code in the files accomplishes. Again, to make it clear to humans where the code for features is implemented.
+Strive for smaller files so it's clear to simple humans where code is and how to find it. Aim to keep code files
+shorter rather than longer with great intros and docstrings. Filenames should not be generic but should be specific
+and indicate what the code in the files accomplishes. Again, to make it clear to humans where the code for features
+is implemented.
 
-Follow Google style conventions for Python and C++. Python docstrings use Google style (`Args:`, `Returns:`, `Raises:`) and carry the same `Verification:` and `References:` intent as the C++ template.
+Follow Google style conventions for Python and C++, with the project rules below taking precedence where they
+differ. Python docstrings use Google style (`Args:`, `Returns:`, `Raises:`) and carry the same `Verification:` and
+`References:` intent as the C++ template.
 
-When editing code, improve surrounding code toward those standards where practical. Favor consistency, readability, maintainability, and well-structured documentation.
+### Wrapped expressions
+When a boolean or arithmetic expression wraps, break before the operator so each continuation line starts with it.
+The leading `&&`, `||`, `+`, or `?` tells the reader at a glance that the line continues an expression, and the
+operands line up for comparison. This is the rule PEP 8 adopts for Python (after Knuth), and the same rule applies
+to C++ here.
 
-When editing code and changing documentation, do not explain why things were changed. Instead, rewrite the documentation so it is relevant and aligned with the rationale of the new code.
+```cpp
+if (reader.is_reliable()
+    && proxy.highest_acked < change.sequence_number
+    && !proxy.is_lost(change.sequence_number)) {
+    resend(change);
+}
+```
+
+### Blocks and vertical whitespace
+- The body of every `if`, `else`, `for`, `while`, and `do` goes on its own line, indented, inside braces, even when
+  it is a single statement. `if (done) return;` on one line is not used.
+- Separate the logical steps of a function with a blank line, so a reader can see which statements belong to which
+  step, loop, or branch.
+- A closing `}` on a line by itself is always followed by a blank line before the next statement. The exceptions
+  are a `}` followed by another `}`, by `else`, by the `while` of a `do` loop, or by a `case` label.
+
+```cpp
+for (auto& proxy : proxies_) {
+    if (proxy.is_matched()) {
+        send_heartbeat(proxy);
+    }
+
+    proxy.age_out(now);
+}
+
+return proxies_.size();
+```
+
+### Function length
+A function fits on one screen: no more than 100 lines, without exception. Below that ceiling, split a function only
+when the piece being extracted is a real concept with a name a reader would recognize, such as a spec procedure or a
+state-machine transition. Do not split a straight-line procedure into many small helpers just to shorten it; the
+reader then has to jump between definitions to follow one sequence of steps. Private helpers are tested through the
+function that calls them, not individually.
+
+### Enforcement
+`.clang-format` encodes the formatting rules, pinned to clang-format 18.1.8. `tools/style/run_style_checks.sh`
+runs every check locally and in the GitHub `style` workflow: formatting and the blank-line rule on lines changed
+since the merge base with `main`, and the function-length cap across the tree, where functions already over the cap
+are listed in `tools/style/function_length_baseline.txt` and may only shrink. Install the tools with
+`python3 -m pip install -r tools/style/requirements.txt`.
+
+### Editing existing code
+When editing code, improve surrounding code toward those standards where practical. Favor consistency, readability,
+maintainability, and well-structured documentation.
+
+When editing code and changing documentation, do not explain why things were changed. Instead, rewrite the
+documentation so it is relevant and aligned with the rationale of the new code.
