@@ -1,21 +1,23 @@
 /**
  * @file net/wiznet/link.hpp
- * @brief WIZnet chip bring-up: verify the part, size its buffers, wait for the PHY link.
+ * @brief WIZnet chip bring-up: verify the part and put it in socket mode with the board's MAC.
  *
  * `WiznetLink` gets the chip to the point where addressing can start: the
- * part answers with the expected version, runs in socket mode with the MAC
- * programmed, and reports carrier. Addresses are then the job of the
- * `AddressProvider`s (`dhcp_provider.hpp`, `ipv4ll_provider.hpp`,
- * `slaac_provider.hpp`) under an `AddressManager`.
+ * part answers with the expected version and runs in socket mode with the
+ * MAC programmed. It does not wait for the PHY: carrier comes and goes for
+ * the life of the board, so `NetworkAddress` (`net/address.hpp`) watches it
+ * through `WiznetInterface::link_state()` and starts the address providers
+ * (`dhcp_provider.hpp`, `ipv4ll_provider.hpp`, `slaac_provider.hpp`) whenever
+ * the link comes up.
  *
  *     namespace wiz = rosette::net::wiznet;
  *     auto bus = wiz::make_board_bus();
  *     wiz::BoardDevice device{bus};
  *     wiz::BoardLink link{device, mac};
- *     while (!link.bring_link_up()) { rosette_platform_delay_ms(500u); }
+ *     while (!link.bring_chip_up()) { rosette_platform_delay_ms(500u); }
  *
  * `board_init()` must have configured SPI and toggled the chip reset line
- * before the first `bring_link_up()`.
+ * before the first `bring_chip_up()`.
  */
 
 #pragma once
@@ -24,8 +26,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <variant>
-
-#include "rosette/platform/host_runtime.hpp"
 
 #include "board.hpp"
 #include "device.hpp"
@@ -44,54 +44,51 @@ public:
     WiznetLink& operator=(const WiznetLink&) = delete;
 
     /**
-     * @brief Verifies the chip, puts it in socket mode, and waits for PHY link.
+     * @brief Verifies the chip and puts it in socket mode with the board's MAC.
      *
      * Leaves the chip ready for an `AddressProvider` to take over addressing;
-     * assigns no address. The chip is verified once; later calls only wait
-     * for the link. Blocks for at most kPhyLinkTimeoutMs.
+     * assigns no address and does not wait for the PHY link. The chip is set
+     * up once; later calls return `true` at once. Takes a few SPI
+     * transactions, so a caller may retry it from a superloop.
      *
-     * @return `true` when the chip is ready and the PHY link is up.
+     * @return `true` when the chip is in socket mode; `false` when it did not
+     *   answer or reported an unexpected version (printed), in which case the
+     *   call may be retried.
+     *
+     * Verification:
+     * - Correct means: after `true`, socket opens succeed and the chip's
+     *   SHAR holds `mac`; a missing or wrong part never yields `true`.
+     * - Covered by: every WIZnet example on the W5100S-EVB-Pico2 and the
+     *   W6100-EVB-Pico (the boot log reaches `[net] chip ready`).
+     *
+     * References: W5100S / W6100 / W6300 datasheets, VERR / CIDR and MR registers.
      */
-    bool bring_link_up() noexcept {
-        if (link_ready_) {
+    bool bring_chip_up() noexcept {
+        if (chip_ready_) {
             return true;
         }
 
-        if (!chip_ready_) {
-            if (!device_.verify()) {
-                std::printf("[wiznet] chip verify failed\n");
-                return false;
-            }
-            auto result = device_.init_socket_mode(mac_);
-            if (std::holds_alternative<typename device_type::InvalidChipVersion>(result)) {
-                const auto& err = std::get<typename device_type::InvalidChipVersion>(result);
-                std::printf("[wiznet] invalid chip version: 0x%02x (expected 0x%02x)\n", err.actual,
-                            err.expected);
-                return false;
-            }
-            chip_ready_ = true;
+        if (!device_.verify()) {
+            std::printf("[wiznet] chip verify failed\n");
+            return false;
         }
 
-        const uint32_t phy_start = rosette_platform_get_ms();
-        while (!device_.is_link_up()) {
-            if ((rosette_platform_get_ms() - phy_start) >= kPhyLinkTimeoutMs) {
-                std::printf("[wiznet] PHY link timeout\n");
-                return false;
-            }
-            rosette_platform_delay_ms(100u);
+        auto result = device_.init_socket_mode(mac_);
+        if (std::holds_alternative<typename device_type::InvalidChipVersion>(result)) {
+            const auto& err = std::get<typename device_type::InvalidChipVersion>(result);
+            std::printf("[wiznet] invalid chip version: 0x%02x (expected 0x%02x)\n", err.actual,
+                        err.expected);
+            return false;
         }
 
-        link_ready_ = true;
+        chip_ready_ = true;
         return true;
     }
 
 private:
-    static constexpr uint32_t kPhyLinkTimeoutMs = 5000u;
-
     device_type& device_;
     std::array<uint8_t, 6> mac_{};
     bool chip_ready_ = false;
-    bool link_ready_ = false;
 };
 
 using BoardLink = WiznetLink<BoardChip, BoardBus>;

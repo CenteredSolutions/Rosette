@@ -150,8 +150,10 @@ becomes `std_msgs::msg::dds_::String_`, and a service `/x` becomes the topics
 The W5100S, W6100, and W6300 run UDP/IP in silicon, so a WIZnet board needs no
 software IP stack and no RTOS. `rosette/net/wiznet/board_network.hpp` owns the
 chip for the whole image: `bring_up_board_network()` initializes the chip,
-waits for link, and acquires an IPv4 address (DHCP, falling back to RFC 3927
-link-local); `poll_board_network()` renews the lease from the main loop. On
+waits for link, and acquires the addresses the firmware's `NetworkConfig`
+names (`rosette/net/network_config.hpp`; by default DHCP, falling back to
+RFC 3927 link-local); `poll_board_network()` renews the lease, and retries
+DHCP while link-local holds, from the main loop. On
 the W6100 and W6300, which also run IPv6 in silicon, the same module runs
 stateless address autoconfiguration beside IPv4
 (`rosette/net/wiznet/slaac_provider.hpp`): a link-local address, and a global

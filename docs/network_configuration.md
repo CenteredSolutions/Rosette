@@ -12,10 +12,12 @@ W6100 / W6300 driver and its IPv6 support are in
 
 ## What a board does at boot
 
-Every WIZnet firmware calls `wiz::bring_up_board_network(hostname)`
-(`include/rosette/net/wiznet/board_network.hpp`) before `rcl_init()`. It
+Every WIZnet firmware calls `wiz::bring_up_board_network(hostname)`, or
+`wiz::bring_up_board_network(hostname, config)` with its own `NetworkConfig`
+(see [Choosing the addressing methods](#choosing-the-addressing-methods)),
+before `rcl_init()` (`include/rosette/net/wiznet/board_network.hpp`). It
 blocks until the board is addressable, then `poll_board_network(now)` in the
-main loop keeps it that way:
+main loop keeps it that way. With the default config:
 
 | Step | What happens | Console |
 | --- | --- | --- |
@@ -24,22 +26,24 @@ main loop keeps it that way:
 | IPv6 (W6100, W6300) | a link-local address fe80::/64 + modified EUI-64 of the MAC, checked by duplicate address detection; then router solicitation, and a global address from any advertised autonomous /64 prefix (RFC 4862 SLAAC) | `[net] IPv6 address fe80:0:0:0:208:dcff:fe12:3456` |
 | Interrupts | route the chip's INT pin to the socket layer, so the firmware sleeps until a datagram arrives | |
 
-Bring-up returns once the IPv4 address and, on IPv6 parts, the link-local
-address are held. A global IPv6 address arrives later, when a router
-advertises a prefix. `board_address_snapshot()` lists every address the board
+Bring-up returns once an IPv4 address is held. IPv6 addresses arrive in the
+background: the link-local address about a second after the link comes up,
+and a global address when a router advertises a prefix. `board_address_snapshot()` lists every address the board
 holds per family; its `v6.primary()` is the global address once there is one
 and the link-local address before that.
 
-After bring-up, `poll_board_network()` renews the DHCP lease at T1, reacts to
-an address conflict the chip detects (DHCPDECLINE and a fresh DISCOVER, or a
-new link-local candidate), refreshes the IPv6 prefix before its lifetime runs
-out, and, when the cable is pulled and replaced, releases the addresses and
-acquires them again from the start. Call it every loop iteration; it never
-blocks except for the first DHCP exchange after a conflict (at most 10 s).
+After bring-up, `poll_board_network()` renews the DHCP lease at T1 by
+unicast to the server that granted it, keeping the address throughout; reacts
+to an address conflict the chip detects (DHCPDECLINE and a fresh DISCOVER, or
+a new link-local candidate); refreshes the IPv6 prefix before its lifetime
+runs out; and, when the cable is pulled and replaced, releases the addresses
+and acquires them again from the start. Call it every loop iteration; it
+never blocks.
 
-**Link-local IPv4 is sticky.** A board that booted with no DHCP server stays
-on its 169.254/16 address until its link drops. Start the DHCP server first,
-or replug the board after it is up.
+**Link-local IPv4 upgrades to DHCP.** A board that booted with no DHCP server
+keeps its 169.254/16 address and retries DHCP in the background every minute
+(`upgrade_probe_ms`). When a server answers, the board moves to the leased
+address; until then the link-local address keeps working.
 
 ### Identity
 
@@ -51,10 +55,45 @@ or replug the board after it is up.
 | IPv4 link-local | a 169.254/16 address derived from the MAC and a conflict counter (RFC 3927 §2.1), the same on every boot and after every link flap |
 
 To give a board a fixed IPv4 address, reserve one for its MAC on the DHCP
-server. `board_network` always runs DHCP with a link-local fallback; a board
-that must use a static address without DHCP declares its own provider list,
-as shown in
-[design/network_address_bringup.md](design/network_address_bringup.md#declaring-it).
+server, or list `Method::static_ipv4` in its config.
+
+### Choosing the addressing methods
+
+A `NetworkConfig` (`include/rosette/net/network_config.hpp`) lists the
+methods per family in preference order. The first method that binds holds the
+address; while a later one holds it, the earlier ones are retried every
+`upgrade_probe_ms`.
+
+```cpp
+namespace net = rosette::net;
+constexpr net::NetworkConfig kNetwork{
+    .v4 = {net::Method::dhcp, net::Method::ipv4_link_local},  // preference order
+    .v6 = {net::Method::slaac},                               // W6100 / W6300 only
+    .upgrade_probe_ms = 300'000,                              // retry DHCP every 5 min
+    .ready_when = net::ready::any_v4,                         // what bring-up waits for
+    .ready_timeout_ms = 30'000,                               // default: wait forever
+};
+const net::BringUpResult result = wiz::bring_up_board_network("my-board", kNetwork);
+```
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `v4` | `dhcp`, `ipv4_link_local`, `static_ipv4` (address in `static_v4`) | `dhcp`, `ipv4_link_local` |
+| `v6` | `slaac`; empty for no IPv6 | empty (`board_default_network()` adds `slaac` on IPv6 parts) |
+| `upgrade_probe_ms` | 0 never retries | 60000 |
+| `ready_when` | `net::ready::any_v4`, `routable_v4`, `any_address`, or any `bool(const AddressSnapshot&)` function | `any_v4` |
+| `ready_timeout_ms` | milliseconds | wait forever |
+
+Bring-up returns `ready`, or `timed_out` when the timeout passed first: the
+network keeps coming up in `poll_board_network()`, so the firmware can start
+its loop and wait for the network there. It returns `unsupported_config`, and
+starts nothing, when the board cannot run the config (SLAAC on the W5100S, a
+method listed twice, `static_ipv4` without an address); the console names the
+reason. The config is a plain value, so firmware can also build it at run
+time, for example from settings stored in flash.
+
+The designated initializers above are C++20; GCC and Clang accept them in
+the C++17 this tree builds with.
 
 ## What ROS 2 traffic needs
 

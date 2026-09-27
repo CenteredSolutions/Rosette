@@ -15,11 +15,12 @@ enable_testing()
 # Host tests run on the POSIX platform port (include/rosette/platform/platform.hpp).
 add_compile_definitions(ROSETTE_OS_POSIX ROSETTE_CHIP_HOST)
 
-# The out-of-line pieces of the address layer (candidates, lists, manager, WIZnet DHCP).
+# The out-of-line pieces of the address layer (candidates, lists, manager, config, WIZnet DHCP).
 add_library(rosette_host_address STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/address_candidate.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/address_list.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/address_manager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/network_config.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/wiznet/dhcp_client.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/wiznet/dhcp_provider.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/wiznet/dhcp_wire.cpp
@@ -64,6 +65,7 @@ add_host_test(network_address_test)
 add_host_test(wiznet_address_provider_test)
 add_host_test(dhcp_client_test)
 add_host_test(address_upgrade_test)
+add_host_test(network_config_test)
 
 # RTPS buffer pool size-class selection, on a pool of two blocks per class.
 add_executable(buf_pool_class_test

@@ -226,7 +226,7 @@ int main()
     // Chip bring-up: verify + socket mode. Carrier is supervised by
     // NetworkAddress from here on, so this is not retried in a loop.
     wiz::BoardLink link{device, mac};
-    (void)link.bring_link_up();
+    (void)link.bring_chip_up();
 
     // ── IPv4 addressing, declared right here ────────────────────────────────
     // One NetInterface for the chip; a list of providers tried in order (first

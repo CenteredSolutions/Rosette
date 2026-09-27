@@ -1,15 +1,19 @@
 /**
  * @file rosette/net/wiznet/board_network.hpp
- * @brief The board's WIZnet chip, PHY link, and IP addresses, brought up once.
+ * @brief The board's WIZnet chip, PHY link, and IP addresses, brought up once from a NetworkConfig.
  *
  * A WIZnet board has exactly one Ethernet chip, so its network is one
  * board-level object: this module owns the chip driver (bus, device, hardware
- * UDP socket provider, link), IPv4 addressing (DHCP, falling back to IPv4
- * link-local), and the INT-pin routing, all configured from the board's
- * `board.h` / `board_config.h` (SPI pins, ROSETTE_PIN_WIZNET_INT, MAC). On
- * parts with hardware IPv6 (W6100, W6300) it also runs IPv6 stateless address
- * autoconfiguration (`slaac_provider.hpp`) beside IPv4, so the board holds a
- * link-local and, when a router advertises a prefix, a global IPv6 address.
+ * UDP socket provider, link), the address providers the config names, and
+ * the INT-pin routing, all configured from the board's `board.h` /
+ * `board_config.h` (SPI pins, ROSETTE_PIN_WIZNET_INT, MAC).
+ *
+ * What the board does for addresses is the firmware's `NetworkConfig`
+ * (`net/network_config.hpp`): an IPv4 method list drawn from DHCP, IPv4
+ * link-local, and a static address, and, on parts with hardware IPv6 (W6100,
+ * W6300), IPv6 SLAAC (`slaac_provider.hpp`). Without a config the board runs
+ * board_default_network(): DHCP, falling back to link-local, plus SLAAC where
+ * the part has IPv6.
  *
  * Every consumer of the network reaches it through these functions: an RTPS
  * participant opens its transport on board_socket_provider(), and rmw_rosette's
@@ -21,7 +25,7 @@
  * Usage (single-threaded superloop):
  *
  *   board_init();
- *   rosette::net::wiznet::bring_up_board_network("my-board");  // blocks
+ *   rosette::net::wiznet::bring_up_board_network("my-board");  // or ("my-board", kNetwork)
  *   rcl_init(...);                                              // or an RTPS participant
  *   for (;;) {
  *       spin_some(...);
@@ -38,49 +42,84 @@
 #include <cstdint>
 
 #include "rosette/net/address_state.hpp"
+#include "rosette/net/network_config.hpp"
 #include "rosette/net/socket.hpp"
 
 namespace rosette::net::wiznet {
 
 /**
- * @brief Brings the chip, PHY link, and the board's addresses up; blocks until they are ready.
+ * @brief The addressing methods this board can run, per family: DHCP, link-local, static; SLAAC.
  *
- * Constructs the chip driver on first call, waits for the PHY to report link,
- * then runs DHCP (IPv4 link-local after DHCP gives up) until an IPv4 address
- * is assigned, printing a `[net]` progress line every two seconds. On parts
- * with hardware IPv6, SLAAC starts at the same time and bring-up also waits
- * for the IPv6 link-local address to pass duplicate address detection; the
- * global address follows in poll_board_network() when a router advertises a
- * prefix. Finally routes the chip's INT pin to the socket provider's receive
- * event (attach_rx_interrupt()), so a participant driver sleeping in
- * wait_readable() wakes when a datagram arrives. Later calls return at once.
+ * @return The board's capabilities, for check_config().
+ */
+NetworkCapabilities board_network_capabilities() noexcept;
+
+/**
+ * @brief The config bring_up_board_network() uses when the firmware names none.
+ *
+ * @return IPv4 DHCP then link-local, IPv6 SLAAC on the W6100 / W6300, the
+ *   default probe interval, ready once any IPv4 address is held, no timeout.
+ */
+NetworkConfig board_default_network() noexcept;
+
+/**
+ * @brief Brings the chip, link, and addresses up; blocks until `ready_when` holds or time runs out.
+ *
+ * Checks the config against board_network_capabilities() first and starts
+ * nothing if the board cannot run it. Otherwise constructs the chip driver
+ * and the providers the config lists, ordered as listed, and polls them
+ * until `config.ready_when` accepts the address snapshot, printing a `[net]`
+ * progress line every two seconds (waiting for the chip, for the PHY link, or
+ * for an address). The chip's INT pin is routed to the socket provider's
+ * receive event (attach_rx_interrupt()) as soon as the chip answers, so a
+ * participant driver sleeping in wait_readable() wakes when a datagram
+ * arrives.
+ *
+ * A timeout does not stop anything: poll_board_network() carries on from
+ * where bring-up left off, including retrying a chip that did not answer, so
+ * a supervisor can wait for the network in its own loop. Later calls start
+ * nothing and report whether the first call's `ready_when` holds now.
  *
  * @param[in] hostname DHCP host name option (RFC 2132 §3.14); must outlive
- *   the program. Only the first call's value is used.
+ *   the program. Only the first successful call's value is used.
+ * @param[in] config   Methods per family in preference order, probe interval,
+ *   ready predicate, and timeout; copied.
+ * @return `ready` when `ready_when` held before the timeout; `timed_out`
+ *   when it did not (the network keeps coming up in poll_board_network());
+ *   `unsupported_config` when check_config() refused the config (printed),
+ *   in which case nothing was started and the call may be repeated with
+ *   another config.
  *
  * Verification:
- * - Correct means: on return board_ipv4_address() is nonzero and equals the
- *   lease the DHCP server granted (or a 169.254/16 address without one); on
- *   the W6100 / W6300 board_address_snapshot().v6 lists the fe80:: address
- *   formed from the MAC (or its next candidate after a conflict); and a datagram to any open socket
- * ends a kWaitForever wait_readable() within interrupt latency.
- * - Covered by: examples/rtps_chatter and examples/rclc_chatter on the
- *   W5100S-EVB-Pico2 (bidirectional traffic with stock Fast DDS);
- *   examples/wiznet_udp_echo with tools/wiznet_udp_echo_probe.py on the
- *   W6100-EVB-Pico (ping and UDP echo on every address).
+ * - Correct means: `ready` is returned only when `ready_when` accepts
+ *   board_address_snapshot(); every address in the snapshot was obtained by
+ *   a listed method, and an earlier method's address replaces a later one's
+ *   when it binds; a config naming a method the part cannot run (SLAAC on the
+ *   W5100S) returns `unsupported_config` without touching the chip; and a
+ *   datagram to any open socket ends a kWaitForever wait_readable() within
+ *   interrupt latency.
+ * - Covered by: tests/host/network_config_test.cpp (config checking and
+ *   provider order, TC-NET-CFG-001 to TC-NET-CFG-005);
+ *   examples/rtps_chatter and examples/rclc_chatter on the W5100S-EVB-Pico2
+ *   (bidirectional traffic with stock Fast DDS); examples/wiznet_udp_echo
+ *   with tools/wiznet_udp_echo_probe.py on the W6100-EVB-Pico (ping and UDP
+ *   echo on every address).
  *
  * References:
  * - RFC 2131 (DHCP), RFC 3927 (IPv4 link-local), RFC 4862 (IPv6 SLAAC)
  * - W5100S / W6100 / W6300 datasheets, INT pin and Sn_IR
  */
-void bring_up_board_network(const char* hostname) noexcept;
+BringUpResult bring_up_board_network(
+    const char* hostname, const NetworkConfig& config = board_default_network()) noexcept;
 
 /**
- * @brief Services DHCP renewal, IPv6 autoconfiguration, and address conflicts.
+ * @brief Services DHCP renewal, IPv6 autoconfiguration, address conflicts, and carrier.
  *
- * Call from the main loop between protocol passes; it never blocks. While
- * the board holds an IPv4 link-local address it also probes for a DHCP server
- * every minute and moves to the leased address when one answers.
+ * Call from the main loop between protocol passes; it never blocks. While a
+ * later IPv4 method holds the address (link-local after DHCP gave up), it
+ * retries the earlier ones every `upgrade_probe_ms` and moves to the first
+ * that binds. After a bring-up that timed out it also finishes bringing the
+ * chip up.
  *
  * @param[in] now_ms Monotonic time in milliseconds (platform::monotonic_ms()).
  *
@@ -96,8 +135,9 @@ void poll_board_network(uint32_t now_ms) noexcept;
 /**
  * @brief The chip's hardware UDP socket provider.
  *
- * @return The provider. Only valid after bring_up_board_network() returns;
- *   it lives for the rest of the program.
+ * @return The provider. Only valid after bring_up_board_network() has
+ *   returned `ready` or `timed_out`; it lives for the rest of the program,
+ *   and its sockets open once the chip answers.
  */
 rosette::net::SocketProvider& board_socket_provider() noexcept;
 

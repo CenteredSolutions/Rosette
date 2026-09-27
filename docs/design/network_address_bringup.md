@@ -115,10 +115,32 @@ address is held. When carrier drops, `NetworkAddress` releases the address,
 returns it re-acquires from the top (a fresh DHCP DISCOVER, since `begin()` —
 not a renew — is what the link-up edge calls).
 
-`board_network` makes one simplification: `bring_up_board_network()` blocks
-until the first address is held, because `rcl_init()` must run after the
-address exists (`rmw_rosette/network_port.hpp`), and `poll_board_network()`
-then keeps it.
+`board_network` wraps this loop for firmware that does not declare its own
+lists. The firmware passes a `NetworkConfig` (`rosette/net/network_config.hpp`)
+naming the methods per family in preference order; `board_network` owns one
+provider per method the chip can run and hands the managers the ones the
+config lists, in its order. `bring_up_board_network()` then steps the loop
+until the config's `ready_when` predicate accepts the snapshot or
+`ready_timeout_ms` passes, because `rcl_init()` must run after the address
+exists (`rmw_rosette/network_port.hpp`), and `poll_board_network()` keeps
+stepping it afterwards:
+
+```cpp
+constexpr net::NetworkConfig kNetwork{
+    .v4 = {net::Method::static_ipv4, net::Method::ipv4_link_local},
+    .static_v4 = {{192, 168, 1, 50}, 24, {192, 168, 1, 1}},
+    .ready_when = net::ready::any_v4,
+    .ready_timeout_ms = 30'000,
+};
+if (wiz::bring_up_board_network("my-board", kNetwork) != net::BringUpResult::ready) { ... }
+```
+
+A config the board cannot run (SLAAC on the W5100S, a method listed twice, a
+static method without an address) is refused whole by `check_config()`, with
+the reason on the console, before the chip is touched: a board never runs
+with a method the firmware asked for silently missing. A bring-up that times
+out starts nothing over; the next `poll_board_network()` continues from where
+it stopped, including retrying a chip that did not answer.
 
 Other layouts are just a different list:
 
@@ -235,10 +257,10 @@ Carrier is a `NetInterface` property (`link_up()` — WIZnet reads PHYSR live).
   re-picks a candidate, static re-writes `SIPR`. No provider-specific re-negotiation
   code — the normal `stop()`/`begin()` lifecycle already does the right thing.
 
-`board_network` waits for the PHY once, in `bring_up_board_network()`
-(`WiznetLink::bring_link_up()`: verify the chip, set socket mode, wait for
-link), because nothing can be acquired before the chip answers. From then on
-carrier is supervised by `NetworkAddress` in the loop.
+`board_network` brings the chip up once (`WiznetLink::bring_chip_up()`:
+verify the part, set socket mode with the MAC) and does not wait for the PHY
+separately: `NetworkAddress` starts the managers when carrier first comes up,
+exactly as it does after any later carrier loss.
 
 ## FreeRTOS+TCP path
 
@@ -294,8 +316,12 @@ first-choice address that follows from the MAC label keeps boards easy to find.
 `NetworkAddress` as the v6 manager, so IPv4 and IPv6 are acquired side by
 side. The choice is made at compile time from `Chip::has_hw_ipv6()`: on the
 W5100S the v6 manager is absent and `NetworkAddress` runs IPv4 alone.
-`bring_up_board_network()` returns once IPv4 and the IPv6 link-local address
-are held; the global address arrives later through `poll_board_network()`.
+The config's `v6` list decides whether SLAAC runs (`board_default_network()`
+lists it on these parts). The default `ready_when` accepts the snapshot once
+IPv4 is up, so a stuck IPv6 duplicate address detection cannot hold up
+bring-up; a firmware that needs IPv6 before `rcl_init()` names that in its
+predicate (`examples/wiznet_udp_echo` waits for every family, with a
+timeout).
 
 ## Verification
 
@@ -310,8 +336,13 @@ backoff → restart-from-top, bound-provider loss → re-cascade),
 `network_address_test` (v4+v6 → one snapshot, platform publish, `on_change`,
 `has_address`, `wait_stable`, and carrier drop → release → return →
 re-acquire), `wiznet_address_provider_test` (the WIZnet template stack
-instantiated against a `RecordingBus`), and `wiznet_header_test` (conflict-bit
-traits). All fakeable — `fake_runtime.hpp` for `block_until_stable`'s clock,
+instantiated against a `RecordingBus`), `wiznet_header_test` (conflict-bit
+traits), `dhcp_client_test` (the RFC 2131 client against a scripted socket:
+wire format, retransmission, unicast renewal, rebinding, decline, expiry),
+`address_upgrade_test` (DHCP probed while link-local holds, the conflict latch
+staying with the holder, the upgrade, renewal without an interface write),
+and `network_config_test` (config checking against a backend's methods,
+providers ordered by the config, the ready predicates). All fakeable — `fake_runtime.hpp` for `block_until_stable`'s clock,
 `fake_interface.hpp` for the `NetInterface` (address / conflict / carrier),
 `mock_provider.hpp` for a scriptable `AddressProvider`. The provider FSMs take
 `poll(now_ms)` so their tests use plain integers, no clock hook.
@@ -319,7 +350,12 @@ traits). All fakeable — `fake_runtime.hpp` for `block_until_stable`'s clock,
 On hardware: DHCP acquisition is exercised by every `rtps_chatter` and
 `rclc_chatter` boot on the W5100S-EVB-Pico2, and `wiznet_udp_echo` on the
 W6100-EVB-Pico acquires IPv4, IPv6 link-local, and a SLAAC global address,
-with ping and UDP echo over each (`tools/wiznet_udp_echo_probe.py`). Checks that need a bench setup: T1
-renewal on a short lease; DHCP server unplugged → `169.254.x.y` → the board
-still discovers on-link peers; conflict injection (a second host on the same
-IP) → the reaction runs, backs off, and re-acquires.
+with ping and UDP echo over each (`tools/wiznet_udp_echo_probe.py`). On the
+W6100-EVB-Pico with a test DHCP server that answered only after a delay, the
+board fell back to link-local, kept echoing through failed DHCP probes, moved
+to the leased address when the server answered, and renewed it at T1 by
+unicast without an echo gap; a leased address another host already held was
+declined. The same board ran a static-first config (`192.168.32.112`, SLAAC
+beside it), refused a config listing DHCP twice, and, given a predicate that
+never holds, returned `timed_out` after its 5 s budget and still acquired
+DHCP and SLAAC addresses from `poll_board_network()`.

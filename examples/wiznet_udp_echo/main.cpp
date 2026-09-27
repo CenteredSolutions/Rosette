@@ -54,6 +54,8 @@ constexpr uint16_t kEchoPort = 7u;
 constexpr uint16_t kStatusPort = 8u;
 constexpr uint32_t kWaitMs = 1000u;
 constexpr uint32_t kReportPeriodMs = 5000u;
+/// Longest wait for every family at boot; IPv6 DAD takes about a second.
+constexpr uint32_t kBringUpTimeoutMs = 30000u;
 
 /// One echo socket and its counters.
 struct EchoSocket {
@@ -74,35 +76,63 @@ std::array<uint8_t, 1500> g_buffer;
  * @return The bound socket, non-blocking; null when the part lacks the family
  *   or binding fails.
  */
-std::unique_ptr<net::Socket> open_echo_socket(net::SocketProvider& sockets, net::SocketDomain domain,
-                                              uint16_t port) {
+std::unique_ptr<net::Socket> open_echo_socket(net::SocketProvider& sockets,
+                                              net::SocketDomain domain, uint16_t port) {
     auto s = sockets.open(domain);
-    if (!s) return nullptr;
+    if (!s) {
+        return nullptr;
+    }
+
     net::SocketAddress local{};
     local.domain = domain;
     local.port = port;
-    if (s->bind(local) != 0) return nullptr;
+    if (s->bind(local) != 0) {
+        return nullptr;
+    }
+
     (void)s->set_receive_timeout(0u);
     return s;
 }
 
 /// @brief Returns every waiting datagram to its sender.
 void serve(EchoSocket& e) {
-    if (!e.socket) return;
+    if (!e.socket) {
+        return;
+    }
+
     for (;;) {
         net::SocketAddress from{};
         const auto n = e.socket->recv_from(g_buffer.data(), g_buffer.size(), &from);
-        if (n < 0 && e.socket->last_error() == net::SocketError::would_block) return;
+        if (n < 0 && e.socket->last_error() == net::SocketError::would_block) {
+            return;
+        }
+
         if (n <= 0) {
             ++e.errors;
             return;
         }
+
         if (e.socket->send_to(g_buffer.data(), static_cast<std::size_t>(n), from) == n) {
             ++e.echoed;
         } else {
             ++e.errors;
         }
     }
+}
+
+/**
+ * @brief Ready once IPv4 is up and, on parts with IPv6, an IPv6 address has passed DAD.
+ *
+ * The board's default config is ready on IPv4 alone; this example waits for
+ * every family it echoes on, so the first status reply already lists them
+ * all for tools/wiznet_udp_echo_probe.py.
+ *
+ * @param[in] snapshot The board's current addresses.
+ * @return Whether every family the board runs holds an address.
+ */
+bool every_family_up(const net::AddressSnapshot& snapshot) {
+    const bool runs_v6 = wiz::board_default_network().v6[0] != net::Method::none;
+    return snapshot.v4.has_address() && (!runs_v6 || snapshot.v6.has_address());
 }
 
 /**
@@ -127,14 +157,15 @@ int format_status(char* out, int cap, const EchoSocket& v4, const EchoSocket& v6
         net::inet::ntop6(entry.address.data(), text, sizeof(ll));
     }
 
-    int n = std::snprintf(out, static_cast<std::size_t>(cap),
-                          "ipv4 %lu.%lu.%lu.%lu\nipv6-link-local %s\nipv6-global %s\n"
-                          "echo ipv4=%lu/%lu ipv6=%lu/%lu arp_timeouts=%lu\n",
-                          static_cast<unsigned long>(a >> 24), static_cast<unsigned long>((a >> 16) & 0xFFu),
-                          static_cast<unsigned long>((a >> 8) & 0xFFu), static_cast<unsigned long>(a & 0xFFu),
-                          ll, gl, static_cast<unsigned long>(v4.echoed), static_cast<unsigned long>(v4.errors),
-                          static_cast<unsigned long>(v6.echoed), static_cast<unsigned long>(v6.errors),
-                          static_cast<unsigned long>(wiz::board_send_timeouts()));
+    int n = std::snprintf(
+        out, static_cast<std::size_t>(cap),
+        "ipv4 %lu.%lu.%lu.%lu\nipv6-link-local %s\nipv6-global %s\n"
+        "echo ipv4=%lu/%lu ipv6=%lu/%lu arp_timeouts=%lu\n",
+        static_cast<unsigned long>(a >> 24), static_cast<unsigned long>((a >> 16) & 0xFFu),
+        static_cast<unsigned long>((a >> 8) & 0xFFu), static_cast<unsigned long>(a & 0xFFu), ll, gl,
+        static_cast<unsigned long>(v4.echoed), static_cast<unsigned long>(v4.errors),
+        static_cast<unsigned long>(v6.echoed), static_cast<unsigned long>(v6.errors),
+        static_cast<unsigned long>(wiz::board_send_timeouts()));
     return n;
 }
 
@@ -147,7 +178,10 @@ int format_status(char* out, int cap, const EchoSocket& v4, const EchoSocket& v6
  * development convenience of this example: anyone on the link can send it.
  */
 void serve_status(net::Socket* s, const EchoSocket& v4, const EchoSocket& v6) {
-    if (s == nullptr) return;
+    if (s == nullptr) {
+        return;
+    }
+
     net::SocketAddress from{};
     std::ptrdiff_t got = 0;
     while ((got = s->recv_from(g_buffer.data(), g_buffer.size(), &from)) >= 0) {
@@ -156,9 +190,12 @@ void serve_status(net::Socket* s, const EchoSocket& v4, const EchoSocket& v6) {
             pf::sleep_ms(50u);
             reset_usb_boot(0u, 0u);
         }
+
         char text[512];
         const int n = format_status(text, sizeof(text), v4, v6);
-        if (n > 0) (void)s->send_to(text, static_cast<std::size_t>(n), from);
+        if (n > 0) {
+            (void)s->send_to(text, static_cast<std::size_t>(n), from);
+        }
     }
 }
 
@@ -169,7 +206,10 @@ int main() {
     pf::sleep_ms(1500u);  // give the USB console time to enumerate
     std::printf("\n[echo] wiznet_udp_echo\n");
 
-    wiz::bring_up_board_network("rosette-echo");
+    net::NetworkConfig network = wiz::board_default_network();
+    network.ready_when = every_family_up;
+    network.ready_timeout_ms = kBringUpTimeoutMs;  // then echo on whatever is up
+    (void)wiz::bring_up_board_network("rosette-echo", network);
     net::SocketProvider& sockets = wiz::board_socket_provider();
 
     EchoSocket v4{"ipv4", open_echo_socket(sockets, net::SocketDomain::ipv4, kEchoPort)};
@@ -177,7 +217,8 @@ int main() {
     auto status4 = open_echo_socket(sockets, net::SocketDomain::ipv4, kStatusPort);
     auto status6 = open_echo_socket(sockets, net::SocketDomain::ipv6, kStatusPort);
     std::printf("[echo] udp/%u ipv4 %s, ipv6 %s; status on udp/%u\n", kEchoPort,
-                v4.socket ? "open" : "unavailable", v6.socket ? "open" : "unavailable", kStatusPort);
+                v4.socket ? "open" : "unavailable", v6.socket ? "open" : "unavailable",
+                kStatusPort);
 
     pf::Event wake;
     sockets.set_receive_event(&wake);
@@ -196,7 +237,9 @@ int main() {
         if (static_cast<int32_t>(now - next_report) >= 0) {
             next_report += kReportPeriodMs;
             char text[512];
-            if (format_status(text, sizeof(text), v4, v6) > 0) std::printf("[echo] %s\n", text);
+            if (format_status(text, sizeof(text), v4, v6) > 0) {
+                std::printf("[echo] %s\n", text);
+            }
         }
     }
 }
