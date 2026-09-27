@@ -67,6 +67,11 @@ add_host_test(dhcp_client_test)
 add_host_test(address_upgrade_test)
 add_host_test(network_config_test)
 
+# The ROS session supervisor, against a fake network, application, and agent gate.
+add_host_test(session_supervisor_test)
+target_sources(session_supervisor_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/ros/session_supervisor.cpp)
+
 # RTPS buffer pool size-class selection, on a pool of two blocks per class.
 add_executable(buf_pool_class_test
     buf_pool_class_test.cpp

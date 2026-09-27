@@ -84,6 +84,12 @@ set(ROSETTE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 include(cmake/rosette_platform.cmake)
 target_link_libraries(rosette_net PUBLIC rosette_platform)
 
+# rosette_session — the ROS session supervisor (include/rosette/ros/session_supervisor.hpp).
+# Backend-neutral: it needs no rcl or rmw headers, so rclc firmware on either
+# rmw_rosette or the micro-ROS agent links the same library.
+add_library(rosette_session STATIC src/ros/session_supervisor.cpp)
+target_link_libraries(rosette_session PUBLIC rosette_net)
+
 # Platform conformance test for the selected board's port. On a Pico it
 # reports over USB serial; on the host it is also tests/platform's ctest.
 add_executable(rosette_platform_contract tests/platform/platform_contract_test.cpp)

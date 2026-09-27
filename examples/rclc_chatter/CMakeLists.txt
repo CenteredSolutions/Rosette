@@ -19,7 +19,7 @@ endif()
 
 add_executable(rclc_chatter main.cpp)
 target_include_directories(rclc_chatter PRIVATE ${ROSETTE_ROOT}/include)
-target_link_libraries(rclc_chatter PRIVATE rmw_rosette_firmware rosette_bsp pico_stdlib)
+target_link_libraries(rclc_chatter PRIVATE rmw_rosette_firmware rosette_session rosette_bsp pico_stdlib)
 pico_add_extra_outputs(rclc_chatter)
 pico_enable_stdio_usb(rclc_chatter 1)
 pico_enable_stdio_uart(rclc_chatter 0)

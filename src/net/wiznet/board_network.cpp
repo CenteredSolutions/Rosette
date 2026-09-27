@@ -284,6 +284,14 @@ void poll_board_network(uint32_t now_ms) noexcept {
     }
 }
 
+bool board_network_ready() noexcept {
+    return g_network != nullptr && g_network->ready();
+}
+
+NetworkWatch board_network_watch() noexcept {
+    return {poll_board_network, board_network_ready, board_address_snapshot};
+}
+
 rosette::net::SocketProvider& board_socket_provider() noexcept {
     return g_network->sockets;
 }

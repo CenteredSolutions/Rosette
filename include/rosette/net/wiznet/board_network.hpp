@@ -32,6 +32,11 @@
  *       rosette::net::wiznet::poll_board_network(platform::monotonic_ms());
  *   }
  *
+ * An rclc firmware that must survive the address moving hands
+ * board_network_watch() to a `rosette::ros::SessionSupervisor`
+ * (`ros/session_supervisor.hpp`), which polls the network and rebuilds the
+ * session for it.
+ *
  * Concurrency: all functions run in thread context on the core that runs the
  * network; none may be called from an interrupt handler.
  */
@@ -43,6 +48,7 @@
 
 #include "rosette/net/address_state.hpp"
 #include "rosette/net/network_config.hpp"
+#include "rosette/net/network_watch.hpp"
 #include "rosette/net/socket.hpp"
 
 namespace rosette::net::wiznet {
@@ -131,6 +137,32 @@ BringUpResult bring_up_board_network(
  * - Covered by: tests/host/address_upgrade_test.cpp (TC-NET-UPG-001 to TC-NET-UPG-006).
  */
 void poll_board_network(uint32_t now_ms) noexcept;
+
+/**
+ * @brief Whether the chip answers and the bring-up config's `ready_when` holds now.
+ *
+ * @return False before bring_up_board_network() has accepted a config.
+ */
+bool board_network_ready() noexcept;
+
+/**
+ * @brief The board network as a ROS session supervisor watches it.
+ *
+ * Bundles poll_board_network(), board_network_ready(), and
+ * board_address_snapshot() for `rosette::ros::SessionSupervisor`, which
+ * then services the network in every session state. Call
+ * bring_up_board_network() first; a firmware that lets the supervisor do all
+ * the waiting passes a config with `ready_timeout_ms = 0`.
+ *
+ * @return The watch; its functions stay valid for the rest of the program.
+ *
+ * Verification:
+ * - Correct means: the supervisor sees the same readiness and snapshot that
+ *   bring_up_board_network() waited on.
+ * - Covered by: examples/rclc_chatter on the W6100-EVB-Pico (session up once
+ *   ready, rebuilt when the address moved).
+ */
+NetworkWatch board_network_watch() noexcept;
 
 /**
  * @brief The chip's hardware UDP socket provider.
