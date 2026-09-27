@@ -68,7 +68,7 @@ struct BoardNetwork {
     BoardSocketProvider sockets;
     BoardLink link;
     WiznetInterface<BoardChip, BoardBus> iface;
-    DhcpAddressProvider<BoardChip, BoardBus> dhcp;
+    DhcpAddressProvider dhcp;
     Ipv4LinkLocalProvider zeroconf;
     AddressProvider* providers[2];
     AddressManager v4;
@@ -87,9 +87,9 @@ struct BoardNetwork {
           bus(make_board_bus()),
           device(bus),
           sockets(device),
-          link(device, sockets, mac),
+          link(device, mac),
           iface(device),
-          dhcp(device, sockets, iface, dhcp_config(hostname)),
+          dhcp(sockets, mac, iface, dhcp_config(hostname)),
           zeroconf(mac, iface),
           providers{&dhcp, &zeroconf},
           v4(providers),
@@ -109,6 +109,7 @@ void bring_up_board_network(const char* hostname) noexcept {
         std::printf("[net] waiting for chip / PHY link\n");
         pf::sleep_ms(kProgressPeriodMs);
     }
+
     std::printf("[net] PHY link up\n");
 
     network.address.begin();
@@ -119,6 +120,7 @@ void bring_up_board_network(const char* hostname) noexcept {
             next_note += kProgressPeriodMs;
             std::printf("[net] waiting for an address (DHCP, then link-local)\n");
         }
+
         pf::sleep_ms(10u);
     }
 

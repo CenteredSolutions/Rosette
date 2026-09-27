@@ -225,7 +225,7 @@ int main()
 
     // Chip bring-up: verify + socket mode. Carrier is supervised by
     // NetworkAddress from here on, so this is not retried in a loop.
-    wiz::BoardLink link{device, sockets, mac};
+    wiz::BoardLink link{device, mac};
     (void)link.bring_link_up();
 
     // ── IPv4 addressing, declared right here ────────────────────────────────
@@ -234,8 +234,8 @@ int main()
     // into a snapshot, publishes the address, watches carrier, and fires one
     // on_change callback. Nothing here blocks the superloop.
     static wiz::WiznetInterface<wiz::BoardChip, wiz::BoardBus> iface{device};
-    static wiz::DhcpAddressProvider<wiz::BoardChip, wiz::BoardBus> dhcp{
-        device, sockets, iface, wiz::dhcp_config("rosette-led-files")};
+    static wiz::DhcpAddressProvider dhcp{sockets, mac, iface,
+                                         wiz::dhcp_config("rosette-led-files")};
     static net::Ipv4LinkLocalProvider zeroconf{mac, iface};   // 169.254/16 fallback
 
     static net::AddressProvider* v4_providers[] = {&dhcp, &zeroconf};

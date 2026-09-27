@@ -2,17 +2,26 @@
 
 /**
  * @file net/wiznet/dhcp_provider.hpp
- * @brief `AddressProvider` wrapping the superloop `DhcpPoller`.
+ * @brief The IPv4 `AddressProvider` that runs DHCP on a WIZnet hardware-socket chip.
  *
- * `begin()` arms one bounded DHCP exchange that the first `poll()` runs;
- * subsequent `poll()`s pump `DhcpPoller::poll()` (renewal at T1, retry after a
- * failure) and, on a conflict from the `NetInterface`, run
- * `DhcpPoller::handle_conflict()` (DHCPDECLINE + fresh DISCOVER).
+ * `DhcpAddressProvider` owns a `DhcpClient` and is the only place a DHCP
+ * lease reaches the chip: it writes the lease through the `NetInterface` when
+ * the client reports `bound`, and removes it when the client reports `lost`.
+ * A renewal (`renewed`) writes nothing, so the address stays on the chip
+ * through T1 and T2.
  *
- * The address write is routed through `NetInterface::apply()` (via
- * `DhcpProtocol::set_apply`) so every address change in the system goes through
- * one path. A held lease that has aged past its validity is dropped so the
- * manager can fall through.
+ * It runs in one of two roles. As the holder (`begin()`, or `claim()` after a
+ * probe) it writes the interface and reads its conflict signal: a conflict on
+ * an address it wrote is declined (DHCPDECLINE) and the address removed. As a
+ * prober (`begin_probe()`) it runs the same exchanges from whatever source
+ * address the chip holds, but writes nothing and leaves the conflict signal
+ * to the holder, so an `AddressManager` can look for a DHCP server while the
+ * board keeps its IPv4 link-local address.
+ *
+ * Every `poll()` is non-blocking; the client holds a socket only while an
+ * exchange is waiting for a reply.
+ *
+ *     static wiz::DhcpAddressProvider dhcp{sockets, mac, iface, wiz::dhcp_config("my-host")};
  */
 
 #include <array>
@@ -20,156 +29,78 @@
 
 #include "rosette/net/address_provider.hpp"
 #include "rosette/net/interface.hpp"
+#include "rosette/net/socket.hpp"
 
-#include "device.hpp"
-#include "dhcp.hpp"
-#include "executor.hpp"
-#include "socket_provider.hpp"
+#include "dhcp_client.hpp"
 
 namespace rosette::net::wiznet {
 
-/**
- * @brief `DhcpConfig` tuned for the cooperative `poll()` path: a short exchange
- *        timeout so a `poll()` never stalls the superloop for long.
- *
- *     static wiz::DhcpAddressProvider<Chip, Bus> dhcp{device, sockets, iface};
- *     static wiz::DhcpAddressProvider<Chip, Bus> dhcp{device, sockets, iface,
- *                                                     wiz::dhcp_config("my-host")};
- */
-inline DhcpConfig dhcp_config(const char* hostname = nullptr) noexcept {
-    DhcpConfig c{};
-    c.exchange_timeout_ms = 10000u;
-    c.retry_delay_ms = 15000u;
-    c.host_name = hostname;
-    return c;
+/// @brief The default `DhcpClientConfig` with a host name (RFC 2132 §3.14) that must outlive it.
+inline DhcpClientConfig dhcp_config(const char* host_name = nullptr) noexcept {
+    DhcpClientConfig config{};
+    config.host_name = host_name;
+    return config;
 }
 
-template <typename Chip, typename Bus,
-          template <typename> class ExecutorT = DefaultExecutor>
 class DhcpAddressProvider : public rosette::net::AddressProvider {
 public:
-    using device_type = WiznetDevice<Chip, Bus>;
-    using provider_type = WiznetSocketProvider<Chip, Bus, ExecutorT>;
-    using poller_type = DhcpPoller<Chip, Bus, ExecutorT>;
+    /**
+     * @brief Creates an idle provider.
+     *
+     * @param[in] sockets  Opens the DHCP client's socket; must outlive the provider.
+     * @param[in] mac      The interface MAC.
+     * @param[in] iface    Where the lease is written and conflicts are read; must
+     *                     outlive the provider.
+     * @param[in] config   DHCP ports, timing, and host name.
+     */
+    DhcpAddressProvider(SocketProvider& sockets, const std::array<uint8_t, 6>& mac,
+                        NetInterface& iface = null_net_interface(),
+                        const DhcpClientConfig& config = dhcp_config()) noexcept;
 
-    DhcpAddressProvider(device_type& device, provider_type& sockets,
-                        rosette::net::NetInterface& iface =
-                                rosette::net::null_net_interface(),
-                        const DhcpConfig& config = dhcp_config()) noexcept
-            : poller_(device, sockets, config), iface_(iface) {
-        reset_lease();
-        poller_.set_apply(&on_apply, this);
-    }
+    void begin() noexcept override;
+    bool begin_probe() noexcept override;
+    void claim() noexcept override;
+    void stop() noexcept override;
 
-    void begin() noexcept override {
-        (void)iface_.conflict();
-        started_ = true;
-        need_acquire_ = true;
-        has_lease_ = false;
-        reset_lease();
-        lease_.state = rosette::net::AddressPhase::acquiring;
-    }
+    /**
+     * @brief One non-blocking step: react to a conflict, advance DHCP, update the chip.
+     *
+     * As the holder, a conflict on the written address is declined first.
+     * Then the client advances one step, and its event decides the chip
+     * write: `bound` writes the lease, `lost` removes it, anything else
+     * writes nothing. A prober only advances the client.
+     *
+     * @param[in] now_ms  Monotonic milliseconds.
+     * @return The provider's lease: `bound` with the address while a lease is
+     *   held (whether or not it is on the chip yet), `failed` while the
+     *   client waits to retry after a failed exchange, a NAK, an expiry, or a
+     *   decline, and `acquiring` otherwise. The `duplicate` flag is set for
+     *   the one poll that declined an address.
+     *
+     * Verification:
+     * - Correct means: no interface write clears the address during a probe
+     *   or a renewal; a holder's conflict yields exactly one DECLINE and one
+     *   clear.
+     * - Covered by: tests/host/address_upgrade_test.cpp (TC-NET-UPG-001 to
+     *   TC-NET-UPG-006).
+     *
+     * References: RFC 2131 §4.4.1, §4.4.5; RFC 3927 §1.9.
+     */
+    const AddressLease& poll(uint32_t now_ms) noexcept override;
 
-    void stop() noexcept override {
-        started_ = false;
-        need_acquire_ = false;
-        has_lease_ = false;
-        reset_lease();
-    }
-
-    const rosette::net::AddressLease& poll(uint32_t now_ms) noexcept override {
-        if (!started_) {
-            return lease_;
-        }
-        rosette::net::set_flag(lease_.flags, rosette::net::AddressFlags::duplicate, false);
-
-        if (iface_.conflict()) {
-            poller_.handle_conflict();
-            rosette::net::set_flag(lease_.flags, rosette::net::AddressFlags::duplicate, true);
-            need_acquire_ = false;
-        } else if (need_acquire_) {
-            need_acquire_ = false;
-            (void)poller_.acquire();    // one bounded exchange (config.exchange_timeout_ms)
-        } else {
-            poller_.poll();            // renew at T1, retry after a failure
-        }
-
-        rebuild(now_ms);
-        return lease_;
-    }
-
-    poller_type& poller() noexcept { return poller_; }
+    const DhcpClient& client() const noexcept { return client_; }
 
 private:
-    /// `DhcpProtocol` applier — every DHCP address write lands here.
-    static void on_apply(const DhcpLease& dl, void* user) noexcept {
-        using namespace rosette::net;
-        auto* self = static_cast<DhcpAddressProvider*>(user);
-        AddressLease l = self->lease_.empty();
-        l.source = AddressSource::dhcp;
-        if (dl.valid) {
-            l.add(v4_bytes(dl.ip), Ipv4MaskToPrefix(dl.subnet), dl.lease_seconds, dl.lease_seconds);
-            l.gateway_v4 = dl.gateway;
-        }
-        self->iface_.apply(l);
-    }
+    void write_lease() noexcept;
+    void remove_address() noexcept;
+    void rebuild(DhcpEvent event, bool duplicate) noexcept;
 
-    static std::array<uint8_t, 16> v4_bytes(const std::array<uint8_t, 4>& ip) noexcept {
-        return {ip[0], ip[1], ip[2], ip[3]};
-    }
-
-    void reset_lease() noexcept {
-        lease_ = rosette::net::AddressLease{};
-        lease_.family = rosette::net::AddressFamily::ipv4;
-        lease_.source = rosette::net::AddressSource::dhcp;
-    }
-
-    bool lease_expired(const DhcpLease& dl, uint32_t now_ms) const noexcept {
-        if (dl.lease_seconds == 0u) {
-            return false;
-        }
-        return (now_ms - lease_acquired_ms_) >= (dl.lease_seconds * 1000u);
-    }
-
-    void rebuild(uint32_t now_ms) noexcept {
-        using namespace rosette::net;
-        const bool conflict_edge = lease_.duplicate();
-
-        DhcpLease dl{};
-        if (poller_.lease(dl) && dl.valid && !lease_expired(dl, now_ms)) {
-            if (!has_lease_) {
-                lease_acquired_ms_ = now_ms;
-                has_lease_ = true;
-            }
-            lease_.state = AddressPhase::bound;
-            lease_.addresses.clear();
-            lease_.add(v4_bytes(dl.ip), Ipv4MaskToPrefix(dl.subnet), dl.lease_seconds,
-                       dl.lease_seconds);
-            lease_.gateway_v4 = dl.gateway;
-            lease_.ntp_count = dl.ntp_count > 2u ? 2u : dl.ntp_count;
-            for (uint8_t i = 0u; i < lease_.ntp_count; ++i) {
-                lease_.ntp_v4[i] = dl.ntp[i];
-            }
-        } else {
-            has_lease_ = false;
-            lease_.addresses.clear();
-            lease_.ntp_count = 0u;
-            // `failed` = an exchange completed unsuccessfully → let the manager
-            // fall through now instead of waiting out the stage timeout.
-            lease_.state = (poller_.state() == DhcpState::failed)
-                                   ? AddressPhase::failed
-                                   : AddressPhase::acquiring;
-        }
-        set_flag(lease_.flags, AddressFlags::duplicate, conflict_edge);
-    }
-
-    poller_type poller_;
-    rosette::net::NetInterface& iface_;
-    rosette::net::AddressLease lease_{};
-    uint32_t lease_acquired_ms_ = 0u;
+    DhcpClient client_;
+    NetInterface& iface_;
+    AddressLease lease_{};
     bool started_ = false;
-    bool need_acquire_ = false;
-    bool has_lease_ = false;
+    bool holder_ = false;
+    bool written_ = false;  ///< The client's lease is on the interface.
 };
 
-}    // namespace rosette::net::wiznet
+}  // namespace rosette::net::wiznet

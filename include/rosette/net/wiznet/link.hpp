@@ -1,23 +1,21 @@
 /**
  * @file net/wiznet/link.hpp
- * @brief WIZnet chip bring-up: reset, buffer sizing, PHY link, addressing.
+ * @brief WIZnet chip bring-up: verify the part, size its buffers, wait for the PHY link.
  *
- * Register-level replacement for the old ioLibrary `WiznetLink`. Built on
- * `WiznetDevice<Chip, Bus>` and a `WiznetSocketProvider`, so the same code path
- * serves the poll-mode (no-RTOS) board and, with a FreeRTOS executor, an RTOS
- * build.
+ * `WiznetLink` gets the chip to the point where addressing can start: the
+ * part answers with the expected version, runs in socket mode with the MAC
+ * programmed, and reports carrier. Addresses are then the job of the
+ * `AddressProvider`s (`dhcp_provider.hpp`, `ipv4ll_provider.hpp`,
+ * `slaac_provider.hpp`) under an `AddressManager`.
  *
  *     namespace wiz = rosette::net::wiznet;
  *     auto bus = wiz::make_board_bus();
  *     wiz::BoardDevice device{bus};
- *     wiz::BoardSocketProvider sockets{device};
- *     wiz::BoardLink link{device, sockets, mac, wiz::LinkMode::dhcp};
- *
- *     while (!link.begin()) { rosette_platform_delay_ms(500u); }  // PHY + DHCP
- *     // link.ipv4() is valid; call link.poll() ~1 Hz for lease renewal
+ *     wiz::BoardLink link{device, mac};
+ *     while (!link.bring_link_up()) { rosette_platform_delay_ms(500u); }
  *
  * `board_init()` must have configured SPI and toggled the chip reset line
- * before the first `begin()`.
+ * before the first `bring_link_up()`.
  */
 
 #pragma once
@@ -31,61 +29,30 @@
 
 #include "board.hpp"
 #include "device.hpp"
-#include "dhcp.hpp"
-#include "executor.hpp"
-#include "socket_provider.hpp"
 
 namespace rosette::net::wiznet {
 
-/// Addressing policy for `WiznetLink`.
-enum class LinkMode : uint8_t {
-    dhcp,      ///< Request a lease; fall back to `fallback` if it fails.
-    static_ip, ///< Use `fallback` directly.
-};
-
-/// Static IPv4 settings for `LinkMode::static_ip` or DHCP fallback.
-struct StaticAddress {
-    std::array<uint8_t, 4> ip{192u, 168u, 1u, 200u};
-    std::array<uint8_t, 4> netmask{255u, 255u, 255u, 0u};
-    std::array<uint8_t, 4> gateway{192u, 168u, 1u, 1u};
-    std::array<uint8_t, 4> dns{8u, 8u, 8u, 8u};
-};
-
-template<typename Chip, typename Bus,
-         template<typename> class ExecutorT = DefaultExecutor>
+template <typename Chip, typename Bus>
 class WiznetLink {
 public:
     using device_type = WiznetDevice<Chip, Bus>;
-    using provider_type = WiznetSocketProvider<Chip, Bus, ExecutorT>;
-    using dhcp_type = DhcpPoller<Chip, Bus, ExecutorT>;
 
-    WiznetLink(device_type& device,
-               provider_type& provider,
-               const std::array<uint8_t, 6>& mac,
-               LinkMode mode = LinkMode::dhcp,
-               const StaticAddress& fallback = {},
-               const DhcpConfig& dhcp_config = {}) noexcept
-        : device_(device)
-        , dhcp_(device, provider, dhcp_config)
-        , mac_(mac)
-        , mode_(mode)
-        , fallback_(fallback) {}
+    WiznetLink(device_type& device, const std::array<uint8_t, 6>& mac) noexcept
+        : device_(device), mac_(mac) {}
 
     WiznetLink(const WiznetLink&) = delete;
     WiznetLink& operator=(const WiznetLink&) = delete;
 
     /**
-     * @brief Verifies the chip, sizes its buffers, and waits for PHY link —
-     * but does NOT assign an address.
+     * @brief Verifies the chip, puts it in socket mode, and waits for PHY link.
      *
-     * This is the half of `begin()` that an `AddressManager` still needs: the
-     * chip is verified and in socket mode and the PHY is up, ready for an
-     * `AddressProvider` to take over addressing. Idempotent.
+     * Leaves the chip ready for an `AddressProvider` to take over addressing;
+     * assigns no address. The chip is verified once; later calls only wait
+     * for the link. Blocks for at most kPhyLinkTimeoutMs.
      *
      * @return `true` when the chip is ready and the PHY link is up.
      */
-    bool bring_link_up() noexcept
-    {
+    bool bring_link_up() noexcept {
         if (link_ready_) {
             return true;
         }
@@ -97,10 +64,9 @@ public:
             }
             auto result = device_.init_socket_mode(mac_);
             if (std::holds_alternative<typename device_type::InvalidChipVersion>(result)) {
-                const auto& err =
-                    std::get<typename device_type::InvalidChipVersion>(result);
-                std::printf("[wiznet] invalid chip version: 0x%02x (expected 0x%02x)\n",
-                            err.actual, err.expected);
+                const auto& err = std::get<typename device_type::InvalidChipVersion>(result);
+                std::printf("[wiznet] invalid chip version: 0x%02x (expected 0x%02x)\n", err.actual,
+                            err.expected);
                 return false;
             }
             chip_ready_ = true;
@@ -119,99 +85,13 @@ public:
         return true;
     }
 
-    /**
-     * @brief Verifies the chip, sizes its buffers, waits for PHY link, and
-     * assigns an address.
-     *
-     * Idempotent once the link is up. Blocks through the PHY wait and, for
-     * DHCP, one full exchange; on DHCP failure applies the static fallback so
-     * the board still boots.
-     *
-     * @return `true` when a usable IPv4 address is assigned.
-     */
-    bool begin() noexcept
-    {
-        if (ready_) {
-            return true;
-        }
-
-        if (!bring_link_up()) {
-            return false;
-        }
-
-        if (mode_ == LinkMode::static_ip) {
-            device_.configure_ipv4(fallback_.ip, fallback_.netmask, fallback_.gateway);
-            apply_address(fallback_.ip);
-            return ready_;
-        }
-
-        dhcp_.set_callbacks(&on_dhcp_assign, &on_dhcp_change, this);
-        if (dhcp_.acquire()) {
-            return ready_;  // on_dhcp_assign has applied the address
-        }
-
-        std::printf("[wiznet] DHCP failed; applying static fallback\n");
-        device_.configure_ipv4(fallback_.ip, fallback_.netmask, fallback_.gateway);
-        apply_address(fallback_.ip);
-        return ready_;
-    }
-
-    /// Services DHCP lease renewal, and (guarded) checks the chip's IPv4
-    /// conflict flag. Call about once per second.
-    void poll() noexcept
-    {
-#if !defined(ROSETTE_WIZNET_IP_CONFLICT_MONITOR) || (ROSETTE_WIZNET_IP_CONFLICT_MONITOR != 0)
-        if (device_.mode() == DeviceMode::socket) {
-            (void)device_.poll_common_interrupt();
-        }
-#endif
-        if (mode_ == LinkMode::dhcp) {
-            dhcp_.poll();
-        }
-    }
-
-    bool ready() const noexcept { return ready_; }
-    std::array<uint8_t, 4> ipv4() const noexcept { return ip_; }
-
-    /// The DHCP driver, for callers that want lease details (DNS, NTP, T1).
-    dhcp_type& dhcp() noexcept { return dhcp_; }
-
 private:
     static constexpr uint32_t kPhyLinkTimeoutMs = 5000u;
 
-    static void on_dhcp_assign(const DhcpLease& lease, void* user) noexcept
-    {
-        static_cast<WiznetLink*>(user)->apply_address(lease.ip);
-    }
-
-    static void on_dhcp_change(const DhcpLease& /*old_lease*/,
-                               const DhcpLease& new_lease,
-                               void* user) noexcept
-    {
-        static_cast<WiznetLink*>(user)->apply_address(new_lease.ip);
-    }
-
-    void apply_address(const std::array<uint8_t, 4>& ip) noexcept
-    {
-        ip_ = ip;
-        ready_ = (ip[0] | ip[1] | ip[2] | ip[3]) != 0u;
-        rosette_platform_set_ipv4_addr(
-            ready_ ? ((static_cast<uint32_t>(ip[0]) << 24) |
-                      (static_cast<uint32_t>(ip[1]) << 16) |
-                      (static_cast<uint32_t>(ip[2]) << 8) |
-                       static_cast<uint32_t>(ip[3]))
-                   : 0u);
-    }
-
     device_type& device_;
-    dhcp_type dhcp_;
     std::array<uint8_t, 6> mac_{};
-    LinkMode mode_;
-    StaticAddress fallback_;
-    std::array<uint8_t, 4> ip_{};
     bool chip_ready_ = false;
     bool link_ready_ = false;
-    bool ready_ = false;
 };
 
 using BoardLink = WiznetLink<BoardChip, BoardBus>;

@@ -6,7 +6,13 @@
  *
  * `apply()` programs `SIPR` / `SUBR` / `GAR` (writing `SIPR` makes the chip emit
  * a gratuitous ARP — the RFC 3927 announce), or zeroes them when the lease has
- * no address. `conflict()` drains the chip's IP-conflict latch, which
+ * no address. An IPv4 link-local address is programmed with mask 0.0.0.0 and
+ * no gateway: the chip then ARPs for every destination directly, which is
+ * what RFC 3927 §2.6.2 requires of a host holding only a link-local address,
+ * so it reaches peers on the link that hold routable addresses. With the /16
+ * mask the chip would send those packets to the absent gateway, and each
+ * failed ARP stalls the socket's next send for the chip's retry time
+ * (about 1.6 s, measured on the W6100). `conflict()` drains the chip's IP-conflict latch, which
  * `WiznetDevice` sets under the bus lock from either the FreeRTOS ISR-dispatch
  * task (`service_socket_interrupts()`) or a superloop register read.
  *
@@ -54,6 +60,11 @@ public:
         const auto& entry = lease.primary();
         const std::array<uint8_t, 4> ip{entry.address[0], entry.address[1], entry.address[2],
                                         entry.address[3]};
+        if (entry.link_local()) {
+            device_.configure_ipv4(ip, {}, {});
+            return;
+        }
+
         device_.configure_ipv4(ip, rosette::net::Ipv4PrefixToMask(entry.prefix_len),
                                lease.gateway_v4);
     }
@@ -102,6 +113,7 @@ private:
             mask[i] = static_cast<uint8_t>(0xFFu << (8u - take));
             bits = static_cast<uint8_t>(bits - take);
         }
+
         return mask;
     }
 

@@ -106,10 +106,41 @@ class AddressProvider {
 public:
     virtual ~AddressProvider() = default;
 
-    /// Begin acquisition. Non-blocking kick-off; `poll()` does the work.
+    /// Begin acquisition as the interface's address holder. Non-blocking; `poll()` does the work.
     virtual void begin() noexcept = 0;
 
-    /// Return to idle. A bound address is released.
+    /**
+     * @brief Begin a trial acquisition while another provider holds the interface.
+     *
+     * An `AddressManager` holding a lower-preference address (IPv4 link-local)
+     * probes the providers ahead of it in its list (DHCP) to find out whether
+     * a better address is available again. A probing provider acquires as
+     * usual but never writes the interface and never reads its conflict
+     * signal: the address on the chip, and every conflict reported for it,
+     * belong to the holder. When its `poll()` reports `bound`, the manager
+     * stops the holder and calls `claim()`.
+     *
+     * @return `false` when the provider cannot acquire without writing the
+     *   interface (the default), so the manager never probes it.
+     *
+     * Verification:
+     * - Correct means: between begin_probe() and claim(), the provider makes
+     *   no NetInterface::apply() or NetInterface::conflict() call.
+     * - Covered by: tests/host/address_upgrade_test.cpp (TC-NET-UPG-001, TC-NET-UPG-003).
+     *
+     * References: RFC 3927 §1.9 (a link-local host keeps looking for a routable address).
+     */
+    virtual bool begin_probe() noexcept { return false; }
+
+    /**
+     * @brief Takes over the interface with the address a probe acquired.
+     *
+     * Writes the probed lease through the `NetInterface` and from then on
+     * behaves exactly as after `begin()`: it renews, and it reacts to conflicts.
+     */
+    virtual void claim() noexcept {}
+
+    /// Return to idle. An address this provider wrote to the interface is removed.
     virtual void stop() noexcept = 0;
 
     /**

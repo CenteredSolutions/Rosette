@@ -18,7 +18,10 @@ needs a different address policy declares its own list the same way.
 Four small pieces bring an interface online:
 
 * **`rosette::net::AddressProvider`** — one way to get one address for one
-  family. Three methods: `begin()`, `stop()`, `poll(now_ms)`. `poll()` is called
+  family. Three methods: `begin()`, `stop()`, `poll(now_ms)`, plus the optional
+  pair `begin_probe()` / `claim()` for a provider that can acquire while
+  another one holds the interface (see [Upgrading](#upgrading-from-a-fallback)).
+  `poll()` is called
   every superloop iteration with the loop's timestamp; it drives acquisition,
   then keeps the address valid (DHCP renewal) and watches for a duplicate. It
   returns the provider's current `AddressLease` (`{family, source, state,
@@ -30,7 +33,9 @@ Four small pieces bring an interface online:
   for **one family**. The whole rule: try the providers in order, first to bind
   wins; a provider that reports `failed` or hasn't bound by `provider_timeout_ms`
   hands off to the next; when the list is exhausted (or a bound provider is later
-  lost) it waits an exponential backoff and restarts from provider[0]. Exposes
+  lost) it waits an exponential backoff and restarts from provider[0]. While a
+  lower-preference provider holds the interface, it probes the providers ahead
+  of it every `upgrade_probe_ms` and hands the interface to one that binds. Exposes
   `lease()` + `stable()` and nothing else — it knows nothing about snapshots,
   IPv6, the link, or the platform.
 
@@ -48,8 +53,7 @@ Four small pieces bring an interface online:
   WIZnet supplies `wiznet::WiznetInterface<Chip,Bus>`; FreeRTOS+TCP owns its
   endpoint and uses `NullNetInterface` (always up).
 
-Nothing in the address layer blocks except a first DHCP exchange (below):
-`main()` calls `poll(now)` every iteration and services the protocol stack
+Nothing in the address layer blocks: `main()` calls `poll(now)` every iteration and services the protocol stack
 only while `has_address()` holds. `wait_stable()` is an opt-in for firmware
 with nothing to do offline.
 
@@ -65,7 +69,7 @@ independent `AddressManager`s over independent provider lists.
 | provider | family | `poll(now)` does |
 |---|---|---|
 | `StaticAddressProvider` | v4 / v6 | writes the address via `NetInterface`, binds; a conflict → `failed` (a static address can't be renumbered) |
-| `wiznet::DhcpAddressProvider` | v4 | wraps `DhcpPoller`; first `poll()` runs one bounded exchange; then renew at T1; conflict → `DhcpPoller::handle_conflict()` (DHCPDECLINE + fresh DISCOVER); a lease aged past validity is dropped. Every address write is routed through `NetInterface::apply()` — `DhcpProtocol` gets a `set_apply()` callback rather than touching `configure_ipv4` itself |
+| `wiznet::DhcpAddressProvider` | v4 | steps a `wiznet::DhcpClient` (RFC 2131 state machine, one non-blocking step per poll, a socket only while waiting for a reply); writes the lease through `NetInterface::apply()` on `bound`, removes it on `lost` (expiry or NAK), writes nothing on a renewal; as holder a conflict → DHCPDECLINE and a fresh DISCOVER ≥10 s later. Supports `begin_probe()` |
 | `Ipv4LinkLocalProvider` | v4 | RFC 3927 FSM (below); no internal clock; the terminal fallback — never reports `failed`, holds link-local and defends it |
 | `freertos::FreeRtosObserver` | one per family | observe-only: maps `rosette_platform_get_ipv{4,6}_addr()` into a lease; never fails, never blocks |
 | `wiznet::WiznetSlaacProvider` | v6 | RFC 4862 SLAAC on the W6100 / W6300: link-local address with DAD, router solicitation, global address from an autonomous prefix, refresh before lifetimes end; see [W6100 / W6300 hardware IPv6](#w6100--w6300-hardware-ipv6) |
@@ -84,12 +88,11 @@ namespace net = rosette::net;
 static wiz::WiznetInterface<wiz::BoardChip, wiz::BoardBus> iface{device};
 
 // The IPv4 providers, tried in order — first to bind wins.
-static wiz::DhcpAddressProvider<wiz::BoardChip, wiz::BoardBus> dhcp{
-    device, sockets, iface, wiz::dhcp_config("my-hostname")};
+static wiz::DhcpAddressProvider dhcp{sockets, mac, iface, wiz::dhcp_config("my-hostname")};
 static net::Ipv4LinkLocalProvider zeroconf{mac, iface};   // 169.254/16 fallback
 
 static net::AddressProvider* v4_providers[] = {&dhcp, &zeroconf};
-static net::AddressManager   v4{v4_providers};              // policy defaults: 15 s / 30 s
+static net::AddressManager   v4{v4_providers};              // policy defaults: 15 s / 30 s / 60 s
 static net::NetworkAddress   net_addr{v4, /*v6=*/nullptr, /*link=*/&iface};
 
 net_addr.on_change([](const net::AddressSnapshot& s){
@@ -133,7 +136,8 @@ static net::AddressProvider* v4_providers[] = {&zeroconf};
 ```
 
 `AddressManager{list}` takes an optional `AddressManagerPolicy{provider_timeout_ms,
-retry_backoff_ms}` as a second argument; the defaults (15 s, 30 s) suit a board.
+retry_backoff_ms, upgrade_probe_ms}` as a second argument; the defaults (15 s,
+30 s, 60 s) suit a board.
 
 ## RFC 3927 IPv4 link-local — no ARP probe
 
@@ -157,6 +161,14 @@ rate_limited → wait RATE_LIMIT_INTERVAL, reset the count, re-pick
 The RFC 3927 "announce" is implicit — writing `SIPR` makes the chip gratuitous-ARP.
 The same `conflict()` signal covers both the pre-claim settle and steady state.
 
+`WiznetInterface` writes a link-local address with subnet mask 0.0.0.0 and no
+gateway. RFC 3927 §2.6.2 has a host with only a link-local address ARP for
+every destination directly, and mask 0 makes the chip do exactly that, so a
+link-local board reaches peers on the link that hold routable addresses. With
+the /16 mask the chip sends those packets to the absent gateway; the ARP fails
+and stalls that socket's next send for the chip's retry time (1.6 s, measured
+on the W6100).
+
 ## Conflict / DAD reaction
 
 Detection is off the driver's existing cadence — no new bus-lock-contending
@@ -170,25 +182,44 @@ poller:
   `WiznetDevice::poll_common_interrupt()` — one register read — then consumes
   the latch.
 
-`WiznetInterface` is shared by every WIZnet v4 provider; only the active one is
-polled, so exactly one provider consumes each conflict:
+`WiznetInterface` is shared by every WIZnet v4 provider, and the chip has one
+conflict latch, so exactly one provider reads it: the one holding the
+interface. A provider being probed never reads it (below).
 
-| active provider | reaction |
+| holder | reaction |
 |---|---|
-| DHCP | `DhcpPoller::handle_conflict()` → DHCPDECLINE, clear the lease + chip config, fresh DISCOVER after the RFC 2131 ≥10 s pause |
+| DHCP | DHCPDECLINE, remove the address, fresh DISCOVER after the RFC 2131 ≥10 s pause |
 | zeroconf | defend once, then a new `169.254.x.y` candidate |
 | static | `failed` → `AddressManager` falls through to the next provider |
 
-**Blocking.** `DhcpAddressProvider`'s first `poll()` and a conflict-recovery
-exchange run a blocking DHCP exchange bounded by
-`DhcpConfig::exchange_timeout_ms` (10 s). During that window the protocol
-stack is not serviced; RTPS reliability recovers anything missed. The
-FreeRTOS `DhcpTask` path does not block. Everything else in the address layer
-is non-blocking.
+## Upgrading from a fallback
 
-**Fallback is sticky.** Once link-local binds (DHCP was down at boot), the
-manager stays on it; it retries DHCP from the top only if link-local itself
-fails or carrier drops and returns.
+When DHCP was down at boot, link-local holds the interface, and RFC 3927 §1.9
+asks the host to keep looking for a routable address. Every
+`upgrade_probe_ms` the manager probes each provider ahead of the holder, one
+at a time, with `begin_probe()`:
+
+* The prober runs its normal acquisition, but **never writes the interface
+  and never reads the conflict latch**. DHCP's DISCOVER goes out from the
+  link-local source address with the BROADCAST flag set, so the server's
+  broadcast OFFER and ACK reach the board. (RFC 2131 §4.1 asks for source
+  0.0.0.0; the one LAN router tested so far answers either way.)
+* The holder keeps being polled, so it keeps defending its address (RFC 3927
+  §2.5) and its address stays on the chip for the whole probe.
+* A prober that binds takes over: the manager stops the holder (which removes
+  its address), then `claim()` writes the prober's lease, so the chip ends up
+  with the routable address and a single interface write per step.
+* A prober that fails or times out is stopped; the next round starts
+  `upgrade_probe_ms` later.
+
+DHCP renewal is the same idea inside one provider: at T1 the client unicasts
+a REQUEST with `ciaddr` to its server, and at T2 broadcasts one (RFC 2131
+§4.4.5); a successful renewal writes nothing to the interface, so the address
+never leaves the chip.
+
+A provider that cannot acquire without writing the interface (link-local,
+static) returns `false` from `begin_probe()` and is only retried by the
+backoff restart.
 
 ## Link failure and re-negotiation
 

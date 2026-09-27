@@ -57,6 +57,10 @@ add_library(rosette_net STATIC
     src/net/socket.cpp
     src/net/address_candidate.cpp
     src/net/address_list.cpp
+    src/net/address_manager.cpp
+    src/net/wiznet/dhcp_client.cpp
+    src/net/wiznet/dhcp_provider.cpp
+    src/net/wiznet/dhcp_wire.cpp
     src/support/fnv1a.cpp
 )
 

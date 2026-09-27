@@ -78,13 +78,18 @@ void bring_up_board_network(const char* hostname) noexcept;
 /**
  * @brief Services DHCP renewal, IPv6 autoconfiguration, and address conflicts.
  *
- * Call from the main loop between protocol passes; it never blocks.
+ * Call from the main loop between protocol passes; it never blocks. While
+ * the board holds an IPv4 link-local address it also probes for a DHCP server
+ * every minute and moves to the leased address when one answers.
  *
  * @param[in] now_ms Monotonic time in milliseconds (platform::monotonic_ms()).
  *
  * Verification:
  * - Correct means: a board running past half its lease renews it (RFC 2131
- *   §4.4.5, T1) without losing its address.
+ *   §4.4.5, T1) without losing its address; a board on link-local takes a
+ *   DHCP lease within a minute of a server appearing, and keeps answering on
+ *   link-local until then (RFC 3927 §1.9).
+ * - Covered by: tests/host/address_upgrade_test.cpp (TC-NET-UPG-001 to TC-NET-UPG-006).
  */
 void poll_board_network(uint32_t now_ms) noexcept;
 
