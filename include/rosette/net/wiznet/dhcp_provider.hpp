@@ -108,14 +108,14 @@ private:
         AddressLease l = self->lease_.empty();
         l.source = AddressSource::dhcp;
         if (dl.valid) {
-            l.has_address = true;
-            for (std::size_t i = 0u; i < 4u; ++i) {
-                l.address[i] = dl.ip[i];
-            }
+            l.add(v4_bytes(dl.ip), Ipv4MaskToPrefix(dl.subnet), dl.lease_seconds, dl.lease_seconds);
             l.gateway_v4 = dl.gateway;
-            l.prefix_len = Ipv4MaskToPrefix(dl.subnet);
         }
         self->iface_.apply(l);
+    }
+
+    static std::array<uint8_t, 16> v4_bytes(const std::array<uint8_t, 4>& ip) noexcept {
+        return {ip[0], ip[1], ip[2], ip[3]};
     }
 
     void reset_lease() noexcept {
@@ -142,22 +142,17 @@ private:
                 has_lease_ = true;
             }
             lease_.state = AddressPhase::bound;
-            lease_.has_address = true;
-            for (std::size_t i = 0u; i < 4u; ++i) {
-                lease_.address[i] = dl.ip[i];
-            }
+            lease_.addresses.clear();
+            lease_.add(v4_bytes(dl.ip), Ipv4MaskToPrefix(dl.subnet), dl.lease_seconds,
+                       dl.lease_seconds);
             lease_.gateway_v4 = dl.gateway;
-            lease_.prefix_len = Ipv4MaskToPrefix(dl.subnet);
-            lease_.lease_remaining_s = dl.lease_seconds;
             lease_.ntp_count = dl.ntp_count > 2u ? 2u : dl.ntp_count;
             for (uint8_t i = 0u; i < lease_.ntp_count; ++i) {
                 lease_.ntp_v4[i] = dl.ntp[i];
             }
         } else {
             has_lease_ = false;
-            lease_.has_address = false;
-            lease_.address = {};
-            lease_.lease_remaining_s = 0u;
+            lease_.addresses.clear();
             lease_.ntp_count = 0u;
             // `failed` = an exchange completed unsuccessfully → let the manager
             // fall through now instead of waiting out the stage timeout.

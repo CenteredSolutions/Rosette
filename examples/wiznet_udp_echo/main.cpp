@@ -120,12 +120,13 @@ void serve(EchoSocket& e) {
  */
 int format_status(char* out, int cap, const EchoSocket& v4, const EchoSocket& v6) {
     const uint32_t a = wiz::board_ipv4_address();
-    const auto link_local = wiz::board_ipv6_link_local();
-    const auto global = wiz::board_ipv6_global();
     char ll[48] = "none";
     char gl[48] = "none";
-    if (link_local != std::array<uint8_t, 16>{}) net::inet::ntop6(link_local.data(), ll, sizeof(ll));
-    if (global != std::array<uint8_t, 16>{}) net::inet::ntop6(global.data(), gl, sizeof(gl));
+    for (const net::AddressEntry& entry : wiz::board_address_snapshot().v6.addresses) {
+        char* text = entry.link_local() ? ll : gl;
+        net::inet::ntop6(entry.address.data(), text, sizeof(ll));
+    }
+
     int n = std::snprintf(out, static_cast<std::size_t>(cap),
                           "ipv4 %lu.%lu.%lu.%lu\nipv6-link-local %s\nipv6-global %s\n"
                           "echo ipv4=%lu/%lu ipv6=%lu/%lu arp_timeouts=%lu\n",

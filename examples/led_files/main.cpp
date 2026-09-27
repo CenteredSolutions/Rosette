@@ -244,8 +244,8 @@ int main()
 
     net_addr.on_change([](const net::AddressSnapshot& s) {
         if (s.assigned) {
-            std::printf("[led_files] address %u.%u.%u.%u (%s)\n",
-                        s.v4.address[0], s.v4.address[1], s.v4.address[2], s.v4.address[3],
+            std::printf("[led_files] address %u.%u.%u.%u (%s)\n", s.v4.address()[0],
+                        s.v4.address()[1], s.v4.address()[2], s.v4.address()[3],
                         s.v4.routable() ? "routable" : "link-local");
         } else {
             std::printf("[led_files] address lost\n");

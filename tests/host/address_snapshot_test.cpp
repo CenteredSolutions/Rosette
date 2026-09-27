@@ -1,7 +1,8 @@
 /**
  * @file address_snapshot_test.cpp
  * @brief `AddressSnapshot` / `FamilyAddressSnapshot` equality over the per-family
- *        fields, the `AddressFlags` bitset, and the link-local classifiers.
+ *        fields, the `AddressFlags` bitset, the link-local classifiers, and
+ *        primary-address selection (TC-NET-6724-001).
  */
 
 #include "test_util.hpp"
@@ -10,18 +11,56 @@
 
 using namespace rosette::net;
 
+/// TC-NET-6724-001: primary-address selection.
+void tc_net_6724_001() {
+    const std::array<uint8_t, 16> ll{0xFEu, 0x80u, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1u};
+    const std::array<uint8_t, 16> g1{0x20u, 0x01u, 0x0Du, 0xB8u, 0, 0, 0, 0,
+                                     0,     0,     0,     0,     0, 0, 0, 1u};
+    const std::array<uint8_t, 16> g2{0x20u, 0x01u, 0x0Du, 0xB8u, 0, 0, 0, 0,
+                                     0,     0,     0,     0,     0, 0, 0, 2u};
+
+    AddressList empty{};
+    check(empty.primary().address == std::array<uint8_t, 16>{}, "empty list: all-zero primary");
+
+    AddressList l{};
+    l.add(AddressFamily::ipv6, ll, 64u);
+    check(l.primary().address == ll, "link-local alone is primary");
+    l.add(AddressFamily::ipv6, g1, 64u, 600u, 0u, true);
+    check(l.primary().address == g1,
+          "rule 2: a routable address, even deprecated, beats link-local");
+
+    AddressList m{};
+    m.add(AddressFamily::ipv6, g1, 64u, 600u, 0u, true);
+    m.add(AddressFamily::ipv6, g2, 64u);
+    check(m.primary().address == g2, "rule 3: preferred beats deprecated at the same scope");
+
+    AddressList n{};
+    n.add(AddressFamily::ipv6, g1, 64u);
+    n.add(AddressFamily::ipv6, g2, 64u);
+    check(n.primary().address == g1, "a tie keeps list order");
+    check(!n.add(AddressFamily::ipv6, ll, 64u) && n.size() == kMaxFamilyAddresses,
+          "a full list refuses another address");
+    check(n[0].routable() && !n[0].link_local(), "add() derives the routable bit");
+}
+
 int main() {
     AddressSnapshot a{};
     AddressSnapshot b{};
     check(a == b, "default snapshots compare equal");
 
-    b.v4.has_address = true;
+    b.v4.addresses.add(AddressFamily::ipv4, {192u, 168u, 1u, 4u}, 24u);
     check(a != b, "a v4 address change is visible");
     a = b;
     check(a == b, "copy compares equal again");
 
-    b.v4.address[3] = 5u;
+    b.v4.addresses.clear();
+    b.v4.addresses.add(AddressFamily::ipv4, {192u, 168u, 1u, 5u}, 24u);
     check(a != b, "a v4 octet change is visible");
+    a = b;
+
+    b.v6.addresses.add(AddressFamily::ipv6,
+                       {0xFEu, 0x80u, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1u}, 64u);
+    check(a != b, "a second-family address is visible");
     a = b;
 
     b.v6.state = AddressPhase::bound;
@@ -64,6 +103,8 @@ int main() {
         check(classify(AddressFamily::ipv6, ll_v6, true) == AddressFlags::link_local,
               "fe80:: classifies link-local");
     }
+
+    tc_net_6724_001();
 
     // classifiers
     check(IsIpv4LinkLocal({169u, 254u, 3u, 9u}), "169.254.x.y is link-local");

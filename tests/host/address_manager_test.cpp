@@ -36,7 +36,7 @@ int main() {
         mgr.poll(fake::now());
         check(mgr.stable(), "stable once a provider binds");
         check(!zc.started, "the fallback is never started");
-        check(mgr.lease().has_address, "lease exposes the bound address");
+        check(mgr.lease().has_address(), "lease exposes the bound address");
     }
 
     // ── a failed provider hands off to the next ───────────────────────────
@@ -53,7 +53,7 @@ int main() {
 
         b.bind({169u, 254u, 3u, 9u});
         mgr.poll(fake::now());
-        check(mgr.lease().has_address && mgr.lease().link_local(),
+        check(mgr.lease().has_address() && mgr.lease().link_local(),
               "publishes the bound address; 169.254 is link-local");
     }
 

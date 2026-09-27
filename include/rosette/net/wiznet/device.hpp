@@ -400,6 +400,18 @@ public:
     }
 
     /**
+     * @brief Reads the IPv6 link-local address (LLAR) back from the chip.
+     *
+     * @return The address the chip holds; all zero when none is programmed.
+     */
+    std::array<uint8_t, 16> ipv6_link_local() noexcept {
+        std::array<uint8_t, 16> address{};
+        const auto lock = bus_.acquire();
+        read(Chip::common_ip6_link_local(), address.data(), address.size());
+        return address;
+    }
+
+    /**
      * @brief Programs the IPv6 global address, on-link prefix mask, and default router.
      *
      * The chip delivers a destination that matches `address` under

@@ -69,15 +69,12 @@ private:
         if (family_ == AddressFamily::ipv4) {
             const uint32_t v4 = rosette_platform_get_ipv4_addr();
             if (v4 != 0u) {
-                lease_.address[0] = static_cast<uint8_t>(v4 >> 24);
-                lease_.address[1] = static_cast<uint8_t>(v4 >> 16);
-                lease_.address[2] = static_cast<uint8_t>(v4 >> 8);
-                lease_.address[3] = static_cast<uint8_t>(v4);
-                const std::array<uint8_t, 4> a{lease_.address[0], lease_.address[1],
-                                               lease_.address[2], lease_.address[3]};
-                lease_.source = IsIpv4LinkLocal(a) ? AddressSource::zeroconf
-                                                   : AddressSource::dhcp;
-                lease_.has_address = true;
+                const std::array<uint8_t, 16> a{
+                    static_cast<uint8_t>(v4 >> 24), static_cast<uint8_t>(v4 >> 16),
+                    static_cast<uint8_t>(v4 >> 8), static_cast<uint8_t>(v4)};
+                lease_.source = IsIpv4LinkLocal({a[0], a[1], a[2], a[3]}) ? AddressSource::zeroconf
+                                                                          : AddressSource::dhcp;
+                lease_.add(a, 0u);
                 lease_.state = AddressPhase::bound;
             } else {
                 lease_.source = AddressSource::dhcp;
@@ -86,9 +83,8 @@ private:
         } else {
             std::array<uint8_t, 16> v6{};
             if (rosette_platform_get_ipv6_addr(v6.data())) {
-                lease_.address = v6;
                 lease_.source = AddressSource::slaac;    // link_local flag distinguishes fe80::
-                lease_.has_address = true;
+                lease_.add(v6, 64u);
                 lease_.state = AddressPhase::bound;
             } else {
                 lease_.source = AddressSource::slaac;

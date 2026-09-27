@@ -40,10 +40,10 @@ constexpr uint32_t kProgressPeriodMs = 2000u;
 /// @brief IPv6 addressing for a part without hardware IPv6: none.
 template <typename Chip, bool = Chip::has_hw_ipv6()>
 struct BoardIpv6 {
-    BoardIpv6(BoardDevice&, BoardSocketProvider&, NetInterface&, const std::array<uint8_t, 6>&) noexcept {}
+    BoardIpv6(BoardDevice&, BoardSocketProvider&, NetInterface&,
+              const std::array<uint8_t, 6>&) noexcept {}
+
     AddressManager* manager() noexcept { return nullptr; }
-    std::array<uint8_t, 16> link_local() const noexcept { return {}; }
-    std::array<uint8_t, 16> global() const noexcept { return {}; }
 };
 
 /// @brief IPv6 addressing on the W6100 / W6300: SLAAC, one provider.
@@ -56,11 +56,8 @@ struct BoardIpv6<Chip, true> {
     BoardIpv6(BoardDevice& device, BoardSocketProvider& sockets, NetInterface& iface,
               const std::array<uint8_t, 6>& mac) noexcept
         : slaac(device, sockets, iface, mac), providers{&slaac}, v6(providers) {}
+
     AddressManager* manager() noexcept { return &v6; }
-    std::array<uint8_t, 16> link_local() const noexcept {
-        return v6.stable() ? slaac.link_local_address() : std::array<uint8_t, 16>{};
-    }
-    std::array<uint8_t, 16> global() const noexcept { return slaac.global_address(); }
 };
 
 /// @brief The board's chip driver and addressing, in construction order.
@@ -116,7 +113,7 @@ void bring_up_board_network(const char* hostname) noexcept {
 
     network.address.begin();
     uint32_t next_note = pf::monotonic_ms() + kProgressPeriodMs;
-    while (!network.address.snapshot().v4.has_address) {
+    while (!network.address.snapshot().v4.has_address()) {
         network.address.poll(pf::monotonic_ms());
         if (static_cast<int32_t>(pf::monotonic_ms() - next_note) >= 0) {
             next_note += kProgressPeriodMs;
@@ -124,20 +121,23 @@ void bring_up_board_network(const char* hostname) noexcept {
         }
         pf::sleep_ms(10u);
     }
-    const auto a = network.address.snapshot().v4.address;
+
+    const auto& a = network.address.snapshot().v4.address();
     std::printf("[net] address %u.%u.%u.%u\n", a[0], a[1], a[2], a[3]);
 
     // Link-local SLAAC binds within about a second of DAD; a global address
     // follows only if a router advertises a prefix, so poll_board_network()
     // keeps the manager running and the global address is reported later.
-    while (network.ipv6.manager() != nullptr && !network.address.snapshot().v6.has_address) {
+    while (network.ipv6.manager() != nullptr && !network.address.snapshot().v6.has_address()) {
         network.address.poll(pf::monotonic_ms());
         pf::sleep_ms(10u);
     }
-    if (network.ipv6.manager() != nullptr) {
+
+    for (const AddressEntry& entry : network.address.snapshot().v6.addresses) {
         char text[48];
-        const auto a = network.address.snapshot().v6.address;
-        if (inet::ntop6(a.data(), text, sizeof(text)) != nullptr) std::printf("[net] IPv6 address %s\n", text);
+        if (inet::ntop6(entry.address.data(), text, sizeof(text)) != nullptr) {
+            std::printf("[net] IPv6 address %s/%u\n", text, entry.prefix_len);
+        }
     }
 
     attach_rx_interrupt(ROSETTE_PIN_WIZNET_INT, network.sockets);
@@ -154,16 +154,13 @@ rosette::net::SocketProvider& board_socket_provider() noexcept {
 
 uint32_t board_ipv4_address() noexcept {
     if (g_network == nullptr) return 0u;
-    const auto a = g_network->address.snapshot().v4.address;
+    const auto& a = g_network->address.snapshot().v4.address();
     return (uint32_t{a[0]} << 24) | (uint32_t{a[1]} << 16) | (uint32_t{a[2]} << 8) | uint32_t{a[3]};
 }
 
-std::array<uint8_t, 16> board_ipv6_link_local() noexcept {
-    return g_network != nullptr ? g_network->ipv6.link_local() : std::array<uint8_t, 16>{};
-}
-
-std::array<uint8_t, 16> board_ipv6_global() noexcept {
-    return g_network != nullptr ? g_network->ipv6.global() : std::array<uint8_t, 16>{};
+const AddressSnapshot& board_address_snapshot() noexcept {
+    static const AddressSnapshot kNone{};
+    return g_network != nullptr ? g_network->address.snapshot() : kNone;
 }
 
 uint32_t board_send_timeouts() noexcept {

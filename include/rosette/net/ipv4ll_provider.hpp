@@ -4,8 +4,10 @@
  * @file net/ipv4ll_provider.hpp
  * @brief RFC 3927 IPv4 link-local ("zeroconf" / AutoIP) `AddressProvider`.
  *
- * Picks a `169.254.x.y` candidate deterministically from the interface MAC
- * (stable across reboots so a board reclaims its address), writes it through the
+ * Picks a `169.254.x.y` candidate deterministically from the interface MAC and
+ * a conflict counter (`ipv4_link_local_candidate()`), so a board reclaims the
+ * same address on every boot and after every link flap, and moves to the next
+ * candidate only after a conflict. It writes the candidate through the
  * `NetInterface` — which emits a gratuitous ARP — waits a settle window while
  * watching `NetInterface::conflict()`, then holds the address. A first conflict
  * while bound is defended once with a re-announce; a repeat within
@@ -23,6 +25,7 @@
 #include <array>
 #include <cstdint>
 
+#include "address_candidate.hpp"
 #include "address_provider.hpp"
 #include "interface.hpp"
 
@@ -46,15 +49,15 @@ public:
 
     Ipv4LinkLocalProvider(const std::array<uint8_t, 6>& mac,
                           NetInterface& iface = null_net_interface()) noexcept
-            : iface_(iface), prng_{seed_from_mac(mac)} {
+        : iface_(iface), mac_(mac) {
         lease_.family = AddressFamily::ipv4;
         lease_.source = AddressSource::zeroconf;
-        lease_.prefix_len = 16u;
     }
 
     void begin() noexcept override {
         (void)iface_.conflict();    // drop a stale signal from a prior owner
         conflicts_ = 0u;
+        attempt_ = 0u;
         state_ = State::settling;
         need_pick_ = true;
         rebuild(false);
@@ -88,49 +91,26 @@ public:
     uint8_t conflict_count() const noexcept { return conflicts_; }
 
 private:
-    struct Xorshift {
-        uint32_t s;
-        uint32_t next() noexcept {
-            s ^= s << 13;
-            s ^= s >> 17;
-            s ^= s << 5;
-            return s;
-        }
-    };
-
-    static uint32_t seed_from_mac(const std::array<uint8_t, 6>& mac) noexcept {
-        uint32_t seed = (static_cast<uint32_t>(mac[2]) << 24) |
-                        (static_cast<uint32_t>(mac[3]) << 16) |
-                        (static_cast<uint32_t>(mac[4]) << 8) |
-                        static_cast<uint32_t>(mac[5]);
-        seed ^= (static_cast<uint32_t>(mac[0]) << 8) | mac[1];
-        return seed != 0u ? seed : 0x1234567u;
-    }
-
-    void pick_candidate() noexcept {
-        const uint32_t r = prng_.next();
-        candidate_ = {169u, 254u,
-                      static_cast<uint8_t>(1u + (r % 254u)),        // 1..254
-                      static_cast<uint8_t>((r >> 8) & 0xFFu)};      // 0..255
+    std::array<uint8_t, 16> candidate_bytes() const noexcept {
+        return {candidate_[0], candidate_[1], candidate_[2], candidate_[3]};
     }
 
     AddressLease candidate_lease(bool has_address) const noexcept {
-        AddressLease l{};
-        l.family = AddressFamily::ipv4;
-        l.source = AddressSource::zeroconf;
-        l.prefix_len = 16u;
-        l.has_address = has_address;
+        AddressLease l = lease_.empty();
         if (has_address) {
-            l.address = {candidate_[0], candidate_[1], candidate_[2], candidate_[3]};
+            l.add(candidate_bytes(), 16u);
         }
+
         return l;
     }
 
     void announce() noexcept { iface_.apply(candidate_lease(true)); }
     void clear_address() noexcept { iface_.apply(candidate_lease(false)); }
 
+    // `attempt_` numbers the candidates tried since begin() and keeps counting
+    // across rate-limit pauses, so a pause never cycles back to a taken address.
     void pick_and_announce(uint32_t now) noexcept {
-        pick_candidate();
+        candidate_ = ipv4_link_local_candidate(mac_, attempt_++);
         announce();
         state_ = State::settling;
         settle_until_ms_ = now + kSettleMs;
@@ -190,30 +170,27 @@ private:
     }
 
     void rebuild(bool conflict_edge) noexcept {
-        lease_.source = AddressSource::zeroconf;
-        lease_.prefix_len = 16u;
         set_flag(lease_.flags, AddressFlags::duplicate, conflict_edge);
+        lease_.addresses.clear();
         const bool have = state_ == State::bound || state_ == State::defending;
-        lease_.has_address = have;
         if (have) {
-            lease_.address = {candidate_[0], candidate_[1], candidate_[2],
-                              candidate_[3], 0};
+            lease_.add(candidate_bytes(), 16u);
             lease_.state = AddressPhase::bound;
         } else {
-            lease_.address = {};
             lease_.state = (state_ == State::idle) ? AddressPhase::idle
                                                    : AddressPhase::acquiring;
         }
     }
 
     NetInterface& iface_;
-    Xorshift prng_;
+    std::array<uint8_t, 6> mac_;
     AddressLease lease_{};
     std::array<uint8_t, 4> candidate_{};
     State state_ = State::idle;
     uint32_t settle_until_ms_ = 0u;
     uint32_t defend_until_ms_ = 0u;
     uint8_t conflicts_ = 0u;
+    uint32_t attempt_ = 0u;
     bool need_pick_ = false;
 };
 

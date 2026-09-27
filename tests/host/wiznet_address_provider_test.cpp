@@ -72,12 +72,10 @@ int main() {
         check(!iface.conflict(), "no conflict pending initially");
         AddressLease l{};
         l.family = AddressFamily::ipv4;
-        l.has_address = true;
-        l.address = {192u, 168u, 1u, 5u};
-        l.prefix_len = 24u;
+        l.add({192u, 168u, 1u, 5u}, 24u);
         iface.apply(l);
         check(!bus.writes.empty(), "apply() wrote chip registers");
-        l.has_address = false;
+        l.addresses.clear();
         iface.apply(l);    // clear path
     }
 

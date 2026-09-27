@@ -84,7 +84,7 @@ public:
                 applied_ = false;
             }
             lease_.state = AddressPhase::failed;
-            lease_.has_address = false;
+            lease_.addresses.clear();
             return lease_;
         }
 
@@ -103,9 +103,7 @@ private:
         l.family = config_.family;
         l.source = AddressSource::manual;
         l.state = AddressPhase::bound;
-        l.has_address = true;
-        l.address = config_.address;
-        l.prefix_len = config_.prefix_len;
+        l.add(config_.address, config_.prefix_len);
         l.gateway_v4 = config_.gateway_v4;
         return l;
     }

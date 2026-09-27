@@ -14,7 +14,9 @@
  *      the board MAC (RFC 4291 §2.5.1, Appendix A). Duplicate address
  *      detection sends one neighbor solicitation (the chip's SLCR.NS command);
  *      silence for RetransTimer means unique, and the address goes to LLAR.
- *      The provider is `bound` from here on.
+ *      An answered probe moves to the next candidate of
+ *      `ipv6_address_candidate()` (RFC 7217 DAD_Counter), up to IDGEN_RETRIES
+ *      times. The provider is `bound` from here on.
  *   2. Router discovery: the provider claims a hardware socket, opens it in
  *      IPRAW6 mode for ICMPv6, and sends router solicitations (SLCR.RS),
  *      MAX_RTR_SOLICITATIONS of them RTR_SOLICITATION_INTERVAL apart
@@ -24,16 +26,18 @@
  *      decodes the prefix option at the wrong offset unless an 8-octet option
  *      precedes it, which RFC 4861 does not require. The socket is released as
  *      soon as an advertisement arrives or the solicitations run out.
- *   3. Global: an autonomous /64 prefix plus the interface identifier is
- *      checked by DAD like the link-local address and written to GUAR with its
- *      prefix mask, and the advertising router to GA6R when it offers itself
- *      as a default router. The lease then reports the global address.
+ *   3. Global: an autonomous /64 prefix plus an interface identifier, chosen
+ *      and checked by DAD the way the link-local address is (with its own
+ *      conflict counter per prefix), is written to GUAR with its prefix mask,
+ *      and the advertising router to GA6R when it offers itself as a default
+ *      router. The lease then lists both addresses.
  *   4. Refresh: before the router lifetime (or, for a prefix-only router, the
- *      valid lifetime) runs out, the provider solicits again, updating
- *      lifetimes and following a changed prefix. A router lifetime that ends
- *      withdraws GA6R; a valid lifetime that ends withdraws the global
- *      address. Without any router the provider keeps soliciting with the
- *      exponential backoff of RFC 7559.
+ *      preferred or valid lifetime) runs out, the provider solicits again,
+ *      updating lifetimes and following a changed prefix. A router lifetime
+ *      that ends withdraws GA6R; a preferred lifetime that ends marks the
+ *      global address deprecated; a valid lifetime that ends withdraws it.
+ *      Without any router the provider keeps soliciting with the exponential
+ *      backoff of RFC 7559.
  *
  * The provider holds a hardware socket only while it is soliciting, a few
  * seconds per refresh, so it shares the chip's sockets with DHCP, NTP, and the
@@ -41,9 +45,12 @@
  * second later.
  *
  * Every address write goes through `NetInterface::apply()`
- * (`WiznetInterface`). A duplicate link-local address stops IPv6 on the
- * interface (RFC 4862 §5.4.5) and reports `failed`; a duplicate global
- * address leaves the link-local address in service.
+ * (`WiznetInterface`) with the full lease, so the chip's registers always
+ * match the lease's address list. When every link-local candidate is
+ * duplicated, IPv6 stops on the interface (RFC 4862 §5.4.5) and the provider
+ * reports `failed`; when every global candidate for a prefix is duplicated,
+ * the link-local address stays in service and that prefix is not retried
+ * until a different one is advertised.
  *
  *     static wiz::WiznetSlaacProvider<Chip, Bus> slaac{device, sockets, iface, mac};
  *     static rosette::net::AddressProvider* v6_list[] = {&slaac};
@@ -55,6 +62,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "rosette/net/address_candidate.hpp"
 #include "rosette/net/address_provider.hpp"
 #include "rosette/net/interface.hpp"
 #include "rosette/net/ipv6_router_advert.hpp"
@@ -63,27 +71,6 @@
 #include "socket_provider.hpp"
 
 namespace rosette::net::wiznet {
-
-/**
- * @brief The modified EUI-64 interface identifier for a 48-bit MAC.
- *
- * Inserts ff:fe between the OUI and the NIC-specific half and inverts the
- * universal/local bit, as RFC 4291 Appendix A specifies.
- *
- * @param[in] mac Board MAC address.
- * @return The eight identifier octets, network byte order.
- *
- * Verification:
- * - Correct means: 00:1c:42:14:87:37 yields 02:1c:42:ff:fe:14:87:37 (the
- *   identifier Linux derives for the same MAC).
- * - Covered by: tests/host/wiznet_slaac_provider_test.cpp (TC-NET-SLAAC-001).
- *
- * References: RFC 4291 §2.5.1 and Appendix A.
- */
-inline std::array<uint8_t, 8> modified_eui64(const std::array<uint8_t, 6>& mac) noexcept
-{
-    return {static_cast<uint8_t>(mac[0] ^ 0x02u), mac[1], mac[2], 0xFFu, 0xFEu, mac[3], mac[4], mac[5]};
-}
 
 /**
  * @brief Drives SLAAC for a W6100 / W6300.
@@ -119,10 +106,10 @@ public:
     /// ICMPv6 next-header value (RFC 4443).
     static constexpr uint8_t kNextHeaderIcmp6 = 58u;
 
-    WiznetSlaacProvider(device_type& device, sockets_type& sockets, rosette::net::NetInterface& iface,
+    WiznetSlaacProvider(device_type& device, sockets_type& sockets,
+                        rosette::net::NetInterface& iface,
                         const std::array<uint8_t, 6>& mac) noexcept
-        : device_(device), sockets_(sockets), iface_(iface), iid_(modified_eui64(mac))
-    {
+        : device_(device), sockets_(sockets), iface_(iface), mac_(mac) {
         reset_lease();
     }
 
@@ -132,8 +119,12 @@ public:
         release_socket();
         reset_lease();
         lease_.state = rosette::net::AddressPhase::acquiring;
-        link_local_ = with_iid({0xFEu, 0x80u});
+        link_local_conflicts_ = 0u;
+        link_local_ = rosette::net::ipv6_address_candidate(kLinkLocalPrefix, mac_, 0u);
         global_ = {};
+        prefix_ = {};
+        global_conflicts_ = 0u;
+        deprecated_ = false;
         router_ = {};
         backoff_ms_ = kFirstBackoffMs;
         device_.set_icmp6_block(Chip::icmp6_block_router_advert());
@@ -159,21 +150,25 @@ public:
      * the socket is held, and none otherwise.
      *
      * @param[in] now_ms Monotonic milliseconds.
-     * @return The IPv6 lease: `acquiring` until the link-local address passes
-     *   DAD, then `bound` with the global address when one is configured and
-     *   the link-local address otherwise; `failed` after a duplicate
-     *   link-local address.
+     * @return The IPv6 lease: `acquiring` until a link-local candidate passes
+     *   DAD, then `bound`, listing the link-local address and, when one is
+     *   configured, the global address; `failed` once IDGEN_RETRIES + 1
+     *   link-local candidates have all been duplicated.
      *
      * Verification:
-     * - Correct means: the lease address is always one the chip holds and DAD
-     *   has passed; a global address appears only from an autonomous /64
+     * - Correct means: every lease address is one the chip holds and DAD
+     *   has passed; a duplicate moves to the next candidate for the same
+     *   prefix; a global address appears only from an autonomous /64
      *   advertised by a link-local router, GA6R holds that router only while
-     *   its router lifetime lasts, and the global address leaves when its
-     *   valid lifetime ends without a refresh.
-     * - Covered by: tests/host/wiznet_slaac_provider_test.cpp; on hardware,
+     *   its router lifetime lasts, the global address is deprecated when its
+     *   preferred lifetime ends and leaves when its valid lifetime ends
+     *   without a refresh.
+     * - Covered by: tests/host/wiznet_slaac_provider_test.cpp
+     *   (TC-NET-SLAAC-002 through -010); on hardware,
      *   examples/wiznet_udp_echo with tools/wiznet_udp_echo_probe.py.
      *
-     * References: RFC 4862 §5.4 (DAD), §5.5.3 (prefix processing);
+     * References: RFC 4862 §5.4 (DAD), §5.5.3 (prefix processing), §5.5.4
+     * (deprecation); RFC 7217 §5 and §6 (next candidate after a conflict);
      * RFC 4861 §6.3.4, §6.3.7; RFC 7559 §2 (solicitation backoff).
      */
     const rosette::net::AddressLease& poll(uint32_t now_ms) noexcept override
@@ -218,17 +213,12 @@ private:
         failed,            ///< Link-local address duplicated; IPv6 is off.
     };
 
+    static constexpr std::array<uint8_t, 16> kLinkLocalPrefix{0xFEu, 0x80u};
+    static constexpr std::array<uint8_t, 16> kNoAddress{};
+
     static bool due(uint32_t now_ms, uint32_t at_ms) noexcept
     {
         return static_cast<int32_t>(now_ms - at_ms) >= 0;
-    }
-
-    std::array<uint8_t, 16> with_iid(std::array<uint8_t, 8> prefix) const noexcept
-    {
-        std::array<uint8_t, 16> a{};
-        for (std::size_t i = 0; i < 8u; ++i) a[i] = prefix[i];
-        for (std::size_t i = 0; i < 8u; ++i) a[8u + i] = iid_[i];
-        return a;
     }
 
     void start_dad(Stage stage, const std::array<uint8_t, 16>& target, uint32_t now_ms) noexcept
@@ -238,31 +228,44 @@ private:
         device_.start_socketless_command(Chip::socketless_command_neighbor_solicit(), target, kDadTimeoutMs);
     }
 
-    // DAD outcome: a neighbor answering the probe means the address is taken.
+    // DAD outcome: a neighbor answering the probe means the address is taken,
+    // and the next candidate for the same prefix is probed, up to IDGEN_RETRIES.
     void poll_dad(uint32_t now_ms) noexcept
     {
         const uint8_t status = device_.poll_socketless_status();
         const bool answered = (status & Chip::socketless_status_neighbor_solicit()) != 0u;
-        const bool unique = !answered &&
-                            ((status & Chip::socketless_status_timeout()) != 0u || due(now_ms, deadline_ms_));
-        if (stage_ == Stage::dad_link_local) {
-            if (answered) {
-                rosette::net::set_flag(lease_.flags, rosette::net::AddressFlags::duplicate, true);
-                lease_.state = rosette::net::AddressPhase::failed;
-                stage_ = Stage::failed;
-            } else if (unique) {
-                publish_link_local();
-                start_solicitation(now_ms);
-            }
-            return;
-        }
+        const bool unique =
+            !answered
+            && ((status & Chip::socketless_status_timeout()) != 0u || due(now_ms, deadline_ms_));
         if (answered) {
             rosette::net::set_flag(lease_.flags, rosette::net::AddressFlags::duplicate, true);
+        }
+
+        if (stage_ == Stage::dad_link_local) {
+            if (answered && ++link_local_conflicts_ > rosette::net::kIdgenRetries) {
+                lease_.state = rosette::net::AddressPhase::failed;
+                stage_ = Stage::failed;
+            } else if (answered) {
+                link_local_ = rosette::net::ipv6_address_candidate(kLinkLocalPrefix, mac_,
+                                                                   link_local_conflicts_);
+                start_dad(Stage::dad_link_local, link_local_, now_ms);
+            } else if (unique) {
+                publish();
+                start_solicitation(now_ms);
+            }
+
+            return;
+        }
+
+        if (answered && ++global_conflicts_ > rosette::net::kIdgenRetries) {
             candidate_ = {};
             settle(now_ms, refresh_delay_ms());
+        } else if (answered) {
+            candidate_ = rosette::net::ipv6_address_candidate(prefix_, mac_, global_conflicts_);
+            start_dad(Stage::dad_global, candidate_, now_ms);
         } else if (unique) {
             global_ = candidate_;
-            publish_global();
+            publish();
             settle(now_ms, refresh_delay_ms());
         }
     }
@@ -317,48 +320,72 @@ private:
     }
 
     // RFC 4862 §5.5.3 for the chosen prefix, plus the router as default router.
+    // The same prefix refreshes the address in service; a new prefix starts
+    // DAD at conflict counter 0; a prefix whose candidates were all
+    // duplicated is not retried.
     void accept(const rosette::net::RouterAdvert& ra, uint32_t now_ms) noexcept
     {
         router_lifetime_ms_ = static_cast<uint32_t>(ra.router_lifetime_s) * 1000u;
         router_until_ms_ = now_ms + router_lifetime_ms_;
-        const std::array<uint8_t, 16> router = ra.router_lifetime_s != 0u ? ra.router : std::array<uint8_t, 16>{};
-
+        router_ = ra.router_lifetime_s != 0u ? ra.router : kNoAddress;
         if (!ra.has_prefix) {
-            router_ = router;
-            if (global_ != std::array<uint8_t, 16>{}) publish_global();
+            if (global_ != kNoAddress) {
+                publish();
+            }
+
             settle(now_ms, refresh_delay_ms());
             return;
         }
-        set_valid(ra.valid_lifetime_s, now_ms);
-        const auto address = with_iid({ra.prefix[0], ra.prefix[1], ra.prefix[2], ra.prefix[3],
-                                       ra.prefix[4], ra.prefix[5], ra.prefix[6], ra.prefix[7]});
-        router_ = router;
-        if (address == global_) {
-            publish_global();    // same address: new lifetimes and router
+
+        set_lifetimes(ra.valid_lifetime_s, ra.preferred_lifetime_s, now_ms);
+        if (ra.prefix != prefix_) {
+            prefix_ = ra.prefix;
+            global_conflicts_ = 0u;
+        } else if (global_ != kNoAddress) {
+            publish();  // same prefix: new lifetimes and router
             settle(now_ms, refresh_delay_ms());
             return;
         }
-        candidate_ = address;
+
+        if (global_conflicts_ > rosette::net::kIdgenRetries) {
+            settle(now_ms, refresh_delay_ms());
+            return;
+        }
+
+        candidate_ = rosette::net::ipv6_address_candidate(prefix_, mac_, global_conflicts_);
         start_dad(Stage::dad_global, candidate_, now_ms);
     }
 
-    void set_valid(uint32_t valid_s, uint32_t now_ms) noexcept
-    {
+    // Lifetimes past ~24 days do not fit the millisecond clock; they are
+    // treated as infinite, and the refresh cycle renews them long before.
+    void set_lifetimes(uint32_t valid_s, uint32_t preferred_s, uint32_t now_ms) noexcept {
+        constexpr uint32_t kLongest = 0x7FFFFFFFu / 1000u;
         valid_s_ = valid_s;
-        // Lifetimes past ~24 days do not fit the millisecond clock; they are
-        // treated as infinite, and the refresh cycle renews them long before.
-        valid_infinite_ = valid_s > 0x7FFFFFFFu / 1000u;
+        valid_infinite_ = valid_s > kLongest;
         valid_until_ms_ = now_ms + (valid_infinite_ ? 0u : valid_s * 1000u);
+        preferred_s_ = preferred_s;
+        preferred_infinite_ = preferred_s > kLongest;
+        preferred_until_ms_ = now_ms + (preferred_infinite_ ? 0u : preferred_s * 1000u);
+        deprecated_ = preferred_s == 0u;
     }
 
     // Half the shortest lifetime still in force, at most kMaxIntervalMs.
     uint32_t refresh_delay_ms() const noexcept
     {
         uint32_t delay = kMaxIntervalMs;
-        if (router_lifetime_ms_ != 0u && router_lifetime_ms_ / 2u < delay) delay = router_lifetime_ms_ / 2u;
-        if (global_ != std::array<uint8_t, 16>{} && !valid_infinite_ && valid_s_ * 500u < delay) {
+        if (router_lifetime_ms_ != 0u && router_lifetime_ms_ / 2u < delay) {
+            delay = router_lifetime_ms_ / 2u;
+        }
+
+        if (global_ != kNoAddress && !valid_infinite_ && valid_s_ * 500u < delay) {
             delay = valid_s_ * 500u;
         }
+
+        if (global_ != kNoAddress && !preferred_infinite_ && !deprecated_
+            && preferred_s_ * 500u < delay) {
+            delay = preferred_s_ * 500u;
+        }
+
         return delay < kSocketRetryMs ? kSocketRetryMs : delay;
     }
 
@@ -368,38 +395,40 @@ private:
         next_solicit_ms_ = now_ms + delay_ms;
     }
 
-    // Router lifetime over: withdraw GA6R. Valid lifetime over: withdraw GUAR.
+    // Router lifetime over: withdraw GA6R. Preferred lifetime over: deprecate
+    // the global address. Valid lifetime over: withdraw GUAR.
     void expire(uint32_t now_ms) noexcept
     {
-        if (router_ != std::array<uint8_t, 16>{} && due(now_ms, router_until_ms_)) {
+        if (router_ != kNoAddress && due(now_ms, router_until_ms_)) {
             router_ = {};
-            if (global_ != std::array<uint8_t, 16>{}) publish_global();
+            if (global_ != kNoAddress) {
+                publish();
+            }
         }
-        if (global_ != std::array<uint8_t, 16>{} && !valid_infinite_ && due(now_ms, valid_until_ms_)) {
+
+        if (global_ != kNoAddress && !deprecated_ && !preferred_infinite_
+            && due(now_ms, preferred_until_ms_)) {
+            deprecated_ = true;
+            publish();
+        }
+
+        if (global_ != kNoAddress && !valid_infinite_ && due(now_ms, valid_until_ms_)) {
             global_ = {};
-            publish_link_local();
+            publish();
         }
     }
 
-    void publish_link_local() noexcept
-    {
-        publish(link_local_, 0u, {});
-    }
-
-    void publish_global() noexcept
-    {
-        publish(global_, valid_s_, router_);
-    }
-
-    void publish(const std::array<uint8_t, 16>& address, uint32_t valid_s,
-                 const std::array<uint8_t, 16>& router) noexcept
-    {
+    // Lists the addresses in service and programs the chip to match. Six
+    // transitions call it, so it stays out of line.
+    [[gnu::noinline]] void publish() noexcept {
         lease_.state = rosette::net::AddressPhase::bound;
-        lease_.has_address = true;
-        lease_.address = address;
-        lease_.prefix_len = 64u;
-        lease_.lease_remaining_s = valid_s;
-        lease_.gateway_v6 = router;
+        lease_.addresses.clear();
+        lease_.add(link_local_, 64u);
+        if (global_ != kNoAddress) {
+            lease_.add(global_, 64u, valid_s_, preferred_s_, deprecated_);
+        }
+
+        lease_.gateway_v6 = router_;
         iface_.apply(lease_);
     }
 
@@ -422,17 +451,25 @@ private:
     device_type& device_;
     sockets_type& sockets_;
     rosette::net::NetInterface& iface_;
-    std::array<uint8_t, 8> iid_;
+    std::array<uint8_t, 6> mac_;
     rosette::net::AddressLease lease_{};
     Stage stage_ = Stage::idle;
     socket_type socket_ = Chip::socket_count();
     std::array<uint8_t, 16> link_local_{};
     std::array<uint8_t, 16> global_{};
     std::array<uint8_t, 16> candidate_{};
+    std::array<uint8_t, 16>
+        prefix_{};  ///< Prefix the global address and its conflict counter belong to.
     std::array<uint8_t, 16> router_{};
+    uint8_t link_local_conflicts_ = 0u;
+    uint8_t global_conflicts_ = 0u;
     uint32_t valid_s_ = 0u;
     bool valid_infinite_ = false;
     uint32_t valid_until_ms_ = 0u;
+    uint32_t preferred_s_ = 0u;
+    bool preferred_infinite_ = false;
+    bool deprecated_ = false;
+    uint32_t preferred_until_ms_ = 0u;
     uint32_t router_lifetime_ms_ = 0u;
     uint32_t router_until_ms_ = 0u;
     uint32_t deadline_ms_ = 0u;

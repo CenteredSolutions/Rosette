@@ -21,8 +21,10 @@ Four small pieces bring an interface online:
   family. Three methods: `begin()`, `stop()`, `poll(now_ms)`. `poll()` is called
   every superloop iteration with the loop's timestamp; it drives acquisition,
   then keeps the address valid (DHCP renewal) and watches for a duplicate. It
-  returns the provider's current `AddressLease` (`{family, method, phase,
-  conflict, address, prefix_len, gateway, lease_remaining_s, ntp}`).
+  returns the provider's current `AddressLease` (`{family, source, state,
+  flags, addresses, gateway_v4, gateway_v6, ntp}`), where `addresses` is an
+  inline `AddressList` of every address the provider holds, each with its
+  prefix length, flags, and valid / preferred lifetimes.
 
 * **`rosette::net::AddressManager`** — runs an ordered `AddressProvider*` list
   for **one family**. The whole rule: try the providers in order, first to bind
@@ -141,7 +143,8 @@ already does duplicate-address detection in hardware (`IR_CONFLICT` /
 a plain cooperative FSM stepped from `poll()`:
 
 ```
-picking  → choose a 169.254.x.y candidate from the MAC, write it (the chip
+picking  → take candidate N (ipv4_link_local_candidate(mac, N), N counting
+           up from 0 at begin()), write it (the chip
            emits a gratuitous ARP), start a ~3 s settle window
 settling → each poll: conflict() → new candidate (or → rate_limited after
            MAX_CONFLICTS); window elapsed with no conflict → bound
@@ -226,22 +229,35 @@ one `AddressProvider` for family v6:
 
 1. **Link-local.** fe80::/64 plus the modified EUI-64 of the MAC, checked by
    duplicate address detection with the chip's socket-less `SLCR.NS` command,
-   then written to LLAR. The provider is `bound` from here on.
+   then written to LLAR. A probe that is answered moves to the next candidate
+   from `ipv6_address_candidate()` (`rosette/net/address_candidate.hpp`), up
+   to IDGEN_RETRIES (3) times (RFC 7217 §5–6). The provider is `bound` from
+   here on.
 2. **Router discovery.** Router solicitations (`SLCR.RS`), with the chip's RA
    handling diverted (`ICMP6BLKR.RA`) to an IPRAW6 socket the provider holds
    only while soliciting; `parse_router_advert()`
    (`rosette/net/ipv6_router_advert.hpp`) decodes the answers. The chip's own
    prefix latch is not used because it decodes the prefix option at the wrong
    offset ([wiznet_w61xx_w63xx.md](wiznet_w61xx_w63xx.md#ipv6)).
-3. **Global.** An autonomous /64 prefix plus the interface identifier, checked
-   by DAD, goes to GUAR; the advertising router goes to GA6R.
-4. **Refresh.** The provider solicits again before the router or valid
-   lifetime ends, follows a changed prefix, and withdraws what expires.
-   Without a router it keeps soliciting with RFC 7559 backoff.
+3. **Global.** An autonomous /64 prefix plus an interface identifier, chosen
+   and checked by DAD the same way with its own per-prefix conflict counter,
+   goes to GUAR; the advertising router goes to GA6R.
+4. **Refresh.** The provider solicits again before the router, preferred, or
+   valid lifetime ends and follows a changed prefix. An ended preferred
+   lifetime marks the global address `deprecated`; an ended valid lifetime
+   withdraws it. Without a router it keeps soliciting with RFC 7559 backoff.
 
-A duplicate link-local address stops IPv6 on the interface (RFC 4862 §5.4.5)
-and reports `failed`; a duplicate global address leaves the link-local address
-in service.
+The lease lists the link-local address and, when present, the global address;
+`AddressList::primary()` picks the global one (RFC 6724 rules 2 and 3), and
+`WiznetInterface::apply()` programs LLAR and GUAR from the list. When every
+link-local candidate is duplicated, IPv6 stops on the interface
+(RFC 4862 §5.4.5) and the provider reports `failed`; when every global
+candidate for a prefix is duplicated, the link-local address stays in service.
+
+Candidates are FNV-1a hashes (`rosette/support/fnv1a.hpp`) of the MAC, the
+prefix, and the counter, with counter 0 fixed to the modified EUI-64. No key is
+secret: the goal is escaping a collision, not RFC 7217's privacy, and a
+first-choice address that follows from the MAC label keeps boards easy to find.
 
 `board_network` gives the provider its own `AddressManager` and passes it to
 `NetworkAddress` as the v6 manager, so IPv4 and IPv6 are acquired side by

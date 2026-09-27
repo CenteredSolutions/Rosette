@@ -34,7 +34,10 @@ if(ROSETTE_NET_STACK STREQUAL "wiznet_iolib")
     # instantiates its BoardLink for the fitted part. Nothing to compile here.
     add_library(rosette_net_wiznet STATIC
         "${_rosette_root}/src/net/socket.cpp"
-        "${_rosette_root}/src/net/ntp_sync.cpp")
+        "${_rosette_root}/src/net/ntp_sync.cpp"
+        "${_rosette_root}/src/net/address_candidate.cpp"
+        "${_rosette_root}/src/net/address_list.cpp"
+        "${_rosette_root}/src/support/fnv1a.cpp")
 
     target_include_directories(rosette_net_wiznet PUBLIC
         "${_rosette_root}/include"
@@ -63,6 +66,9 @@ elseif(ROSETTE_NET_STACK STREQUAL "freertos_tcp")
     add_library(rosette_net_freertos_tcp STATIC
         "${_rosette_root}/src/net/socket.cpp"
         "${_rosette_root}/src/net/ntp_sync.cpp"
+        "${_rosette_root}/src/net/address_candidate.cpp"
+        "${_rosette_root}/src/net/address_list.cpp"
+        "${_rosette_root}/src/support/fnv1a.cpp"
         "${_rosette_root}/src/net/freertos/socket.cpp"
         "${_rosette_root}/src/net/freertos/interface.cpp"
         "${_rosette_root}/src/net/freertos/igmp.cpp")

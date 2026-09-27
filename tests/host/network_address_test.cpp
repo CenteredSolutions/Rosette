@@ -39,7 +39,7 @@ int main() {
 
         check(changes == 1 && last_assigned, "on_change fires once when the interface comes up");
         const AddressSnapshot& s = net.snapshot();
-        check(s.v4.has_address && s.v6.has_address, "both families present");
+        check(s.v4.has_address() && s.v6.has_address(), "both families present");
         check(s.v4.routable(), "v4 routable");
         check(s.v6.link_local(), "v6 link-local (fe80::)");
         check(fake::ipv4() == 0xC0A80132u, "IPv4 published to the platform");

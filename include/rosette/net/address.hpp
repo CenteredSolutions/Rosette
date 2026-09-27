@@ -146,7 +146,8 @@ private:
         if (v6_ != nullptr) {
             v6_->lease().fill_family(s);
         }
-        s.assigned = s.v4.has_address || s.v6.has_address;
+
+        s.assigned = s.v4.has_address() || s.v6.has_address();
         snapshot_ = s;
     }
 
@@ -157,18 +158,14 @@ private:
     }
 
     void publish(const AddressSnapshot& before) noexcept {
-        if (snapshot_.v4.has_address != before.v4.has_address ||
-            snapshot_.v4.address != before.v4.address) {
-            rosette_platform_set_ipv4_addr(
-                    snapshot_.v4.has_address ? v4_host_order(snapshot_.v4.address)
-                                             : 0u);
+        // The primary address of an empty family is all zero, which is also
+        // what the runtime takes as "no address".
+        if (snapshot_.v4.address() != before.v4.address()) {
+            rosette_platform_set_ipv4_addr(v4_host_order(snapshot_.v4.address()));
         }
-        if (snapshot_.v6.has_address != before.v6.has_address ||
-            snapshot_.v6.address != before.v6.address) {
-            std::array<uint8_t, 16> zero{};
-            rosette_platform_set_ipv6_addr(snapshot_.v6.has_address
-                                                   ? snapshot_.v6.address.data()
-                                                   : zero.data());
+
+        if (snapshot_.v6.address() != before.v6.address()) {
+            rosette_platform_set_ipv6_addr(snapshot_.v6.address().data());
         }
     }
 

@@ -55,6 +55,9 @@ target_include_directories(rosette_fs PUBLIC
 # ------------------------------------------------------------
 add_library(rosette_net STATIC
     src/net/socket.cpp
+    src/net/address_candidate.cpp
+    src/net/address_list.cpp
+    src/support/fnv1a.cpp
 )
 
 set(ROSETTE_INTERNAL_INCLUDE_DIRS

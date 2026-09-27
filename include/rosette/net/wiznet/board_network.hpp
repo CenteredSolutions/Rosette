@@ -37,6 +37,7 @@
 #include <array>
 #include <cstdint>
 
+#include "rosette/net/address_state.hpp"
 #include "rosette/net/socket.hpp"
 
 namespace rosette::net::wiznet {
@@ -60,9 +61,9 @@ namespace rosette::net::wiznet {
  * Verification:
  * - Correct means: on return board_ipv4_address() is nonzero and equals the
  *   lease the DHCP server granted (or a 169.254/16 address without one); on
- *   the W6100 / W6300 board_ipv6_link_local() is the fe80:: address formed
- *   from the MAC; and a datagram to any open socket ends a kWaitForever
- *   wait_readable() within interrupt latency.
+ *   the W6100 / W6300 board_address_snapshot().v6 lists the fe80:: address
+ *   formed from the MAC (or its next candidate after a conflict); and a datagram to any open socket
+ * ends a kWaitForever wait_readable() within interrupt latency.
  * - Covered by: examples/rtps_chatter and examples/rclc_chatter on the
  *   W5100S-EVB-Pico2 (bidirectional traffic with stock Fast DDS);
  *   examples/wiznet_udp_echo with tools/wiznet_udp_echo_probe.py on the
@@ -104,21 +105,25 @@ rosette::net::SocketProvider& board_socket_provider() noexcept;
 uint32_t board_ipv4_address() noexcept;
 
 /**
- * @brief The IPv6 link-local address (W6100 / W6300).
+ * @brief Every address the board holds, per family, with each family's state.
  *
- * @return fe80:: address once duplicate address detection has passed; all
- *   zero before then, after a duplicate, and on parts without hardware IPv6.
- */
-std::array<uint8_t, 16> board_ipv6_link_local() noexcept;
-
-/**
- * @brief The SLAAC global IPv6 address (W6100 / W6300).
+ * `v4.addresses` holds the IPv4 lease. On the W6100 / W6300, `v6.addresses`
+ * lists the link-local address once it passes duplicate address detection
+ * and, while a router advertises an autonomous prefix, the SLAAC global
+ * address; `v6.primary()` is the one to announce (the global address when
+ * present). On the W5100S `v6` is always empty.
  *
- * @return The address formed from an advertised autonomous /64 prefix; all
- *   zero until a router advertises one, after its valid lifetime ends, and on
- *   parts without hardware IPv6.
+ * @return The live snapshot, updated by poll_board_network(); an empty
+ *   snapshot before bring_up_board_network() has run. The reference stays
+ *   valid for the rest of the program; copy it to keep a stable view.
+ *
+ * Verification:
+ * - Correct means: every listed address is one the chip holds in SIPR,
+ *   LLAR, or GUAR.
+ * - Covered by: examples/wiznet_udp_echo with tools/wiznet_udp_echo_probe.py
+ *   on the W6100-EVB-Pico (ping and UDP echo on every listed address).
  */
-std::array<uint8_t, 16> board_ipv6_global() noexcept;
+const AddressSnapshot& board_address_snapshot() noexcept;
 
 /**
  * @brief Sends the chip abandoned because ARP for the destination failed.

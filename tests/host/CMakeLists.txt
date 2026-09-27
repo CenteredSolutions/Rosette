@@ -15,9 +15,18 @@ enable_testing()
 # Host tests run on the POSIX platform port (include/rosette/platform/platform.hpp).
 add_compile_definitions(ROSETTE_OS_POSIX ROSETTE_CHIP_HOST)
 
-# add_host_test(<name>) — one .cpp, header-only against include/, no link deps.
+# The out-of-line pieces of the address providers (candidates, address lists).
+add_library(rosette_host_address STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/address_candidate.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/address_list.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/support/fnv1a.cpp)
+target_include_directories(rosette_host_address PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
+target_compile_options(rosette_host_address PRIVATE -Wall -Wextra)
+
+# add_host_test(<name>) — one .cpp against include/, linking only rosette_host_address.
 function(add_host_test name)
     add_executable(${name} ${name}.cpp)
+    target_link_libraries(${name} PRIVATE rosette_host_address)
     target_include_directories(${name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../../include
@@ -44,6 +53,7 @@ add_host_test(ipv6_router_advert_test)
 
 # Address bring-up layer.
 add_host_test(address_snapshot_test)
+add_host_test(address_candidate_test)
 add_host_test(ipv4ll_provider_test)
 add_host_test(address_manager_test)
 add_host_test(network_address_test)

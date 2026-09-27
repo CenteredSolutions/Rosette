@@ -47,8 +47,8 @@ int main() {
         check(p.poll(0).state == AddressPhase::acquiring, "settling reports acquiring");
         const auto& l = p.poll(kSettle + 100u);
         check(p.state() == State::bound, "bound after the settle window");
-        check(l.state == AddressPhase::bound && l.has_address, "lease has the address");
-        check(l.address[0] == 169u && l.source == rosette::net::AddressSource::zeroconf,
+        check(l.state == AddressPhase::bound && l.has_address(), "lease has the address");
+        check(l.address()[0] == 169u && l.source == rosette::net::AddressSource::zeroconf,
               "link-local address, zeroconf source");
         check(l.link_local() && !l.routable(), "link-local, not routable");
     }

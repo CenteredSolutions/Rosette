@@ -26,7 +26,9 @@ main loop keeps it that way:
 
 Bring-up returns once the IPv4 address and, on IPv6 parts, the link-local
 address are held. A global IPv6 address arrives later, when a router
-advertises a prefix; `board_ipv6_global()` reports it.
+advertises a prefix. `board_address_snapshot()` lists every address the board
+holds per family; its `v6.primary()` is the global address once there is one
+and the link-local address before that.
 
 After bring-up, `poll_board_network()` renews the DHCP lease at T1, reacts to
 an address conflict the chip detects (DHCPDECLINE and a fresh DISCOVER, or a
@@ -45,7 +47,8 @@ or replug the board after it is up.
 | --- | --- |
 | MAC | WIZnet OUI `00:08:DC` + the last three bytes of the RP2040 / RP2350 unique ID (`board_get_mac_address()` in `boards/<board>/board_init.c`); stable across reboots, distinct per board |
 | DHCP host name | the argument to `bring_up_board_network()` (`"rosette-rclc"` in `rclc_chatter`) |
-| IPv6 interface ID | modified EUI-64 of the MAC (RFC 4291 Appendix A): MAC `00:08:dc:12:34:56` → `::208:dcff:fe12:3456` |
+| IPv6 interface ID | modified EUI-64 of the MAC (RFC 4291 Appendix A): MAC `00:08:dc:12:34:56` → `::208:dcff:fe12:3456`. If another host already holds that address, the board moves to the next of up to three further identifiers, derived from the MAC, prefix, and a conflict counter (RFC 7217); the sequence is the same on every boot |
+| IPv4 link-local | a 169.254/16 address derived from the MAC and a conflict counter (RFC 3927 §2.1), the same on every boot and after every link flap |
 
 To give a board a fixed IPv4 address, reserve one for its MAC on the DHCP
 server. `board_network` always runs DHCP with a link-local fallback; a board
