@@ -1,17 +1,21 @@
 # Network address bring-up
 
-Status: IPv4 (DHCP / zeroconf / static / conflict) landed for the WIZnet
-hardware-socket path; FreeRTOS+TCP observer landed; WIZnet hardware IPv6 is a
-documented seam, not implemented.
+Scope: how a Rosette interface acquires and keeps its addresses. On the
+WIZnet hardware-socket path that is IPv4 (DHCP, RFC 3927 link-local, static,
+duplicate-address reaction, carrier supervision) and, on the W6100 / W6300,
+IPv6 stateless autoconfiguration; on FreeRTOS+TCP it is an observer of the
+stack's own addressing. What a user configures is in
+[../network_configuration.md](../network_configuration.md).
 
-## Why
+`rosette/net/wiznet/board_network.hpp` is the composition every WIZnet
+firmware uses: it declares DHCP with a link-local fallback for IPv4 and, on
+parts with hardware IPv6, SLAAC for IPv6, over the pieces below.
+`wiznet_udp_echo`, `rtps_chatter`, and `rclc_chatter` call it. Firmware that
+needs a different address policy declares its own list the same way.
 
-Every firmware `main()` used to bring the interface online by hand —
-`WiznetLink::begin()` did `verify → init_socket_mode → PHY-wait → DHCP-or-static`
-with one baked-in DHCP→static fallback. No RFC 3927 IPv4 link-local, no reaction
-to a duplicate address.
+## The pieces
 
-Four small pieces replace it:
+Four small pieces bring an interface online:
 
 * **`rosette::net::AddressProvider`** — one way to get one address for one
   family. Three methods: `begin()`, `stop()`, `poll(now_ms)`. `poll()` is called
@@ -42,16 +46,16 @@ Four small pieces replace it:
   WIZnet supplies `wiznet::WiznetInterface<Chip,Bus>`; FreeRTOS+TCP owns its
   endpoint and uses `NullNetInterface` (always up).
 
-`rosette::App` is unchanged. Nothing in the address layer blocks: `main()` calls
-`net.poll(now)` every iteration and gates `app.spin_once(now)` on
-`net.has_address()`. `wait_stable()` stays as an opt-in for firmware with
-nothing to do offline.
+Nothing in the address layer blocks except a first DHCP exchange (below):
+`main()` calls `poll(now)` every iteration and services the protocol stack
+only while `has_address()` holds. `wait_stable()` is an opt-in for firmware
+with nothing to do offline.
 
 ### One manager per family
 
 There is no primary/secondary role and no combined bimodal manager. IPv4 (a
-serial DHCP→fallback ladder) and IPv6 (SLAAC / link-local, when hardware IPv6
-lands) are independent `AddressManager`s over independent provider lists.
+serial DHCP→fallback ladder) and IPv6 (SLAAC on the W6100 / W6300) are
+independent `AddressManager`s over independent provider lists.
 `NetworkAddress` is the only thing that knows about both.
 
 ## Providers
@@ -62,13 +66,13 @@ lands) are independent `AddressManager`s over independent provider lists.
 | `wiznet::DhcpAddressProvider` | v4 | wraps `DhcpPoller`; first `poll()` runs one bounded exchange; then renew at T1; conflict → `DhcpPoller::handle_conflict()` (DHCPDECLINE + fresh DISCOVER); a lease aged past validity is dropped. Every address write is routed through `NetInterface::apply()` — `DhcpProtocol` gets a `set_apply()` callback rather than touching `configure_ipv4` itself |
 | `Ipv4LinkLocalProvider` | v4 | RFC 3927 FSM (below); no internal clock; the terminal fallback — never reports `failed`, holds link-local and defends it |
 | `freertos::FreeRtosObserver` | one per family | observe-only: maps `rosette_platform_get_ipv{4,6}_addr()` into a lease; never fails, never blocks |
-| `wiznet::SlaacProvider` | v6 | *future — see below* |
+| `wiznet::WiznetSlaacProvider` | v6 | RFC 4862 SLAAC on the W6100 / W6300: link-local address with DAD, router solicitation, global address from an autonomous prefix, refresh before lifetimes end; see [W6100 / W6300 hardware IPv6](#w6100--w6300-hardware-ipv6) |
 
 ### Declaring it
 
-There is no bring-up wrapper and no `ROSETTE_NET_*` policy macros. Firmware
-declares the providers it wants, in fallback order, straight into an
-`AddressManager`:
+There are no `ROSETTE_NET_*` policy macros. The providers are declared in
+fallback order, straight into an `AddressManager`; this is what
+`src/net/wiznet/board_network.cpp` does:
 
 ```cpp
 namespace wiz = rosette::net::wiznet;
@@ -92,20 +96,24 @@ net_addr.on_change([](const net::AddressSnapshot& s){
 net_addr.begin();
 
 for (;;) {
-    const uint32_t now = rosette_platform_get_ms();
+    const uint32_t now = rosette::platform::monotonic_ms();
     net_addr.poll(now);
     if (net_addr.has_address()) {
-        app.spin_once(now);
+        (void)rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10));
     }
-    rosette_platform_wait_for_event(app.connected() ? 5u : 200u);
 }
 ```
 
-`main()` never blocks on the network: `poll(now)` runs every iteration and
-`app.spin_once()` is gated on `has_address()`. When carrier drops,
-`NetworkAddress` releases the address, `has_address()` goes false, the app stops
-being serviced; when carrier returns it re-acquires from the top (a fresh DHCP
-DISCOVER, since `begin()` — not a renew — is what the link-up edge calls).
+`poll(now)` runs every iteration and the executor is serviced only while an
+address is held. When carrier drops, `NetworkAddress` releases the address,
+`has_address()` goes false, and the protocol stack is left idle; when carrier
+returns it re-acquires from the top (a fresh DHCP DISCOVER, since `begin()` —
+not a renew — is what the link-up edge calls).
+
+`board_network` makes one simplification: `bring_up_board_network()` blocks
+until the first address is held, because `rcl_init()` must run after the
+address exists (`rmw_rosette/network_port.hpp`), and `poll_board_network()`
+then keeps it.
 
 Other layouts are just a different list:
 
@@ -168,16 +176,16 @@ polled, so exactly one provider consumes each conflict:
 | zeroconf | defend once, then a new `169.254.x.y` candidate |
 | static | `failed` → `AddressManager` falls through to the next provider |
 
-**Blocking note.** `DhcpAddressProvider`'s first `poll()` and a conflict-recovery
+**Blocking.** `DhcpAddressProvider`'s first `poll()` and a conflict-recovery
 exchange run a blocking DHCP exchange bounded by
-`DhcpConfig::exchange_timeout_ms` (10 s here). During that window
-`app.spin_once()` can miss a beat — the same characteristic as today's lease
-renewal. The FreeRTOS `DhcpTask` path does not block. Everything else in the
-address layer is non-blocking.
+`DhcpConfig::exchange_timeout_ms` (10 s). During that window the protocol
+stack is not serviced; RTPS reliability recovers anything missed. The
+FreeRTOS `DhcpTask` path does not block. Everything else in the address layer
+is non-blocking.
 
-**Known limitation.** Once zeroconf binds (DHCP was down at boot), the manager
-stays on it; it only re-tries DHCP-from-the-top if zeroconf itself later fails.
-A periodic "retry the preferred provider while a fallback holds" is a future knob.
+**Fallback is sticky.** Once link-local binds (DHCP was down at boot), the
+manager stays on it; it retries DHCP from the top only if link-local itself
+fails or carrier drops and returns.
 
 ## Link failure and re-negotiation
 
@@ -186,16 +194,17 @@ Carrier is a `NetInterface` property (`link_up()` — WIZnet reads PHYSR live).
 
 * **carrier lost** → `NetworkAddress` calls `stop()` on its managers (which
   release the address and clear the chip via `NetInterface::apply`),
-  `has_address()` goes false, `main()` stops calling `app.spin_once()`.
+  `has_address()` goes false, and `main()` leaves the protocol stack idle.
 * **carrier back** → `NetworkAddress` calls `begin()` on its managers. Because
   `begin()` — not a renewal — is what runs, DHCP does a fresh **DISCOVER** (the
   old lease is presumed invalid on a possibly-different network), zeroconf
   re-picks a candidate, static re-writes `SIPR`. No provider-specific re-negotiation
   code — the normal `stop()`/`begin()` lifecycle already does the right thing.
 
-`main()` no longer needs a `while (!link.bring_link_up())` wait — chip init
-(`verify` + `init_socket_mode`) stays explicit, but the PHY wait folds into the
-supervised loop.
+`board_network` waits for the PHY once, in `bring_up_board_network()`
+(`WiznetLink::bring_link_up()`: verify the chip, set socket mode, wait for
+link), because nothing can be acquired before the chip answers. From then on
+carrier is supervised by `NetworkAddress` in the loop.
 
 ## FreeRTOS+TCP path
 
@@ -206,26 +215,49 @@ DHCP, AutoIP fallback (`ipconfigDHCP_FALL_BACK_AUTO_IP` = `1`), RA/SLAAC, and DA
 itself. Give the v4 observer to a `v4` manager and the v6 observer to a `v6`
 manager (each list is just that one provider), then combine with `NetworkAddress`.
 
-## Future: W6100 / W6300 hardware IPv6
+## W6100 / W6300 hardware IPv6
 
-Not implemented — no EVB to verify the SLAAC/DAD register semantics. The seam is
-a commented trait block in `w6x00.hpp` plus:
+The W6100 and W6300 run IPv6 in silicon once the host programs their
+addresses: a link-local address (LLAR), a global address and prefix (GUAR,
+SUB6R), and a default router (GA6R). The chip then answers neighbor
+solicitations and echo requests itself and carries UDP6 traffic. Choosing the
+addresses is `wiznet::WiznetSlaacProvider<Chip,Bus>` (`slaac_provider.hpp`),
+one `AddressProvider` for family v6:
 
-* `wiznet::SlaacProvider<Chip,Bus> : AddressProvider` (family v6) — write the LLA
-  via `WiznetInterface`, kick RS + the chip's DAD engine, poll the status
-  register, on DAD fail regenerate the IID, promote to `slaac_v6` on a GUA.
-* Its own `AddressManager` for the v6 list, passed to `NetworkAddress` as the
-  second argument.
-* `WiznetInterface::apply(AddressFamily::ipv6, …)` — the v6 publication point.
-* Gate `WiznetSocketProvider`'s `SocketDomain::ipv6` rejection on
-  `if constexpr (!Chip::has_hw_ipv6())`.
+1. **Link-local.** fe80::/64 plus the modified EUI-64 of the MAC, checked by
+   duplicate address detection with the chip's socket-less `SLCR.NS` command,
+   then written to LLAR. The provider is `bound` from here on.
+2. **Router discovery.** Router solicitations (`SLCR.RS`), with the chip's RA
+   handling diverted (`ICMP6BLKR.RA`) to an IPRAW6 socket the provider holds
+   only while soliciting; `parse_router_advert()`
+   (`rosette/net/ipv6_router_advert.hpp`) decodes the answers. The chip's own
+   prefix latch is not used because it decodes the prefix option at the wrong
+   offset ([wiznet_w61xx_w63xx.md](wiznet_w61xx_w63xx.md#ipv6)).
+3. **Global.** An autonomous /64 prefix plus the interface identifier, checked
+   by DAD, goes to GUAR; the advertising router goes to GA6R.
+4. **Refresh.** The provider solicits again before the router or valid
+   lifetime ends, follows a changed prefix, and withdraws what expires.
+   Without a router it keeps soliciting with RFC 7559 backoff.
 
-Nothing above changes — hardware v6 is a second provider list.
+A duplicate link-local address stops IPv6 on the interface (RFC 4862 §5.4.5)
+and reports `failed`; a duplicate global address leaves the link-local address
+in service.
+
+`board_network` gives the provider its own `AddressManager` and passes it to
+`NetworkAddress` as the v6 manager, so IPv4 and IPv6 are acquired side by
+side. The choice is made at compile time from `Chip::has_hw_ipv6()`: on the
+W5100S the v6 manager is absent and `NetworkAddress` runs IPv4 alone.
+`bring_up_board_network()` returns once IPv4 and the IPv6 link-local address
+are held; the global address arrives later through `poll_board_network()`.
 
 ## Verification
 
 `tests/host/`: `ipv4ll_provider_test` (RFC 3927 FSM against a fake `NetInterface`),
 `address_snapshot_test` (`AddressSnapshot` equality + link-local classifiers),
+`wiznet_slaac_provider_test` (link-local and global DAD, router solicitation,
+RA handling, lifetimes, against a register-file chip model),
+`ipv6_router_advert_test` (RFC 4861 RA decoding, option order),
+`wiznet_udp_socket_test` (IPv4 and IPv6 UDP receive and send per chip),
 `address_manager_test` (serial list, fall-through, timeout, exhaustion →
 backoff → restart-from-top, bound-provider loss → re-cascade),
 `network_address_test` (v4+v6 → one snapshot, platform publish, `on_change`,
@@ -237,6 +269,10 @@ traits). All fakeable — `fake_runtime.hpp` for `block_until_stable`'s clock,
 `mock_provider.hpp` for a scriptable `AddressProvider`. The provider FSMs take
 `poll(now_ms)` so their tests use plain integers, no clock hook.
 
-Only on real W5100S-EVB-Pico2 hardware: real DHCP + T1 renewal; DHCP unplugged
-→ `169.254.x.y` → micro-ROS still reaches an on-link Agent; conflict injection
-(a second host on the same IP) → the reaction runs, backs off, re-acquires.
+On hardware: DHCP acquisition is exercised by every `rtps_chatter` and
+`rclc_chatter` boot on the W5100S-EVB-Pico2, and `wiznet_udp_echo` on the
+W6100-EVB-Pico acquires IPv4, IPv6 link-local, and a SLAAC global address,
+with ping and UDP echo over each (`tools/wiznet_udp_echo_probe.py`). Checks that need a bench setup: T1
+renewal on a short lease; DHCP server unplugged → `169.254.x.y` → the board
+still discovers on-link peers; conflict injection (a second host on the same
+IP) → the reaction runs, backs off, and re-acquires.

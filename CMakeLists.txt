@@ -48,11 +48,10 @@ target_include_directories(rosette_fs PUBLIC
 # ------------------------------------------------------------
 # rosette_net — socket abstraction layer (rosette::net)
 #
-# The custom DDSI-RTPS stack that this library used to carry has been
-# archived (tag archive/rtps-stack) as part of the micro-ROS-only
-# refactor. What remains is the transport-neutral socket abstraction
-# that both the board BSP and the micro-ROS client build on.
-# See docs/design/rosette_micro_ros_refactor.md.
+# The transport-neutral SocketProvider interface and its host backend. The
+# RTPS core (cmake/rosette_rtps.cmake), rmw_rosette
+# (cmake/rmw_rosette_firmware.cmake), and the board BSP all open their
+# sockets through it. See docs/architecture.md.
 # ------------------------------------------------------------
 add_library(rosette_net STATIC
     src/net/socket.cpp
@@ -162,7 +161,7 @@ endif()
 #
 #   rosette::storage::Volume        mounts the board storage region
 #   rosette::storage::FileStore     content-agnostic keyed blob store
-#   rosette::storage::DeviceConfig  the micro-ROS client's own boot config
+#   rosette::storage::DeviceConfig  Rosette's own boot configuration record
 #
 # The board block-device implementation is compiled in per target: the Pico
 # flash binding for FreeRTOS boards, a file-backed volume for host builds.

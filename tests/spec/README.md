@@ -2,17 +2,17 @@
 
 This directory hosts standards-first conformance tests for `Rosette`.
 
-The current pilot targets:
+Implementations under test:
 
-- RTPS parser implementation: `lib/Rosette/src/rtps/message_parser.cpp`
-- RTPS builder implementation: `lib/Rosette/include/rosette/rtps/message_builder.hpp`
-- RTPS fragment assembler implementation: `lib/Rosette/include/rosette/rtps/fragment_assembler.hpp`
-- SPDP discovery implementation: `lib/Rosette/src/rtps/spdp.cpp`
-- SEDP endpoint-discovery implementation: `lib/Rosette/src/rtps/sedp.cpp`
-- RTPS history-cache implementation: `lib/Rosette/include/rosette/rtps/history_cache.hpp`
-- Stateful writer reliability implementation: `lib/Rosette/include/rosette/rtps/stateful_writer.hpp`
-- Stateful reader reliability implementation: `lib/Rosette/include/rosette/rtps/stateful_reader.hpp`
-- RTPS participant orchestration implementation: `lib/Rosette/src/rtps/participant.cpp`
+- RTPS message parser: `src/rtps/message_parser.cpp`
+- RTPS message builder: `include/rosette/rtps/message_builder.hpp`
+- Fragment assembler: `include/rosette/rtps/fragment_assembler.hpp`
+- SPDP participant discovery: `src/rtps/spdp.cpp`
+- SEDP endpoint discovery and matching: `src/rtps/sedp.cpp`, `src/rtps/endpoint_match_table.cpp`
+- History cache: `src/rtps/history_cache.cpp`
+- Stateful writer reliability: `src/rtps/stateful_writer.cpp`, `src/rtps/reader_proxy.cpp`
+- Stateful reader reliability: `src/rtps/stateful_reader.cpp`, `src/rtps/writer_proxy.cpp`, `src/rtps/sn_window.cpp`
+- Participant orchestration: `src/rtps/participant.cpp`
 - Specification baseline: OMG DDSI-RTPS v2.5 (`formal/2022-04-01`)
 
 ## Design
@@ -47,23 +47,23 @@ The current pilot targets:
 ## Build And Run
 
 ```bash
-cmake -S lib/Rosette/tests/spec -B lib/Rosette/tests/spec/build
-cmake --build lib/Rosette/tests/spec/build
-ctest --test-dir lib/Rosette/tests/spec/build --output-on-failure
+cmake -S tests/spec -B tests/spec/build
+cmake --build tests/spec/build
+ctest --test-dir tests/spec/build --output-on-failure
 ```
 
 Coverage report:
 
 ```bash
-cmake --build lib/Rosette/tests/spec/build --target message_parser_spec_report
-cmake --build lib/Rosette/tests/spec/build --target message_builder_spec_report
-cmake --build lib/Rosette/tests/spec/build --target fragment_assembler_spec_report
-cmake --build lib/Rosette/tests/spec/build --target spdp_spec_report
-cmake --build lib/Rosette/tests/spec/build --target sedp_spec_report
-cmake --build lib/Rosette/tests/spec/build --target history_cache_spec_report
-cmake --build lib/Rosette/tests/spec/build --target stateful_writer_spec_report
-cmake --build lib/Rosette/tests/spec/build --target stateful_reader_spec_report
-cmake --build lib/Rosette/tests/spec/build --target participant_spec_report
+cmake --build tests/spec/build --target message_parser_spec_report
+cmake --build tests/spec/build --target message_builder_spec_report
+cmake --build tests/spec/build --target fragment_assembler_spec_report
+cmake --build tests/spec/build --target spdp_spec_report
+cmake --build tests/spec/build --target sedp_spec_report
+cmake --build tests/spec/build --target history_cache_spec_report
+cmake --build tests/spec/build --target stateful_writer_spec_report
+cmake --build tests/spec/build --target stateful_reader_spec_report
+cmake --build tests/spec/build --target participant_spec_report
 ```
 
 ## Fuzzing
@@ -71,11 +71,11 @@ cmake --build lib/Rosette/tests/spec/build --target participant_spec_report
 Build with fuzz target enabled (Clang required):
 
 ```bash
-cmake -S lib/Rosette/tests/spec -B lib/Rosette/tests/spec/build-fuzz \
+cmake -S tests/spec -B tests/spec/build-fuzz \
   -DROSETTE_SPEC_ENABLE_FUZZ=ON \
   -DCMAKE_CXX_COMPILER=clang++
-cmake --build lib/Rosette/tests/spec/build-fuzz -j
-cmake --build lib/Rosette/tests/spec/build-fuzz --target \
+cmake --build tests/spec/build-fuzz -j
+cmake --build tests/spec/build-fuzz --target \
   message_parser_fuzz_corpus \
   fragment_assembler_fuzz_corpus \
   spdp_fuzz_corpus \
@@ -86,40 +86,40 @@ cmake --build lib/Rosette/tests/spec/build-fuzz --target \
 Run with generated corpus:
 
 ```bash
-lib/Rosette/tests/spec/build-fuzz/message_parser_fuzz \
-  lib/Rosette/tests/spec/build-fuzz/fuzz/corpus/message_parser
-lib/Rosette/tests/spec/build-fuzz/fragment_assembler_fuzz \
-  lib/Rosette/tests/spec/build-fuzz/fuzz/corpus/fragment_assembler
-lib/Rosette/tests/spec/build-fuzz/spdp_fuzz \
-  lib/Rosette/tests/spec/build-fuzz/fuzz/corpus/spdp
-lib/Rosette/tests/spec/build-fuzz/sedp_fuzz \
-  lib/Rosette/tests/spec/build-fuzz/fuzz/corpus/sedp
-lib/Rosette/tests/spec/build-fuzz/endpoint_match_fuzz \
-  lib/Rosette/tests/spec/build-fuzz/fuzz/corpus/endpoint_match
+tests/spec/build-fuzz/message_parser_fuzz \
+  tests/spec/build-fuzz/fuzz/corpus/message_parser
+tests/spec/build-fuzz/fragment_assembler_fuzz \
+  tests/spec/build-fuzz/fuzz/corpus/fragment_assembler
+tests/spec/build-fuzz/spdp_fuzz \
+  tests/spec/build-fuzz/fuzz/corpus/spdp
+tests/spec/build-fuzz/sedp_fuzz \
+  tests/spec/build-fuzz/fuzz/corpus/sedp
+tests/spec/build-fuzz/endpoint_match_fuzz \
+  tests/spec/build-fuzz/fuzz/corpus/endpoint_match
 ```
 
 Convenience smoke pass over all replay harnesses:
 
 ```bash
-cmake --build lib/Rosette/tests/spec/build-fuzz --target fuzz_smoke_all
+cmake --build tests/spec/build-fuzz --target fuzz_smoke_all
 ```
 
 Recommended longer fuzz campaigns (example 5-minute runs each):
 
 ```bash
-ASAN_OPTIONS=detect_leaks=0 lib/Rosette/tests/spec/build-fuzz/message_parser_fuzz -max_total_time=300 lib/Rosette/tests/spec/build-fuzz/fuzz/corpus/message_parser
-ASAN_OPTIONS=detect_leaks=0 lib/Rosette/tests/spec/build-fuzz/fragment_assembler_fuzz -max_total_time=300 lib/Rosette/tests/spec/build-fuzz/fuzz/corpus/fragment_assembler
-ASAN_OPTIONS=detect_leaks=0 lib/Rosette/tests/spec/build-fuzz/spdp_fuzz -max_total_time=300 lib/Rosette/tests/spec/build-fuzz/fuzz/corpus/spdp
-ASAN_OPTIONS=detect_leaks=0 lib/Rosette/tests/spec/build-fuzz/sedp_fuzz -max_total_time=300 lib/Rosette/tests/spec/build-fuzz/fuzz/corpus/sedp
-ASAN_OPTIONS=detect_leaks=0 lib/Rosette/tests/spec/build-fuzz/endpoint_match_fuzz -max_total_time=300 lib/Rosette/tests/spec/build-fuzz/fuzz/corpus/endpoint_match
+ASAN_OPTIONS=detect_leaks=0 tests/spec/build-fuzz/message_parser_fuzz -max_total_time=300 tests/spec/build-fuzz/fuzz/corpus/message_parser
+ASAN_OPTIONS=detect_leaks=0 tests/spec/build-fuzz/fragment_assembler_fuzz -max_total_time=300 tests/spec/build-fuzz/fuzz/corpus/fragment_assembler
+ASAN_OPTIONS=detect_leaks=0 tests/spec/build-fuzz/spdp_fuzz -max_total_time=300 tests/spec/build-fuzz/fuzz/corpus/spdp
+ASAN_OPTIONS=detect_leaks=0 tests/spec/build-fuzz/sedp_fuzz -max_total_time=300 tests/spec/build-fuzz/fuzz/corpus/sedp
+ASAN_OPTIONS=detect_leaks=0 tests/spec/build-fuzz/endpoint_match_fuzz -max_total_time=300 tests/spec/build-fuzz/fuzz/corpus/endpoint_match
 ```
 
 If Clang/libFuzzer is unavailable, you can still run corpus replay smoke tests:
 
 ```bash
-cmake -S lib/Rosette/tests/spec -B lib/Rosette/tests/spec/build-fuzz \
+cmake -S tests/spec -B tests/spec/build-fuzz \
   -DROSETTE_SPEC_ENABLE_FUZZ=ON
-cmake --build lib/Rosette/tests/spec/build-fuzz -j \
+cmake --build tests/spec/build-fuzz -j \
   --target \
   message_parser_fuzz_replay message_parser_fuzz_corpus message_parser_fuzz_smoke \
   fragment_assembler_fuzz_replay fragment_assembler_fuzz_corpus fragment_assembler_fuzz_smoke \

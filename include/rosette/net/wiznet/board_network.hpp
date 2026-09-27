@@ -42,14 +42,16 @@
 namespace rosette::net::wiznet {
 
 /**
- * @brief Brings the chip, PHY link, and an IPv4 address up; blocks until all are ready.
+ * @brief Brings the chip, PHY link, and the board's addresses up; blocks until they are ready.
  *
  * Constructs the chip driver on first call, waits for the PHY to report link,
  * then runs DHCP (IPv4 link-local after DHCP gives up) until an IPv4 address
- * is assigned; IPv6 autoconfiguration, where the part has it, starts at the
- * same time and completes in poll_board_network(), printing a `[net]` progress line every two seconds. Finally routes
- * the chip's INT pin to the socket provider's receive event
- * (attach_rx_interrupt()), so a participant driver sleeping in
+ * is assigned, printing a `[net]` progress line every two seconds. On parts
+ * with hardware IPv6, SLAAC starts at the same time and bring-up also waits
+ * for the IPv6 link-local address to pass duplicate address detection; the
+ * global address follows in poll_board_network() when a router advertises a
+ * prefix. Finally routes the chip's INT pin to the socket provider's receive
+ * event (attach_rx_interrupt()), so a participant driver sleeping in
  * wait_readable() wakes when a datagram arrives. Later calls return at once.
  *
  * @param[in] hostname DHCP host name option (RFC 2132 §3.14); must outlive
@@ -57,14 +59,17 @@ namespace rosette::net::wiznet {
  *
  * Verification:
  * - Correct means: on return board_ipv4_address() is nonzero and equals the
- *   lease the DHCP server granted (or a 169.254/16 address without one), and a
- *   datagram to any open socket ends a kWaitForever wait_readable() within
- *   interrupt latency.
+ *   lease the DHCP server granted (or a 169.254/16 address without one); on
+ *   the W6100 / W6300 board_ipv6_link_local() is the fe80:: address formed
+ *   from the MAC; and a datagram to any open socket ends a kWaitForever
+ *   wait_readable() within interrupt latency.
  * - Covered by: examples/rtps_chatter and examples/rclc_chatter on the
- *   W5100S-EVB-Pico2 (bidirectional traffic with stock Fast DDS).
+ *   W5100S-EVB-Pico2 (bidirectional traffic with stock Fast DDS);
+ *   examples/wiznet_udp_echo with tools/wiznet_udp_echo_probe.py on the
+ *   W6100-EVB-Pico (ping and UDP echo on every address).
  *
  * References:
- * - RFC 2131 (DHCP), RFC 3927 (IPv4 link-local)
+ * - RFC 2131 (DHCP), RFC 3927 (IPv4 link-local), RFC 4862 (IPv6 SLAAC)
  * - W5100S / W6100 / W6300 datasheets, INT pin and Sn_IR
  */
 void bring_up_board_network(const char* hostname) noexcept;
