@@ -1,12 +1,15 @@
 /**
  * @file rosette/net/wiznet/board_network.hpp
- * @brief The board's WIZnet chip, PHY link, and IPv4 address, brought up once.
+ * @brief The board's WIZnet chip, PHY link, and IP addresses, brought up once.
  *
  * A WIZnet board has exactly one Ethernet chip, so its network is one
  * board-level object: this module owns the chip driver (bus, device, hardware
  * UDP socket provider, link), IPv4 addressing (DHCP, falling back to IPv4
  * link-local), and the INT-pin routing, all configured from the board's
- * `board.h` / `board_config.h` (SPI pins, ROSETTE_PIN_WIZNET_INT, MAC).
+ * `board.h` / `board_config.h` (SPI pins, ROSETTE_PIN_WIZNET_INT, MAC). On
+ * parts with hardware IPv6 (W6100, W6300) it also runs IPv6 stateless address
+ * autoconfiguration (`slaac_provider.hpp`) beside IPv4, so the board holds a
+ * link-local and, when a router advertises a prefix, a global IPv6 address.
  *
  * Every consumer of the network reaches it through these functions: an RTPS
  * participant opens its transport on board_socket_provider(), and rmw_rosette's
@@ -31,6 +34,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 #include "rosette/net/socket.hpp"
@@ -41,8 +45,9 @@ namespace rosette::net::wiznet {
  * @brief Brings the chip, PHY link, and an IPv4 address up; blocks until all are ready.
  *
  * Constructs the chip driver on first call, waits for the PHY to report link,
- * then runs DHCP (IPv4 link-local after DHCP gives up) until an address is
- * assigned, printing a `[net]` progress line every two seconds. Finally routes
+ * then runs DHCP (IPv4 link-local after DHCP gives up) until an IPv4 address
+ * is assigned; IPv6 autoconfiguration, where the part has it, starts at the
+ * same time and completes in poll_board_network(), printing a `[net]` progress line every two seconds. Finally routes
  * the chip's INT pin to the socket provider's receive event
  * (attach_rx_interrupt()), so a participant driver sleeping in
  * wait_readable() wakes when a datagram arrives. Later calls return at once.
@@ -65,7 +70,7 @@ namespace rosette::net::wiznet {
 void bring_up_board_network(const char* hostname) noexcept;
 
 /**
- * @brief Services DHCP lease renewal and address-conflict handling.
+ * @brief Services DHCP renewal, IPv6 autoconfiguration, and address conflicts.
  *
  * Call from the main loop between protocol passes; it never blocks.
  *
@@ -92,6 +97,23 @@ rosette::net::SocketProvider& board_socket_provider() noexcept;
  *   has assigned one.
  */
 uint32_t board_ipv4_address() noexcept;
+
+/**
+ * @brief The IPv6 link-local address (W6100 / W6300).
+ *
+ * @return fe80:: address once duplicate address detection has passed; all
+ *   zero before then, after a duplicate, and on parts without hardware IPv6.
+ */
+std::array<uint8_t, 16> board_ipv6_link_local() noexcept;
+
+/**
+ * @brief The SLAAC global IPv6 address (W6100 / W6300).
+ *
+ * @return The address formed from an advertised autonomous /64 prefix; all
+ *   zero until a router advertises one, after its valid lifetime ends, and on
+ *   parts without hardware IPv6.
+ */
+std::array<uint8_t, 16> board_ipv6_global() noexcept;
 
 /**
  * @brief Sends the chip abandoned because ARP for the destination failed.

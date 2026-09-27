@@ -75,22 +75,36 @@ struct W6x00 : ChipBase {
     // is a pre-existing, hardware-unverified issue tracked in the design note.)
     static constexpr uint8_t common_ip_conflict_mask() { return 0x04u; }  // IR_IPCONF
 
-    static constexpr bool has_hw_ipv6() { return false; }
+    // ── IPv6 (hardware dual stack) ──────────────────────────────────────────
+    // The chip answers neighbor solicitations and echo requests for the
+    // addresses in LLAR / GUAR on its own; the host programs the addresses and
+    // runs the socket-less commands (SLCR) that probe for duplicates (NS) and
+    // solicit a router advertisement (RS). Router advertisements are read by
+    // the host from an IPRAW6 socket: the chip's own RA prefix latch
+    // (PLR/PFR/VLTR/PLTR/PAR) decodes the prefix option at the wrong offset
+    // unless an 8-octet option precedes it, so it is not used.
+    static constexpr bool has_hw_ipv6() { return true; }
 
-    // ── future: WIZnet hardware IPv6 (W6100/W6300) ──────────────────────────
-    // Not implemented — no W6100/W6300 EVB on hand to verify the SLAAC/DAD
-    // register semantics. Filling this block + flipping has_hw_ipv6() is all
-    // the trait work a `WiznetSlaacProvider` needs; nothing above changes.
-    //
-    //   static constexpr address_type common_slaac_control() { return reg(0x2130u, common_block()); }  // SLCR
-    //   static constexpr address_type common_slaac_status()  { return reg(0x2102u, common_block()); }  // SLIR
-    //   static constexpr address_type common_slaac_status_clear() { return reg(0x2128u, common_block()); }  // SLIRCLR
-    //   static constexpr address_type common_ip6_link_local() { return reg(0x4140u, common_block()); }  // LLAR
-    //   static constexpr address_type common_ip6_global()     { return reg(0x4150u, common_block()); }  // GUAR
-    //   static constexpr uint8_t slaac_cmd_router_solicit()   { return 0x02u; }  // SLCR_RS
-    //   static constexpr uint8_t slaac_cmd_dad()              { return 0x04u; }  // SLCR_NS
-    //   static constexpr uint8_t common_ip6_dad_fail_mask()   { return 0x04u; }  // SLIR_NS (address conflict)
-    //   static constexpr uint8_t slaac_status_ra_received()   { return 0x01u; }  // SLIR_RA
+    static constexpr address_type common_ip6_link_local() { return reg(0x4140u, common_block()); }  // LLAR
+    static constexpr address_type common_ip6_global() { return reg(0x4150u, common_block()); }      // GUAR
+    static constexpr address_type common_ip6_prefix_mask() { return reg(0x4160u, common_block()); } // SUB6R
+    static constexpr address_type common_ip6_gateway() { return reg(0x4170u, common_block()); }     // GA6R
+
+    static constexpr address_type common_socketless_status() { return reg(0x2102u, common_block()); }        // SLIR
+    static constexpr address_type common_socketless_status_clear() { return reg(0x2128u, common_block()); }  // SLIRCLR
+    static constexpr address_type common_socketless_command() { return reg(0x2130u, common_block()); }       // SLCR
+    static constexpr address_type common_socketless_peer_ip6() { return reg(0x4180u, common_block()); }      // SLDIP6R
+    static constexpr address_type common_socketless_retry_time() { return reg(0x4208u, common_block()); }    // SLRTR, 100 us units
+    static constexpr address_type common_socketless_retry_count() { return reg(0x420Cu, common_block()); }   // SLRCR
+
+    // ICMPv6 messages set here bypass the chip's handler and reach an IPRAW6 socket.
+    static constexpr address_type common_icmp6_block() { return reg(0x41F0u, common_block()); }  // ICMP6BLKR
+    static constexpr uint8_t icmp6_block_router_advert() { return 0x04u; }                       // ICMP6BLKR_RA
+
+    static constexpr uint8_t socketless_command_neighbor_solicit() { return 0x04u; }  // SLCR_NS (DAD probe)
+    static constexpr uint8_t socketless_command_router_solicit() { return 0x02u; }    // SLCR_RS
+    static constexpr uint8_t socketless_status_timeout() { return 0x80u; }            // SLIR_TOUT
+    static constexpr uint8_t socketless_status_neighbor_solicit() { return 0x04u; }   // SLIR_NS: a neighbor answered
 
     // ── socket registers ────────────────────────────────────────────────────
     static constexpr address_type socket_mode(socket_type s) { return reg(0x0000u, socket_reg_block(s)); }
@@ -102,7 +116,9 @@ struct W6x00 : ChipBase {
     static constexpr address_type socket_source_port(socket_type s) { return reg(0x0114u, socket_reg_block(s)); }
     static constexpr address_type socket_dest_hardware(socket_type s) { return reg(0x0118u, socket_reg_block(s)); }
     static constexpr address_type socket_dest_ip(socket_type s) { return reg(0x0120u, socket_reg_block(s)); }
+    static constexpr address_type socket_dest_ip6(socket_type s) { return reg(0x0130u, socket_reg_block(s)); }        // Sn_DIP6R
     static constexpr address_type socket_dest_port(socket_type s) { return reg(0x0140u, socket_reg_block(s)); }
+    static constexpr address_type socket_next_header(socket_type s) { return reg(0x0100u, socket_reg_block(s)); }     // Sn_PNR (IPRAW)
     static constexpr address_type socket_tx_buffer_size(socket_type s) { return reg(0x0200u, socket_reg_block(s)); }   // Sn_TX_BSR
     static constexpr address_type socket_tx_free_size(socket_type s) { return reg(0x0204u, socket_reg_block(s)); }     // Sn_TX_FSR
     static constexpr address_type socket_tx_write_pointer(socket_type s) { return reg(0x020Cu, socket_reg_block(s)); } // Sn_TX_WR
@@ -126,6 +142,8 @@ struct W6x00 : ChipBase {
 
     // ── socket mode / command / interrupt / status ──────────────────────────
     static constexpr uint8_t mode_udp() { return 0x02u; }         // Sn_MR_UDP4
+    static constexpr uint8_t mode_udp6() { return 0x0Au; }        // Sn_MR_UDP6
+    static constexpr uint8_t mode_ipraw6() { return 0x0Bu; }      // Sn_MR_IPRAW6
     static constexpr uint8_t mode_multicast() { return 0x80u; }   // Sn_MR_MULTI
     // Sn_MR_MC (bit 5) selects the IGMP version: 0 = IGMPv2 (the default we
     // want), 1 = IGMPv1. Nothing to OR in for v2.
@@ -139,6 +157,7 @@ struct W6x00 : ChipBase {
 
     static constexpr uint8_t command_open() { return 0x01u; }
     static constexpr uint8_t command_send() { return 0x20u; }
+    static constexpr uint8_t command_send6() { return 0xA0u; }  // Sn_CR_SEND6: destination in Sn_DIP6R
     /// No SEND_MAC is used on the W6x00 (0 = send with SEND); multicast from
     /// a unicast socket relies on the chip resolving the group MAC itself,
     /// which is to be confirmed on a W6100 before relying on it.
@@ -152,9 +171,60 @@ struct W6x00 : ChipBase {
 
     static constexpr uint8_t socket_status_closed() { return 0x00u; }  // SOCK_CLOSED
     static constexpr uint8_t socket_status_udp() { return 0x22u; }     // SOCK_UDP
+    static constexpr uint8_t socket_status_ipraw6() { return 0x33u; }  // SOCK_IPRAW6
 
     static constexpr uint16_t macraw_rx_header_bytes() { return 2u; }
+    /// Smallest UDP packet-info header: info/length, an IPv4 address, a port.
     static constexpr uint16_t udp_rx_header_bytes() { return 8u; }
+
+    /**
+     * @brief Decodes the packet-info header the chip stores before each UDP datagram.
+     *
+     * Layout (io6Library socket.c recvfrom()): two octets whose top five bits
+     * are packet info and low eleven bits the payload length, then the sender's
+     * address (4 octets, or 16 when info bit 7, PACK_IPv6, is set), then the
+     * sender's port, big-endian.
+     *
+     * @param[in]  read_next `void(uint8_t* out, uint16_t n)`: reads the next `n`
+     *   octets of the RX ring.
+     * @param[out] source    Sender family, address, and port.
+     * @return Payload length in octets.
+     */
+    template<typename ReadNext>
+    static uint16_t read_udp_rx_header(ReadNext&& read_next, UdpEndpoint& source)
+    {
+        uint8_t info[2] = {0u, 0u};
+        read_next(info, 2u);
+        source.ipv6 = (info[0] & 0x80u) != 0u;
+        source.address = {};
+        read_next(source.address.data(), source.ipv6 ? 16u : 4u);
+        uint8_t port[2] = {0u, 0u};
+        read_next(port, 2u);
+        source.port = static_cast<uint16_t>((port[0] << 8) | port[1]);
+        return static_cast<uint16_t>(((info[0] & 0x07u) << 8) | info[1]);
+    }
+
+    /**
+     * @brief Decodes the packet-info header before each IPRAW6 datagram.
+     *
+     * The UDP layout without the port: info/length (2 octets), then the
+     * sender's IPv6 address (16).
+     *
+     * @param[in]  read_next `void(uint8_t* out, uint16_t n)`.
+     * @param[out] source    Sender address; `port` is 0.
+     * @return Payload length in octets (the IPv6 payload, e.g. the ICMPv6 message).
+     */
+    template<typename ReadNext>
+    static uint16_t read_ipraw_rx_header(ReadNext&& read_next, UdpEndpoint& source)
+    {
+        uint8_t info[2] = {0u, 0u};
+        read_next(info, 2u);
+        source.ipv6 = (info[0] & 0x80u) != 0u;
+        source.address = {};
+        read_next(source.address.data(), source.ipv6 ? 16u : 4u);
+        source.port = 0u;
+        return static_cast<uint16_t>(((info[0] & 0x07u) << 8) | info[1]);
+    }
     static constexpr uint16_t max_frame_bytes() { return 1536u; }
 
     /**

@@ -6,6 +6,10 @@
  * bring_up_board_network() call, so their construction order (bus, device,
  * sockets, link, addressing) is explicit and each lives for the whole
  * program; WiznetDevice holds its bus by reference.
+ *
+ * IPv6 addressing exists only on parts with hardware IPv6: `BoardIpv6` is an
+ * empty struct on the W5100S and a SLAAC provider with its own AddressManager
+ * on the W6100 / W6300, chosen at compile time from `Chip::has_hw_ipv6()`.
  */
 
 #include "rosette/net/wiznet/board_network.hpp"
@@ -15,12 +19,14 @@
 
 #include "board.h"
 #include "rosette/net/address.hpp"
+#include "rosette/net/inet.h"
 #include "rosette/net/ipv4ll_provider.hpp"
 #include "rosette/net/wiznet/board.hpp"
 #include "rosette/net/wiznet/dhcp_provider.hpp"
 #include "rosette/net/wiznet/interface.hpp"
 #include "rosette/net/wiznet/link.hpp"
 #include "rosette/net/wiznet/rx_interrupt_pico.hpp"
+#include "rosette/net/wiznet/slaac_provider.hpp"
 #include "rosette/platform/platform.hpp"
 
 namespace rosette::net::wiznet {
@@ -30,6 +36,32 @@ namespace pf = rosette::platform;
 
 /// Interval between progress lines while waiting for link or an address.
 constexpr uint32_t kProgressPeriodMs = 2000u;
+
+/// @brief IPv6 addressing for a part without hardware IPv6: none.
+template <typename Chip, bool = Chip::has_hw_ipv6()>
+struct BoardIpv6 {
+    BoardIpv6(BoardDevice&, BoardSocketProvider&, NetInterface&, const std::array<uint8_t, 6>&) noexcept {}
+    AddressManager* manager() noexcept { return nullptr; }
+    std::array<uint8_t, 16> link_local() const noexcept { return {}; }
+    std::array<uint8_t, 16> global() const noexcept { return {}; }
+};
+
+/// @brief IPv6 addressing on the W6100 / W6300: SLAAC, one provider.
+template <typename Chip>
+struct BoardIpv6<Chip, true> {
+    WiznetSlaacProvider<Chip, BoardBus> slaac;
+    AddressProvider* providers[1];
+    AddressManager v6;
+
+    BoardIpv6(BoardDevice& device, BoardSocketProvider& sockets, NetInterface& iface,
+              const std::array<uint8_t, 6>& mac) noexcept
+        : slaac(device, sockets, iface, mac), providers{&slaac}, v6(providers) {}
+    AddressManager* manager() noexcept { return &v6; }
+    std::array<uint8_t, 16> link_local() const noexcept {
+        return v6.stable() ? slaac.link_local_address() : std::array<uint8_t, 16>{};
+    }
+    std::array<uint8_t, 16> global() const noexcept { return slaac.global_address(); }
+};
 
 /// @brief The board's chip driver and addressing, in construction order.
 struct BoardNetwork {
@@ -43,6 +75,7 @@ struct BoardNetwork {
     Ipv4LinkLocalProvider zeroconf;
     AddressProvider* providers[2];
     AddressManager v4;
+    BoardIpv6<BoardChip> ipv6;
     NetworkAddress address;
 
     /// @brief The board's MAC address (board_get_mac_address()).
@@ -63,7 +96,8 @@ struct BoardNetwork {
           zeroconf(mac, iface),
           providers{&dhcp, &zeroconf},
           v4(providers),
-          address(v4, &iface) {}
+          ipv6(device, sockets, iface, mac),
+          address(v4, ipv6.manager(), &iface) {}
 };
 
 BoardNetwork* g_network = nullptr;
@@ -82,7 +116,7 @@ void bring_up_board_network(const char* hostname) noexcept {
 
     network.address.begin();
     uint32_t next_note = pf::monotonic_ms() + kProgressPeriodMs;
-    while (!network.address.has_address()) {
+    while (!network.address.snapshot().v4.has_address) {
         network.address.poll(pf::monotonic_ms());
         if (static_cast<int32_t>(pf::monotonic_ms() - next_note) >= 0) {
             next_note += kProgressPeriodMs;
@@ -92,6 +126,19 @@ void bring_up_board_network(const char* hostname) noexcept {
     }
     const auto a = network.address.snapshot().v4.address;
     std::printf("[net] address %u.%u.%u.%u\n", a[0], a[1], a[2], a[3]);
+
+    // Link-local SLAAC binds within about a second of DAD; a global address
+    // follows only if a router advertises a prefix, so poll_board_network()
+    // keeps the manager running and the global address is reported later.
+    while (network.ipv6.manager() != nullptr && !network.address.snapshot().v6.has_address) {
+        network.address.poll(pf::monotonic_ms());
+        pf::sleep_ms(10u);
+    }
+    if (network.ipv6.manager() != nullptr) {
+        char text[48];
+        const auto a = network.address.snapshot().v6.address;
+        if (inet::ntop6(a.data(), text, sizeof(text)) != nullptr) std::printf("[net] IPv6 address %s\n", text);
+    }
 
     attach_rx_interrupt(ROSETTE_PIN_WIZNET_INT, network.sockets);
     g_network = &network;
@@ -109,6 +156,14 @@ uint32_t board_ipv4_address() noexcept {
     if (g_network == nullptr) return 0u;
     const auto a = g_network->address.snapshot().v4.address;
     return (uint32_t{a[0]} << 24) | (uint32_t{a[1]} << 16) | (uint32_t{a[2]} << 8) | uint32_t{a[3]};
+}
+
+std::array<uint8_t, 16> board_ipv6_link_local() noexcept {
+    return g_network != nullptr ? g_network->ipv6.link_local() : std::array<uint8_t, 16>{};
+}
+
+std::array<uint8_t, 16> board_ipv6_global() noexcept {
+    return g_network != nullptr ? g_network->ipv6.global() : std::array<uint8_t, 16>{};
 }
 
 uint32_t board_send_timeouts() noexcept {

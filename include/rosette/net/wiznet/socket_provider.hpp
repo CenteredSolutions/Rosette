@@ -13,6 +13,12 @@
  *   s->bind({.port = 0});
  *   s->send_to(data, len, remote);
  *
+ * An `ipv6` socket is available on parts with hardware IPv6 (W6100, W6300,
+ * `Chip::has_hw_ipv6()`): it binds the chip's UDP6 mode and exchanges IPv6
+ * datagrams only, from the addresses the board's IPv6 address provider has
+ * programmed (see `slaac_provider.hpp`). A host that wants both families opens
+ * one socket of each, as it would with BSD sockets and `IPV6_V6ONLY`.
+ *
  * The @p Executor policy (see `executor.hpp`) decides how `recv_from()` waits:
  * a cooperative poll in a bare superloop, or a task notification under
  * FreeRTOS. It defaults to whichever fits the build's platform (`ROSETTE_OS_FREERTOS`);
@@ -54,11 +60,13 @@ public:
     WiznetUdpSocket(device_type& device,
                     provider_type* provider,
                     executor_type& executor,
-                    socket_type socket) noexcept
+                    socket_type socket,
+                    SocketDomain domain) noexcept
         : device_(device)
         , provider_(provider)
         , executor_(executor)
-        , socket_(socket) {}
+        , socket_(socket)
+        , domain_(domain) {}
 
     ~WiznetUdpSocket() override
     {
@@ -123,7 +131,7 @@ public:
 
     int bind(const SocketAddress& local) noexcept override
     {
-        if (local.domain != SocketDomain::ipv4) {
+        if (local.domain != domain_) {
             last_error_ = SocketError::not_supported;
             return -1;
         }
@@ -146,7 +154,7 @@ public:
                 last_error_ = SocketError::io;
                 return -1;
             }
-        } else if (!device_.open_udp_socket(socket_, port)) {
+        } else if (!device_.open_udp_socket(socket_, port, domain_ == SocketDomain::ipv6)) {
             last_error_ = SocketError::io;
             return -1;
         }
@@ -172,7 +180,7 @@ public:
             return -1;
         }
 
-        if (remote.domain != SocketDomain::ipv4) {
+        if (remote.domain != domain_) {
             last_error_ = SocketError::not_supported;
             return -1;
         }
@@ -182,14 +190,12 @@ public:
             return -1;
         }
 
-        const auto* bytes = static_cast<const uint8_t*>(data);
+        UdpEndpoint peer{};
+        peer.ipv6 = remote.is_ipv6();
+        peer.address = remote.address;
+        peer.port = remote.port;
         const std::ptrdiff_t rc =
-            device_.udp_send_to(socket_,
-                                bytes,
-                                length,
-                                {remote.address[0], remote.address[1],
-                                 remote.address[2], remote.address[3]},
-                                remote.port);
+            device_.udp_send_to(socket_, static_cast<const uint8_t*>(data), length, peer);
         last_error_ = rc < 0 ? SocketError::io : SocketError::none;
         return rc;
     }
@@ -231,18 +237,14 @@ public:
         const uint32_t start = executor_type::now_ms();
         typename executor_type::RxScope rx_scope(device_, socket_);
         for (;;) {
-            std::array<uint8_t, 4> address{};
-            uint16_t port = 0u;
-            const std::ptrdiff_t rc =
-                device_.udp_receive_from(socket_,
-                                         static_cast<uint8_t*>(data),
-                                         capacity,
-                                         remote != nullptr ? &address : nullptr,
-                                         remote != nullptr ? &port : nullptr);
+            UdpEndpoint source{};
+            const std::ptrdiff_t rc = device_.udp_receive_from(
+                socket_, static_cast<uint8_t*>(data), capacity, &source);
 
             if (rc != 0) {
                 if ((rc >= 0) && (remote != nullptr)) {
-                    *remote = make_socket_address_v4(address, port);
+                    *remote = source.ipv6 ? make_socket_address_v6(source.address, source.port)
+                                          : make_socket_address_v4(source.ipv4(), source.port);
                 }
                 last_error_ = rc < 0 ? SocketError::io : SocketError::none;
                 return rc;
@@ -313,6 +315,7 @@ private:
     provider_type* provider_ = nullptr;
     executor_type& executor_;
     socket_type socket_ = 0u;
+    SocketDomain domain_ = SocketDomain::ipv4;
     uint32_t receive_timeout_ms_ = 0u;
     SocketMulticastMembership multicast_membership_{};
     SocketError last_error_ = SocketError::none;
@@ -345,7 +348,10 @@ public:
         SocketType type = SocketType::datagram,
         SocketProtocol protocol = SocketProtocol::udp) noexcept override
     {
-        if ((domain != SocketDomain::ipv4) ||
+        const bool family_supported =
+            (domain == SocketDomain::ipv4) ||
+            (domain == SocketDomain::ipv6 && Chip::has_hw_ipv6());
+        if (!family_supported ||
             (type != SocketType::datagram) ||
             (protocol != SocketProtocol::udp)) {
             return {};
@@ -362,7 +368,7 @@ public:
 
         auto instance = std::unique_ptr<Socket>(
             new (std::nothrow) WiznetUdpSocket<Chip, Bus, ExecutorT>(
-                device_, this, executor_, socket));
+                device_, this, executor_, socket, domain));
         if (!instance) {
             release(socket);
         }
@@ -429,6 +435,22 @@ public:
                 return;
             }
         }
+    }
+
+    /**
+     * @brief Claims a free hardware socket for a non-UDP mode (e.g. IPRAW6).
+     *
+     * Chip-level protocols that are not `Socket`s, such as the SLAAC
+     * provider's router-advertisement reader, take a hardware socket here for
+     * as long as they run and give it back with release(), so they share the
+     * chip's sockets with every UDP user.
+     *
+     * @return Socket index, or `Chip::socket_count()` when none is free.
+     */
+    socket_type claim_raw_socket() noexcept
+    {
+        if (!ensure_started()) return Chip::socket_count();
+        return claim_socket();
     }
 
     void release(socket_type socket) noexcept

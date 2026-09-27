@@ -35,8 +35,7 @@ struct W5100S final : ChipBase {
     // cleared the same write-1 way.
     static constexpr uint8_t common_ip_conflict_mask() { return 0x80u; }
 
-    // The W5100S has no IPv6. `Chip::has_hw_ipv6()` gates the (future) hardware
-    // SLAAC / DAD path; see w6x00.hpp.
+    // The W5100S has no IPv6; `Chip::has_hw_ipv6()` gates every IPv6 path.
     static constexpr bool has_hw_ipv6() { return false; }
 
     static constexpr address_type socket_register_base(socket_type socket)
@@ -108,6 +107,28 @@ struct W5100S final : ChipBase {
 
     static constexpr uint16_t macraw_rx_header_bytes() { return 2u; }
     static constexpr uint16_t udp_rx_header_bytes() { return 8u; }
+
+    /**
+     * @brief Decodes the packet-info header the chip stores before each UDP datagram.
+     *
+     * Layout (W5100S datasheet §5, UDP receive): sender IPv4 address (4
+     * octets), sender port (2), payload length (2), all big-endian.
+     *
+     * @param[in]  read_next `void(uint8_t* out, uint16_t n)`: reads the next `n`
+     *   octets of the RX ring.
+     * @param[out] source    Sender address and port; always IPv4.
+     * @return Payload length in octets.
+     */
+    template<typename ReadNext>
+    static uint16_t read_udp_rx_header(ReadNext&& read_next, UdpEndpoint& source)
+    {
+        uint8_t header[8] = {0u};
+        read_next(header, 8u);
+        source.ipv6 = false;
+        source.address = {header[0], header[1], header[2], header[3]};
+        source.port = static_cast<uint16_t>((header[4] << 8) | header[5]);
+        return static_cast<uint16_t>((header[6] << 8) | header[7]);
+    }
     static constexpr uint16_t max_frame_bytes() { return 1536u; }
 
     template<bool IsRead>

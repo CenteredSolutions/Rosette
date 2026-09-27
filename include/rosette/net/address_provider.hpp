@@ -51,6 +51,7 @@ struct AddressLease {
     std::array<uint8_t, 16> address{};    ///< `[0..3]` for IPv4, `[0..15]` for IPv6.
     uint8_t       prefix_len = 0u;
     std::array<uint8_t, 4> gateway_v4{};
+    std::array<uint8_t, 16> gateway_v6{};    ///< Default router (link-local), zero when none.
     uint32_t      lease_remaining_s = 0u;
     std::array<std::array<uint8_t, 4>, 2> ntp_v4{};
     uint8_t       ntp_count = 0u;

@@ -169,8 +169,10 @@ int main()
         static_assert(wiz::W5100S::common_ip_conflict_mask() == 0x80u, "W5100S IR_CONFLICT");
         static_assert(wiz::W6100::common_ip_conflict_mask() == 0x04u, "W6100 IR_IPCONF");
         static_assert(wiz::W6300::common_ip_conflict_mask() == 0x04u, "W6300 IR_IPCONF");
-        check(!wiz::W5100S::has_hw_ipv6() && !wiz::W6100::has_hw_ipv6(),
-              "no chip claims hardware IPv6 yet");
+        static_assert(!wiz::W5100S::has_hw_ipv6(), "W5100S has no IPv6");
+        static_assert(wiz::W6100::has_hw_ipv6() && wiz::W6300::has_hw_ipv6(), "W61xx/W63xx dual stack");
+        static_assert(wiz::W6100::socket_dest_ip6(1) == 0x013005u, "W6100 Sn_DIP6R(1) packed addr");
+        static_assert(wiz::W6100::common_ip6_link_local() == 0x414000u, "W6100 LLAR packed addr");
         check(true, "IPv4 conflict-bit traits pinned");
     }
 

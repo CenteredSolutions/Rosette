@@ -31,6 +31,26 @@ struct ChipBase {
     };
 };
 
+/**
+ * @brief One end of a hardware-socket UDP exchange: address family, address, port.
+ *
+ * The chip reports the sender of each received datagram in this form and
+ * `WiznetDevice::udp_send_to()` takes the destination in it. `address` holds
+ * the IPv4 address in bytes `[0..3]` when `ipv6` is false, all sixteen bytes
+ * otherwise, in network byte order.
+ */
+struct UdpEndpoint {
+    bool ipv6 = false;
+    std::array<uint8_t, 16> address{};
+    uint16_t port = 0u;
+
+    /// @brief The IPv4 address in bytes `[0..3]`; meaningful when `!ipv6`.
+    std::array<uint8_t, 4> ipv4() const noexcept
+    {
+        return {address[0], address[1], address[2], address[3]};
+    }
+};
+
 enum class Interrupt : uint8_t {
     Receive = 0x04u,
 };
@@ -363,6 +383,142 @@ public:
         return config;
     }
 
+    /**
+     * @brief Programs the IPv6 link-local address (LLAR).
+     *
+     * Once written, the chip sources link-scope traffic from this address and
+     * answers neighbor solicitations and echo requests for it. An all-zero
+     * address withdraws it. Parts without `Chip::has_hw_ipv6()` do not provide
+     * this member.
+     *
+     * @param[in] address fe80::/64 address, network byte order.
+     */
+    void configure_ipv6_link_local(const std::array<uint8_t, 16>& address) noexcept
+    {
+        const auto lock = bus_.acquire();
+        write(Chip::common_ip6_link_local(), address.data(), address.size());
+    }
+
+    /**
+     * @brief Programs the IPv6 global address, on-link prefix mask, and default router.
+     *
+     * The chip delivers a destination that matches `address` under
+     * `prefix_mask` directly on the link and sends every other global
+     * destination to `gateway`. All-zero arguments withdraw the configuration.
+     *
+     * @param[in] address     Global unicast address (GUAR).
+     * @param[in] prefix_mask On-link prefix as a mask, e.g. ffff:ffff:ffff:ffff:: (SUB6R).
+     * @param[in] gateway     Default router, usually its link-local address (GA6R); zero when unknown.
+     */
+    void configure_ipv6_global(const std::array<uint8_t, 16>& address,
+                               const std::array<uint8_t, 16>& prefix_mask,
+                               const std::array<uint8_t, 16>& gateway) noexcept
+    {
+        const auto lock = bus_.acquire();
+        write(Chip::common_ip6_gateway(), gateway.data(), gateway.size());
+        write(Chip::common_ip6_prefix_mask(), prefix_mask.data(), prefix_mask.size());
+        write(Chip::common_ip6_global(), address.data(), address.size());
+    }
+
+    /**
+     * @brief Starts a socket-less ICMPv6 exchange (SLCR) without waiting for it.
+     *
+     * The W6100 and W6300 run neighbor solicitation (duplicate address
+     * detection) and router solicitation as single register commands. This
+     * writes the target to SLDIP6R, sets the retransmission timeout, clears any
+     * stale completion bits, and issues the command; poll_socketless_status()
+     * collects the outcome.
+     *
+     * @param[in] command    One `Chip::socketless_command_*()` value.
+     * @param[in] target     Address the command concerns (the tentative address
+     *   for NS); ignored by RS.
+     * @param[in] timeout_ms Wait for an answer before SLIR.TOUT, 1..6553 ms.
+     *
+     * References:
+     * - W6100 datasheet §SLCR, §SLIR, §SLRTR
+     * - WIZnet io6Library wizchip_conf.c wizchip_dad(), wizchip_slaac()
+     */
+    void start_socketless_command(uint8_t command,
+                                  const std::array<uint8_t, 16>& target,
+                                  uint16_t timeout_ms) noexcept
+    {
+        const auto lock = bus_.acquire();
+        clear_socketless_status_locked(0xFFu);
+        write_u16(Chip::common_socketless_retry_time(), static_cast<uint16_t>(timeout_ms * 10u));
+        write_u8(Chip::common_socketless_retry_count(), 0u);
+        write(Chip::common_socketless_peer_ip6(), target.data(), target.size());
+        write_u8(Chip::common_socketless_command(), command);
+    }
+
+    /**
+     * @brief Reads and clears the socket-less status bits (SLIR).
+     *
+     * @return The SLIR bits that were set: `*_neighbor_solicit` when a
+     *   neighbor answered, `*_timeout` when none did (the command is over
+     *   either way); 0 while a command is still in progress.
+     */
+    uint8_t poll_socketless_status() noexcept
+    {
+        const auto lock = bus_.acquire();
+        const uint8_t status = read_u8(Chip::common_socketless_status());
+        if (status != 0u) clear_socketless_status_locked(status);
+        return status;
+    }
+
+    /**
+     * @brief Sets which ICMPv6 messages bypass the chip's handler (ICMP6BLKR).
+     *
+     * A blocked message type is delivered to an open IPRAW6 socket instead of
+     * being processed by the chip, and dropped when none is open.
+     *
+     * @param[in] bits `Chip::icmp6_block_*()` values.
+     */
+    void set_icmp6_block(uint8_t bits) noexcept
+    {
+        const auto lock = bus_.acquire();
+        write_u8(Chip::common_icmp6_block(), bits);
+    }
+
+    /**
+     * @brief Opens a hardware socket in IPRAW6 mode for one IPv6 next header.
+     *
+     * The socket receives IPv6 payloads carrying `next_header` that the chip
+     * does not consume itself, e.g. ICMPv6 (58) messages blocked with
+     * set_icmp6_block(). Read them with ipraw_receive_from().
+     *
+     * @param[in] socket      Hardware socket index.
+     * @param[in] next_header IPv6 next-header value (Sn_PNR).
+     * @return `true` when the chip reports SOCK_IPRAW6.
+     *
+     * References: W6100 datasheet §Sn_MR IPRAW6, §Sn_PNR, §ICMP6BLKR.
+     */
+    bool open_ipraw6_socket(socket_type socket, uint8_t next_header) noexcept
+    {
+        const auto lock = bus_.acquire();
+        close_socket(socket);
+        write_u8(Chip::socket_mode(socket), Chip::mode_ipraw6());
+        write_u8(Chip::socket_next_header(socket), next_header);
+        issue_socket_command(socket, Chip::command_open());
+        return read_u8(Chip::socket_status(socket)) == Chip::socket_status_ipraw6();
+    }
+
+    /**
+     * @brief Reads one datagram from an IPRAW6 socket.
+     *
+     * @param[in]  socket   Socket opened by open_ipraw6_socket().
+     * @param[out] data     IPv6 payload (e.g. the ICMPv6 message).
+     * @param[in]  capacity Size of `data`.
+     * @param[out] source   Sender address; may be null.
+     * @return As udp_receive_from().
+     */
+    std::ptrdiff_t ipraw_receive_from(socket_type socket, uint8_t* data, std::size_t capacity,
+                                      UdpEndpoint* source) noexcept
+    {
+        return receive_datagram(socket, data, capacity, source, [](auto&& read_next, UdpEndpoint& from) {
+            return Chip::read_ipraw_rx_header(read_next, from);
+        });
+    }
+
     std::size_t read_frame(uint8_t* frame, std::size_t capacity) noexcept
     {
         const auto lock = bus_.acquire();
@@ -428,11 +584,62 @@ public:
         return true;
     }
 
-    bool open_udp_socket(socket_type socket, uint16_t local_port) noexcept
+    /**
+     * @brief Opens a hardware socket in UDP mode on `local_port`.
+     *
+     * An IPv4 socket uses the chip's UDP4 mode; an IPv6 socket (parts with
+     * `Chip::has_hw_ipv6()`) uses UDP6 mode, which sends and receives IPv6
+     * only, from the link-local or global address the chip holds (LLAR / GUAR,
+     * see configure_ipv6()). The chip picks the source address for each
+     * datagram from the destination's scope.
+     *
+     * @param[in] socket     Hardware socket index, below `Chip::socket_count()`.
+     * @param[in] local_port Source port, host byte order, nonzero.
+     * @param[in] ipv6       `true` for an IPv6 socket.
+     * @return `true` when the chip reports the socket open in UDP mode;
+     *   `false` on failure or when IPv6 is requested of a part without it.
+     *
+     * Verification:
+     * - Correct means: Sn_SR reads SOCK_UDP after OPEN, and the socket then
+     *   exchanges datagrams of the requested family only.
+     * - Covered by: tests/host/wiznet_udp_rx_test.cpp (register sequence);
+     *   examples/wiznet_udp_echo on the W6100-EVB-Pico (on the wire).
+     *
+     * References:
+     * - W5100S datasheet §Sn_MR, §Sn_CR OPEN
+     * - W6100 datasheet §Sn_MR (UDP4 0x02, UDP6 0x0A)
+     */
+    bool open_udp_socket(socket_type socket, uint16_t local_port, bool ipv6 = false) noexcept
     {
+        if constexpr (!Chip::has_hw_ipv6()) {
+            if (ipv6) return false;
+        }
         const auto lock = bus_.acquire();
         close_socket(socket);
-        write_u8(Chip::socket_mode(socket), Chip::mode_udp());
+        // Reset Sn_DIPR so the chip's ARP-skip optimization can't fire on the
+        // first send after a reopen. Per the WIZnet SEND command: if the
+        // newly-written destination IP equals what Sn_DIPR already holds, the
+        // chip skips ARP and reuses whatever MAC it resolved for that IP last
+        // time (Sn_DHAR is just the cache the chip reuses; it plays no part
+        // in the skip decision itself, and CLOSE/OPEN do not clear Sn_DIPR).
+        // That is wrong the moment the peer's MAC has changed while its IP
+        // stayed the same — e.g. the Agent host rebooted with a new virtual
+        // NIC — since nothing about the reopened socket looks different to
+        // the comparator. Zeroing Sn_DIPR here guarantees the real Agent
+        // address, written moments later via configure_udp_peer(), reads as
+        // a changed destination and forces a fresh ARP request.
+        static constexpr std::array<uint8_t, 4> kNoDestinationAddress{};
+        write(Chip::socket_dest_ip(socket), kNoDestinationAddress.data(),
+              kNoDestinationAddress.size());
+        uint8_t mode = Chip::mode_udp();
+        if constexpr (Chip::has_hw_ipv6()) {
+            // The same comparator guards neighbor discovery for Sn_DIP6R.
+            static constexpr std::array<uint8_t, 16> kNoDestinationAddress6{};
+            write(Chip::socket_dest_ip6(socket), kNoDestinationAddress6.data(),
+                  kNoDestinationAddress6.size());
+            if (ipv6) mode = Chip::mode_udp6();
+        }
+        write_u8(Chip::socket_mode(socket), mode);
         write_u16(Chip::socket_source_port(socket), local_port);
         write_u8(Chip::socket_interrupt_mask(socket), Chip::socket_interrupt_receive());
         write_u8(Chip::common_socket_interrupt_mask(),
@@ -482,25 +689,67 @@ public:
         issue_socket_command(socket, Chip::command_close());
     }
 
-    bool configure_udp_peer(socket_type socket,
-                            const std::array<uint8_t, 4>& address,
-                            uint16_t port) noexcept
+    /**
+     * @brief Writes a UDP socket's destination registers.
+     *
+     * IPv4 goes to Sn_DIPR (plus the group MAC in Sn_DHAR for a multicast
+     * group, which SEND_MAC uses); IPv6 goes to Sn_DIP6R.
+     *
+     * @param[in] socket Hardware socket index.
+     * @param[in] peer   Destination; an IPv6 peer requires `Chip::has_hw_ipv6()`.
+     * @return `false` when the peer's family is not supported by the part.
+     */
+    bool configure_udp_peer(socket_type socket, const UdpEndpoint& peer) noexcept
     {
         const auto lock = bus_.acquire();
+        if (peer.ipv6) {
+            if constexpr (Chip::has_hw_ipv6()) {
+                write(Chip::socket_dest_ip6(socket), peer.address.data(), peer.address.size());
+                write_u16(Chip::socket_dest_port(socket), peer.port);
+                return true;
+            }
+            return false;
+        }
+        const std::array<uint8_t, 4> address = peer.ipv4();
         if (is_multicast_ipv4(address)) {
             const auto group_mac = multicast_mac_from_ipv4(address);
             write(Chip::socket_dest_hardware(socket), group_mac.data(), group_mac.size());
         }
         write(Chip::socket_dest_ip(socket), address.data(), address.size());
-        write_u16(Chip::socket_dest_port(socket), port);
+        write_u16(Chip::socket_dest_port(socket), peer.port);
         return true;
     }
 
+    /**
+     * @brief Sends one datagram from a UDP socket.
+     *
+     * Waits out the previous SEND on this socket (wait_pending_send()), writes
+     * the destination, copies the payload into the TX ring, and issues the SEND
+     * command that matches the destination: SEND for IPv4 unicast, SEND_MAC for
+     * an IPv4 multicast group on parts that need it, SEND6 for IPv6. Completion
+     * is collected by the next send on the socket.
+     *
+     * @param[in] socket Hardware socket opened by open_udp_socket().
+     * @param[in] data   Payload, `length` bytes, copied before return.
+     * @param[in] length Payload size; at most the socket's TX buffer.
+     * @param[in] peer   Destination address, family, and port.
+     * @return `length` when the SEND was issued; -1 on bad arguments or a
+     *   destination family the part does not support.
+     *
+     * Verification:
+     * - Correct means: every call is exactly one datagram on the wire, to
+     *   `peer`, from the family's own source address.
+     * - Covered by: examples/rtps_chatter (IPv4), examples/wiznet_udp_echo
+     *   (IPv4 and IPv6) on hardware.
+     *
+     * References:
+     * - W5100S datasheet §Sn_CR SEND / SEND_MAC
+     * - W6100 datasheet §Sn_CR SEND6 (0xA0), §Sn_DIP6R
+     */
     std::ptrdiff_t udp_send_to(socket_type socket,
                                const uint8_t* data,
                                std::size_t length,
-                               const std::array<uint8_t, 4>& address,
-                               uint16_t port) noexcept
+                               const UdpEndpoint& peer) noexcept
     {
         const auto lock = bus_.acquire();
         if ((data == nullptr) || (length == 0u) ||
@@ -515,8 +764,7 @@ public:
         // write would redirect it or fuse the two payloads. Usually done by now.
         wait_pending_send(socket);
 
-        if (!configure_udp_peer(socket, address, port)) {
-            std::printf("Failed to configure UDP peer for socket %d\n", socket);
+        if (!configure_udp_peer(socket, peer)) {
             return -1;
         }
 
@@ -529,62 +777,55 @@ public:
         set_socket_tx_write_pointer(socket, pointer);
         // A multicast destination has no ARP answer; SEND_MAC uses the group
         // MAC configure_udp_peer() wrote to Sn_DHAR instead.
-        const bool use_mac = is_multicast_ipv4(address) && Chip::command_send_mac() != 0u;
-        issue_socket_command(socket, use_mac ? Chip::command_send_mac() : Chip::command_send());
+        uint8_t command = Chip::command_send();
+        if (peer.ipv6) {
+            if constexpr (Chip::has_hw_ipv6()) command = Chip::command_send6();
+        } else if (is_multicast_ipv4(peer.ipv4()) && Chip::command_send_mac() != 0u) {
+            command = Chip::command_send_mac();
+        }
+        issue_socket_command(socket, command);
         send_pending_[socket] = true;
 
         return static_cast<std::ptrdiff_t>(length);
     }
 
+    /**
+     * @brief Reads one received datagram from a UDP socket's RX ring.
+     *
+     * The chip stores each datagram as a packet-info header followed by the
+     * payload. The header layout is chip-specific, so `Chip::read_udp_rx_header()`
+     * decodes it: the W5100S writes `{ip[4], port[2], length[2]}`; the W6100 and
+     * W6300 write `{info|length[2], ip[4 or 16], port[2]}`, where the info bits
+     * say whether the sender is IPv4 or IPv6. The payload is then copied out, the
+     * read pointer advanced past the whole datagram, and RECV issued so the chip
+     * frees the space.
+     *
+     * @param[in]  socket   Hardware socket opened by open_udp_socket().
+     * @param[out] data     Payload destination, `capacity` bytes.
+     * @param[in]  capacity Size of `data`.
+     * @param[out] source   Sender address and port; may be null.
+     * @return Payload length (>0); 0 when no datagram is waiting; -1 when the
+     *   datagram was larger than `capacity` or empty, in which case it has been
+     *   discarded.
+     *
+     * Verification:
+     * - Correct means: the payload, sender address, family, and port equal the
+     *   datagram the peer sent, and the ring is left at the next datagram.
+     * - Covered by: tests/host/wiznet_udp_rx_test.cpp (W5100S and W6100 layouts,
+     *   IPv4 and IPv6 senders, oversize discard).
+     *
+     * References:
+     * - W5100S datasheet §5 (UDP receive, packet-info header)
+     * - WIZnet io6Library Ethernet/socket.c recvfrom() (W6100 PACK_INFO layout)
+     */
     std::ptrdiff_t udp_receive_from(socket_type socket,
                                     uint8_t* data,
                                     std::size_t capacity,
-                                    std::array<uint8_t, 4>* address,
-                                    uint16_t* port) noexcept
+                                    UdpEndpoint* source) noexcept
     {
-        struct udp4_header {
-            uint8_t src_ip[4];
-            uint8_t src_port[2];
-            uint8_t length[2];
-        };
-
-        const auto lock = bus_.acquire();
-        const uint16_t available = socket_rx_received_size(socket);
-        if ((data == nullptr) || (capacity == 0u) ||
-            (available < Chip::udp_rx_header_bytes())) {
-            return 0;
-        }
-
-        udp4_header header;
-        uint16_t pointer = socket_rx_read_pointer(socket);
-        pointer = ring_read(socket,
-                            pointer,
-                            reinterpret_cast<uint8_t*>(&header),
-                            static_cast<uint16_t>(sizeof(header)));
-
-        const uint16_t payload_len =
-            static_cast<uint16_t>((static_cast<uint16_t>(header.length[0]) << 8) | header.length[1]);
-
-        if (address != nullptr) {
-            std::memcpy(address->data(), header.src_ip, address->size());
-        }
-        if (port != nullptr) {
-            *port = static_cast<uint16_t>((static_cast<uint16_t>(header.src_port[0]) << 8) | header.src_port[1]);
-        }
-
-        if ((payload_len == 0u) || (payload_len > capacity)) {
-            pointer = ring_skip(pointer, payload_len);
-            set_socket_rx_read_pointer(socket, pointer);
-            issue_socket_command(socket, Chip::command_receive_done());
-            ack_socket_rx_interrupt(socket);
-            return -1;
-        }
-
-        pointer = ring_read(socket, pointer, data, payload_len);
-        set_socket_rx_read_pointer(socket, pointer);
-        issue_socket_command(socket, Chip::command_receive_done());
-        ack_socket_rx_interrupt(socket);
-        return payload_len;
+        return receive_datagram(socket, data, capacity, source, [](auto&& read_next, UdpEndpoint& from) {
+            return Chip::read_udp_rx_header(read_next, from);
+        });
     }
 
     /// @brief UDP/MACRAW SENDs that ended in Sn_IR.TIMEOUT (ARP failure) since start-up.
@@ -674,6 +915,50 @@ private:
         uint8_t raw[2] = {0u, 0u};
         read(address, raw, sizeof(raw));
         return static_cast<uint16_t>((static_cast<uint16_t>(raw[0]) << 8) | raw[1]);
+    }
+
+    // One datagram out of a socket's RX ring: `read_header` decodes the
+    // chip's packet-info header (UDP or IPRAW layout), the payload is copied
+    // or skipped when it does not fit, and RECV frees the space.
+    template<typename ReadHeader>
+    std::ptrdiff_t receive_datagram(socket_type socket, uint8_t* data, std::size_t capacity,
+                                    UdpEndpoint* source, ReadHeader&& read_header) noexcept
+    {
+        const auto lock = bus_.acquire();
+        const uint16_t available = socket_rx_received_size(socket);
+        if ((data == nullptr) || (capacity == 0u) ||
+            (available < Chip::udp_rx_header_bytes())) {
+            return 0;
+        }
+
+        uint16_t pointer = socket_rx_read_pointer(socket);
+        UdpEndpoint sender{};
+        const uint16_t payload_len = read_header(
+            [&](uint8_t* out, uint16_t n) { pointer = ring_read(socket, pointer, out, n); },
+            sender);
+        if (source != nullptr) {
+            *source = sender;
+        }
+
+        if ((payload_len == 0u) || (payload_len > capacity)) {
+            pointer = ring_skip(pointer, payload_len);
+            set_socket_rx_read_pointer(socket, pointer);
+            issue_socket_command(socket, Chip::command_receive_done());
+            ack_socket_rx_interrupt(socket);
+            return -1;
+        }
+
+        pointer = ring_read(socket, pointer, data, payload_len);
+        set_socket_rx_read_pointer(socket, pointer);
+        issue_socket_command(socket, Chip::command_receive_done());
+        ack_socket_rx_interrupt(socket);
+        return payload_len;
+    }
+
+    // SLIRCLR is write-1-to-clear; the caller holds the bus lock.
+    void clear_socketless_status_locked(uint8_t bits) noexcept
+    {
+        write_u8(Chip::common_socketless_status_clear(), bits);
     }
 
     uint16_t read_u16_stable(address_type address) noexcept

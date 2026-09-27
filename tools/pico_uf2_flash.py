@@ -11,6 +11,11 @@ Architecture:
     CDC port. This needs only membership in the group owning /dev/ttyACM*
     (dialout), not root or a picotool udev rule.
 
+    When the USB CDC link is unreliable (a VM's USB passthrough), firmware
+    that serves a status port (examples/wiznet_udp_echo) can be asked over
+    the network instead: --bootsel-udp HOST sends it "bootsel", and it calls
+    the RP2 ROM's reset_usb_boot().
+
     Steps: 1200-baud touch (skipped when the drive is already present), wait
     for the drive, copy the UF2, wait for the console, then optionally stream
     it until a pattern is seen or a timeout expires.
@@ -35,6 +40,7 @@ import glob
 import os
 import select
 import shutil
+import socket
 import subprocess
 import sys
 import termios
@@ -98,8 +104,20 @@ def wait_for(predicate, timeout: float, step: float = 0.25):
 
 
 def monitor(port: str, seconds: float, expect: str | None) -> bool:
-    """Streams the console to stdout; returns True once `expect` is seen."""
-    fd = os.open(port, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+    """Streams the console to stdout; returns True once `expect` is seen.
+
+    A freshly enumerated CDC port is briefly root-owned until udev applies its
+    group, so opening it is retried for up to two seconds.
+    """
+    def try_open() -> int | None:
+        try:
+            return os.open(port, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
+        except PermissionError:
+            return None
+
+    fd = wait_for(try_open, 2.0, step=0.05)
+    if fd is None:
+        fd = os.open(port, os.O_RDONLY | os.O_NOCTTY | os.O_NONBLOCK)
     seen = ""
     deadline = time.monotonic() + seconds
     try:
@@ -121,6 +139,26 @@ def monitor(port: str, seconds: float, expect: str | None) -> bool:
     return expect is None
 
 
+def request_bootsel_udp(target: str) -> bool:
+    """Asks firmware to enter BOOTSEL over UDP; True once it acknowledges.
+
+    The request is resent every half second for five seconds: the first
+    datagram after a long idle can be lost while the host resolves the
+    board's address.
+    """
+    host, _, port = target.partition(":")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.settimeout(0.5)
+        for _ in range(10):
+            s.sendto(b"bootsel", (host, int(port or 8)))
+            try:
+                s.recvfrom(256)
+                return True
+            except socket.timeout:
+                continue
+    return False
+
+
 def main() -> int:
     """Flashes the UF2 and optionally monitors; see the module docstring."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -128,15 +166,21 @@ def main() -> int:
     parser.add_argument("--port", default=None, help="CDC port (default: first /dev/ttyACM*)")
     parser.add_argument("--monitor", type=float, default=0.0, help="seconds to stream the console")
     parser.add_argument("--expect", default=None, help="text that ends monitoring successfully")
+    parser.add_argument("--bootsel-udp", default=None, metavar="HOST[:PORT]",
+                        help="enter BOOTSEL by sending 'bootsel' to a firmware status port "
+                             "(examples/wiznet_udp_echo, port 8) instead of the 1200-baud touch")
     args = parser.parse_args()
 
     drive = find_drive() or mount_bootsel_drive()
     if drive is None:
         port = args.port or (sorted(glob.glob("/dev/ttyACM*")) or [None])[0]
-        if port is None:
+        if port is None and not args.bootsel_udp:
             print("no Pico console or BOOTSEL drive found", file=sys.stderr)
             return 1
-        touch_1200(port)
+        if args.bootsel_udp:
+            request_bootsel_udp(args.bootsel_udp)
+        else:
+            touch_1200(port)
         wait_for(lambda: any(os.path.exists(f"/dev/disk/by-label/{l}") for l in DRIVE_LABELS), 10.0)
         drive = find_drive() or mount_bootsel_drive() or wait_for(find_drive, 60.0)
         if drive is None:

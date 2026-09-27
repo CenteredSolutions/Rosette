@@ -35,6 +35,13 @@ add_test(NAME mdns_wire_test COMMAND mdns_wire_test)
 # WIZnet chip-trait SPI frame encoding + the conflict / socket-less ARP traits.
 add_host_test(wiznet_header_test)
 
+# WIZnet UDP receive/send, IPv4 and IPv6, against a register-file chip model.
+add_host_test(wiznet_udp_socket_test)
+add_host_test(wiznet_slaac_provider_test)
+
+# RFC 4861 Router Advertisement decoding, chip-neutral.
+add_host_test(ipv6_router_advert_test)
+
 # Address bring-up layer.
 add_host_test(address_snapshot_test)
 add_host_test(ipv4ll_provider_test)

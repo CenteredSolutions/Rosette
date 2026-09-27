@@ -218,6 +218,7 @@ add_subdirectory(examples/storage_demo)
 add_subdirectory(examples/led_files)
 add_subdirectory(examples/rtps_chatter)
 add_subdirectory(examples/rclc_chatter)
+add_subdirectory(examples/wiznet_udp_echo)
 
 message(STATUS "")
 message(STATUS "Rosette build configuration")
