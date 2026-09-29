@@ -1,6 +1,6 @@
 /**
  * @file storage/device_config.hpp
- * @brief Persistent device configuration read at boot by `rosette::App`.
+ * @brief Persistent device configuration the firmware reads at boot.
  *
  * A single fixed-layout record stored at `/device.cfg` on the board storage
  * volume. It holds the values the micro-ROS client needs before it can reach

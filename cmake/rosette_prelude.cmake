@@ -12,7 +12,7 @@
 #   project(my_firmware C CXX ASM)
 #   add_subdirectory(${ROSETTE_DIR} rosette)
 #   add_executable(my_firmware main.cpp)
-#   target_link_libraries(my_firmware PRIVATE rosette_ros)
+#   target_link_libraries(my_firmware PRIVATE rosette_agent)   # or rmw_rosette_firmware
 
 include_guard(GLOBAL)
 

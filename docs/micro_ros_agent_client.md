@@ -1,45 +1,89 @@
-# micro-ROS Agent Client Examples
+# The micro-ROS Agent Backend
 
-Rosette's primary path puts a board on the ROS 2 network directly, as a DDS
-participant running `rmw_rosette` (see [architecture.md](architecture.md)).
-The repository also carries a second, agent-based path: C++ wrappers over
-`rclc` and `rmw_microxrcedds` (`include/rosette/ros/`), where the board speaks
-XRCE-DDS to a `micro_ros_agent` on a host and the agent joins the DDS graph on
-its behalf. This document covers that path and its two examples.
+Rosette supports two ROS 2 backends on the same networking and storage layers
+(see [architecture.md](architecture.md)); a firmware designer picks one per
+project. This document covers the micro-ROS agent backend: `rmw_microxrcedds`
+speaks XRCE-DDS to a `micro_ros_agent` on the network, and the agent joins the
+DDS graph on the board's behalf.
 
-| | `rmw_rosette` (primary) | micro-ROS agent client |
+| | `rmw_rosette` | micro-ROS agent |
 | --- | --- | --- |
 | On the wire | DDSI-RTPS, directly to every peer | XRCE-DDS to one agent; the agent speaks RTPS |
-| Extra process | none | `micro_ros_agent` on a host |
-| Application API | stock `rclc` | `rosette::App` / `rosette::Module` wrappers over `rclc` |
+| Extra process | none | `micro_ros_agent` on the network |
+| Application API | stock `rclc` | stock `rclc` |
 | Middleware in the image | `rmw_rosette` + `rosette::rtps` | `rmw_microxrcedds` + `microxrcedds_client` (`libmicroros.a`) |
+| Session setup | `SessionSupervisor` | `SessionSupervisor` + `AgentSessionGate` |
 | Build switch | `ROSETTE_ROS2_C_STACK_DIR` | `ROSETTE_ENABLE_MICRO_ROS=ON` |
 
-## Examples
+Application code is the same on both: an rclc `create_session()` that builds
+support, node, entities and executor with default options, and a
+`destroy_session()` that finalizes them. Only session setup differs.
 
-| Example | Runs on | Shows |
+## What Rosette adds
+
+| Piece | Where | Does |
 | --- | --- | --- |
-| `examples/rosette_smoke` | host (`ROSETTE_BOARD=posix`) | the smallest client: publish `std_msgs/Float32` on `/mcu_temperature_c` over the stock XRCE UDP transport |
-| `examples/led_files` | host (verified against a live agent); builds for the W5100S-EVB-Pico2 | `rosette::App` with two `rosette::Module`s: an LED service and a `FileStore`-backed file service over its own `rosette_msgs` package |
+| `UdpSocketTransport` | `rosette/ros/socket_transport.hpp` | the XRCE transport, over Rosette's `SocketProvider` (the WIZnet chip's hardware sockets on a board) |
+| `AgentLocator`s | `rosette/ros/agent_locator*.hpp` | where the agent is: a fixed address, mDNS/DNS-SD, or the XRCE multicast probe |
+| `AgentSessionGate` | `rosette/ros/agent_session_gate.hpp` | locates and pings the agent before a session is created; pings it while the session runs (three misses end it); syncs the epoch clock |
+| `SessionSupervisor` | `rosette/ros/session_supervisor.hpp` | creates the session once the network is ready and the gate passes; rebuilds it when the address moves or the agent goes away |
+| wall clock | `rosette/ros/time_sync.hpp` | `time_synced()`, `epoch_nanos()`, `time_stamp()` for message headers, read from `platform::WallClock`, which the agent's time exchange sets |
 
-`examples/board_smoke` is not part of the build (see its README).
+The XRCE client always uses the custom transport over Rosette sockets, on every
+platform, so agent location and the socket path are the code the board runs.
+The gate installs the transport as rmw_microxrcedds's default, which is why
+`rclc_support_init()` needs no micro-ROS-specific options. `rosette_agent` is
+the library to link.
 
-### Host
+```cpp
+static rosette::UdpSocketTransport transport(sockets, any_v4, any_v4, 50u);
+static rosette::MdnsAgentLocator locator(sockets);
+static rosette::ros::AgentSessionGate gate(transport, locator, rosette::ros::rmw_agent_link());
+rosette::ros::SessionSupervisor session(wiz::board_network_watch(),
+                                        {create_session, destroy_session}, &gate);
+for (;;) {
+    if (session.step(platform::monotonic_ms()) == rosette::ros::SessionState::running) {
+        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(50));
+    }
+}
+```
+
+The gate's timing is `AgentGatePolicy`: a ping every 2 s with a 200 ms timeout,
+three consecutive misses to declare the agent gone, and a clock resync every
+60 s. The wall clock keeps its last offset across reconnects.
+
+## Testing on a host against a real agent
+
+The same stack runs on a host with only the socket backend swapped:
+`tests/agent/agent_live_probe.cpp` is a stock rclc node on the agent backend
+over Rosette's POSIX sockets, with the gate and the supervisor.
+`tests/agent/run_agent_live.sh` starts a stock `micro_ros_agent` in Docker
+and a stock rclpy echo peer, then checks three things: traffic and service
+calls round-trip and the clock syncs to the agent host
+(TC-ROS-AGT-LIVE-001); stopping the agent is detected within the ping budget
+(TC-ROS-AGT-LIVE-002); and restarting it rebuilds the session
+(TC-ROS-AGT-LIVE-003).
 
 ```bash
-cmake -S . -B build/micro-ros-host -DROSETTE_BOARD=posix -DROSETTE_ENABLE_MICRO_ROS=ON
-cmake --build build/micro-ros-host -j --target rosette_smoke led_files
+cmake -S . -B build-host-agent -DROSETTE_BOARD=posix -DROSETTE_ENABLE_MICRO_ROS=ON
+cmake --build build-host-agent -j --target agent_live_probe
+source /opt/ros/humble/setup.bash && tests/agent/run_agent_live.sh
+```
 
-# terminal 1
-source /opt/ros/humble/setup.bash
-ros2 run micro_ros_agent micro_ros_agent udp4 --port 8888
+## Example
 
-# terminal 2
-ROSETTE_AGENT_IP=127.0.0.1 build/micro-ros-host/examples/rosette_smoke/rosette_smoke
+`examples/led_files` runs on bare-metal WIZnet Pico boards: five rclc services
+(an LED, and put/get/list/erase on a `FileStore`) over its own `rosette_msgs`
+package.
 
-# terminal 3
-source /opt/ros/humble/setup.bash
-ros2 topic echo /mcu_temperature_c std_msgs/msg/Float32
+```bash
+cmake -S . -B build-hw/w6100-pico-agent -DROSETTE_BOARD=w6100-evb-pico \
+      -DROSETTE_ENABLE_MICRO_ROS=ON [-DROSETTE_MICRO_ROS_AGENT_IP=192.168.1.10]
+cmake --build build-hw/w6100-pico-agent -j --target led_files
+tools/pico_uf2_flash.py build-hw/w6100-pico-agent/examples/led_files/led_files.uf2 --monitor 30
+
+# the agent
+docker run --rm --net=host microros/micro-ros-agent:humble udp4 --port 8888
 ```
 
 The first build runs micro_ros_setup's `generate_lib` flow to produce
@@ -47,84 +91,24 @@ The first build runs micro_ros_setup's `generate_lib` flow to produce
 workspace, pass `-DROSETTE_MICRO_ROS_WORKSPACE_DIR=<dir>
 -DROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD=OFF`.
 
-### Board
-
-```bash
-cmake -S . -B build/micro-ros-pico2 -DROSETTE_BOARD=w5100s-evb-pico2 \
-      -DROSETTE_ENABLE_MICRO_ROS=ON -DROSETTE_MICRO_ROS_AGENT_IP=192.168.1.10
-cmake --build build/micro-ros-pico2 -j --target led_files
-tools/pico_uf2_flash.py build/micro-ros-pico2/examples/led_files/led_files.uf2 --monitor 30
-```
-
 Then, from a host with the example's `rosette_msgs` package built in an
 overlay:
 
 ```bash
 ros2 service call /led_files/led/set rosette_msgs/srv/SetLed "{led: 0, state: true}"
+ros2 service call /led_files/files/put rosette_msgs/srv/PutFile "{key: k1, body: hello}"
 ros2 service call /led_files/files/list rosette_msgs/srv/ListFiles "{}"
 ```
 
 Interface packages under `examples/*/` are compiled into `libmicroros`
 automatically; `ROSETTE_MICRO_ROS_EXTRA_INTERFACE_PACKAGES` adds others.
 
-## The wrapper API
-
-`rosette::App` owns the agent session. It resolves and pings the agent, builds
-the context and node, asks every registered `Module` to create its entities,
-spins the executor, detects agent loss by ping, tears everything down, and
-rebuilds when the agent returns. The executor is sized from the sum of each
-module's `executor_handles()`.
-
-```cpp
-class LedModule final : public rosette::Module {
-public:
-    using Request = rosette::service_traits<rosette::SetLedSrv>::Request;
-    using Response = rosette::service_traits<rosette::SetLedSrv>::Response;
-
-    const char* name() const noexcept override { return "led"; }
-    uint8_t executor_handles() const noexcept override { return 1u; }
-
-    void register_(rosette::Node& node) noexcept override {
-        node.create_service<rosette::SetLedSrv>(
-            service_, "led/set",
-            [](const Request& req, Response& resp) noexcept {
-                gpio_put(22, req.state);
-                resp.success = true;
-            });
-    }
-
-    void on_disconnect() noexcept override { service_.reset(); }
-
-private:
-    std::optional<rosette::Service<rosette::SetLedSrv>> service_;  // rebuilt on reconnect
-};
-
-int main() {
-    rosette::AppOptions options{};
-    options.node_name = "board";
-    options.node_namespace = "led_files";   // entities land under /led_files/...
-
-    rosette::App app(options);
-    static LedModule led;
-    app.add(led);
-    app.spin();   // never returns; or call app.spin_once(now_ms) from your own loop
-}
-```
-
-Each generated type is bound to the wrappers through a
-`rosette::message_traits<T>` or `rosette::service_traits<T>` specialization
-that supplies its `rosidl` type support and `init`/`fini` hooks; see
-`examples/led_files/rosette_msgs_traits.hpp`.
-
-Actions (`rosette::ActionServer`) run cooperatively from `App`'s spin: one
-active goal per server, advanced on each spin. Action entities must live as
-long as their `App`, because `rclc` has no executor remove call for them.
-
 ## Finding the agent
 
-With `ROSETTE_MICRO_ROS_AGENT_IP` set, the board uses that address. Without
-it, the board discovers the agent, by the mechanism
-`ROSETTE_MICRO_ROS_DISCOVERY` selects:
+The gate asks its `AgentLocator` whenever it holds no answering endpoint, so
+an agent that moves is found again. In `led_files`, `ROSETTE_MICRO_ROS_AGENT_IP`
+selects `StaticAgentLocator`; without it, the board discovers the agent by
+the mechanism `ROSETTE_MICRO_ROS_DISCOVERY` selects:
 
 **`mdns`** (default): `MdnsAgentLocator` (`rosette/ros/agent_locator_mdns.hpp`)
 browses the DNS-SD service `_microrosagent._udp.local`, or resolves the A
@@ -168,6 +152,7 @@ rebuilds the library.
 ## References
 
 - micro-ROS: [Micro XRCE-DDS](https://micro-xrce-dds.docs.eprosima.com/),
-  [micro_ros_setup](https://github.com/micro-ROS/micro_ros_setup) `generate_lib`
+  [micro_ros_setup](https://github.com/micro-ROS/micro_ros_setup) `generate_lib`,
+  the "Handle reconnections and liveliness" and "Custom transports" tutorials
 - OMG DDS-XRCE 1.0 (the agent protocol)
 - RFC 6762 (mDNS), RFC 6763 (DNS-SD)

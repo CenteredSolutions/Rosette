@@ -4,7 +4,7 @@ set(ROSETTE_CHIP "rp2" PARENT_SCOPE)
 set(ROSETTE_BOARD_FAMILY "pico" PARENT_SCOPE)
 set(ROSETTE_BOARD_ENABLE_PICO_SDK ON PARENT_SCOPE)
 
-# No RTOS: the W5100S runs the TCP/IP stack in hardware, and rosette::App is a
+# No RTOS: the W5100S runs the TCP/IP stack in hardware, and the firmware is a
 # cooperative superloop. FreeRTOS+TCP is available as a build option but is not
 # the default for this board.
 set(ROSETTE_BOARD_ENABLE_FREERTOS OFF PARENT_SCOPE)

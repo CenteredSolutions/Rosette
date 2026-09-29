@@ -3,7 +3,6 @@
 # Format: <path>::<function> <length>
 bindings/micropython/rosette_mpy_backend_runtime.cpp::rosette::bindings::micropython::PublisherInit 106
 bindings/micropython/rosette_mpy_schema.cpp::rosette::bindings::micropython::ParseMessageText 115
-examples/board_smoke/main.cpp::service_task 138
 include/rosette/ros/agent_locator_xrce.hpp::rosette::detail::parse_info_packet 118
 src/rtps/message_parser.cpp::rtps::parse_message 212
 src/rtps/spdp.cpp::rtps::SpdpReader::deserialise 134

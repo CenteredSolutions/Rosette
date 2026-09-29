@@ -1,10 +1,17 @@
 /**
  * @file wall_clock.cpp
- * @brief WallClock: one offset over the platform monotonic clock.
+ * @brief WallClock: one offset over the platform monotonic clock, and rcl's view of it.
  *
  * The offset is 64 bits, which the RP2040's Cortex-M0+ cannot read or write
  * atomically, so it sits behind a platform Mutex; WallClock is therefore
  * callable from thread context on any core, not from interrupt handlers.
+ *
+ * The firmware ROS stacks' rcutils (cmake/micro_ros_bootstrap.sh.in) take
+ * `rcutils_system_time_now()` from a weak `rosette_micro_ros_epoch_time_us()`
+ * hook. The strong definition here makes rcl's system clock this WallClock
+ * on both ROS backends. `clock_gettime()` stays on the monotonic tick,
+ * because the XRCE client times its waits with it (`uxr_millis()`) and a
+ * clock that steps at synchronization would cut those waits short.
  */
 
 #include "rosette/platform/wall_clock.hpp"
@@ -15,10 +22,10 @@ namespace rosette::platform {
 namespace {
 
 struct WallClockState {
-    Mutex   mutex;
+    Mutex mutex;
     int64_t offset_us = 0;
-    bool    seeded = false;         ///< Offset initialized (from hint or sync).
-    bool    synchronized = false;
+    bool seeded = false;  ///< Offset initialized (from hint or sync).
+    bool synchronized = false;
 };
 
 WallClockState& state() noexcept {
@@ -29,7 +36,10 @@ WallClockState& state() noexcept {
 /// Seeds the offset from the platform hint the first time it is needed.
 /// Caller holds state().mutex.
 void seed_locked(WallClockState& s) noexcept {
-    if (s.seeded) return;
+    if (s.seeded) {
+        return;
+    }
+
     s.seeded = true;
     int64_t unix_us = 0;
     if (realtime_hint_us(unix_us)) {
@@ -70,3 +80,23 @@ bool WallClock::synchronized() noexcept {
 }
 
 }  // namespace rosette::platform
+
+/**
+ * @brief rcl's system time on firmware: WallClock::now_us(), in Unix microseconds.
+ *
+ * Overrides the weak definition in the firmware ROS stacks' rcutils time
+ * source, which returns the bare monotonic tick.
+ *
+ * @return Microseconds since the Unix epoch once synchronized; before that,
+ *   the monotonic time itself (near 1970), as the weak default returns.
+ *
+ * Verification:
+ * - Correct means: `rcutils_system_time_now()` equals `WallClock::now_us() * 1000`.
+ * - Covered by: nm on a firmware image shows this definition, not the weak one.
+ *
+ * References:
+ * - cmake/micro_ros_bootstrap.sh.in (the rcutils time source with the weak hook)
+ */
+extern "C" int64_t rosette_micro_ros_epoch_time_us(void) {
+    return rosette::platform::WallClock::now_us();
+}

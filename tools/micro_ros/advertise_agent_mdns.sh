@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Advertise a running micro-ROS Agent over mDNS / DNS-SD so a Rosette board can
-# find it with MdnsAgentLocator (see include/rosette/ros/mdns_agent_locator.hpp).
+# find it with MdnsAgentLocator (see include/rosette/ros/agent_locator_mdns.hpp).
 #
 # This is a thin wrapper around avahi-publish: it registers the DNS-SD service
 # type that the board browses by default and holds the registration until you

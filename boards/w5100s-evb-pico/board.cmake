@@ -4,7 +4,7 @@ set(ROSETTE_CHIP "rp2" PARENT_SCOPE)
 set(ROSETTE_BOARD_FAMILY "pico" PARENT_SCOPE)
 set(ROSETTE_BOARD_ENABLE_PICO_SDK ON PARENT_SCOPE)
 
-# No RTOS: the W5100S runs the TCP/IP stack in hardware and rosette::App is a
+# No RTOS: the W5100S runs the TCP/IP stack in hardware and the firmware is a
 # cooperative superloop — the same poll-mode path as the RP2350 EVB. The RP2040
 # EVB is the debugger-friendly variant of that board.
 set(ROSETTE_BOARD_ENABLE_FREERTOS OFF PARENT_SCOPE)

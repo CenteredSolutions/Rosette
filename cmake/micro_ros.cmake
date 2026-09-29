@@ -30,9 +30,6 @@ endif()
 option(ROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD
     "Build the micro-ROS static library automatically as part of the default build"
     ON)
-option(ROSETTE_BUILD_MICRO_ROS_BOARD_SMOKE
-    "Build the Rosette micro-ROS board smoke executable"
-    ON)
 option(ROSETTE_MICRO_ROS_FETCH_SETUP
     "Fetch the official micro_ros_setup repository when no local path is provided"
     ON)
@@ -47,11 +44,6 @@ set(ROSETTE_MICRO_ROS_DISTRO "humble" CACHE STRING
     "ROS 2 distro / micro_ros_setup branch to use")
 set_property(CACHE ROSETTE_MICRO_ROS_DISTRO PROPERTY STRINGS
     humble jazzy kilted rolling)
-
-set(ROSETTE_MICRO_ROS_TRANSPORT "auto" CACHE STRING
-    "micro-ROS transport profile to build: auto | custom | udp")
-set_property(CACHE ROSETTE_MICRO_ROS_TRANSPORT PROPERTY STRINGS
-    auto custom udp)
 
 set(ROSETTE_MICRO_ROS_SETUP_PATH "" CACHE PATH
     "Path to a local micro_ros_setup checkout")
@@ -101,7 +93,7 @@ set(ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS "750" CACHE STRING
 set(ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS "3" CACHE STRING
     "Number of multicast probe attempts for the Rosette Agent locator")
 
-# --- Agent autodiscovery mechanism for the board smoke targets ---------------
+# --- Agent location for the agent examples (examples/led_files) --------------
 # "mdns"  -> MdnsAgentLocator: browse a DNS-SD service or resolve a host name.
 # "xrce"  -> MulticastAgentLocator: the upstream-compatible XRCE GET_INFO probe.
 set(ROSETTE_MICRO_ROS_DISCOVERY "mdns" CACHE STRING
@@ -121,30 +113,30 @@ else()
     set(_rosette_discovery_mdns 0)
 endif()
 
-# Resolve the transport profile up front; it is needed by both the prebuilt
-# and the bootstrap paths.
-set(_rosette_micro_ros_transport "${ROSETTE_MICRO_ROS_TRANSPORT}")
-if(_rosette_micro_ros_transport STREQUAL "auto")
-    if(ROSETTE_PROCESSOR STREQUAL "HOST")
-        set(_rosette_micro_ros_transport "udp")   # stock BSD-socket UDP transport
-    else()
-        set(_rosette_micro_ros_transport "custom") # MCU boards drive their own socket
-    endif()
-endif()
+# Agent location settings, compiled into every target linking micro_ros_vendor
+# (the agent examples pick their AgentLocator from these).
+set(_rosette_micro_ros_agent_definitions
+    ROSETTE_MICRO_ROS_AGENT_IP="${ROSETTE_MICRO_ROS_AGENT_IP}"
+    ROSETTE_MICRO_ROS_AGENT_PORT=${ROSETTE_MICRO_ROS_AGENT_PORT}
+    ROSETTE_MICRO_ROS_DISCOVERY_GROUP="${ROSETTE_MICRO_ROS_DISCOVERY_GROUP}"
+    ROSETTE_MICRO_ROS_DISCOVERY_PORT="${ROSETTE_MICRO_ROS_DISCOVERY_PORT}"
+    ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS=${ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS}
+    ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS=${ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS}
+    ROSETTE_MICRO_ROS_DISCOVERY_MDNS=${_rosette_discovery_mdns}
+    ROSETTE_MICRO_ROS_MDNS_SERVICE="${ROSETTE_MICRO_ROS_MDNS_SERVICE}"
+    ROSETTE_MICRO_ROS_MDNS_HOSTNAME="${ROSETTE_MICRO_ROS_MDNS_HOSTNAME}"
+    ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS=${ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS}
+    ROSETTE_MICRO_ROS_MDNS_ATTEMPTS=${ROSETTE_MICRO_ROS_MDNS_ATTEMPTS}
+)
 
-set(ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT OFF)
-set(ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT OFF)
-set(ROSETTE_MICRO_ROS_USE_DISCOVERY OFF)
-if(_rosette_micro_ros_transport STREQUAL "custom")
-    set(ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT ON)
-elseif(_rosette_micro_ros_transport STREQUAL "udp")
-    set(ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT ON)
-    set(ROSETTE_MICRO_ROS_USE_DISCOVERY ON)
-else()
-    message(FATAL_ERROR
-        "Unsupported ROSETTE_MICRO_ROS_TRANSPORT='${_rosette_micro_ros_transport}'. "
-        "Expected custom or udp.")
-endif()
+# The XRCE client always speaks through a Rosette socket: the custom transport
+# on every platform, host included, so agent location (static, mDNS, XRCE
+# multicast) and the socket path are the same code the board runs. See
+# include/rosette/ros/agent_session_gate.hpp. The profile feeds both the
+# prebuilt and the bootstrap paths, and micro_ros_colcon.meta.in.
+set(_rosette_micro_ros_transport "custom")
+set(ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT ON)
+set(ROSETTE_MICRO_ROS_UCLIENT_UDP OFF)
 
 set(_rosette_micro_ros_lib
     "${ROSETTE_MICRO_ROS_WORKSPACE_DIR}/firmware/build/libmicroros.a")
@@ -169,20 +161,7 @@ if(NOT ROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD AND
 
     add_library(micro_ros_vendor INTERFACE)
     target_link_libraries(micro_ros_vendor INTERFACE micro_ros_prebuilt)
-    target_compile_definitions(micro_ros_vendor INTERFACE
-        ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM=$<BOOL:${ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT}>
-        ROSETTE_MICRO_ROS_TRANSPORT_UDP=$<BOOL:${ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT}>
-        ROSETTE_MICRO_ROS_AGENT_IP="${ROSETTE_MICRO_ROS_AGENT_IP}"
-        ROSETTE_MICRO_ROS_AGENT_PORT=${ROSETTE_MICRO_ROS_AGENT_PORT}
-        ROSETTE_MICRO_ROS_DISCOVERY_GROUP="${ROSETTE_MICRO_ROS_DISCOVERY_GROUP}"
-        ROSETTE_MICRO_ROS_DISCOVERY_PORT="${ROSETTE_MICRO_ROS_DISCOVERY_PORT}"
-        ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS=${ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS}
-        ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS=${ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS}
-        ROSETTE_MICRO_ROS_DISCOVERY_MDNS=${_rosette_discovery_mdns}
-        ROSETTE_MICRO_ROS_MDNS_SERVICE="${ROSETTE_MICRO_ROS_MDNS_SERVICE}"
-        ROSETTE_MICRO_ROS_MDNS_HOSTNAME="${ROSETTE_MICRO_ROS_MDNS_HOSTNAME}"
-        ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS=${ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS}
-        ROSETTE_MICRO_ROS_MDNS_ATTEMPTS=${ROSETTE_MICRO_ROS_MDNS_ATTEMPTS})
+    target_compile_definitions(micro_ros_vendor INTERFACE ${_rosette_micro_ros_agent_definitions})
 
     add_custom_target(rosette_micro_ros_bootstrap
         COMMENT "micro-ROS: using prebuilt ${_rosette_micro_ros_lib}")
@@ -228,15 +207,6 @@ else()
         "Set ROSETTE_MICRO_ROS_SETUP_PATH or enable ROSETTE_MICRO_ROS_FETCH_SETUP.")
 endif()
 
-set(_rosette_micro_ros_transport "${ROSETTE_MICRO_ROS_TRANSPORT}")
-if(_rosette_micro_ros_transport STREQUAL "auto")
-    if(ROSETTE_PROCESSOR STREQUAL "HOST")
-        set(_rosette_micro_ros_transport "udp")   # stock BSD-socket UDP transport
-    else()
-        set(_rosette_micro_ros_transport "custom") # MCU boards drive their own socket
-    endif()
-endif()
-
 set(_rosette_micro_ros_arch_flags "")
 set(ROSETTE_MICRO_ROS_USE_PICO_TIME OFF)
 if(RTPS_PROCESSOR STREQUAL "RP2040" OR PICO_PLATFORM STREQUAL "rp2040")
@@ -271,56 +241,6 @@ file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated/micro_ros")
 set(ROSETTE_MICRO_ROS_TOOLCHAIN_SYSTEM_NAME "Generic")
 if(ROSETTE_PROCESSOR STREQUAL "HOST")
     set(ROSETTE_MICRO_ROS_TOOLCHAIN_SYSTEM_NAME "${CMAKE_SYSTEM_NAME}")
-endif()
-
-set(ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT OFF)
-set(ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT OFF)
-set(ROSETTE_MICRO_ROS_USE_DISCOVERY OFF)
-if(_rosette_micro_ros_transport STREQUAL "custom")
-    set(ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT ON)
-elseif(_rosette_micro_ros_transport STREQUAL "udp")
-    set(ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT ON)
-    set(ROSETTE_MICRO_ROS_USE_DISCOVERY ON)
-else()
-    message(FATAL_ERROR
-        "Unsupported ROSETTE_MICRO_ROS_TRANSPORT='${_rosette_micro_ros_transport}'. "
-        "Expected custom or udp.")
-endif()
-
-# Micro-XRCE-DDS-Client (uClient) transport profile flags
-# --------------------------------------------------------
-# UCLIENT_PROFILE_UDP requires a POSIX/FreeRTOS/RTEMS platform layer that
-# provides uxrUDPPlatform.  Embedded targets (CMAKE_SYSTEM_NAME=Generic) have
-# none of those, so building with UCLIENT_PROFILE_UDP=ON produces an
-# "incomplete type" error.
-#
-# The MicroPython binding always routes packets through its own socket
-# callbacks via the uClient custom-transport API regardless of whether the
-# higher-level RMW transport label is "udp" or "custom".  So on embedded
-# targets we always compile uClient with UCLIENT_PROFILE_CUSTOM_TRANSPORT=ON
-# and UCLIENT_PROFILE_UDP=OFF.
-#
-# Critically, RMW_UXRCE_TRANSPORT (set in colcon.meta for rmw_microxrcedds)
-# must match the uclient transport profile actually compiled in.  When uclient
-# is forced to custom transport on embedded targets, we must also tell rmw to
-# use "custom" — otherwise rmw tries to reference uxrUDPTransport / the UDP
-# MTU symbol that the uclient build omitted, causing link/compile errors.
-#
-# _rosette_micro_ros_rmw_transport  → value passed to RMW_UXRCE_TRANSPORT
-# ROSETTE_MICRO_ROS_UCLIENT_CUSTOM  → 1 when uClient should use custom transport
-# ROSETTE_MICRO_ROS_UCLIENT_UDP     → 1 when uClient may use its native UDP stack
-if(ROSETTE_MICRO_ROS_TOOLCHAIN_SYSTEM_NAME STREQUAL "Generic")
-    # Embedded / bare-metal: force custom transport at both uClient and RMW
-    # layers.  The MicroPython binding provides its own UDP socket callbacks
-    # through the custom-transport API, so "custom" is correct end-to-end.
-    set(ROSETTE_MICRO_ROS_UCLIENT_CUSTOM ON)
-    set(ROSETTE_MICRO_ROS_UCLIENT_UDP    OFF)
-    set(_rosette_micro_ros_rmw_transport "custom")
-else()
-    # Host / POSIX build: use native UDP when the RMW transport is "udp".
-    set(ROSETTE_MICRO_ROS_UCLIENT_CUSTOM ${ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT})
-    set(ROSETTE_MICRO_ROS_UCLIENT_UDP    ${ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT})
-    set(_rosette_micro_ros_rmw_transport "${_rosette_micro_ros_transport}")
 endif()
 
 set(ROSETTE_MICRO_ROS_SETUP_SOURCE_DIR "${_rosette_micro_ros_setup_source_dir}")
@@ -426,15 +346,7 @@ add_dependencies(micro_ros_prebuilt rosette_micro_ros_bootstrap)
 add_library(micro_ros_vendor INTERFACE)
 target_link_libraries(micro_ros_vendor INTERFACE micro_ros_prebuilt)
 add_dependencies(micro_ros_vendor rosette_micro_ros_bootstrap)
-target_compile_definitions(micro_ros_vendor INTERFACE
-    ROSETTE_MICRO_ROS_TRANSPORT_CUSTOM=$<BOOL:${ROSETTE_MICRO_ROS_USE_CUSTOM_TRANSPORT}>
-    ROSETTE_MICRO_ROS_TRANSPORT_UDP=$<BOOL:${ROSETTE_MICRO_ROS_USE_UDP_TRANSPORT}>
-    ROSETTE_MICRO_ROS_AGENT_IP="${ROSETTE_MICRO_ROS_AGENT_IP}"
-    ROSETTE_MICRO_ROS_AGENT_PORT=${ROSETTE_MICRO_ROS_AGENT_PORT}
-    ROSETTE_MICRO_ROS_DISCOVERY_GROUP="${ROSETTE_MICRO_ROS_DISCOVERY_GROUP}"
-    ROSETTE_MICRO_ROS_DISCOVERY_PORT="${ROSETTE_MICRO_ROS_DISCOVERY_PORT}"
-    ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS=${ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS}
-    ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS=${ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS})
+target_compile_definitions(micro_ros_vendor INTERFACE ${_rosette_micro_ros_agent_definitions})
 
 set(ROSETTE_MICRO_ROS_LIBRARY "${_rosette_micro_ros_lib}" CACHE FILEPATH
     "Path to the generated micro-ROS static library" FORCE)
@@ -443,6 +355,6 @@ set(ROSETTE_MICRO_ROS_INCLUDE_DIR "${_rosette_micro_ros_include}" CACHE PATH
 
 message(STATUS "micro-ROS bootstrap enabled")
 message(STATUS "  Distro        : ${ROSETTE_MICRO_ROS_DISTRO}")
-message(STATUS "  Transport     : ${_rosette_micro_ros_transport} (rmw: ${_rosette_micro_ros_rmw_transport}, uclient: custom=${ROSETTE_MICRO_ROS_UCLIENT_CUSTOM} udp=${ROSETTE_MICRO_ROS_UCLIENT_UDP})")
+message(STATUS "  Transport     : ${_rosette_micro_ros_transport} (Rosette sockets)")
 message(STATUS "  Workspace     : ${ROSETTE_MICRO_ROS_WORKSPACE_DIR}")
 message(STATUS "  Toolchain     : ${_rosette_micro_ros_toolchain_file}")

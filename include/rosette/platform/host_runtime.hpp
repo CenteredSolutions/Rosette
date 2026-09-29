@@ -51,7 +51,7 @@ bool rosette_platform_get_ipv6_addr(uint8_t out[16]);
 /**
  * @brief Blocks the caller for approximately @p ms milliseconds.
  *
- * Used by `rosette::App::spin()` to pace its loop. On FreeRTOS this yields to
+ * Paces a firmware superloop between polls. On FreeRTOS this yields to
  * other tasks (`vTaskDelay`); on the host it sleeps the thread; on a bare
  * superloop it busy-waits.
  *

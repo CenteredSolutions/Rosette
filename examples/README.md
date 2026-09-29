@@ -14,13 +14,9 @@ build the example's target. Board firmware lands at
 | [`rclc_chatter`](rclc_chatter/main.cpp) | A stock `rclc` node on `rmw_rosette`: publishes `/rosette/chatter` every second, prints `/rosette/command`, reports the rcl heap. The template for your own firmware. | a WIZnet board, the C client stack for the board's CPU | W5100S-EVB-Pico2 |
 | [`rtps_chatter`](rtps_chatter/main.cpp) | The same topics on the RTPS core directly, with no `rcl`: participant, writer, reader, and hand-written CDR. The smallest ROS-visible image. | a WIZnet board | W5100S-EVB-Pico2 |
 | [`storage_demo`](storage_demo/main.cpp) | The LittleFS volume, a `DeviceConfig` record, and the `FileStore` blob API. | host (`ROSETTE_BOARD=posix`) | host |
-| [`rosette_smoke`](rosette_smoke/main.cpp) | The smallest micro-ROS agent client: publishes `std_msgs/Float32` to a `micro_ros_agent`. | `ROSETTE_ENABLE_MICRO_ROS=ON`, an agent | host |
-| [`led_files`](led_files/main.cpp) | An agent client with two modules: an LED service and a file service over its own `rosette_msgs` package. | `ROSETTE_ENABLE_MICRO_ROS=ON`, an agent | host |
+| [`led_files`](led_files/main.cpp) | Stock `rclc` services through a `micro_ros_agent`: an LED and a `FileStore`, over its own `rosette_msgs` package, with the agent located, pinged, and followed by `AgentSessionGate`. | a WIZnet board, `ROSETTE_ENABLE_MICRO_ROS=ON`, an agent | W6100-EVB-Pico |
 
-`board_smoke/` is the original FreeRTOS bring-up smoke. It is not part of the
-build; its [README](board_smoke/README.md) says why.
-
-The agent-client examples are described in
+The agent backend and `led_files` are described in
 [docs/micro_ros_agent_client.md](../docs/micro_ros_agent_client.md). Network
 settings that every board example shares (addresses, domain, ports) are in
 [docs/network_configuration.md](../docs/network_configuration.md).

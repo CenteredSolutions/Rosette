@@ -84,10 +84,15 @@ set(ROSETTE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 include(cmake/rosette_platform.cmake)
 target_link_libraries(rosette_net PUBLIC rosette_platform)
 
-# rosette_session — the ROS session supervisor (include/rosette/ros/session_supervisor.hpp).
-# Backend-neutral: it needs no rcl or rmw headers, so rclc firmware on either
-# rmw_rosette or the micro-ROS agent links the same library.
-add_library(rosette_session STATIC src/ros/session_supervisor.cpp)
+# rosette_session — the ROS session supervisor (include/rosette/ros/session_supervisor.hpp),
+# the micro-ROS agent's gate for it (agent_session_gate.hpp), and the ROS view of
+# the wall clock (time_sync.hpp). Backend-neutral:
+# it needs no rcl or rmw headers (the gate reaches the agent through an
+# AgentLink), so rclc firmware on either backend links the same library.
+add_library(rosette_session STATIC
+    src/ros/session_supervisor.cpp
+    src/ros/agent_session_gate.cpp
+    src/ros/time_sync.cpp)
 target_link_libraries(rosette_session PUBLIC rosette_net)
 
 # Platform conformance test for the selected board's port. On a Pico it
@@ -103,7 +108,9 @@ endif()
 
 if(NOT ROSETTE_BOARD_ENABLE_PICO_SDK)
     # Host: platform runtime + POSIX socket backend live here.
-    target_sources(rosette_net PRIVATE src/platform/posix/host_runtime.cpp)
+    target_sources(rosette_net PRIVATE
+        src/platform/posix/host_runtime.cpp
+        src/net/posix/socket.cpp)
 endif()
 
 if(ROSETTE_BOARD_ENABLE_FREERTOS)
@@ -199,23 +206,28 @@ else()
 endif()
 
 # ------------------------------------------------------------
-# rosette_ros — the header-only micro-ROS client wrapper
+# rosette_agent — the micro-ROS agent backend's session pieces
 #
-# All of include/rosette/ros/*.hpp (Context, Node, Publisher, Subscription,
-# Timer, Service, Client, ActionServer/Client, transports, Agent locators).
-# Consumers link this one target to pull the wrappers plus the generated
-# micro-ROS library and its compile definitions.
+# rmw_agent_link() (the XRCE custom transport over Rosette sockets, agent
+# ping, and the time exchange that sets platform::WallClock), on top of
+# rosette_session's AgentSessionGate. The application itself is stock rclc
+# and links micro_ros_vendor through this target. The agent locators and
+# UdpSocketTransport are headers under include/rosette/ros/.
 # ------------------------------------------------------------
 if(ROSETTE_ENABLE_MICRO_ROS)
-    add_library(rosette_ros INTERFACE)
-    target_include_directories(rosette_ros INTERFACE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${ROSETTE_INTERNAL_INCLUDE_DIRS}
-    )
-    target_link_libraries(rosette_ros INTERFACE
+    add_library(rosette_agent STATIC
+        src/ros/agent_rmw_link.cpp)
+    target_link_libraries(rosette_agent PUBLIC
+        rosette_session
         rosette_net
         micro_ros_vendor
     )
+
+    # The agent path on a host, against a real micro_ros_agent (tests/agent/run_agent_live.sh).
+    if(NOT ROSETTE_BOARD_ENABLE_PICO_SDK)
+        add_executable(agent_live_probe tests/agent/agent_live_probe.cpp)
+        target_link_libraries(agent_live_probe PRIVATE rosette_agent)
+    endif()
 endif()
 
 # ------------------------------------------------------------
@@ -226,7 +238,6 @@ endif()
 # be configured standalone. Interface packages under examples/ are compiled
 # into libmicroros automatically (see cmake/micro_ros.cmake).
 # ------------------------------------------------------------
-add_subdirectory(examples/rosette_smoke)
 add_subdirectory(examples/storage_demo)
 add_subdirectory(examples/led_files)
 add_subdirectory(examples/rtps_chatter)
