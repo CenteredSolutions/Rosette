@@ -5,7 +5,9 @@
  * The record on flash is `Header` immediately followed by a byte-for-byte copy
  * of `DeviceConfig`. `load()` reads the whole file, checks the magic, version,
  * and size, then verifies a CRC-32 over the payload before handing the caller a
- * populated struct. Any mismatch leaves the caller's struct at its defaults so
+ * populated struct. A version-1 record (the same layout without the trailing
+ * `ntp_server`) is accepted, so boards keep their stored settings across the
+ * version change. Any mismatch leaves the caller's struct at its defaults so
  * a corrupt or stale record can never brick startup. `store()` recomputes the
  * header and writes the record through `Volume::write_file()`, which is atomic.
  *
@@ -15,6 +17,7 @@
 
 #include "rosette/storage/device_config.hpp"
 
+#include <stddef.h>
 #include <string.h>
 
 namespace rosette::storage {
@@ -22,7 +25,24 @@ namespace rosette::storage {
 namespace {
 
 constexpr uint32_t kMagic = 0x52434647u;  // "RCFG"
-constexpr uint16_t kVersion = 1u;
+constexpr uint16_t kVersion = 2u;
+
+/// The version-1 payload: every field before `ntp_server`, padded as that struct was.
+struct DeviceConfigV1 {
+    NetMode net_mode;
+    uint8_t static_ip[4];
+    uint8_t static_mask[4];
+    uint8_t static_gw[4];
+    uint8_t static_dns[4];
+    char agent_host[64];
+    uint16_t agent_port;
+    uint32_t client_key;
+    uint16_t domain_id;
+    char node_namespace[32];
+};
+
+static_assert(offsetof(DeviceConfig, ntp_server) <= sizeof(DeviceConfigV1),
+              "version 2 must only append to the version-1 layout");
 
 /**
  * @brief On-flash record header preceding the `DeviceConfig` payload.
@@ -66,24 +86,29 @@ bool load(Volume& volume, DeviceConfig& out) noexcept
 
     uint8_t buffer[sizeof(Header) + sizeof(DeviceConfig)];
     const size_t n = volume.read_file(kDeviceConfigPath, buffer, sizeof(buffer));
-    if (n != sizeof(buffer)) {
+    if (n < sizeof(Header)) {
         return false;
     }
 
     Header header;
     memcpy(&header, buffer, sizeof(header));
-    if (header.magic != kMagic ||
-        header.version != kVersion ||
-        header.payload_size != sizeof(DeviceConfig)) {
+    const bool current = header.version == kVersion && header.payload_size == sizeof(DeviceConfig);
+    const bool v1 = header.version == 1u && header.payload_size == sizeof(DeviceConfigV1);
+    if (header.magic != kMagic || !(current || v1) || n != sizeof(Header) + header.payload_size) {
         return false;
     }
 
     const uint8_t* payload = buffer + sizeof(Header);
-    if (crc32(payload, sizeof(DeviceConfig)) != header.crc32) {
+    if (crc32(payload, header.payload_size) != header.crc32) {
         return false;
     }
 
-    memcpy(&out, payload, sizeof(DeviceConfig));
+    memcpy(&out, payload, header.payload_size);
+    if (v1) {
+        // The v1 tail padding overlaps the appended field; a v1 record names no NTP server.
+        memset(out.ntp_server, 0, sizeof(out.ntp_server));
+    }
+
     return true;
 }
 

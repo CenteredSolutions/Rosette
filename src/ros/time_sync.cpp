@@ -2,10 +2,10 @@
  * @file src/ros/time_sync.cpp
  * @brief ros/time_sync.hpp over platform::WallClock, the one clock every time source sets.
  *
- * Time sources write WallClock's offset (on the agent backend, the agent's
- * time exchange, `rmw_agent_link().sync_time`), so the ROS view of time is
- * the same on either backend and survives sessions being torn down and
- * rebuilt.
+ * The SNTP client (net/sntp_client.hpp, run by the board network) and the
+ * micro-ROS agent's time exchange (`rmw_agent_link().sync_time`) both write
+ * WallClock's offset, so the ROS view of time is the same on either backend
+ * and survives sessions being torn down and rebuilt.
  */
 
 #include "rosette/ros/time_sync.hpp"

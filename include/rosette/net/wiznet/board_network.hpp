@@ -15,6 +15,13 @@
  * board_default_network(): DHCP, falling back to link-local, plus SLAAC where
  * the part has IPv6.
  *
+ * The board network also runs the board's SNTP client (`net/sntp_client.hpp`):
+ * once the board holds an IPv4 address and knows an NTP server
+ * (`NetworkConfig::time.server` or DHCP option 42), it sets
+ * `platform::WallClock` and keeps it on UTC, so ROS stamps and rcl's system
+ * clock read UTC. Agent-backend builds leave it off by default; the agent
+ * sets the clock there.
+ *
  * Every consumer of the network reaches it through these functions: an RTPS
  * participant opens its transport on board_socket_provider(), and rmw_rosette's
  * WIZnet network port (rmw_rosette/src/network_port_wiznet.cpp) forwards to

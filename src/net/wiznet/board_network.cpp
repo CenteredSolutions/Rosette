@@ -15,8 +15,9 @@
  *
  * `BoardNetwork::poll()` is the one step both bring-up and
  * poll_board_network() take: it retries the chip until it answers, then runs
- * the addresses. Bring-up is that step in a loop with a predicate and a
- * deadline, which is why a bring-up that times out loses nothing.
+ * the addresses and the SNTP client that keeps the wall clock on UTC.
+ * Bring-up is that step in a loop with a predicate and a deadline, which is
+ * why a bring-up that times out loses nothing.
  */
 
 #include "rosette/net/wiznet/board_network.hpp"
@@ -28,6 +29,7 @@
 #include "rosette/net/address.hpp"
 #include "rosette/net/inet.h"
 #include "rosette/net/ipv4ll_provider.hpp"
+#include "rosette/net/sntp_client.hpp"
 #include "rosette/net/static_provider.hpp"
 #include "rosette/net/wiznet/board.hpp"
 #include "rosette/net/wiznet/dhcp_provider.hpp"
@@ -104,6 +106,7 @@ struct BoardNetwork {
     AddressManager v4;
     BoardIpv6<BoardChip> ipv6;
     NetworkAddress address;
+    SntpClient sntp;
     ReadyPredicate ready_when;
     bool chip_ready = false;
     uint32_t chip_retry_ms;
@@ -134,6 +137,7 @@ struct BoardNetwork {
           v4(v4_providers, v4_count, policy_for(config)),
           ipv6(device, sockets, iface, mac, config.v6),
           address(v4, ipv6.manager(), &iface),
+          sntp(sockets, config.time, wall_clock_for_sntp()),
           ready_when(config.ready_when),
           chip_retry_ms(pf::monotonic_ms()) {}
 
@@ -152,7 +156,9 @@ struct BoardNetwork {
      *
      * Until the chip answers, retries bring_chip_up() every kChipRetryMs;
      * once it does, routes the INT pin and starts the address managers,
-     * which from then on follow carrier (NetworkAddress). Never blocks.
+     * which from then on follow carrier (NetworkAddress), then gives the
+     * SNTP client its turn. Blocks only while an SNTP exchange is in flight
+     * (at most `SntpConfig::reply_timeout_ms`, once per poll interval).
      *
      * @param[in] now_ms Monotonic milliseconds.
      */
@@ -174,6 +180,7 @@ struct BoardNetwork {
         }
 
         address.poll(now_ms);
+        sntp.poll(now_ms, address.snapshot());
     }
 
     /// @brief Whether the config's ready predicate accepts the current addresses.

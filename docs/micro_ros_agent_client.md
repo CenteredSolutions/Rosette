@@ -27,7 +27,7 @@ support, node, entities and executor with default options, and a
 | `AgentLocator`s | `rosette/ros/agent_locator*.hpp` | where the agent is: a fixed address, mDNS/DNS-SD, or the XRCE multicast probe |
 | `AgentSessionGate` | `rosette/ros/agent_session_gate.hpp` | locates and pings the agent before a session is created; pings it while the session runs (three misses end it); syncs the epoch clock |
 | `SessionSupervisor` | `rosette/ros/session_supervisor.hpp` | creates the session once the network is ready and the gate passes; rebuilds it when the address moves or the agent goes away |
-| wall clock | `rosette/ros/time_sync.hpp` | `time_synced()`, `epoch_nanos()`, `time_stamp()` for message headers, read from `platform::WallClock`, which the agent's time exchange sets |
+| wall clock | `rosette/ros/time_sync.hpp` | `time_synced()`, `epoch_nanos()`, `time_stamp()` for message headers, read from `platform::WallClock`, which the agent's time exchange and the board network's SNTP client both set |
 
 The XRCE client always uses the custom transport over Rosette sockets, on every
 platform, so agent location and the socket path are the code the board runs.
@@ -50,7 +50,12 @@ for (;;) {
 
 The gate's timing is `AgentGatePolicy`: a ping every 2 s with a 200 ms timeout,
 three consecutive misses to declare the agent gone, and a clock resync every
-60 s. The wall clock keeps its last offset across reconnects.
+60 s. The wall clock keeps its last offset across reconnects. The agent is the
+only time source on this backend: builds with `ROSETTE_ENABLE_MICRO_ROS=ON`
+define `ROSETTE_ROS_BACKEND_AGENT`, which turns the board network's SNTP client
+off by default (`NetworkConfig::time.enabled`). On `rmw_rosette` the same
+clock comes from SNTP, against a configured or DHCP-offered NTP server
+(`rosette/net/sntp_client.hpp`).
 
 ## Testing on a host against a real agent
 

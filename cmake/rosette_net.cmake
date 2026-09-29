@@ -1,7 +1,7 @@
 # cmake/rosette_net.cmake
 #
 # Defines the `rosette_net` CMake target that boards link against for Rosette
-# network, DHCP, and NTP services.
+# network, DHCP, and SNTP services.
 #
 # Set ROSETTE_NET_STACK before including this file:
 #   wiznet_iolib   — WIZnet ioLibrary (requires wiznet.cmake already included)
@@ -15,12 +15,19 @@ set(ROSETTE_NET_STACK "wiznet_iolib" CACHE STRING
 set_property(CACHE ROSETTE_NET_STACK PROPERTY STRINGS wiznet_iolib freertos_tcp)
 
 # Optional: name of an existing CMake target that provides FreeRTOS headers.
-# rosette_net links against it so ntp_sync.cpp and socket sources can find
+# rosette_net links against it so the FreeRTOS socket sources can find
 # FreeRTOS.h at compile time.
 set(ROSETTE_FREERTOS_TARGET "" CACHE STRING
     "CMake target that provides FreeRTOS kernel headers (e.g. app_freertos_kernel)")
 
 set(_rosette_root "${CMAKE_CURRENT_LIST_DIR}/..")
+
+# Firmware on the micro-ROS agent backend takes its time from the agent, so
+# SNTP defaults to off there (net/sntp_client.hpp). The define goes on the
+# stack library PUBLIC, so the whole firmware sees one value.
+option(ROSETTE_ROS_BACKEND_AGENT
+    "The firmware uses the micro-ROS agent backend (the agent is the time source; SNTP off by default)"
+    ${ROSETTE_ENABLE_MICRO_ROS})
 
 if(ROSETTE_NET_STACK STREQUAL "wiznet_iolib")
     if(NOT TARGET wiznet_iolib)
@@ -35,7 +42,8 @@ if(ROSETTE_NET_STACK STREQUAL "wiznet_iolib")
     # depend only on the socket and provider interfaces and are compiled here.
     add_library(rosette_net_wiznet STATIC
         "${_rosette_root}/src/net/socket.cpp"
-        "${_rosette_root}/src/net/ntp_sync.cpp"
+        "${_rosette_root}/src/net/sntp_client.cpp"
+        "${_rosette_root}/src/net/sntp_wire.cpp"
         "${_rosette_root}/src/net/address_candidate.cpp"
         "${_rosette_root}/src/net/address_list.cpp"
         "${_rosette_root}/src/net/address_manager.cpp"
@@ -60,6 +68,10 @@ if(ROSETTE_NET_STACK STREQUAL "wiznet_iolib")
         target_link_libraries(rosette_net_wiznet PUBLIC hardware_spi hardware_gpio)
     endif()
 
+    if(ROSETTE_ROS_BACKEND_AGENT)
+        target_compile_definitions(rosette_net_wiznet PUBLIC ROSETTE_ROS_BACKEND_AGENT)
+    endif()
+
     add_library(rosette_net ALIAS rosette_net_wiznet)
 
 elseif(ROSETTE_NET_STACK STREQUAL "freertos_tcp")
@@ -71,7 +83,8 @@ elseif(ROSETTE_NET_STACK STREQUAL "freertos_tcp")
 
     add_library(rosette_net_freertos_tcp STATIC
         "${_rosette_root}/src/net/socket.cpp"
-        "${_rosette_root}/src/net/ntp_sync.cpp"
+        "${_rosette_root}/src/net/sntp_client.cpp"
+        "${_rosette_root}/src/net/sntp_wire.cpp"
         "${_rosette_root}/src/net/address_candidate.cpp"
         "${_rosette_root}/src/net/address_list.cpp"
         "${_rosette_root}/src/net/address_manager.cpp"
@@ -89,6 +102,10 @@ elseif(ROSETTE_NET_STACK STREQUAL "freertos_tcp")
 
     if(NOT ROSETTE_FREERTOS_TARGET STREQUAL "")
         target_link_libraries(rosette_net_freertos_tcp PUBLIC "${ROSETTE_FREERTOS_TARGET}")
+    endif()
+
+    if(ROSETTE_ROS_BACKEND_AGENT)
+        target_compile_definitions(rosette_net_freertos_tcp PUBLIC ROSETTE_ROS_BACKEND_AGENT)
     endif()
 
     add_library(rosette_net ALIAS rosette_net_freertos_tcp)

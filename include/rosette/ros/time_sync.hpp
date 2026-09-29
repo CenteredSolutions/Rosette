@@ -7,9 +7,18 @@
  * A board boots with no idea of the date, yet `std_msgs/Header` stamps and
  * cross-device correlation need Unix time. Rosette keeps one wall clock,
  * `platform::WallClock` (the monotonic tick plus a synchronized offset), and
- * these functions read it. On the micro-ROS agent backend, `AgentSessionGate`
- * runs `rmw_uros_sync_session()` against the agent's host clock when a
- * session comes up and every `AgentGatePolicy::time_resync_period_ms` after.
+ * these functions read it. Each ROS backend has its time source:
+ *
+ * - The micro-ROS agent: `AgentSessionGate` runs `rmw_uros_sync_session()`
+ *   against the agent's host clock when a session comes up and every
+ *   `AgentGatePolicy::time_resync_period_ms` after. On the agent backend
+ *   this is the only time source by default.
+ * - SNTP (net/sntp_client.hpp): on rmw_rosette, the board network
+ *   synchronizes with an NTP server it has learned of, a configured one
+ *   (`NetworkConfig::time.server`, for instance from a stored
+ *   `DeviceConfig`) or one DHCP offered, as soon as the board holds an IPv4
+ *   address, and keeps the clock on UTC. With no server known, the board
+ *   has no wall clock.
  *
  * The same WallClock feeds rcl's system clock (`rcutils_system_time_now()`,
  * through the stack's `rosette_micro_ros_epoch_time_us()` hook) and RTPS
@@ -38,7 +47,7 @@ struct Stamp {
 /**
  * @brief Whether the wall clock has been synchronized with a reference at least once.
  *
- * @return True after the first successful synchronization; it
+ * @return True after the first successful SNTP or agent synchronization; it
  *   stays true while sessions are torn down and rebuilt, since WallClock
  *   keeps the last offset and the local tick carries it forward.
  */
@@ -53,11 +62,12 @@ bool time_synced() noexcept;
  * - Correct means: after a sync, the value tracks the reference's clock to
  *   within the exchange's round-trip time and advances with the local tick.
  * - Covered by: tests/agent/run_agent_live.sh (TC-ROS-AGT-LIVE-001, the
- *   agent's host clock).
+ *   agent's host clock); tests/net/sntp_live_probe.cpp (a public NTP server);
+ *   tests/host/sntp_client_test.cpp (the SNTP discipline).
  *
  * References:
  * - micro-ROS rmw_microxrcedds `rmw_microros/time_sync.h` (Humble)
- * - RFC 5905 §8 (the round-trip offset estimate)
+ * - RFC 4330 §5, RFC 5905 §8 (the round-trip offset estimate both sources use)
  */
 int64_t epoch_nanos() noexcept;
 

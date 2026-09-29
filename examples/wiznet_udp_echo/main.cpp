@@ -11,9 +11,13 @@
  *   - prints the IPv4 address, and the IPv6 link-local and global addresses as
  *     they are acquired;
  *   - echoes each datagram on the socket it arrived on;
- *   - reports its addresses and per-family echo counters every five seconds
- *     on the console, and to any datagram sent to UDP port 8 (the datagram
- *     `bootsel` restarts the board into its USB bootloader for reflashing).
+ *   - reports its addresses, per-family echo counters, and wall clock every
+ *     five seconds on the console, and to any datagram sent to UDP port 8
+ *     (the datagram `bootsel` restarts the board into its USB bootloader for
+ *     reflashing);
+ *   - sets its wall clock by SNTP from the server named at configure time
+ *     (`-DWIZNET_UDP_ECHO_NTP_SERVER=<IPv4>`), then from any server DHCP
+ *     offers, so a host can compare the `clock` status line with its own.
  *
  * Sleeping between datagrams uses the provider's wait_readable() on the
  * receive event the chip's INT pin signals, the same wake path the RTPS
@@ -25,9 +29,11 @@
  *
  * Verification: every probe datagram comes back unchanged to its sender over
  * each family and address, with sub-millisecond-scale chip latency; the
- * counters on the console match the probe's.
+ * counters on the console match the probe's; with an NTP server known, the
+ * `clock` line agrees with a host on NTP to within the status round trip.
  *
- * References: RFC 862 (echo); RFC 4862 (SLAAC); W6100 datasheet §Sn_MR UDP6.
+ * References: RFC 862 (echo); RFC 4862 (SLAAC); RFC 4330 (SNTP); W6100
+ * datasheet §Sn_MR UDP6.
  */
 
 #include <array>
@@ -39,6 +45,7 @@
 #include "rosette/net/inet.h"
 #include "rosette/net/wiznet/board_network.hpp"
 #include "rosette/platform/platform.hpp"
+#include "rosette/platform/wall_clock.hpp"
 
 #include "pico/bootrom.h"
 #include "pico/stdlib.h"
@@ -136,11 +143,12 @@ bool every_family_up(const net::AddressSnapshot& snapshot) {
 }
 
 /**
- * @brief Writes the board's addresses and echo counters as text lines.
+ * @brief Writes the board's addresses, echo counters, and wall clock as text lines.
  *
  * The same text goes to the console every kReportPeriodMs and back to any
  * datagram sent to kStatusPort, so a host can learn the board's addresses
- * even when the USB console is unavailable.
+ * even when the USB console is unavailable. The clock line is Unix time in
+ * microseconds, or `unsynced` until a time source has set the wall clock.
  *
  * @param[out] out Text buffer.
  * @param[in]  cap Its size.
@@ -166,6 +174,17 @@ int format_status(char* out, int cap, const EchoSocket& v4, const EchoSocket& v6
         static_cast<unsigned long>(v4.echoed), static_cast<unsigned long>(v4.errors),
         static_cast<unsigned long>(v6.echoed), static_cast<unsigned long>(v6.errors),
         static_cast<unsigned long>(wiz::board_send_timeouts()));
+    if (n <= 0 || n >= cap) {
+        return n;
+    }
+
+    if (pf::WallClock::synchronized()) {
+        n += std::snprintf(out + n, static_cast<std::size_t>(cap - n), "clock %lld\n",
+                           static_cast<long long>(pf::WallClock::now_us()));
+    } else {
+        n += std::snprintf(out + n, static_cast<std::size_t>(cap - n), "clock unsynced\n");
+    }
+
     return n;
 }
 
@@ -209,6 +228,12 @@ int main() {
     net::NetworkConfig network = wiz::board_default_network();
     network.ready_when = every_family_up;
     network.ready_timeout_ms = kBringUpTimeoutMs;  // then echo on whatever is up
+    // A configured server is static configuration, so SNTP runs on any build that names one.
+    if (net::inet::make_socket_address_v4(WIZNET_UDP_ECHO_NTP_SERVER, net::kNtpServerPort,
+                                          network.time.server)) {
+        network.time.enabled = true;
+    }
+
     (void)wiz::bring_up_board_network("rosette-echo", network);
     net::SocketProvider& sockets = wiz::board_socket_provider();
 

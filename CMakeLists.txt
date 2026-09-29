@@ -59,6 +59,8 @@ add_library(rosette_net STATIC
     src/net/address_list.cpp
     src/net/address_manager.cpp
     src/net/network_config.cpp
+    src/net/sntp_client.cpp
+    src/net/sntp_wire.cpp
     src/net/wiznet/dhcp_client.cpp
     src/net/wiznet/dhcp_provider.cpp
     src/net/wiznet/dhcp_wire.cpp
@@ -83,6 +85,13 @@ target_include_directories(rosette_net PUBLIC
 set(ROSETTE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 include(cmake/rosette_platform.cmake)
 target_link_libraries(rosette_net PUBLIC rosette_platform)
+
+# A build tree targets one ROS backend. On the micro-ROS agent backend the agent
+# is the time source, so the board network's SNTP client defaults to off
+# (net/sntp_client.hpp). PUBLIC, so every target in the tree sees one value.
+if(ROSETTE_ENABLE_MICRO_ROS)
+    target_compile_definitions(rosette_net PUBLIC ROSETTE_ROS_BACKEND_AGENT)
+endif()
 
 # rosette_session — the ROS session supervisor (include/rosette/ros/session_supervisor.hpp),
 # the micro-ROS agent's gate for it (agent_session_gate.hpp), and the ROS view of
@@ -111,6 +120,10 @@ if(NOT ROSETTE_BOARD_ENABLE_PICO_SDK)
     target_sources(rosette_net PRIVATE
         src/platform/posix/host_runtime.cpp
         src/net/posix/socket.cpp)
+
+    # The SNTP client against a real NTP server, checked against the host clock.
+    add_executable(sntp_live_probe tests/net/sntp_live_probe.cpp)
+    target_link_libraries(sntp_live_probe PRIVATE rosette_net)
 endif()
 
 if(ROSETTE_BOARD_ENABLE_FREERTOS)
@@ -203,6 +216,10 @@ if(ROSETTE_BOARD_ENABLE_PICO_SDK)
     target_link_libraries(rosette_storage PUBLIC rosette_bsp)
 else()
     target_sources(rosette_storage PRIVATE src/platform/posix/host_littlefs.cpp)
+
+    # DeviceConfig records on the host volume, including a stored version-1 record.
+    add_executable(device_config_test tests/storage/device_config_test.cpp)
+    target_link_libraries(device_config_test PRIVATE rosette_storage)
 endif()
 
 # ------------------------------------------------------------

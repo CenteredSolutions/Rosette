@@ -38,6 +38,13 @@
  * A backend states which methods it can run as a `NetworkCapabilities`, and
  * refuses a config that `check_config()` rejects against it, rather than
  * quietly skipping a method the firmware asked for.
+ *
+ * `time` is the network's clock service: once the board holds an IPv4
+ * address, the backend keeps `platform::WallClock` on UTC with SNTP against
+ * `time.server` (static configuration, or a stored `DeviceConfig`) and the
+ * servers DHCP offered (net/sntp_client.hpp). With no server known it sends
+ * nothing. Builds for the micro-ROS agent backend take their time from the
+ * agent and default `time.enabled` to false.
  */
 
 #include <array>
@@ -46,6 +53,7 @@
 
 #include "address_provider.hpp"
 #include "address_state.hpp"
+#include "sntp_client.hpp"
 
 namespace rosette::net {
 
@@ -102,6 +110,8 @@ struct NetworkConfig {
     ReadyPredicate ready_when = ready::any_v4;
     /// Longest bring-up wait, in milliseconds; UINT32_MAX (platform::kWaitForever) waits for ever.
     uint32_t ready_timeout_ms = UINT32_MAX;
+    /// The SNTP client that keeps the wall clock on UTC.
+    SntpConfig time{};
 };
 
 /// The methods one backend can run, per family.

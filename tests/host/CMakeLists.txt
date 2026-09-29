@@ -92,3 +92,19 @@ target_compile_definitions(buf_pool_class_test PRIVATE
 target_compile_options(buf_pool_class_test PRIVATE -Wall -Wextra)
 add_test(NAME buf_pool_class_test COMMAND buf_pool_class_test)
 
+# SNTP: the NTPv4 wire format, and the client against a simulated server, path, and tick.
+add_host_test(sntp_wire_test)
+target_sources(sntp_wire_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/sntp_wire.cpp)
+add_host_test(sntp_client_test)
+target_sources(sntp_client_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/sntp_wire.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/sntp_client.cpp)
+
+# SntpConfig defaults on each ROS backend (the agent backend's build defines ROSETTE_ROS_BACKEND_AGENT).
+add_host_test(sntp_config_default_test)
+add_executable(sntp_config_default_agent_test sntp_config_default_test.cpp)
+target_include_directories(sntp_config_default_agent_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
+target_compile_definitions(sntp_config_default_agent_test PRIVATE ROSETTE_ROS_BACKEND_AGENT)
+target_compile_options(sntp_config_default_agent_test PRIVATE -Wall -Wextra)
+add_test(NAME sntp_config_default_agent_test COMMAND sntp_config_default_agent_test)
