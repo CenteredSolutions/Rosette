@@ -218,6 +218,46 @@ static bool tc_swr_8_4_3_002(std::string& err) {
     return true;
 }
 
+// §8.4.2.2, §8.4.3: an ACKNACK that requests nothing from a reader that has
+// acknowledged changes before is not an announcement, even while the writer
+// has written past it; answering it would pair every HEARTBEAT with another
+// for as long as the writer streams.
+static bool tc_swr_8_4_3_003(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer_guid = make_guid(0xE4u, 0xE5u, 0xE6u, make_entity(1u, 1u, 1u, 0x03u));
+    const Guid reader_guid = make_guid(0xF4u, 0xF5u, 0xF6u, make_entity(2u, 2u, 2u, 0x04u));
+    const Locator loc = make_udpv4_locator(0xC0A80147u, 7411u);
+    StatefulWriterStorage<8, 1> w(writer_guid, ReliabilityKind::RELIABLE,
+                                  DurabilityKind::VOLATILE, tx);
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+    const Octet payload[4] = {1u, 2u, 3u, 4u};
+    for (int i = 0; i < 3; ++i) {
+        CHECK(w.write_async(ChangeKind::ALIVE, payload, 4u), "write_async should succeed");
+    }
+
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = reader_guid.prefix;
+    ParsedAckNack ack{};
+    ack.readerId = reader_guid.entityId;
+    ack.writerId = writer_guid.entityId;
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(2));
+    ack.count = 1;
+    tx.unicast_msgs.clear();
+    w.on_acknack(ctx, ack);
+    CHECK(count_heartbeats(tx, nullptr) == 1,
+          "a reader acknowledging for the first time is still answered");
+
+    // SN 3 is in flight; the reader acknowledges 1-2 again, then 1-3 with SN 4 written.
+    CHECK(w.write_async(ChangeKind::ALIVE, payload, 4u), "write_async should succeed");
+    tx.unicast_msgs.clear();
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(4));
+    ack.count = 2;
+    w.on_acknack(ctx, ack);
+    CHECK(count_heartbeats(tx, nullptr) == 0,
+          "a reader that has acknowledged before gets no HEARTBEAT for a plain ACK");
+    return true;
+}
+
 // §8.4.7.1: acknowledgment state for DDS wait_for_acknowledgments.
 static bool tc_swr_8_4_7_001(std::string& err) {
     CaptureTransport tx{};
@@ -444,6 +484,9 @@ void append_stateful_writer_tests_8_4_3_8_4_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.3-002",
                      "§8.4.15.4: a preemptive ACKNACK (no NACK bits, base below the next SN) is answered with a directed HEARTBEAT; an up-to-date ACK is not.",
                      tc_swr_8_4_3_002});
+    tests.push_back({"TC-SWR-8.4.3-003",
+                     "§8.4.2.2/§8.4.3: a plain ACK from a reader that has acknowledged before is not answered with a HEARTBEAT, even while the writer has written past it.",
+                     tc_swr_8_4_3_003});
     tests.push_back({"TC-SWR-8.4.7-001",
                      "§8.4.7.1: acknowledged_by_all() is true for an empty history, false until every matched reader ACKs the newest SN, and always true for BEST_EFFORT.",
                      tc_swr_8_4_7_001});

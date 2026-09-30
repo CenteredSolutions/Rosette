@@ -54,6 +54,7 @@ void append_stateful_writer_tests_8_2_2(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_9_irrelevant_gap(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_6_requested_window(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_9_announcing(std::vector<TestCase>& tests);
+void append_stateful_writer_tests_8_4_15_piggyback_heartbeat(std::vector<TestCase>& tests);
 
 void register_all_stateful_writer_tests(std::vector<TestCase>& tests);
 

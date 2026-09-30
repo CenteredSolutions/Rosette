@@ -14,6 +14,7 @@
     "8.4.3",
     "8.4.4",
     "8.4.6",
+    "8.4.15",
     "8.7.2.2"
   ],
   "statements": [
@@ -99,6 +100,14 @@
       "test_ids": ["TC-SWR-8.4.3-001"]
     },
     {
+      "id": "REQ-SWR-8.4.3-ANNOUNCING-READER-HEARTBEAT",
+      "section": "8.4.3",
+      "normativity": "should",
+      "statement": "An ACKNACK requesting nothing from a reader that has acknowledged nothing yet, while the writer has written more, is answered with a HEARTBEAT directed at that reader; a plain ACK from a reader that has acknowledged before is not answered, so HEARTBEATs never pair with ACKNACKs into a per-round-trip exchange while the writer streams.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.3-002", "TC-SWR-8.4.3-003"]
+    },
+    {
       "id": "REQ-SWR-8.4.4-NACK-FRAG-DEFERRED-RESPONSE",
       "section": "8.4.4",
       "page": 122,
@@ -124,6 +133,14 @@
       "statement": "next_unsent_change returns the lowest UNSENT change relevant to the reader, and unacked_changes is non-empty until the newest relevant change is acknowledged.",
       "status": "implemented",
       "test_ids": ["TC-SWR-8.4.6-002"]
+    },
+    {
+      "id": "REQ-SWR-8.4.15-PIGGYBACK-HEARTBEAT",
+      "section": "8.4.15.4",
+      "normativity": "may",
+      "statement": "A reliable StatefulWriter piggybacks a non-final HEARTBEAT on the DATA of every depth/2-th write, in the same RTPS message when the DATA can end on a 4-octet boundary within the datagram limit (a copied DATA is padded and the padding recorded in the encapsulation options), and in a datagram of its own otherwise; a periodic HEARTBEAT restarts the count.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.15-001", "TC-SWR-8.4.15-002", "TC-SWR-8.4.15-003", "TC-SWR-8.4.15-004"]
     }
   ]
 }

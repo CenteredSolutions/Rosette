@@ -234,6 +234,7 @@ add_executable(stateful_writer_spec_tests
     src/test_stateful_writer_8_4_6_requested_window.cpp
     src/test_stateful_writer_8_4_9_irrelevant_gap.cpp
     src/test_stateful_writer_8_4_9_announcing.cpp
+    src/test_stateful_writer_8_4_15_piggyback_heartbeat.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
 )

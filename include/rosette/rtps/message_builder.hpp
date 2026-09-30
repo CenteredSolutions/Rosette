@@ -293,6 +293,13 @@ public:
     // (representation identifier CDR_LE=0x0001, options=0x0000).
     //  — §10.2, p. 244
     //
+    // With `pad_to_boundary`, zero octets follow the payload up to the
+    // next 4-octet boundary, so another submessage can follow the DATA
+    // (§9.4.1: submessages are 32-bit aligned). The padding counts in
+    // submessageLength and its length is recorded in the low two bits
+    // of the encapsulation options, so a reader can tell it from data.
+    //  — DDS-XTypes 1.3 §7.6.3.1.2
+    //
     // Flags:
     //   D (bit 2) — dataFlag: serializedPayload contains data.
     //   K (bit 3) — keyFlag:  serializedPayload contains key hash.
@@ -302,13 +309,17 @@ public:
                      const SequenceNumber& writer_sn,
                      const BufRef&         payload,
                      bool                  key_flag = false,
-                     const InlineQos&      inline_qos = {}) noexcept
+                     const InlineQos&      inline_qos = {},
+                     bool                  pad_to_boundary = false) noexcept
     {
         const uint16_t payload_bytes = payload.valid() ? payload.size : 0u;
         const uint16_t encap_size    = 4u;
+        const uint16_t pad_bytes =
+            pad_to_boundary ? static_cast<uint16_t>((4u - (payload_bytes & 3u)) & 3u) : 0u;
         const uint16_t inline_qos_bytes = inline_qos_serialized_size(inline_qos);
         const uint16_t body_len = static_cast<uint16_t>(
-            sizeof(DataSubmessageFixed) + inline_qos_bytes + encap_size + payload_bytes);
+            sizeof(DataSubmessageFixed) + inline_qos_bytes + encap_size + payload_bytes
+            + pad_bytes);
 
         Octet flags = FLAG_E;
         flags |= (key_flag ? data_flags::K : data_flags::D);
@@ -333,14 +344,17 @@ public:
 
         // EncapsulationHeader — §10.2, p. 244. The representation
         // identifier is an octet pair, not a host-order integer:
-        // CDR_LE = {0x00, 0x01}, followed by two zero option octets.
-        static constexpr Octet kCdrLeEncapsulation[4] = {0x00u, 0x01u, 0x00u, 0x00u};
-        if (!write_bytes(kCdrLeEncapsulation, sizeof(kCdrLeEncapsulation))) return false;
+        // CDR_LE = {0x00, 0x01}, followed by the big-endian options,
+        // whose low two bits hold the padding length.
+        const Octet encapsulation[4] = {0x00u, 0x01u, 0x00u, static_cast<Octet>(pad_bytes)};
+        if (!write_bytes(encapsulation, sizeof(encapsulation))) return false;
 
         if (payload_bytes > 0) {
             if (!write_bytes(payload.data, payload_bytes)) return false;
         }
-        return true;
+
+        static constexpr Octet kZeros[3] = {0u, 0u, 0u};
+        return pad_bytes == 0u || write_bytes(kZeros, pad_bytes);
     }
 
     // ----------------------------------------------------------

@@ -320,6 +320,29 @@ struct BufRef {
     }
 
     // ----------------------------------------------------------
+    // append(n)
+    //
+    // Claim n bytes immediately after the current region
+    // [data .. data+size) and expand `size` to include them.
+    // Returns a pointer to the claimed bytes for the caller to fill.
+    //
+    // This is the tail counterpart of prepend(): a writer appends a
+    // HEARTBEAT submessage after a DATA it framed in place, so both
+    // travel in one datagram (§8.4.15.4). Allocations that want this
+    // reserve kRtpsHeartbeatTailroom beyond their payload.
+    //
+    // @param n  Number of bytes to append.  Must be <= capacity() - size.
+    // @returns  Pointer to the newly claimed region, or nullptr if the
+    //           block has fewer than n bytes past the region.
+    // ----------------------------------------------------------
+    Octet* append(uint32_t n) noexcept {
+        if (!block || n == 0u || n > capacity() - size) return nullptr;
+        Octet* tail = data + size;
+        size += n;
+        return tail;
+    }
+
+    // ----------------------------------------------------------
     // Lifecycle
     // ----------------------------------------------------------
 
@@ -846,6 +869,9 @@ inline BufRef buf_alloc_with_headroom_dbg(uint32_t min_payload_size,
 //
 // kRtpsCtrlHeadroom is narrower — just the RTPS message header plus
 // a fixed submessage header — sufficient for HEARTBEAT, ACKNACK, GAP.
+//
+// kRtpsHeartbeatTailroom is the space after a payload for one
+// HEARTBEAT submessage, claimed with BufRef::append().
 // ============================================================
 
 /// RTPS message header (20) + DATA submessage header (24) = 44 bytes.
@@ -853,6 +879,11 @@ inline constexpr uint32_t kRtpsDataHeadroom = 44u;
 
 /// RTPS message header (20) + generic submessage header (4) = 24 bytes.
 inline constexpr uint32_t kRtpsCtrlHeadroom = 24u;
+
+/// HEARTBEAT submessage header (4) + body (28) = 32 bytes, reserved after a
+/// reliable writer's payload so a piggybacked HEARTBEAT (§8.4.15.4) shares
+/// the DATA's datagram. See BufRef::append().
+inline constexpr uint32_t kRtpsHeartbeatTailroom = 32u;
 
 // ============================================================
 // Sizing helpers

@@ -44,7 +44,23 @@
  *   on_nack_frag                 — §8.4.4,   p. 122
  *   nackResponseDelay            — §8.4.1.1, p. 104
  *   heartbeatPeriod              — §8.4.1.1, p. 104
+ *   piggybacked HEARTBEAT        — §8.4.15.4
  *   TRANSIENT_LOCAL replay       — §8.7.2.2, p. 196
+ *
+ * Heartbeats under load
+ * ---------------------
+ * A reliable reader requests a lost change only in answer to a HEARTBEAT,
+ * and it tracks a bounded window of sequence numbers past its oldest hole.
+ * A writer that heartbeats only once per heartbeatPeriod therefore parks a
+ * reader behind one lost datagram for up to that period, discarding every
+ * change beyond its window, and by the time it asks, KEEP_LAST has evicted
+ * the change. So a reliable writer also piggybacks a HEARTBEAT on the DATA
+ * of every depth/2-th write (§8.4.15.4), the write paths calling
+ * send_unsent_changes(heartbeat_due()): a lost change is requested while
+ * the history still holds it. The HEARTBEAT travels in the same datagram as
+ * the DATA, in kRtpsHeartbeatTailroom reserved after the payload, so it
+ * costs 32 octets rather than a datagram; only when the DATA already fills
+ * the datagram limit does it go in a datagram of its own.
  */
 
 #pragma once
@@ -120,7 +136,8 @@ public:
      * When the history is full, KEEP_LAST evicts its oldest change; a reader
      * that later NACKs it is sent a GAP. The added change is UNSENT on every
      * matched proxy, since each proxy's highest sent change is below it;
-     * add_change() itself sends nothing.
+     * add_change() itself sends nothing. A RELIABLE writer also counts the
+     * change toward its next piggybacked HEARTBEAT (see heartbeat_due()).
      *
      * @param[in] change Change from new_change() (or built by the caller);
      *   the history takes ownership of its payload.
@@ -288,15 +305,22 @@ public:
      * that are relevant to the reader and still in the history REQUESTED
      * (repaired by tick() after nackResponseDelay), GAPs the other NACKed
      * numbers the writer has assigned, and answers a
-     * preemptive ACKNACK (no NACK bits, base below the next number) with a
-     * directed HEARTBEAT.
+     * preemptive ACKNACK (no NACK bits, base below the next number, from a
+     * reader that has acknowledged nothing yet) with a directed HEARTBEAT.
+     * A plain ACK from a reader that has acknowledged before gets no answer,
+     * even while the writer has written past it: the piggybacked HEARTBEATs
+     * keep such a reader current, and answering would pair every HEARTBEAT
+     * with another for as long as the writer streams.
      *
      * @param[in] ctx Parse context; supplies the sender's GUID prefix.
      * @param[in] msg The decoded ACKNACK.
      *
      * Verification:
-     * - Covered by: TC-SWR-8.4.3-001, TC-SWR-8.4.3-002, TC-SWR-8.4.9-001,
-     *   TC-SWR-8.2.2-003.
+     * - Correct means: no ACKNACK from a reader that has acknowledged before
+     *   elicits a HEARTBEAT unless it NACKs, so a streaming writer sends about
+     *   one datagram per sample to such a reader.
+     * - Covered by: TC-SWR-8.4.3-001, TC-SWR-8.4.3-002, TC-SWR-8.4.3-003,
+     *   TC-SWR-8.4.9-001, TC-SWR-8.2.2-003.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.3, §8.4.9.2.8, §8.4.9.2.12, §8.4.15.4
@@ -323,7 +347,8 @@ public:
      * First, for each reader whose nackResponseDelay has elapsed, resends
      * its REQUESTED changes (GAPping any the history evicted) and follows
      * them with a directed final HEARTBEAT. Then, once per heartbeatPeriod,
-     * sends a HEARTBEAT to each reader that still has unacknowledged changes.
+     * sends a HEARTBEAT to each reader that still has unacknowledged changes
+     * and restarts the count toward the next piggybacked HEARTBEAT.
      *
      * @param[in] now_ms Current rosette::platform::monotonic_ms().
      *
@@ -462,20 +487,70 @@ private:
     ReaderProxy* find_free_slot() noexcept;
 
     /**
-     * @brief Sends one change to one matched reader, as DATA or DATA_FRAGs.
+     * @brief Sends one change to one matched reader, as DATA or DATA_FRAGs,
+     *   optionally followed by a HEARTBEAT in the same datagram.
      *
      * The proxy's sent and requested state is the caller's to update: a
      * send the transport refuses, or a reader with no locator, is treated
      * as a datagram lost on the wire, which reliable repair recovers.
      *
-     * @param[in] ch    Change from the writer history.
-     * @param[in] proxy Reader to send to, at its best unicast locator.
-     * @return `true` when every datagram was handed to the transport.
+     * A change whose payload has headroom is framed in place
+     * (send_data_in_place()); any other is copied into a message built for
+     * it. With `heartbeat`, a HEARTBEAT (final flag clear, addressed to the
+     * reader) follows the DATA, or the last DATA_FRAG, in the same RTPS
+     * message whenever that message still fits the datagram limit and, when
+     * framed in place, the payload block has kRtpsHeartbeatTailroom to spare;
+     * otherwise it is sent in a datagram of its own right after.
+     *
+     * @param[in] ch        Change from the writer history.
+     * @param[in] proxy     Reader to send to, at its best unicast locator.
+     * @param[in] heartbeat Also send a HEARTBEAT advertising the history's
+     *   current range; heartbeatCount_ must already be advanced for it.
+     * @return `true` when every DATA or DATA_FRAG datagram was handed to the
+     *   transport.
+     *
+     * Verification:
+     * - Correct means: every datagram is within the limit; with `heartbeat`,
+     *   exactly one HEARTBEAT reaches the reader, inside the DATA's datagram
+     *   when it fits, and parses as a valid submessage after the DATA.
+     * - Covered by: TC-SWR-8.4.15-001, TC-SWR-8.4.15-003, TC-SWR-8.4.15-004.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.4.9.2 (reliable StatefulWriter), §8.4.14.1
+     * - OMG DDSI-RTPS 2.5 §8.4.9.2 (reliable StatefulWriter), §8.4.14.1,
+     *   §8.4.15.4 (piggybacked HEARTBEAT), §8.3.3 (a message carries any
+     *   number of submessages)
      */
-    bool send_data_to(const CacheChange& ch, ReaderProxy& proxy) noexcept;
+    bool send_data_to(const CacheChange& ch, ReaderProxy& proxy, bool heartbeat = false) noexcept;
+
+    /**
+     * @brief Frames a change as DATA inside its own payload block and sends it.
+     *
+     * The zero-copy path of §9.4.5.3: the RTPS header, DATA submessage
+     * header, and inline QoS are prepended into the headroom the payload was
+     * allocated with, and with `heartbeat` a HEARTBEAT submessage is appended
+     * into its tailroom, so the datagram is sent without copying the
+     * payload. The caller has checked that the headroom (and, with
+     * `heartbeat`, the tailroom) is there.
+     *
+     * @param[in] ch        Change whose payload has kRtpsDataHeadroom plus
+     *   its inline QoS size of headroom.
+     * @param[in] proxy     Reader to address the DATA to.
+     * @param[in] dest      The reader's locator.
+     * @param[in] heartbeat Append a HEARTBEAT; the payload has
+     *   kRtpsHeartbeatTailroom past its size.
+     * @return `true` when the transport accepted the datagram.
+     *
+     * Verification:
+     * - Correct means: the datagram parses as header, DATA, and (with
+     *   `heartbeat`) HEARTBEAT, and the change's stored payload bytes and
+     *   size are unchanged afterwards.
+     * - Covered by: TC-SWR-8.4.15-003.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §9.4.5.3 (DATA), §9.4.5.5 (HEARTBEAT), §8.4.15.4
+     */
+    bool send_data_in_place(const CacheChange& ch, ReaderProxy& proxy, const Locator& dest,
+                            bool heartbeat) noexcept;
 
     /**
      * @brief Sends a change too large for one datagram as DATA_FRAG submessages.
@@ -488,20 +563,28 @@ private:
      * reader holding any fragment knows the sample's related identity. A
      * NACK_FRAG or NACK for the change resends every fragment.
      *
-     * @param[in] ch    Change from the writer history.
-     * @param[in] proxy Reader to send to.
-     * @param[in] dest  The reader's locator.
+     * With `heartbeat`, the HEARTBEAT rides after the last fragment when that
+     * datagram has room for it under the limit, and otherwise follows in a
+     * datagram of its own.
+     *
+     * @param[in] ch        Change from the writer history.
+     * @param[in] proxy     Reader to send to.
+     * @param[in] dest      The reader's locator.
+     * @param[in] heartbeat Also send a HEARTBEAT, as for send_data_to().
      * @return `true` when every fragment was handed to the transport.
      *
      * Verification:
-     * - Correct means: every datagram is within the limit and reassembly
-     *   restores the header plus payload.
-     * - Covered by: TC-SWR-8.4.14-001; tests/ros2/run_rmw_frag_loopback.sh.
+     * - Correct means: every datagram is within the limit, reassembly
+     *   restores the header plus payload, and with `heartbeat` exactly one
+     *   HEARTBEAT reaches the reader.
+     * - Covered by: TC-SWR-8.4.14-001, TC-SWR-8.4.15-004;
+     *   tests/ros2/run_rmw_frag_loopback.sh.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.4.14.1, §9.4.5.4 (DATA_FRAG)
+     * - OMG DDSI-RTPS 2.5 §8.4.14.1, §9.4.5.4 (DATA_FRAG), §8.4.15.4
      */
-    bool send_fragments_to(const CacheChange& ch, ReaderProxy& proxy, const Locator& dest) noexcept;
+    bool send_fragments_to(const CacheChange& ch, ReaderProxy& proxy, const Locator& dest,
+                           bool heartbeat) noexcept;
 
     /**
      * @brief Sends every UNSENT change to every matched reader.
@@ -512,19 +595,53 @@ private:
      * is thereby a lost datagram: a reliable reader requests it again, a
      * best-effort reader loses it, and the loop always terminates.
      *
+     * With `with_heartbeat`, the newest change goes to each reader with a
+     * HEARTBEAT in the same datagram (send_data_to()), all sharing one count,
+     * and the write count toward the next one restarts. Older changes sent in
+     * the same pass carry none: the HEARTBEAT after the newest one advertises
+     * them too. The write paths pass heartbeat_due().
+     *
+     * @param[in] with_heartbeat Piggyback a HEARTBEAT on the newest change's
+     *   datagram to each reader.
+     *
      * Verification:
      * - Correct means: every UNSENT change is attempted once per reader and
-     *   leaves UNSENT whether or not the send succeeds.
-     * - Covered by: TC-SWR-8.4.9-005.
+     *   leaves UNSENT whether or not the send succeeds; a HEARTBEAT reaches
+     *   every matched reader with the piggyback_interval()-th write since the
+     *   last HEARTBEAT, and with no write before it.
+     * - Covered by: TC-SWR-8.4.9-005, TC-SWR-8.4.15-001, TC-SWR-8.4.15-002.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.9.2 (reliable StatefulWriter, UNSENT ->
-     *   UNACKNOWLEDGED), §8.4.8.1 (best-effort)
+     *   UNACKNOWLEDGED), §8.4.8.1 (best-effort), §8.4.15.4 (piggybacked
+     *   HEARTBEAT)
      */
-    void send_unsent_changes() noexcept;
+    void send_unsent_changes(bool with_heartbeat = false) noexcept;
+
+    /// @brief The range a HEARTBEAT advertises: the history's oldest and
+    ///   newest change, or lastSN + 1 and lastSN when it is empty (§8.4.2.2).
+    void heartbeat_range(SequenceNumber& first, SequenceNumber& last) const noexcept;
 
     /// @brief Sends a HEARTBEAT for the current history range to one locator.
     void send_heartbeat_to(const EntityId& reader_id, const Locator& dest, bool final_flag) noexcept;
+
+    /**
+     * @brief Writes since the last HEARTBEAT that make the next one due: half
+     *   the history depth, at least 1.
+     *
+     * Half the depth leaves the other half of the history holding a lost
+     * change while the reader's NACK and the repair travel, so a reader that
+     * answers the HEARTBEAT promptly gets the change itself rather than a GAP.
+     */
+    uint32_t piggyback_interval() const noexcept;
+
+    /// @brief True when a RELIABLE writer has made piggyback_interval() writes
+    ///   since its last HEARTBEAT, so the next send should carry one.
+    bool heartbeat_due() const noexcept;
+
+    /// @brief Fills `out` (kRtpsHeartbeatTailroom octets) with a non-final
+    ///   HEARTBEAT to `reader_id` for the current range and heartbeatCount_.
+    void encode_heartbeat(Octet* out, const EntityId& reader_id) const noexcept;
 
     /// @brief True when every matched reader has acknowledged `sn`.
     bool all_readers_acked(const SequenceNumber& sn) const noexcept;
@@ -544,6 +661,7 @@ private:
     uint32_t       nack_delay_ms_;
     uint32_t       hb_period_ms_;
     uint32_t       lastHbSentMs_   = 0;
+    uint32_t       writesSinceHb_  = 0;  ///< RELIABLE writes since any HEARTBEAT.
     MessageBuilder builder_;
 };
 
