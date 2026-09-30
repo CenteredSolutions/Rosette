@@ -267,6 +267,40 @@ stock `ros2 node list` sees the firmware's node.
 The endpoint slot counts are fixed at four writers and four readers in that
 file; a firmware with a different shape edits them there.
 
+### WIZnet socket receive buffers
+
+The WIZnet chip holds received datagrams in per-socket receive memory until
+firmware reads them, and drops any that no longer fit. Every fragment of a
+large sample arrives back to back, so the socket that carries RTPS user
+traffic needs room for a whole sample; a DHCP or SNTP socket needs one
+datagram. The driver therefore sizes the sockets unevenly. This memory is on
+the chip, not in MCU RAM.
+
+| Chip | Receive memory | Default layout (KiB per socket) |
+| --- | ---: | --- |
+| W5100S | 8 KiB, 4 sockets | 4 / 2 / 1 / 1 |
+| W6100 | 16 KiB, 8 sockets | 8 / 2 / 1 / 1 / 1 / 1 / 1 / 1 |
+| W6300 | 32 KiB, 8 sockets | 16 / 4 / 2 / 2 / 2 / 2 / 2 / 2 |
+
+A plain `open()` takes the smallest free buffer. A socket that needs more asks
+before `bind()` with `Socket::set_receive_buffer_size()` and moves to the
+smallest buffer that holds the request, or the largest free one. The RTPS
+user socket asks for the largest pool block plus an eighth for fragment
+framing (`RTPS_USER_SOCKET_RECEIVE_BUFFER`, 4608 B with
+`RMW_ROSETTE_MAX_SAMPLE_SIZE` 4096), the metatraffic socket for 2 KiB
+(`RTPS_META_SOCKET_RECEIVE_BUFFER`), and the micro-ROS agent backend's XRCE
+socket for a reliable-stream window (`ROSETTE_XRCE_SOCKET_RECEIVE_BUFFER`,
+stream history × MTU). Transmit memory stays split evenly: a socket holds one
+outgoing datagram at a time.
+
+Set `ROSETTE_WIZNET_RX_LAYOUT_KIB` (for example `8;4;1;1;1;1;0;0`) to override
+the layout; `board.hpp` rejects at compile time a size that is not 0 or a power
+of two, or a layout that exceeds the chip's memory, and a socket given 0 KiB is
+never handed out. When the user socket's buffer is smaller than a sample's
+fragments (the W5100S's 4 KiB against a full 4096-octet sample), the reader
+requests the dropped fragments with NACK_FRAG and the sample still arrives, one
+writer heartbeat period later.
+
 ### Low-level macros
 
 Both paths end in these preprocessor definitions, which the headers read. Set

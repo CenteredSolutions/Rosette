@@ -18,6 +18,21 @@ namespace {
 #  define RTPS_SEND_TIMEOUT_MS 100u
 #endif
 
+// Receive buffering the user-traffic socket asks for: the largest sample the
+// buffer pool can reassemble (kPoolMaxBlockSize), whose fragments all arrive
+// back to back, plus an eighth for each fragment's RTPS headers and the
+// socket backend's per-datagram record (about 160 octets per 1.3 KB fragment).
+#ifndef RTPS_USER_SOCKET_RECEIVE_BUFFER
+#  define RTPS_USER_SOCKET_RECEIVE_BUFFER (kPoolMaxBlockSize + kPoolMaxBlockSize / 8u)
+#endif
+
+// Receive buffering the metatraffic socket asks for: a burst of SEDP
+// announcements from a participant that has just matched, each a few
+// hundred octets.
+#ifndef RTPS_META_SOCKET_RECEIVE_BUFFER
+#  define RTPS_META_SOCKET_RECEIVE_BUFFER 2048u
+#endif
+
 static uint32_t locator_to_ipv4_be(const Locator& locator) noexcept
 {
     return locator.ipv4_address_be();
@@ -70,7 +85,8 @@ SocketUdpTransport::~SocketUdpTransport() noexcept
 }
 
 std::unique_ptr<rosette::net::Socket> SocketUdpTransport::open_bound(uint16_t port,
-                                                                     bool join_group) noexcept
+                                                                     bool join_group,
+                                                                     uint32_t receive_bytes) noexcept
 {
     const rosette::net::SocketDomain domain =
         locator_is_ipv6(multicast_locator_) ? rosette::net::SocketDomain::ipv6
@@ -79,6 +95,22 @@ std::unique_ptr<rosette::net::Socket> SocketUdpTransport::open_bound(uint16_t po
     if (!socket) {
         return nullptr;
     }
+
+    // Before bind(): a WIZnet backend picks the hardware socket, and so the
+    // buffer, then. A backend that does not size per socket declines, and a
+    // burst larger than the grant is repaired fragment by fragment
+    // (NACK_FRAG), only more slowly.
+    if (receive_bytes > 0u && socket->set_receive_buffer_size(receive_bytes) == 0) {
+        const std::size_t granted = socket->receive_buffer_size();
+        if (granted < receive_bytes) {
+            RTPS_LOG_W("transport", "port %u receive buffer %lu of %lu asked", (unsigned)port,
+                       (unsigned long)granted, (unsigned long)receive_bytes);
+        } else {
+            RTPS_LOG_I("transport", "port %u receive buffer %lu", (unsigned)port,
+                       (unsigned long)granted);
+        }
+    }
+
     // Membership precedes bind(): WIZnet latches it at OPEN, and hosted
     // backends enable port sharing for group sockets at join time.
     if (join_group &&
@@ -109,8 +141,8 @@ bool SocketUdpTransport::open() noexcept
     const uint16_t multicast_port = static_cast<uint16_t>(multicast_locator_.port);
     const bool shared_meta = (multicast_port == meta_port_);
 
-    meta_socket_ = open_bound(meta_port_, shared_meta);
-    user_socket_ = open_bound(user_port_, false);
+    meta_socket_ = open_bound(meta_port_, shared_meta, RTPS_META_SOCKET_RECEIVE_BUFFER);
+    user_socket_ = open_bound(user_port_, false, RTPS_USER_SOCKET_RECEIVE_BUFFER);
     if (!meta_socket_ || !user_socket_) {
         RTPS_LOG_D("transport", "bind failed: meta_port=%u user_port=%u",
                    (unsigned)meta_port_, (unsigned)user_port_);
@@ -119,7 +151,7 @@ bool SocketUdpTransport::open() noexcept
     }
 
     if (!shared_meta) {
-        spdp_socket_ = open_bound(multicast_port, true);
+        spdp_socket_ = open_bound(multicast_port, true, 0u);
         if (!spdp_socket_) {
             RTPS_LOG_E("transport", "bind failed: spdp_port=%u", (unsigned)multicast_port);
             close();

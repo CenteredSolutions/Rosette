@@ -144,6 +144,43 @@ public:
     virtual int leaveMulticastGroup(const SocketMulticastMembership& membership) noexcept = 0;
     virtual int bind(const SocketAddress& local) noexcept = 0;
     virtual int set_receive_timeout(uint32_t timeout_ms) noexcept = 0;
+
+    /**
+     * @brief Asks for at least `bytes` of receive buffering, as SO_RCVBUF does.
+     *
+     * A socket that receives bursts, such as every fragment of a large RTPS
+     * sample sent back to back, loses the datagrams that arrive while its
+     * buffer is full, so it asks for room for the whole burst. The request is
+     * best effort: the backend grants what it can, and receive_buffer_size()
+     * reports the result. Call it before bind(): a backend whose buffers are
+     * fixed per hardware socket (WIZnet) picks the socket then.
+     *
+     * Backends whose buffering is not per socket (FreeRTOS+TCP's shared
+     * network buffers) or already ample (POSIX) leave this default, which
+     * reports not_supported and changes nothing.
+     *
+     * @param[in] bytes Receive buffering wanted, in bytes.
+     * @return 0 when the request was applied (the grant may be smaller than
+     *   `bytes`); otherwise the negative SocketError: not_supported, or
+     *   invalid_argument after bind() on a backend that cannot resize then.
+     *
+     * Verification:
+     * - Correct means: after a 0 return, receive_buffer_size() is the
+     *   smallest available size of at least `bytes`, or the largest available
+     *   when none is that large.
+     * - Covered by: TC-NET-WIZ-LAYOUT-002 (WIZnet backend).
+     *
+     * References:
+     * - POSIX.1-2017 setsockopt(), SO_RCVBUF
+     */
+    virtual int set_receive_buffer_size(std::size_t bytes) noexcept
+    {
+        (void)bytes;
+        return static_cast<int>(SocketError::not_supported);
+    }
+
+    /// @brief Receive buffering this socket has, in bytes; 0 when the backend does not say.
+    virtual std::size_t receive_buffer_size() const noexcept { return 0u; }
     virtual std::ptrdiff_t send_to(const void* data,
                                    std::size_t length,
                                    const SocketAddress& remote) noexcept = 0;

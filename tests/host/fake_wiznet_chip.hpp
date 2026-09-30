@@ -54,7 +54,9 @@ template<typename Chip>
 class FakeWiznetChip {
 public:
     using address_type = typename Chip::address_type;
-    static constexpr uint16_t kSocketBufferBytes = 2048u;
+    /// Buffer size of a socket whose Sn_RXBUF_SIZE / Sn_TXBUF_SIZE was never
+    /// written: 2 KiB, the reset value on the W5100S, W6100 and W6300.
+    static constexpr uint8_t kResetBufferKib = 2u;
 
     std::map<address_type, uint8_t> mem;
     std::vector<SentDatagram> sent;
@@ -85,8 +87,9 @@ public:
                 return;
             }
             if (len == 2u && base == Chip::socket_tx_free_size(s)) {
-                data[0] = static_cast<uint8_t>(kSocketBufferBytes >> 8);
-                data[1] = static_cast<uint8_t>(kSocketBufferBytes);
+                const uint16_t free = tx_bytes(s);
+                data[0] = static_cast<uint8_t>(free >> 8);
+                data[1] = static_cast<uint8_t>(free);
                 return;
             }
         }
@@ -147,37 +150,66 @@ private:
         }
     }
 
-    // The address of the i-th byte of a burst. Buffer blocks of the W6x00 wrap
-    // at the socket buffer size, as the hardware does (Chip::auto_wrap()).
-    static address_type step(address_type base, std::size_t i)
+    /// Socket `s`'s buffer size in bytes, from the Sn_RXBUF_SIZE / Sn_TXBUF_SIZE
+    /// register the driver wrote, as the chip sizes it.
+    uint16_t buffer_bytes(address_type size_register) const
+    {
+        const auto it = mem.find(size_register);
+        const uint8_t kib = it == mem.end() ? kResetBufferKib : it->second;
+        return static_cast<uint16_t>(kib * 1024u);
+    }
+
+    uint16_t rx_bytes(uint8_t s) const { return buffer_bytes(Chip::socket_rx_buffer_size(s)); }
+    uint16_t tx_bytes(uint8_t s) const { return buffer_bytes(Chip::socket_tx_buffer_size(s)); }
+
+    /// Byte offset of socket `s`'s buffer in the W5100S's shared region: the
+    /// chip lays the buffers out back to back in socket order.
+    uint16_t linear_offset(uint8_t s, bool rx) const
+    {
+        uint16_t offset = 0u;
+        for (uint8_t i = 0; i < s; ++i) {
+            offset = static_cast<uint16_t>(offset + (rx ? rx_bytes(i) : tx_bytes(i)));
+        }
+
+        return offset;
+    }
+
+    // The address of the i-th byte of a burst. Buffer blocks of the W6x00
+    // (block select 4s+2 for TX, 4s+3 for RX) wrap at that socket's buffer
+    // size, as the hardware does (Chip::auto_wrap()).
+    address_type step(address_type base, std::size_t i) const
     {
         if constexpr (kPacked) {
             const uint8_t block = static_cast<uint8_t>(base & 0xFFu);
             uint32_t offset = static_cast<uint32_t>(base >> 8) + static_cast<uint32_t>(i);
-            if (block != 0u && (block % 4u) != 1u) offset %= kSocketBufferBytes;
+            if (block != 0u && (block % 4u) != 1u) {
+                const uint8_t s = static_cast<uint8_t>(block / 4u);
+                offset %= (block % 4u) == 3u ? rx_bytes(s) : tx_bytes(s);
+            }
+
             return (static_cast<address_type>(offset) << 8) | block;
         } else {
             return static_cast<address_type>(base + i);
         }
     }
 
-    static address_type rx_byte_address(uint8_t s, uint16_t pointer)
+    address_type rx_byte_address(uint8_t s, uint16_t pointer) const
     {
         if constexpr (kPacked) {
-            return Chip::rx_buffer_block_addr(s, static_cast<uint16_t>(pointer % kSocketBufferBytes));
+            return Chip::rx_buffer_block_addr(s, static_cast<uint16_t>(pointer % rx_bytes(s)));
         } else {
-            return static_cast<address_type>(Chip::rx_buffer_base() + s * kSocketBufferBytes +
-                                             pointer % kSocketBufferBytes);
+            return static_cast<address_type>(Chip::rx_buffer_base() + linear_offset(s, true)
+                                             + pointer % rx_bytes(s));
         }
     }
 
-    static address_type tx_byte_address(uint8_t s, uint16_t pointer)
+    address_type tx_byte_address(uint8_t s, uint16_t pointer) const
     {
         if constexpr (kPacked) {
-            return Chip::tx_buffer_block_addr(s, static_cast<uint16_t>(pointer % kSocketBufferBytes));
+            return Chip::tx_buffer_block_addr(s, static_cast<uint16_t>(pointer % tx_bytes(s)));
         } else {
-            return static_cast<address_type>(Chip::tx_buffer_base() + s * kSocketBufferBytes +
-                                             pointer % kSocketBufferBytes);
+            return static_cast<address_type>(Chip::tx_buffer_base() + linear_offset(s, false)
+                                             + pointer % tx_bytes(s));
         }
     }
 

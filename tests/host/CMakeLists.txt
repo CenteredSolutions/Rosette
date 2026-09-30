@@ -51,6 +51,9 @@ add_host_test(wiznet_header_test)
 
 # WIZnet UDP receive/send, IPv4 and IPv6, against a register-file chip model.
 add_host_test(wiznet_udp_socket_test)
+
+# Receive-buffer layout and the size-aware socket claim (Socket::set_receive_buffer_size()).
+add_host_test(wiznet_socket_layout_test)
 add_host_test(wiznet_slaac_provider_test)
 
 # RFC 4861 Router Advertisement decoding, chip-neutral.

@@ -87,8 +87,82 @@ public:
         std::array<uint8_t, 4> gateway{};
     };
 
+    /// Receive buffer size of each socket, in KiB, in socket-number order.
+    using RxLayout = std::array<uint8_t, Chip::socket_count()>;
+
     explicit WiznetDevice(Bus& bus) noexcept
         : bus_(bus) {}
+
+    /**
+     * @brief True when the chip can split its receive memory as `kib` says.
+     *
+     * Each socket's Sn_RXBUF_SIZE takes 0 or a power of two KiB no larger
+     * than the chip's whole receive memory, and the sizes together must fit
+     * in it; the chip lays the buffers out back to back in socket order.
+     *
+     * @param[in] kib Receive buffer KiB per socket.
+     * @return `true` for a layout set_rx_layout() accepts.
+     *
+     * Verification:
+     * - Correct means: every value is 0 or a power of two at most
+     *   Chip::socket_rx_buffer_kib(), and the sum is at most that total.
+     * - Covered by: TC-NET-WIZ-LAYOUT-001.
+     *
+     * References:
+     * - W5100S datasheet §Sn_RXBUF_SIZE; W6100 / W6300 datasheets §Sn_RX_BSR
+     */
+    static constexpr bool is_valid_rx_layout(const RxLayout& kib) noexcept
+    {
+        uint32_t total = 0u;
+        for (uint8_t size : kib) {
+            if (size > Chip::socket_rx_buffer_kib() || (size & (size - 1u)) != 0u) {
+                return false;
+            }
+
+            total += size;
+        }
+
+        return total <= Chip::socket_rx_buffer_kib();
+    }
+
+    /**
+     * @brief Sets how the next init_socket_mode() splits receive memory across sockets.
+     *
+     * Datagrams wait in a socket's receive buffer until the host reads them,
+     * and the chip drops any that no longer fit, so a socket that receives
+     * bursts (RTPS user traffic: every fragment of a large sample arrives
+     * back to back) needs a buffer several datagrams deep, while one that
+     * carries a DHCP or SNTP exchange needs one datagram. The layout starts
+     * as Chip::default_rx_layout_kib(); transmit memory stays split evenly,
+     * since a socket holds one outgoing datagram at a time (udp_send_to()
+     * waits for the previous SEND to complete). WiznetSocketProvider places
+     * each socket on the smallest buffer that meets its
+     * Socket::set_receive_buffer_size() request.
+     *
+     * @param[in] kib Receive buffer KiB per socket, in socket order.
+     * @return `false`, leaving the layout unchanged, when is_valid_rx_layout()
+     *   rejects `kib`.
+     *
+     * Verification:
+     * - Correct means: after init_socket_mode(), socket_rx_capacity(s) is
+     *   kib[s] KiB and the buffers are contiguous in socket order.
+     * - Covered by: TC-NET-WIZ-LAYOUT-001.
+     *
+     * References:
+     * - W5100S datasheet §Sn_RXBUF_SIZE; W6100 / W6300 datasheets §Sn_RX_BSR
+     */
+    bool set_rx_layout(const RxLayout& kib) noexcept
+    {
+        if (!is_valid_rx_layout(kib)) {
+            return false;
+        }
+
+        rx_layout_kib_ = kib;
+        return true;
+    }
+
+    /// @brief The receive layout the next init_socket_mode() applies.
+    const RxLayout& rx_layout() const noexcept { return rx_layout_kib_; }
 
     bool verify() noexcept
     {
@@ -161,16 +235,17 @@ public:
             return InvalidChipVersion{version, Chip::chip_version()};
         }
 
-        // Split the buffer memory evenly across the sockets. Each socket's
-        // buffer offset is the running sum of the sizes actually assigned, so
-        // the layout the driver caches always matches the layout it wrote.
+        // Transmit memory is split evenly; receive memory follows
+        // rx_layout_kib_ (set_rx_layout()). Each socket's buffer offset is the
+        // running sum of the sizes actually assigned, so the layout the driver
+        // caches always matches the layout it wrote.
         const uint8_t tx_kib = Chip::socket_tx_buffer_kib() / Chip::socket_count();
-        const uint8_t rx_kib = Chip::socket_rx_buffer_kib() / Chip::socket_count();
         const uint16_t tx_size = static_cast<uint16_t>(tx_kib * 1024u);
-        const uint16_t rx_size = static_cast<uint16_t>(rx_kib * 1024u);
         uint16_t tx_offset = 0u;
         uint16_t rx_offset = 0u;
         for (socket_type socket = 0; socket < Chip::socket_count(); ++socket) {
+            const uint8_t rx_kib = rx_layout_kib_[socket];
+            const uint16_t rx_size = static_cast<uint16_t>(rx_kib * 1024u);
             write_u8(Chip::socket_tx_buffer_size(socket), tx_kib);
             write_u8(Chip::socket_rx_buffer_size(socket), rx_kib);
             buffers_[socket] = SocketBuffer{tx_offset, tx_size, rx_offset, rx_size};
@@ -1209,6 +1284,9 @@ private:
         uint16_t rx_size = 0u;
     };
     std::array<SocketBuffer, Chip::socket_count()> buffers_{};
+
+    // Receive KiB per socket for the next init_socket_mode(); see set_rx_layout().
+    RxLayout rx_layout_kib_ = Chip::default_rx_layout_kib();
 
     // A SEND was issued on this socket and its Sn_IR.SENDOK has not been
     // drained yet; see wait_pending_send().

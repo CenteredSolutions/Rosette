@@ -72,6 +72,11 @@ struct W5100S final : ChipBase {
     static constexpr uint8_t socket_tx_buffer_kib() { return 8u; }
     static constexpr uint8_t socket_rx_buffer_kib() { return 8u; }
 
+    /// Receive buffer KiB per socket in socket mode (WiznetDevice::set_rx_layout()):
+    /// half the memory for one bulk socket (RTPS user traffic, fragment bursts),
+    /// 2 KiB for a medium one (SEDP), 1 KiB for the rest.
+    static constexpr std::array<uint8_t, 4> default_rx_layout_kib() { return {4u, 2u, 1u, 1u}; }
+
     static constexpr uint8_t socket_interrupt_send_ok() { return 0x10u; }
     static constexpr uint8_t socket_interrupt_timeout() { return 0x08u; }
     static constexpr uint8_t socket_interrupt_receive() { return 0x04u; }

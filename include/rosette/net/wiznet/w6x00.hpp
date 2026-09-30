@@ -255,6 +255,13 @@ struct W6100 final : W6x00 {
     static constexpr uint8_t socket_tx_buffer_kib() { return 16u; }
     static constexpr uint8_t socket_rx_buffer_kib() { return 16u; }
 
+    /// Receive buffer KiB per socket in socket mode (WiznetDevice::set_rx_layout()):
+    /// half the memory for one bulk socket, 2 KiB for a medium one, 1 KiB for the rest.
+    static constexpr std::array<uint8_t, 8> default_rx_layout_kib()
+    {
+        return {8u, 2u, 1u, 1u, 1u, 1u, 1u, 1u};
+    }
+
     /// Frame: `{ addr[15:8], addr[7:0], (BSB << 3) | R/W }`, then data.
     /// `_W6100_SPI_WRITE_ == 0x01 << 2`; operation mode (VDM) is 0.
     template<bool IsRead>
@@ -278,6 +285,13 @@ struct W6300 final : W6x00 {
     static constexpr uint8_t chip_version() { return 0x63u; }  // CIDR high byte (0x6300)
     static constexpr uint8_t socket_tx_buffer_kib() { return 32u; }
     static constexpr uint8_t socket_rx_buffer_kib() { return 32u; }
+
+    /// Receive buffer KiB per socket in socket mode (WiznetDevice::set_rx_layout()):
+    /// half the memory for one bulk socket, 4 KiB for a medium one, 2 KiB for the rest.
+    static constexpr std::array<uint8_t, 8> default_rx_layout_kib()
+    {
+        return {16u, 4u, 2u, 2u, 2u, 2u, 2u, 2u};
+    }
 
     /// Frame: `{ OP-code, addr[15:8], addr[7:0] }`, then data — OP-code first.
     /// OP-code = `QMODE[7:6] | R/W[5] | BSB[4:0]`; `_W6300_SPI_WRITE_ == 0x01 << 5`,

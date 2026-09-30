@@ -139,7 +139,11 @@ struct BoardNetwork {
           address(v4, ipv6.manager(), &iface),
           sntp(sockets, config.time, wall_clock_for_sntp()),
           ready_when(config.ready_when),
-          chip_retry_ms(pf::monotonic_ms()) {}
+          chip_retry_ms(pf::monotonic_ms()) {
+        // Before the link's bring-up runs init_socket_mode(); kBoardRxLayoutKib
+        // is checked at compile time, so this always takes.
+        (void)device.set_rx_layout(kBoardRxLayoutKib);
+    }
 
     /// @brief Fills `v4_providers` in the order the config lists IPv4 methods.
     std::size_t bind_v4(const MethodList& methods) noexcept {

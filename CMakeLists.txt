@@ -184,6 +184,16 @@ if(ROSETTE_BOARD_BUILD_BSP)
     )
     if(ROSETTE_BOARD_ENABLE_WIZNET)
         target_link_libraries(rosette_bsp PUBLIC wiznet_iolib)
+        # Receive-buffer KiB per hardware socket, one entry per socket; empty
+        # keeps the chip's default (see kBoardRxLayoutKib in
+        # include/rosette/net/wiznet/board.hpp, which checks it at compile time).
+        set(ROSETTE_WIZNET_RX_LAYOUT_KIB "" CACHE STRING
+            "WIZnet receive-buffer KiB per socket, e.g. 8;2;1;1;1;1;1;1 (empty: chip default)")
+        if(ROSETTE_WIZNET_RX_LAYOUT_KIB)
+            string(REPLACE ";" "," _rosette_rx_layout "${ROSETTE_WIZNET_RX_LAYOUT_KIB}")
+            target_compile_definitions(rosette_bsp PUBLIC
+                "ROSETTE_WIZNET_RX_LAYOUT_KIB=${_rosette_rx_layout}")
+        endif()
     endif()
     if(ROSETTE_BOARD_ENABLE_FREERTOS)
         target_link_libraries(rosette_bsp PUBLIC freertos_kernel freertos_tcp)
@@ -239,6 +249,12 @@ if(ROSETTE_ENABLE_MICRO_ROS)
         rosette_net
         micro_ros_vendor
     )
+    # The XRCE socket's receive buffer holds a whole reliable-stream window
+    # from the agent (ros/socket_transport.hpp).
+    math(EXPR _rosette_xrce_rx_bytes
+         "${ROSETTE_MICRO_ROS_STREAM_HISTORY} * ${ROSETTE_MICRO_ROS_MAX_TRANSPORT_MTU}")
+    target_compile_definitions(rosette_agent PUBLIC
+        ROSETTE_XRCE_SOCKET_RECEIVE_BUFFER=${_rosette_xrce_rx_bytes}u)
 
     # The agent path on a host, against a real micro_ros_agent (tests/agent/run_agent_live.sh).
     if(NOT ROSETTE_BOARD_ENABLE_PICO_SDK)

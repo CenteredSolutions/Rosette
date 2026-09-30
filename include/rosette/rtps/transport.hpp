@@ -261,7 +261,20 @@ private:
     static rosette::net::SocketMulticastMembership locator_to_multicast_membership(
         const Locator& dest) noexcept;
     rosette::net::SocketAddress any_bind_address(uint16_t port) const noexcept;
-    std::unique_ptr<rosette::net::Socket> open_bound(uint16_t port, bool join_group) noexcept;
+    /**
+     * @brief Opens a socket, joins the multicast group when asked, and binds `port`.
+     *
+     * @param[in] port          Local port to bind.
+     * @param[in] join_group    Join the SPDP multicast group first.
+     * @param[in] receive_bytes Receive buffering to ask for before bind()
+     *   (Socket::set_receive_buffer_size()); 0 asks for none, which leaves a
+     *   WIZnet socket on the smallest buffer. The user-traffic socket asks for
+     *   a whole fragmented sample (RTPS_USER_SOCKET_RECEIVE_BUFFER), the
+     *   metatraffic socket for an SEDP burst (RTPS_META_SOCKET_RECEIVE_BUFFER).
+     * @return The bound socket, or null when any step fails.
+     */
+    std::unique_ptr<rosette::net::Socket> open_bound(uint16_t port, bool join_group,
+                                                     uint32_t receive_bytes) noexcept;
 
     rosette::net::SocketProvider& provider_;
     uint16_t meta_port_;

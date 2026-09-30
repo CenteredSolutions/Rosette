@@ -142,11 +142,11 @@ int main()
         sock_bus.next_reads = {0x51};  // chip-version read; command polls then read 0
         Device sock{sock_bus};
         sock.init_socket_mode({1, 2, 3, 4, 5, 6});
-        // 8 KiB / 4 sockets => 2 KiB spans from 0x4000 (TX) / 0x6000 (RX).
+        // TX: 2 KiB spans from 0x4000; RX: the default 4/2/1/1 KiB from 0x6000.
         check(sock.tx_buffer_address(0) == 0x4000u && sock.tx_buffer_address(2) == 0x5000u,
               "W5100S socket-mode TX spans: socket 0 @ 0x4000, socket 2 @ 0x5000");
-        check(sock.rx_buffer_address(3) == 0x7800u,
-              "W5100S socket-mode RX span: socket 3 @ 0x7800");
+        check(sock.rx_buffer_address(1) == 0x7000u && sock.rx_buffer_address(3) == 0x7C00u,
+              "W5100S socket-mode RX spans follow 4/2/1/1: socket 1 @ 0x7000, socket 3 @ 0x7C00");
         check(sock.socket_tx_capacity(1) == 2048u && sock.socket_rx_capacity(1) == 2048u,
               "W5100S socket-mode capacity cached at 2 KiB (no per-packet SPI read)");
 

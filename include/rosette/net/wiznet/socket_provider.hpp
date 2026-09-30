@@ -171,6 +171,49 @@ public:
         return 0;
     }
 
+    /**
+     * @brief Moves this socket to the hardware socket whose receive buffer best fits `bytes`.
+     *
+     * A WIZnet socket's receive buffer is fixed by its number
+     * (WiznetDevice::set_rx_layout()), and the number is only claimed, not
+     * opened on the chip, until bind(); so the request swaps the claim for
+     * the free socket WiznetSocketProvider::reclaim() picks: the smallest
+     * whose buffer holds `bytes`, otherwise the largest.
+     *
+     * @param[in] bytes Receive buffering wanted, in bytes.
+     * @return 0; SocketError::invalid_argument once bound; SocketError::closed
+     *   after close().
+     *
+     * Verification:
+     * - Correct means: the socket ends on the best-fitting free buffer, and
+     *   the socket it held is free again unless it was that best fit.
+     * - Covered by: TC-NET-WIZ-LAYOUT-002.
+     */
+    int set_receive_buffer_size(std::size_t bytes) noexcept override
+    {
+        if (!claimed_) {
+            last_error_ = SocketError::closed;
+            return static_cast<int>(last_error_);
+        }
+
+        if (open_) {
+            last_error_ = SocketError::invalid_argument;
+            return static_cast<int>(last_error_);
+        }
+
+        if (provider_ != nullptr) {
+            socket_ = provider_->reclaim(socket_, bytes);
+        }
+
+        last_error_ = SocketError::none;
+        return 0;
+    }
+
+    std::size_t receive_buffer_size() const noexcept override
+    {
+        return device_.socket_rx_capacity(socket_);
+    }
+
     std::ptrdiff_t send_to(const void* data,
                            std::size_t length,
                            const SocketAddress& remote) noexcept override
@@ -461,6 +504,26 @@ public:
         }
     }
 
+    /**
+     * @brief Trades the claimed, unopened socket `held` for the free socket that best fits `bytes`.
+     *
+     * Backs WiznetUdpSocket::set_receive_buffer_size(). `held` counts as
+     * free, so it is kept when it is already the best fit.
+     *
+     * @param[in] held  A socket this provider handed out and the chip has not opened.
+     * @param[in] bytes Receive buffering wanted, in bytes.
+     * @return The socket now claimed in place of `held`.
+     */
+    socket_type reclaim(socket_type held, std::size_t bytes) noexcept
+    {
+        typename executor_type::CriticalSection guard;
+        claimed_[held] = false;
+        const socket_type best = best_free_socket(bytes);
+        const socket_type taken = best < Chip::socket_count() ? best : held;
+        claimed_[taken] = true;
+        return taken;
+    }
+
 private:
     /**
      * @brief One-time chip init (socket mode) and dispatch-lifecycle start.
@@ -490,25 +553,55 @@ private:
     }
 
     /**
-     * @brief Claims a free hardware socket, or `Chip::socket_count()` if none.
+     * @brief Claims the free hardware socket with the smallest receive buffer, or `Chip::socket_count()` if none.
      *
-     * Socket 0 is reserved while the device is in MACRAW mode.
+     * Sockets are sized unevenly (WiznetDevice::set_rx_layout()), and one
+     * that asks for more (Socket::set_receive_buffer_size()) does so after
+     * open(), so a socket that asks for nothing must leave the large buffers
+     * free: whichever protocol happens to open first (DHCP, usually) would
+     * otherwise take the one the RTPS user socket needs.
      */
     socket_type claim_socket() noexcept
     {
         typename executor_type::CriticalSection guard;
+        const socket_type socket = best_free_socket(0u);
+        if (socket < Chip::socket_count()) {
+            claimed_[socket] = true;
+        }
+
+        return socket;
+    }
+
+    /**
+     * @brief The free socket whose receive buffer best fits `bytes`, or `Chip::socket_count()` if none.
+     *
+     * The best fit is the smallest buffer of at least `bytes`, or, when none
+     * is that large, the largest buffer; ties go to the lower socket number.
+     * Sockets with no receive buffer, and socket 0 while the device is in
+     * MACRAW mode, are never picked. The caller holds the critical section.
+     */
+    socket_type best_free_socket(std::size_t bytes) const noexcept
+    {
+        socket_type fit = Chip::socket_count();
+        socket_type largest = Chip::socket_count();
         for (socket_type socket = 0; socket < Chip::socket_count(); ++socket) {
-            if ((device_.mode() == DeviceMode::macraw) &&
-                (socket == Chip::macraw_socket())) {
+            const std::size_t size = device_.socket_rx_capacity(socket);
+            const bool reserved =
+                device_.mode() == DeviceMode::macraw && socket == Chip::macraw_socket();
+            if (claimed_[socket] || reserved || size == 0u) {
                 continue;
             }
 
-            if (!claimed_[socket]) {
-                claimed_[socket] = true;
-                return socket;
+            if (size >= bytes && (fit == Chip::socket_count() || size < device_.socket_rx_capacity(fit))) {
+                fit = socket;
+            }
+
+            if (largest == Chip::socket_count() || size > device_.socket_rx_capacity(largest)) {
+                largest = socket;
             }
         }
-        return Chip::socket_count();
+
+        return fit < Chip::socket_count() ? fit : largest;
     }
 
     /// Register re-read period for boards with no INT line (see wait_readable()).

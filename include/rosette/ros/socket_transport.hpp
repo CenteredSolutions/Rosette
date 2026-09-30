@@ -29,6 +29,15 @@
 #include <cstdlib>
 #include <memory>
 
+// Receive buffering the XRCE socket asks for: a whole reliable-stream window
+// from the agent, RMW_UXRCE_STREAM_HISTORY datagrams of the transport MTU sent
+// back to back. The build passes it from ROSETTE_MICRO_ROS_STREAM_HISTORY and
+// ROSETTE_MICRO_ROS_MAX_TRANSPORT_MTU (cmake/micro_ros.cmake); the fallback is
+// their defaults, 8 x 1400.
+#ifndef ROSETTE_XRCE_SOCKET_RECEIVE_BUFFER
+#  define ROSETTE_XRCE_SOCKET_RECEIVE_BUFFER (8u * 1400u)
+#endif
+
 namespace rosette {
 
 inline bool make_ipv4_socket_address(const char* text,
@@ -131,6 +140,9 @@ public:
             return false;
         }
 
+        // Before bind(), so a WIZnet backend places the socket on its largest
+        // buffer; a backend that does not size per socket declines, harmlessly.
+        (void)socket_->set_receive_buffer_size(ROSETTE_XRCE_SOCKET_RECEIVE_BUFFER);
         if (socket_->bind(local_) != 0) {
             socket_.reset();
             return false;
