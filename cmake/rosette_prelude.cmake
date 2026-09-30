@@ -27,7 +27,6 @@ set(ROSETTE_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE INTERNAL
 #   w6100-evb-pico    WIZnet W6100-EVB-Pico    (RP2040)
 #   w6100-evb-pico2   WIZnet W6100-EVB-Pico2   (RP2350)
 #   w6300-evb-pico2   WIZnet W6300-EVB-Pico2   (RP2350, QSPI single-lane — provisional)
-#   bc-gen2           RP2040 + W5100S, custom pin map
 # ------------------------------------------------------------
 set(_rosette_default_board "w5100s-evb-pico2")
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
@@ -35,9 +34,9 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
 endif()
 
 set(ROSETTE_BOARD "${_rosette_default_board}" CACHE STRING
-    "Target board: posix | w5100s-evb-pico | w5100s-evb-pico2 | w6100-evb-pico | w6100-evb-pico2 | w6300-evb-pico2 | bc-gen2")
+    "Target board: posix | w5100s-evb-pico | w5100s-evb-pico2 | w6100-evb-pico | w6100-evb-pico2 | w6300-evb-pico2")
 set_property(CACHE ROSETTE_BOARD PROPERTY STRINGS
-    posix w5100s-evb-pico w5100s-evb-pico2 w6100-evb-pico w6100-evb-pico2 w6300-evb-pico2 bc-gen2)
+    posix w5100s-evb-pico w5100s-evb-pico2 w6100-evb-pico w6100-evb-pico2 w6300-evb-pico2)
 
 include("${CMAKE_CURRENT_LIST_DIR}/boards.cmake")
 rosette_select_board(${ROSETTE_BOARD})

@@ -4,7 +4,8 @@
 # Formatting and the blank-line rule apply to lines changed since the merge
 # base with BASE_REF (default origin/main), including uncommitted edits, so
 # untouched code is held to them once it is edited. The function-length check
-# covers the whole tree against tools/style/function_length_baseline.txt.
+# covers the whole tree against tools/style/function_length_baseline.txt, and the
+# port-boundary check against tools/style/port_boundary_baseline.txt.
 #
 # Setup:  python3 -m pip install -r tools/style/requirements.txt
 # Usage:  tools/style/run_style_checks.sh [BASE_REF]
@@ -27,5 +28,8 @@ python3 "$here/check_blank_after_brace.py" --base "$base_sha" || status=1
 
 echo "== function length"
 python3 "$here/check_function_length.py" || status=1
+
+echo "== port boundaries"
+python3 "$here/check_port_boundaries.py" || status=1
 
 exit "$status"

@@ -109,7 +109,6 @@ Select a board at configure time with `-DROSETTE_BOARD=<name>`.
 | `w6100-evb-pico2` | RP2350 | W6100 hardware UDP, IPv4 + IPv6, SPI | none | builds; not run on hardware | builds; not run on hardware |
 | `w6300-evb-pico2` | RP2350 | W6300 hardware UDP, single-lane QSPI | none | builds; not run on hardware | builds; not run on hardware |
 | `w5100s-evb-pico` | RP2040 | W5100S hardware UDP | none | builds (RP2040 C client stack); not run on hardware | builds |
-| `bc-gen2` | RP2040 | W5100S MACRAW + FreeRTOS+TCP | FreeRTOS | no FreeRTOS+TCP network port | no example targets it |
 
 `posix` is the default board on macOS; `w5100s-evb-pico2` elsewhere. "Runs"
 means verified on the board against stock ROS 2; "builds" means the image
