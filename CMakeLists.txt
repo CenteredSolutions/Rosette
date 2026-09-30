@@ -107,10 +107,11 @@ if(ROSETTE_BOARD_ENABLE_PICO_SDK)
 endif()
 
 if(NOT ROSETTE_BOARD_ENABLE_PICO_SDK)
-    # Host: platform runtime + POSIX socket backend live here.
+    # Host: platform runtime, POSIX socket backend, and the host board network live here.
     target_sources(rosette_net PRIVATE
         src/platform/posix/host_runtime.cpp
-        src/net/posix/socket.cpp)
+        src/net/posix/socket.cpp
+        src/net/posix/board_network.cpp)
 
     # The SNTP client against a real NTP server, checked against the host clock.
     add_executable(sntp_live_probe tests/net/sntp_live_probe.cpp)

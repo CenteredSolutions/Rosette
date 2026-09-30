@@ -7,7 +7,7 @@ IPv6 stateless autoconfiguration; on FreeRTOS+TCP it is an observer of the
 stack's own addressing. What a user configures is in
 [../network_configuration.md](../network_configuration.md).
 
-`rosette/net/wiznet/board_network.hpp` is the composition every WIZnet
+`rosette/net/board_network.hpp` is the composition every WIZnet
 firmware uses: it declares DHCP with a link-local fallback for IPv4 and, on
 parts with hardware IPv6, SLAAC for IPv6, over the pieces below.
 `wiznet_udp_echo`, `rtps_chatter`, and `rclc_chatter` call it. Firmware that
@@ -132,7 +132,7 @@ constexpr net::NetworkConfig kNetwork{
     .ready_when = net::ready::any_v4,
     .ready_timeout_ms = 30'000,
 };
-if (wiz::bring_up_board_network("my-board", kNetwork) != net::BringUpResult::ready) { ... }
+if (net::bring_up_board_network("my-board", kNetwork) != net::BringUpResult::ready) { ... }
 ```
 
 A config the board cannot run (SLAAC on the W5100S, a method listed twice, a

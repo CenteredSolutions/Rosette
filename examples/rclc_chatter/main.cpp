@@ -44,7 +44,7 @@
 #include <std_msgs/msg/string.h>
 
 #include "board.h"
-#include "rosette/net/wiznet/board_network.hpp"
+#include "rosette/net/board_network.hpp"
 #include "rosette/platform/platform.hpp"
 #include "rosette/ros/session_supervisor.hpp"
 
@@ -53,7 +53,7 @@
 namespace {
 
 namespace pf = rosette::platform;
-namespace wiz = rosette::net::wiznet;
+namespace net = rosette::net;
 namespace ros = rosette::ros;
 
 constexpr uint64_t kPublishPeriodNs = RCL_MS_TO_NS(1000);
@@ -188,7 +188,7 @@ void report(const ros::SessionSupervisor& session) {
         static_cast<unsigned long>(session.sessions_created()),
         session.state() == ros::SessionState::running ? "" : " (down)",
         static_cast<unsigned long>(g_published), static_cast<unsigned long>(g_commands_received),
-        heap.uordblks, static_cast<unsigned long>(wiz::board_send_timeouts()));
+        heap.uordblks, static_cast<unsigned long>(net::board_send_timeouts()));
 }
 
 }  // namespace
@@ -210,10 +210,10 @@ int main() {
     g_incoming.data.size = 0u;
 
     // The supervisor does the waiting, so bring-up returns at once.
-    rosette::net::NetworkConfig network = wiz::board_default_network();
+    rosette::net::NetworkConfig network = net::board_default_network();
     network.ready_timeout_ms = 0u;
-    (void)wiz::bring_up_board_network("rosette-rclc", network);
-    ros::SessionSupervisor session(wiz::board_network_watch(), {create_session, destroy_session});
+    (void)net::bring_up_board_network("rosette-rclc", network);
+    ros::SessionSupervisor session(net::board_network_watch(), {create_session, destroy_session});
 
     uint32_t next_report = pf::monotonic_ms() + kReportPeriodMs;
     for (;;) {

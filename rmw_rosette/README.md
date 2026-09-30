@@ -103,8 +103,9 @@ the same relationships.
    table keeps only as keys; those report `RMW_RET_UNSUPPORTED`.
 3. **QoS events and listeners.** Event initialization reports
    `RMW_RET_UNSUPPORTED`, which both client libraries accept.
-4. **FreeRTOS+TCP network port.** Hosts and WIZnet boards have one
-   (`network_port.hpp`); FreeRTOS+TCP boards need their own definition.
+4. **FreeRTOS+TCP board network.** The network port forwards to the board
+   network (`rosette/net/board_network.hpp`), which hosts and WIZnet boards
+   implement; FreeRTOS+TCP boards do not yet.
 
 ## Verification
 
@@ -149,10 +150,12 @@ middleware (`rmw_microxrcedds`, `microxrcedds_client`) is never linked, and
 rcl calls `rmw_rosette` directly. Rebuilding after an `rmw_rosette` or RTPS
 change compiles only those sources.
 
-The image defines the network port (`include/rmw_rosette/network_port.hpp`):
-the socket provider and IPv4 address `rmw_init()` uses. Hosts compile
-`src/network_port_posix.cpp`; a firmware defines both functions beside its
-network bring-up and calls `rcl_init()` once the address is assigned.
+The network port (`include/rmw_rosette/network_port.hpp`) is the socket
+provider and IPv4 address `rmw_init()` uses. `src/network_port.cpp` forwards
+both to the board network (`rosette/net/board_network.hpp`): BSD sockets and
+the host's address on a host, the chip's sockets and its assigned address on a
+WIZnet board, where the firmware calls `bring_up_board_network()` before
+`rcl_init()`.
 Firmware capacity defaults to one rclc node with no parameter server and
 `RMW_ROSETTE_POOL_PROFILE=firmware`.
 

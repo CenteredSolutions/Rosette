@@ -132,14 +132,14 @@ Actions: **move** (`git mv`, then fix includes), **split** (the contents go to s
 | `include/rosette/net/wiznet/executor.hpp` | refactor | one executor over `platform::Event` / `sleep_ms` replaces `PollingExecutor` + `FreeRtosExecutor` |
 | `include/rosette/net/wiznet/board.hpp` | move | `boards/common/rp2_wiznet/wiznet_board_types.hpp` (chooses `Rp2SpiBus`/`Rp2QspiBus` from `board_config.h`) |
 | `include/rosette/net/wiznet/chip_select.hpp` | refactor | chip model comes from a compile definition set by `board.cmake`, not `board_config.h`; drop the missing `w5500.hpp` branch or add the part |
-| `include/rosette/net/wiznet/board_network.hpp` | move + refactor | `include/rosette/net/board_network.hpp`, namespace `rosette::net`: the public contract (see "What an application includes") |
+| `include/rosette/net/wiznet/board_network.hpp` | done | `include/rosette/net/board_network.hpp`, namespace `rosette::net`: the public contract (see "What an application includes") |
 | `src/net/wiznet/board_network.cpp` | move | `boards/common/rp2_wiznet/wiznet_board_network.cpp`, the WIZnet implementation of that contract |
-| *new* | add | `ports/net/posix/posix_board_network.cpp` and `ports/net/freertos_tcp/freertos_tcp_board_network.cpp`: the same contract over host sockets and FreeRTOS+TCP |
-| `examples/*/main.cpp` | refactor | include `rosette/net/board_network.hpp`, call `rosette::net::bring_up_board_network()` |
+| *new* | add | the same contract over host sockets (done: `src/net/posix/board_network.cpp`, moves to `ports/net/posix/` with the POSIX port) and FreeRTOS+TCP (`ports/net/freertos_tcp/freertos_tcp_board_network.cpp`) |
+| `examples/*/main.cpp` | done | include `rosette/net/board_network.hpp`, call `rosette::net::bring_up_board_network()` |
 | `include/rosette/net/wiznet/dhcp_{client,provider,wire}.hpp`, `src/net/wiznet/dhcp_*.cpp` | move | `include/rosette/net/dhcp_*.hpp`, `src/net/dhcp_*.cpp`, namespace `rosette::net`: they depend only on the socket and provider interfaces |
 | `include/rosette/net/wiznet/{device,socket_provider,link,interface,slaac_provider,w5100s,w6x00}.hpp` | stays | portable WIZnet driver |
 | everything else in `include/rosette/net/`, `src/net/` | stays | portable |
-| `rmw_rosette/src/network_port_wiznet.cpp`, `network_port_posix.cpp` | merge | `rmw_rosette/src/network_port.cpp`, forwarding to `rosette/net/board_network.hpp`; rmw no longer knows which network it runs on |
+| `rmw_rosette/src/network_port_wiznet.cpp`, `network_port_posix.cpp` | done | `rmw_rosette/src/network_port.cpp`, forwarding to `rosette/net/board_network.hpp`; rmw no longer knows which network it runs on |
 | `tests/agent/agent_live_probe.cpp`, `tests/net/sntp_live_probe.cpp` | stays | host test drivers may name `PosixSocketProvider` (the `tests/` zone allows port headers) |
 
 ### Build, config, boards
@@ -168,7 +168,7 @@ neither fetched nor linked. The comments in `device.hpp` and `w6x00.hpp` that ci
 1. Commit the open work on `feature/rmw-rtps` so the moves start from a clean tree.
 2. Add the check and baseline (done).
 3. Remove the WIZnet ioLibrary (done).
-4. Promote `board_network.hpp` to `rosette::net`, merge the rmw network ports, and switch the examples to it.
+4. Promote `board_network.hpp` to `rosette::net`, merge the rmw network ports, and switch the examples to it (done).
 5. Add a **stub chip port** (`ports/chip/stub/`, compile-only, every hook a trivial stub) and a CI job that builds the
    portable core against it with no Pico SDK. It's the first chip that isn't Pico or host, so leaks show up as
    link errors, not just include findings.

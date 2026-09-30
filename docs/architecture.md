@@ -54,7 +54,8 @@ Each layer reaches the one below through a narrow, build-time seam:
 | --- | --- | --- |
 | Platform port: clock, mutex, wake event, unique ID | `rosette/platform/platform.hpp` | `ROSETTE_OS` and `ROSETTE_CHIP` in the board's `board.cmake` (`cmake/rosette_platform.cmake`) |
 | Sockets | `rosette/net/socket.hpp` (`SocketProvider`) | the board: WIZnet boards use the chip's hardware sockets, hosts use BSD sockets |
-| Network port for `rmw_rosette` | `rmw_rosette/network_port.hpp` | one definition per image: `network_port_posix.cpp` on hosts, `network_port_wiznet.cpp` over `rosette/net/wiznet/board_network.hpp` on WIZnet boards |
+| Board network: bring-up, addresses, the image's `SocketProvider` | `rosette/net/board_network.hpp` | one implementation per image: `src/net/posix/board_network.cpp` on hosts, `src/net/wiznet/board_network.cpp` on WIZnet boards |
+| Network port for `rmw_rosette` | `rmw_rosette/network_port.hpp` | `network_port.cpp`, which forwards to the board network |
 | Capacity | `rmw_rosette/capacity.hpp`, `RTPS_*` macros | `rmw_rosette/cmake/rmw_rosette_capacity.cmake` from a few application limits |
 
 A seam is resolved at build time, so an image contains exactly one platform
@@ -148,8 +149,9 @@ becomes `std_msgs::msg::dds_::String_`, and a service `/x` becomes the topics
 ## Networking on WIZnet boards
 
 The W5100S, W6100, and W6300 run UDP/IP in silicon, so a WIZnet board needs no
-software IP stack and no RTOS. `rosette/net/wiznet/board_network.hpp` owns the
-chip for the whole image: `bring_up_board_network()` initializes the chip,
+software IP stack and no RTOS. The board network
+(`rosette/net/board_network.hpp`, implemented for WIZnet boards in
+`src/net/wiznet/board_network.cpp`) owns the chip for the whole image: `bring_up_board_network()` initializes the chip,
 waits for link, and acquires the addresses the firmware's `NetworkConfig`
 names (`rosette/net/network_config.hpp`; by default DHCP, falling back to
 RFC 3927 link-local); `poll_board_network()` renews the lease, and retries
@@ -195,8 +197,8 @@ application. `examples/storage_demo` exercises it on a host.
 | --- | --- |
 | `include/rosette/rtps`, `src/rtps` | RTPS protocol: `participant`, `spdp`, `sedp`, `endpoint_match_table`, `stateful_writer`, `stateful_reader`, `reader_proxy`, `writer_proxy`, `history_cache`, `sn_window`, `fragment_assembler`, `message_parser`, `message_builder`, `buf_pool`, `transport`, `participant_driver` |
 | `rmw_rosette/` | the `rmw` implementation (a colcon package); `cmake/rmw_rosette_capacity.cmake` is the capacity model |
-| `include/rosette/net`, `src/net` | `SocketProvider` backends (POSIX, WIZnet, FreeRTOS+TCP), address providers, mDNS and NTP helpers |
-| `include/rosette/net/wiznet` | register-level WIZnet driver templated on chip and bus; `board_network` |
+| `include/rosette/net`, `src/net` | `SocketProvider` backends (POSIX, WIZnet, FreeRTOS+TCP), the board network, address providers, mDNS and NTP helpers |
+| `include/rosette/net/wiznet` | register-level WIZnet driver templated on chip and bus |
 | `include/rosette/platform`, `src/platform` | platform ports: OS layers, chip layers, Pico flash and LittleFS glue |
 | `include/rosette/storage`, `src/storage` | LittleFS volume and file store |
 | `boards/<name>` | `board.cmake` (OS, chip, features), `board_config.h` (pins, chip), `board_init.c` |

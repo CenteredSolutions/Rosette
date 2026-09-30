@@ -28,7 +28,7 @@
 #include <cstring>
 
 #include "board.h"
-#include "rosette/net/wiznet/board_network.hpp"
+#include "rosette/net/board_network.hpp"
 #include "rosette/platform/platform.hpp"
 #include "rosette/rtps/participant.hpp"
 #include "rosette/rtps/participant_driver.hpp"
@@ -38,7 +38,6 @@
 
 namespace {
 
-namespace wiz = rosette::net::wiznet;
 namespace net = rosette::net;
 namespace pf = rosette::platform;
 
@@ -135,9 +134,9 @@ int main() {
     std::printf("[chatter] rosette RTPS chatter, datagram limit %u\n",
                 static_cast<unsigned>(ROSETTE_RTPS_MAX_DATAGRAM_SIZE));
 
-    wiz::bring_up_board_network("rosette-chatter");
-    net::SocketProvider& sockets = wiz::board_socket_provider();
-    const uint32_t addr = wiz::board_ipv4_address();
+    net::bring_up_board_network("rosette-chatter");
+    net::SocketProvider& sockets = net::board_socket_provider();
+    const uint32_t addr = net::board_ipv4_address();
 
     static rtps::SocketUdpTransport transport(sockets, meta_port(kDomainId, kParticipantId),
                                               user_port(kDomainId, kParticipantId), kSpdpGroup,
@@ -185,7 +184,7 @@ int main() {
         (void)driver.spin_until([] { return false; }, wait);
 
         const uint32_t t = pf::monotonic_ms();
-        wiz::poll_board_network(t);  // DHCP lease renewal
+        net::poll_board_network(t);  // DHCP lease renewal
         if (static_cast<int32_t>(t - next_publish) >= 0) {
             next_publish += kPublishPeriodMs;
             char text[48];
@@ -199,7 +198,7 @@ int main() {
         if (static_cast<int32_t>(t - next_report) >= 0) {
             next_report += kReportPeriodMs;
             pf::LockGuard guard(driver.mutex());
-            report(transport, *writer, *reader, wiz::board_send_timeouts());
+            report(transport, *writer, *reader, net::board_send_timeouts());
         }
     }
 }

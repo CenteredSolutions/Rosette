@@ -307,15 +307,15 @@ created before the executor first spins.
 #include <std_msgs/msg/string.h>
 
 #include "board.h"
-#include "rosette/net/wiznet/board_network.hpp"
+#include "rosette/net/board_network.hpp"
 #include "rosette/platform/platform.hpp"
 #include "pico/stdlib.h"
 
-namespace wiz = rosette::net::wiznet;
+namespace net = rosette::net;
 
 int main() {
     board_init();
-    wiz::bring_up_board_network("my-board");   // blocks until an IPv4 address is held
+    net::bring_up_board_network("my-board");   // blocks until an IPv4 address is held
 
     rcl_allocator_t allocator = rcl_get_default_allocator();
     rclc_support_t support;
@@ -335,7 +335,7 @@ int main() {
 
     for (;;) {
         rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));   // sleeps until data or a deadline
-        wiz::poll_board_network(rosette::platform::monotonic_ms());   // DHCP renewal and retry, SLAAC, conflicts
+        net::poll_board_network(rosette::platform::monotonic_ms());   // DHCP renewal and retry, SLAAC, conflicts
     }
 }
 ```

@@ -12,10 +12,10 @@ W6100 / W6300 driver and its IPv6 support are in
 
 ## What a board does at boot
 
-Every WIZnet firmware calls `wiz::bring_up_board_network(hostname)`, or
-`wiz::bring_up_board_network(hostname, config)` with its own `NetworkConfig`
+Every WIZnet firmware calls `net::bring_up_board_network(hostname)`, or
+`net::bring_up_board_network(hostname, config)` with its own `NetworkConfig`
 (see [Choosing the addressing methods](#choosing-the-addressing-methods)),
-before `rcl_init()` (`include/rosette/net/wiznet/board_network.hpp`). It
+before `rcl_init()` (`include/rosette/net/board_network.hpp`). It
 blocks until the board is addressable, then `poll_board_network(now)` in the
 main loop keeps it that way. With the default config:
 
@@ -73,7 +73,7 @@ constexpr net::NetworkConfig kNetwork{
     .ready_when = net::ready::any_v4,                         // what bring-up waits for
     .ready_timeout_ms = 30'000,                               // default: wait forever
 };
-const net::BringUpResult result = wiz::bring_up_board_network("my-board", kNetwork);
+const net::BringUpResult result = net::bring_up_board_network("my-board", kNetwork);
 ```
 
 | Field | Values | Default |

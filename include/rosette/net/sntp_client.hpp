@@ -8,7 +8,7 @@
  * offset from that tick to UTC against an NTP server and keeps
  * `platform::WallClock` (monotonic time plus one offset) on it, so ROS
  * stamps, RTPS source timestamps, and rcl's system clock all read UTC. The
- * board network runs it (net/wiznet/board_network.hpp) whenever the board
+ * board network runs it (net/board_network.hpp) whenever the board
  * holds an IPv4 address.
  *
  * The client asks only servers it has been told about: `SntpConfig::server`

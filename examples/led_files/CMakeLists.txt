@@ -35,7 +35,7 @@ if(NOT ROSETTE_ENABLE_MICRO_ROS)
     return()
 endif()
 
-# The board network (wiz::bring_up_board_network) is the bare-metal WIZnet port.
+# The board network (net::bring_up_board_network) is the bare-metal WIZnet port.
 if(NOT ROSETTE_BOARD_ENABLE_WIZNET OR NOT ROSETTE_BOARD_ENABLE_PICO_SDK OR ROSETTE_BOARD_ENABLE_FREERTOS)
     return()
 endif()

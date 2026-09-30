@@ -15,7 +15,7 @@ as just another node.
 
 ```c
 // examples/rclc_chatter — the whole ROS side of a firmware is stock rclc
-wiz::bring_up_board_network("rosette-rclc");                  // DHCP / link-local
+net::bring_up_board_network("rosette-rclc");                  // DHCP / link-local
 rclc_support_init(&support, 0, nullptr, &allocator);          // rmw_rosette underneath
 rclc_node_init_default(&node, "rclc_chatter", "rosette", &support);
 rclc_publisher_init_default(&pub, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "chatter");

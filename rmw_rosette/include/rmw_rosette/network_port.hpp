@@ -2,17 +2,15 @@
  * @file rmw_rosette/network_port.hpp
  * @brief The build-time network port: which sockets and address rmw_init() uses.
  *
- * rmw_rosette never chooses a network stack. Every image links exactly one
- * definition of the two functions below, the same way it links exactly one
- * platform port (rosette/platform/platform.hpp):
- *
- *   - Host builds compile src/network_port_posix.cpp: BSD sockets and the
- *     host's primary IPv4 address.
- *   - Firmware defines them next to the board's network bring-up (for a
- *     WIZnet board, the chip's hardware UDP sockets and the DHCP or
- *     link-local address), because only the firmware knows when its link and
- *     address are ready. rcl_init() must therefore run after the address is
- *     assigned.
+ * rmw_rosette never chooses a network stack. src/network_port.cpp defines
+ * the two functions below over the board network
+ * (rosette/net/board_network.hpp), and the image links exactly one board
+ * network, the same way it links exactly one platform port
+ * (rosette/platform/platform.hpp): BSD sockets and the host's primary IPv4
+ * address on a host, the chip's hardware UDP sockets and its DHCP or
+ * link-local address on a WIZnet board. Only the firmware knows when its
+ * link and address are ready, so on a board rcl_init() runs after
+ * bring_up_board_network().
  *
  * rmw_init() calls both once per context, before the participant is created,
  * and keeps the provider for the context's lifetime.
@@ -39,8 +37,8 @@ namespace rmw_rosette {
  * Verification:
  * - Correct means: rmw_init() opens its transport on the returned provider,
  *   and a stock RMW in the same domain discovers the participant.
- * - Covered by: tests/ros2/run_rmw_interop_loopback.sh (POSIX port);
- *   examples/rclc_chatter against stock Fast DDS (WIZnet port).
+ * - Covered by: tests/ros2/run_rmw_interop_loopback.sh (host);
+ *   examples/rclc_chatter against stock Fast DDS (WIZnet board).
  *
  * References:
  * - OMG DDSI-RTPS 2.5 §9.6.1.1 (port mapping)

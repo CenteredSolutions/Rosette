@@ -35,7 +35,7 @@
  * created and keeps pinging while it runs. rmw_rosette has no far end and
  * passes no gate.
  *
- *     rosette::ros::SessionSupervisor session(wiz::board_network_watch(), {create, destroy});
+ *     rosette::ros::SessionSupervisor session(net::board_network_watch(), {create, destroy});
  *     for (;;) {
  *         if (session.step(platform::monotonic_ms()) == rosette::ros::SessionState::running) {
  *             rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));

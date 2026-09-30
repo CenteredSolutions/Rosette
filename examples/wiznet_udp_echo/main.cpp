@@ -42,8 +42,8 @@
 #include <memory>
 
 #include "board.h"
+#include "rosette/net/board_network.hpp"
 #include "rosette/net/inet.h"
-#include "rosette/net/wiznet/board_network.hpp"
 #include "rosette/platform/platform.hpp"
 #include "rosette/platform/wall_clock.hpp"
 
@@ -52,7 +52,6 @@
 
 namespace {
 
-namespace wiz = rosette::net::wiznet;
 namespace net = rosette::net;
 namespace pf = rosette::platform;
 
@@ -138,7 +137,7 @@ void serve(EchoSocket& e) {
  * @return Whether every family the board runs holds an address.
  */
 bool every_family_up(const net::AddressSnapshot& snapshot) {
-    const bool runs_v6 = wiz::board_default_network().v6[0] != net::Method::none;
+    const bool runs_v6 = net::board_default_network().v6[0] != net::Method::none;
     return snapshot.v4.has_address() && (!runs_v6 || snapshot.v6.has_address());
 }
 
@@ -157,10 +156,10 @@ bool every_family_up(const net::AddressSnapshot& snapshot) {
  * @return Length written, excluding the terminator.
  */
 int format_status(char* out, int cap, const EchoSocket& v4, const EchoSocket& v6) {
-    const uint32_t a = wiz::board_ipv4_address();
+    const uint32_t a = net::board_ipv4_address();
     char ll[48] = "none";
     char gl[48] = "none";
-    for (const net::AddressEntry& entry : wiz::board_address_snapshot().v6.addresses) {
+    for (const net::AddressEntry& entry : net::board_address_snapshot().v6.addresses) {
         char* text = entry.link_local() ? ll : gl;
         net::inet::ntop6(entry.address.data(), text, sizeof(ll));
     }
@@ -173,7 +172,7 @@ int format_status(char* out, int cap, const EchoSocket& v4, const EchoSocket& v6
         static_cast<unsigned long>((a >> 8) & 0xFFu), static_cast<unsigned long>(a & 0xFFu), ll, gl,
         static_cast<unsigned long>(v4.echoed), static_cast<unsigned long>(v4.errors),
         static_cast<unsigned long>(v6.echoed), static_cast<unsigned long>(v6.errors),
-        static_cast<unsigned long>(wiz::board_send_timeouts()));
+        static_cast<unsigned long>(net::board_send_timeouts()));
     if (n <= 0 || n >= cap) {
         return n;
     }
@@ -225,7 +224,7 @@ int main() {
     pf::sleep_ms(1500u);  // give the USB console time to enumerate
     std::printf("\n[echo] wiznet_udp_echo\n");
 
-    net::NetworkConfig network = wiz::board_default_network();
+    net::NetworkConfig network = net::board_default_network();
     network.ready_when = every_family_up;
     network.ready_timeout_ms = kBringUpTimeoutMs;  // then echo on whatever is up
     // A configured server is static configuration, so SNTP runs on any build that names one.
@@ -234,8 +233,8 @@ int main() {
         network.time.enabled = true;
     }
 
-    (void)wiz::bring_up_board_network("rosette-echo", network);
-    net::SocketProvider& sockets = wiz::board_socket_provider();
+    (void)net::bring_up_board_network("rosette-echo", network);
+    net::SocketProvider& sockets = net::board_socket_provider();
 
     EchoSocket v4{"ipv4", open_echo_socket(sockets, net::SocketDomain::ipv4, kEchoPort)};
     EchoSocket v6{"ipv6", open_echo_socket(sockets, net::SocketDomain::ipv6, kEchoPort)};
@@ -258,7 +257,7 @@ int main() {
         serve_status(status6.get(), v4, v6);
 
         const uint32_t now = pf::monotonic_ms();
-        wiz::poll_board_network(now);
+        net::poll_board_network(now);
         if (static_cast<int32_t>(now - next_report) >= 0) {
             next_report += kReportPeriodMs;
             char text[512];

@@ -30,7 +30,7 @@
  *     static rosette::MdnsAgentLocator locator(sockets, "_microrosagent._udp.local");
  *     static rosette::ros::AgentSessionGate gate(transport, locator,
  *                                                rosette::ros::rmw_agent_link());
- *     rosette::ros::SessionSupervisor session(wiz::board_network_watch(),
+ *     rosette::ros::SessionSupervisor session(net::board_network_watch(),
  *                                             {create_session, destroy_session}, &gate);
  *
  * The gate itself calls no micro-ROS function: every agent operation goes

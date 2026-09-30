@@ -39,6 +39,9 @@ set(ROSETTE_RTPS_SOURCES
   ${ROSETTE_ROOT}/src/platform/posix/host_runtime.cpp
   ${ROSETTE_ROOT}/src/platform/posix/rtps_posix_log.cpp
   ${ROSETTE_ROOT}/src/net/posix/socket.cpp
+  ${ROSETTE_ROOT}/src/net/posix/board_network.cpp
+  ${ROSETTE_ROOT}/src/net/network_config.cpp
+  ${ROSETTE_ROOT}/src/net/address_list.cpp
 )
 
 add_library(rmw_rosette SHARED
@@ -61,7 +64,7 @@ add_library(rmw_rosette SHARED
   src/rmw_qos_event.cpp
   src/rmw_serialize.cpp
   src/service_endpoints.cpp
-  src/network_port_posix.cpp
+  src/network_port.cpp
   ${ROSETTE_RTPS_SOURCES}
 )
 

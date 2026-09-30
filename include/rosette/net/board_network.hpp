@@ -1,42 +1,43 @@
 /**
- * @file rosette/net/wiznet/board_network.hpp
- * @brief The board's WIZnet chip, PHY link, and IP addresses, brought up once from a NetworkConfig.
+ * @file rosette/net/board_network.hpp
+ * @brief The board's network (link, IP addresses, sockets), brought up once from a NetworkConfig.
  *
- * A WIZnet board has exactly one Ethernet chip, so its network is one
- * board-level object: this module owns the chip driver (bus, device, hardware
- * UDP socket provider, link), the address providers the config names, and
- * the INT-pin routing, all configured from the board's `board.h` /
- * `board_config.h` (SPI pins, ROSETTE_PIN_WIZNET_INT, MAC).
+ * Every Rosette image has exactly one network, so it is one board-level
+ * object reached through these functions. Applications, the RTPS participant,
+ * rmw_rosette's network port (rmw_rosette/src/network_port.cpp), and the ROS
+ * session supervisor all use it without knowing which stack is underneath.
+ * The build links exactly one implementation:
+ *
+ *   - WIZnet boards (src/net/wiznet/board_network.cpp): the chip's hardware
+ *     UDP sockets. The board network owns the chip driver (bus, device,
+ *     socket provider, link), the address providers the config names, and
+ *     the INT-pin routing, configured from the board's `board.h` /
+ *     `board_config.h`.
+ *   - Hosts (src/net/posix/board_network.cpp): BSD sockets. The operating
+ *     system owns the interface and its addresses; the board network reports
+ *     them.
  *
  * What the board does for addresses is the firmware's `NetworkConfig`
  * (`net/network_config.hpp`): an IPv4 method list drawn from DHCP, IPv4
- * link-local, and a static address, and, on parts with hardware IPv6 (W6100,
- * W6300), IPv6 SLAAC (`slaac_provider.hpp`). Without a config the board runs
- * board_default_network(): DHCP, falling back to link-local, plus SLAAC where
- * the part has IPv6.
+ * link-local, and a static address, and IPv6 SLAAC where the backend has it.
+ * board_network_capabilities() says which methods this backend can run, and
+ * board_default_network() is the config used when the firmware names none.
  *
- * The board network also runs the board's SNTP client (`net/sntp_client.hpp`):
- * once the board holds an IPv4 address and knows an NTP server
- * (`NetworkConfig::time.server` or DHCP option 42), it sets
+ * On WIZnet boards the board network also runs the SNTP client
+ * (`net/sntp_client.hpp`): once the board holds an IPv4 address and knows an
+ * NTP server (`NetworkConfig::time.server` or DHCP option 42), it sets
  * `platform::WallClock` and keeps it on UTC, so ROS stamps and rcl's system
  * clock read UTC. Agent-backend builds leave it off by default; the agent
- * sets the clock there.
- *
- * Every consumer of the network reaches it through these functions: an RTPS
- * participant opens its transport on board_socket_provider(), and rmw_rosette's
- * WIZnet network port (rmw_rosette/src/network_port_wiznet.cpp) forwards to
- * board_socket_provider() and board_ipv4_address(). The driver templates are
- * instantiated only in board_network.cpp, so including this header costs
- * nothing.
+ * sets the clock there. A host's clock is the operating system's.
  *
  * Usage (single-threaded superloop):
  *
  *   board_init();
- *   rosette::net::wiznet::bring_up_board_network("my-board");  // or ("my-board", kNetwork)
- *   rcl_init(...);                                              // or an RTPS participant
+ *   rosette::net::bring_up_board_network("my-board");  // or ("my-board", kNetwork)
+ *   rcl_init(...);                                      // or an RTPS participant
  *   for (;;) {
  *       spin_some(...);
- *       rosette::net::wiznet::poll_board_network(platform::monotonic_ms());
+ *       rosette::net::poll_board_network(platform::monotonic_ms());
  *   }
  *
  * An rclc firmware that must survive the address moving hands
@@ -58,10 +59,15 @@
 #include "rosette/net/network_watch.hpp"
 #include "rosette/net/socket.hpp"
 
-namespace rosette::net::wiznet {
+namespace rosette::net {
 
 /**
- * @brief The addressing methods this board can run, per family: DHCP, link-local, static; SLAAC.
+ * @brief The addressing methods this board can run, per family.
+ *
+ * WIZnet boards run DHCP, IPv4 link-local, and a static address, plus SLAAC
+ * on parts with hardware IPv6 (W6100, W6300). A host lists DHCP and IPv4
+ * link-local, the methods its operating system runs; it cannot take a static
+ * address from the firmware, and reports no IPv6.
  *
  * @return The board's capabilities, for check_config().
  */
@@ -70,23 +76,28 @@ NetworkCapabilities board_network_capabilities() noexcept;
 /**
  * @brief The config bring_up_board_network() uses when the firmware names none.
  *
- * @return IPv4 DHCP then link-local, IPv6 SLAAC on the W6100 / W6300, the
- *   default probe interval, ready once any IPv4 address is held, no timeout.
+ * @return IPv4 DHCP then link-local, IPv6 SLAAC where the backend has it
+ *   (W6100 / W6300), the default probe interval, ready once any IPv4
+ *   address is held, no timeout.
  */
 NetworkConfig board_default_network() noexcept;
 
 /**
- * @brief Brings the chip, link, and addresses up; blocks until `ready_when` holds or time runs out.
+ * @brief Brings the link and addresses up; blocks until `ready_when` holds or time runs out.
  *
  * Checks the config against board_network_capabilities() first and starts
- * nothing if the board cannot run it. Otherwise constructs the chip driver
- * and the providers the config lists, ordered as listed, and polls them
- * until `config.ready_when` accepts the address snapshot, printing a `[net]`
+ * nothing if the board cannot run it. Otherwise starts the backend and polls
+ * it until `config.ready_when` accepts the address snapshot, then prints each
+ * address as a `[net]` line.
+ *
+ * On a WIZnet board, starting the backend constructs the chip driver and the
+ * providers the config lists, ordered as listed, and bring-up prints a
  * progress line every two seconds (waiting for the chip, for the PHY link, or
  * for an address). The chip's INT pin is routed to the socket provider's
  * receive event (attach_rx_interrupt()) as soon as the chip answers, so a
  * participant driver sleeping in wait_readable() wakes when a datagram
- * arrives.
+ * arrives. On a host, bring-up waits for the operating system to hold an
+ * IPv4 address.
  *
  * A timeout does not stop anything: poll_board_network() carries on from
  * where bring-up left off, including retrying a chip that did not answer, so
@@ -113,6 +124,8 @@ NetworkConfig board_default_network() noexcept;
  *   interrupt latency.
  * - Covered by: tests/host/network_config_test.cpp (config checking and
  *   provider order, TC-NET-CFG-001 to TC-NET-CFG-005);
+ *   tests/host/posix_board_network_test.cpp (the host backend,
+ *   TC-NET-BRD-001 to TC-NET-BRD-003);
  *   examples/rtps_chatter and examples/rclc_chatter on the W5100S-EVB-Pico2
  *   (bidirectional traffic with stock Fast DDS); examples/wiznet_udp_echo
  *   with tools/wiznet_udp_echo_probe.py on the W6100-EVB-Pico (ping and UDP
@@ -132,7 +145,7 @@ BringUpResult bring_up_board_network(
  * later IPv4 method holds the address (link-local after DHCP gave up), it
  * retries the earlier ones every `upgrade_probe_ms` and moves to the first
  * that binds. After a bring-up that timed out it also finishes bringing the
- * chip up.
+ * chip up. On a host it rereads the operating system's address.
  *
  * @param[in] now_ms Monotonic time in milliseconds (platform::monotonic_ms()).
  *
@@ -146,7 +159,7 @@ BringUpResult bring_up_board_network(
 void poll_board_network(uint32_t now_ms) noexcept;
 
 /**
- * @brief Whether the chip answers and the bring-up config's `ready_when` holds now.
+ * @brief Whether the backend is up and the bring-up config's `ready_when` holds now.
  *
  * @return False before bring_up_board_network() has accepted a config.
  */
@@ -172,19 +185,24 @@ bool board_network_ready() noexcept;
 NetworkWatch board_network_watch() noexcept;
 
 /**
- * @brief The chip's hardware UDP socket provider.
+ * @brief The socket provider every protocol opens its sockets on.
  *
- * @return The provider. Only valid after bring_up_board_network() has
- *   returned `ready` or `timed_out`; it lives for the rest of the program,
- *   and its sockets open once the chip answers.
+ * On WIZnet boards it is the chip's hardware UDP socket provider; on a host,
+ * BSD sockets.
+ *
+ * @return The provider; it lives for the rest of the program. On a WIZnet
+ *   board it is valid only after bring_up_board_network() has returned
+ *   `ready` or `timed_out`, and its sockets open once the chip answers. On a
+ *   host it is valid at any time, bring-up or not.
  */
 rosette::net::SocketProvider& board_socket_provider() noexcept;
 
 /**
- * @brief The assigned IPv4 address.
+ * @brief The IPv4 address the board holds.
  *
- * @return Address in host byte order, or 0 before bring_up_board_network()
- *   has assigned one.
+ * @return Address in host byte order, or 0 while the board holds none. On a
+ *   WIZnet board that includes the time before bring_up_board_network() has
+ *   assigned one; a host reports the operating system's address at any time.
  */
 uint32_t board_ipv4_address() noexcept;
 
@@ -195,7 +213,8 @@ uint32_t board_ipv4_address() noexcept;
  * lists the link-local address once it passes duplicate address detection
  * and, while a router advertises an autonomous prefix, the SLAAC global
  * address; `v6.primary()` is the one to announce (the global address when
- * present). On the W5100S `v6` is always empty.
+ * present). On the W5100S and on a host `v6` is always empty; a host's `v4`
+ * lists the operating system's address with source `manual`.
  *
  * @return The live snapshot, updated by poll_board_network(); an empty
  *   snapshot before bring_up_board_network() has run. The reference stays
@@ -210,10 +229,11 @@ uint32_t board_ipv4_address() noexcept;
 const AddressSnapshot& board_address_snapshot() noexcept;
 
 /**
- * @brief Sends the chip abandoned because ARP for the destination failed.
+ * @brief Sends the network abandoned because ARP for the destination failed.
  *
- * @return Count since boot; 0 before bring-up.
+ * @return Count since boot; 0 before bring-up, and always 0 on a backend that
+ *   does not report it (a host).
  */
 uint32_t board_send_timeouts() noexcept;
 
-}  // namespace rosette::net::wiznet
+}  // namespace rosette::net

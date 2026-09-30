@@ -9,7 +9,7 @@
  * around rclc:
  *
  *   - the board network (DHCP, link-local fallback, SLAAC), brought up from
- *     `wiz::board_default_network()`;
+ *     `net::board_default_network()`;
  *   - the XRCE transport over the chip's hardware UDP sockets
  *     (`rosette::UdpSocketTransport`);
  *   - agent location: a fixed address, mDNS/DNS-SD, or the XRCE multicast
@@ -57,7 +57,7 @@
 #include <rosette_msgs/srv/set_led.h>
 
 #include "board.h"
-#include "rosette/net/wiznet/board_network.hpp"
+#include "rosette/net/board_network.hpp"
 #include "rosette/platform/platform.hpp"
 #include "rosette/ros/agent_locator_mdns.hpp"
 #include "rosette/ros/agent_locator_xrce.hpp"
@@ -76,7 +76,7 @@
 namespace {
 
 namespace pf = rosette::platform;
-namespace wiz = rosette::net::wiznet;
+namespace net = rosette::net;
 namespace ros = rosette::ros;
 namespace storage = rosette::storage;
 
@@ -375,17 +375,17 @@ int main() {
     bind_messages();
 
     // The supervisor does the waiting, so bring-up returns at once.
-    rosette::net::NetworkConfig network = wiz::board_default_network();
+    rosette::net::NetworkConfig network = net::board_default_network();
     network.ready_timeout_ms = 0u;
-    (void)wiz::bring_up_board_network("rosette-led-files", network);
+    (void)net::bring_up_board_network("rosette-led-files", network);
 
-    rosette::net::SocketProvider& sockets = wiz::board_socket_provider();
+    rosette::net::SocketProvider& sockets = net::board_socket_provider();
     static rosette::UdpSocketTransport transport(
         sockets, rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u),
         rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u), 50u);
     static ros::AgentSessionGate gate(transport, configured_locator(sockets),
                                       ros::rmw_agent_link());
-    ros::SessionSupervisor session(wiz::board_network_watch(), {create_session, destroy_session},
+    ros::SessionSupervisor session(net::board_network_watch(), {create_session, destroy_session},
                                    &gate);
 
     uint32_t next_report = pf::monotonic_ms() + kReportPeriodMs;

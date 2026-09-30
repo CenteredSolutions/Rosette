@@ -12,7 +12,7 @@
  * network in every state and rebuilds the session when the address it was
  * created on goes away, without depending on any one backend.
  *
- *     rosette::ros::SessionSupervisor session(wiz::board_network_watch(), kApp);
+ *     rosette::ros::SessionSupervisor session(net::board_network_watch(), kApp);
  */
 
 #include <cstdint>

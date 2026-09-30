@@ -5,7 +5,7 @@
  * @brief What the firmware asks of the network: addressing methods per family and a ready test.
  *
  * A `NetworkConfig` is a plain value the firmware passes to its backend's
- * bring-up function (`wiznet::bring_up_board_network()`). It names, per
+ * bring-up function (`bring_up_board_network()`). It names, per
  * address family, the addressing methods to run in preference order; the
  * backend maps each method to an `AddressProvider` and runs the list under an
  * `AddressManager` (`address_manager.hpp`), so the first method in a list that
@@ -19,7 +19,7 @@
  *         .upgrade_probe_ms = 300'000,
  *         .ready_when = net::ready::any_v4,
  *     };
- *     wiz::bring_up_board_network("my-board", kNetwork);
+ *     net::bring_up_board_network("my-board", kNetwork);
  *
  * (Designated initializers are C++20; GCC and Clang accept them in C++17 as
  * an extension, which is how the snippet above builds in this tree.)

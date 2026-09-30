@@ -1,6 +1,6 @@
 /**
  * @file src/net/wiznet/board_network.cpp
- * @brief The board's WIZnet network; see rosette/net/wiznet/board_network.hpp.
+ * @brief The board network on a WIZnet chip; see rosette/net/board_network.hpp.
  *
  * The chip objects and every provider the board can run live in one struct,
  * constructed on the first accepted bring_up_board_network() call, so their
@@ -20,7 +20,7 @@
  * why a bring-up that times out loses nothing.
  */
 
-#include "rosette/net/wiznet/board_network.hpp"
+#include "rosette/net/board_network.hpp"
 
 #include <array>
 #include <cstdio>
@@ -253,6 +253,14 @@ BringUpResult wait_until_ready(BoardNetwork& network, uint32_t timeout_ms) noexc
 BoardNetwork* g_network = nullptr;
 
 }  // namespace
+}  // namespace rosette::net::wiznet
+
+namespace rosette::net {
+
+using wiznet::BoardChip;
+using wiznet::BoardNetwork;
+using wiznet::g_network;
+using wiznet::wait_until_ready;
 
 NetworkCapabilities board_network_capabilities() noexcept {
     NetworkCapabilities capabilities{};
@@ -325,4 +333,4 @@ uint32_t board_send_timeouts() noexcept {
     return g_network != nullptr ? g_network->device.send_timeouts() : 0u;
 }
 
-}  // namespace rosette::net::wiznet
+}  // namespace rosette::net

@@ -39,7 +39,7 @@ the library to link.
 static rosette::UdpSocketTransport transport(sockets, any_v4, any_v4, 50u);
 static rosette::MdnsAgentLocator locator(sockets);
 static rosette::ros::AgentSessionGate gate(transport, locator, rosette::ros::rmw_agent_link());
-rosette::ros::SessionSupervisor session(wiz::board_network_watch(),
+rosette::ros::SessionSupervisor session(net::board_network_watch(),
                                         {create_session, destroy_session}, &gate);
 for (;;) {
     if (session.step(platform::monotonic_ms()) == rosette::ros::SessionState::running) {
