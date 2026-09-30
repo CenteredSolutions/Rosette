@@ -1,11 +1,9 @@
 /**
  * @file platform/pico_freertos.c
- * @brief C runtime accessors (host_runtime.hpp, flash.hpp) for RP2350 and
- * RP2040 under FreeRTOS.
+ * @brief Flash hooks (flash.hpp) for RP2350 and RP2040 under FreeRTOS.
  *
  * Implements:
  *
- *   rosette_platform_get_ms()              — monotonic millisecond counter
  *   rosette_platform_flash_erase()         — RP2350/RP2040 flash erase
  *   rosette_platform_flash_write()         — RP2350/RP2040 flash program
  *   rosette_platform_flash_read()          — RP2350/RP2040 flash read
@@ -41,11 +39,6 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
-#if defined(ROSETTE_FREERTOS_TCP)
-#include "FreeRTOS_Routing.h"
-#include "FreeRTOS_IP_Common.h"
-#endif
-
 #include <string.h>
 #include <stdint.h>
 
@@ -53,85 +46,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-// ============================================================
-// rosette_platform_get_ms()
-//
-// Milliseconds from the RP2040/RP2350 64-bit hardware timer: the same time
-// base as rosette::platform::monotonic_us() (src/platform/chip/rp2), so C and
-// C++ callers read one clock whether or not FreeRTOS is running.
-// ============================================================
-uint32_t rosette_platform_get_ms(void) {
-    return (uint32_t)(time_us_64() / 1000u);
-}
-
-// Yields to the scheduler for approximately `ms` milliseconds. Used by
-// rosette::App::spin() to pace its loop.
-void rosette_platform_delay_ms(uint32_t ms) {
-    vTaskDelay(pdMS_TO_TICKS(ms));
-}
-
-// The FreeRTOS WIZnet socket path is interrupt-driven (FreeRtosExecutor), so
-// nothing here calls this; provide it for symbol completeness as a plain yield.
-void rosette_platform_wait_for_event(uint32_t max_wait_ms) {
-    vTaskDelay(pdMS_TO_TICKS(max_wait_ms));
-}
-
-uint32_t rosette_platform_get_ipv4_addr(void) {
-#if defined(ROSETTE_FREERTOS_TCP)
-    for (NetworkEndPoint_t *ep = FreeRTOS_FirstEndPoint(NULL);
-         ep != NULL;
-         ep = FreeRTOS_NextEndPoint(NULL, ep)) {
-        if ((ENDPOINT_IS_IPv4(ep) != 0) && (FreeRTOS_IsEndPointUp(ep) != 0)) {
-            return ep->ipv4_settings.ulIPAddress;
-        }
-    }
-    return 0u;
-#else
-    return 0u;
-#endif
-}
-
-void rosette_platform_set_ipv6_addr(const uint8_t addr[16]) {
-    /* FreeRTOS+TCP owns the endpoint addresses; the getter reads them back from
-     * the endpoint list. Nothing to store here. */
-    (void)addr;
-}
-
-bool rosette_platform_get_ipv6_addr(uint8_t out[16]) {
-    if (out == NULL) {
-        return false;
-    }
-
-    memset(out, 0, 16u);
-
-#if defined(ROSETTE_FREERTOS_TCP)
-    NetworkEndPoint_t *preferred = NULL;
-
-    for (NetworkEndPoint_t *ep = FreeRTOS_FirstEndPoint(NULL);
-         ep != NULL;
-         ep = FreeRTOS_NextEndPoint(NULL, ep)) {
-        if ((ENDPOINT_IS_IPv6(ep) == 0) || (FreeRTOS_IsEndPointUp(ep) == 0)) {
-            continue;
-        }
-
-        preferred = ep;
-        if ((ep->ipv6_settings.xIPAddress.ucBytes[0] != 0xFEu) ||
-            ((ep->ipv6_settings.xIPAddress.ucBytes[1] & 0xC0u) != 0x80u)) {
-            break;
-        }
-    }
-
-    if (preferred == NULL) {
-        return false;
-    }
-
-    memcpy(out, preferred->ipv6_settings.xIPAddress.ucBytes, 16u);
-    return true;
-#endif
-
-    return false;
-}
 
 // ============================================================
 // Flash persistence hooks

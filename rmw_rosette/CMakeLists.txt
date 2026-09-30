@@ -36,7 +36,6 @@ include(${ROSETTE_ROOT}/cmake/rosette_rtps_sources.cmake)
 set(ROSETTE_RTPS_SOURCES
   ${ROSETTE_RTPS_PROTOCOL_SOURCES}
   ${ROSETTE_RTPS_IO_SOURCES}
-  ${ROSETTE_ROOT}/src/platform/posix/host_runtime.cpp
   ${ROSETTE_ROOT}/src/platform/posix/rtps_posix_log.cpp
   ${ROSETTE_ROOT}/src/net/posix/socket.cpp
   ${ROSETTE_ROOT}/src/net/posix/board_network.cpp

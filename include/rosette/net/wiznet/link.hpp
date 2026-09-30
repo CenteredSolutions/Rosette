@@ -14,7 +14,7 @@
  *     auto bus = wiz::make_board_bus();
  *     wiz::BoardDevice device{bus};
  *     wiz::BoardLink link{device, mac};
- *     while (!link.bring_chip_up()) { rosette_platform_delay_ms(500u); }
+ *     while (!link.bring_chip_up()) { rosette::platform::sleep_ms(500u); }
  *
  * `board_init()` must have configured SPI and toggled the chip reset line
  * before the first `bring_chip_up()`.

@@ -17,7 +17,7 @@
  * or through CMake: `cmake -S tests/host -B build/tests-host && ctest --test-dir build/tests-host`.
  */
 
-#include "fake_runtime.hpp"
+#include "fake_clock.hpp"
 
 #include "rosette/net/wiznet/w5100s.hpp"
 #include "rosette/net/wiznet/w6x00.hpp"

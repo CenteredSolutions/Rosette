@@ -75,7 +75,6 @@ add_host_test(posix_board_network_test)
 target_sources(posix_board_network_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/posix/board_network.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/posix/socket.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform/posix/host_runtime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform/chip/host/chip_host.cpp)
 
 # The ROS session supervisor, against a fake network, application, and agent gate.

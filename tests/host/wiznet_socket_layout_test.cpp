@@ -19,7 +19,7 @@
  * Build and run: `cmake -S tests/host -B build/tests-host && ctest --test-dir build/tests-host`.
  */
 
-#include "fake_runtime.hpp"
+#include "fake_clock.hpp"
 #include "fake_wiznet_chip.hpp"
 #include "test_util.hpp"
 

@@ -6,6 +6,7 @@ bindings/micropython/modrosette.c header posix:sys/time.h
 config/FreeRTOSConfig.h header board:board_config.h
 include/rosette/net/freertos/address_provider.hpp header freertos_kernel:FreeRTOS.h
 include/rosette/net/freertos/address_provider.hpp header freertos_tcp:FreeRTOS_IP.h
+include/rosette/net/freertos/address_provider.hpp header freertos_tcp:FreeRTOS_Routing.h
 include/rosette/net/freertos/igmp.hpp header freertos_kernel:FreeRTOS.h
 include/rosette/net/freertos/igmp.hpp header freertos_tcp:FreeRTOS_Routing.h
 include/rosette/net/freertos/interface.hpp header freertos_tcp:FreeRTOS_IP.h
@@ -67,6 +68,10 @@ src/net/freertos/igmp.cpp header freertos_tcp:pack_struct_start.h
 src/net/freertos/socket.cpp header freertos_kernel:FreeRTOS.h
 src/net/freertos/socket.cpp header freertos_tcp:FreeRTOS_IPv6.h
 src/net/freertos/socket.cpp header freertos_tcp:FreeRTOS_Sockets.h
+src/net/posix/board_network.cpp header posix:arpa/inet.h
+src/net/posix/board_network.cpp header posix:netinet/in.h
+src/net/posix/board_network.cpp header posix:sys/socket.h
+src/net/posix/board_network.cpp header posix:unistd.h
 src/net/posix/socket.cpp header posix:arpa/inet.h
 src/net/posix/socket.cpp header posix:fcntl.h
 src/net/posix/socket.cpp header posix:net/if.h
@@ -87,16 +92,9 @@ src/platform/pico_bare.c header pico_sdk:pico/time.h
 src/platform/pico_bare.c header posix:sys/time.h
 src/platform/pico_freertos.c header freertos_kernel:FreeRTOS.h
 src/platform/pico_freertos.c header freertos_kernel:task.h
-src/platform/pico_freertos.c header freertos_tcp:FreeRTOS_IP_Common.h
-src/platform/pico_freertos.c header freertos_tcp:FreeRTOS_Routing.h
 src/platform/pico_freertos.c header pico_sdk:hardware/flash.h
 src/platform/pico_freertos.c header pico_sdk:hardware/sync.h
 src/platform/pico_freertos.c header pico_sdk:pico/stdlib.h
-src/platform/pico_freertos.c port-macro ROSETTE_FREERTOS_TCP
 src/platform/pico_littlefs.cpp header board:board_config.h
 src/platform/posix/host_littlefs.cpp header posix:fcntl.h
 src/platform/posix/host_littlefs.cpp header posix:unistd.h
-src/platform/posix/host_runtime.cpp header posix:arpa/inet.h
-src/platform/posix/host_runtime.cpp header posix:netinet/in.h
-src/platform/posix/host_runtime.cpp header posix:sys/socket.h
-src/platform/posix/host_runtime.cpp header posix:unistd.h

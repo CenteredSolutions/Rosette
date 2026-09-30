@@ -19,14 +19,16 @@
 #include <array>
 #include <cstdint>
 
+#include <cstring>
+
 extern "C" {
 #include "FreeRTOS.h"
 #include "FreeRTOS_IP.h"
+#include "FreeRTOS_Routing.h"
 }
 
 #include "rosette/net/address_provider.hpp"
 #include "rosette/net/address_state.hpp"
-#include "rosette/platform/host_runtime.hpp"
 
 namespace rosette::net::freertos {
 
@@ -67,7 +69,7 @@ private:
         lease_.family = family_;
 
         if (family_ == AddressFamily::ipv4) {
-            const uint32_t v4 = rosette_platform_get_ipv4_addr();
+            const uint32_t v4 = endpoint_ipv4();
             if (v4 != 0u) {
                 const std::array<uint8_t, 16> a{
                     static_cast<uint8_t>(v4 >> 24), static_cast<uint8_t>(v4 >> 16),
@@ -82,7 +84,7 @@ private:
             }
         } else {
             std::array<uint8_t, 16> v6{};
-            if (rosette_platform_get_ipv6_addr(v6.data())) {
+            if (endpoint_ipv6(v6)) {
                 lease_.source = AddressSource::slaac;    // link_local flag distinguishes fe80::
                 lease_.add(v6, 64u);
                 lease_.state = AddressPhase::bound;
@@ -94,6 +96,53 @@ private:
         if (!started_) {
             lease_.state = AddressPhase::idle;
         }
+    }
+
+    /**
+     * @brief The first IPv4 endpoint that is up.
+     *
+     * @return Its address in host byte order, or 0 when none is up.
+     */
+    static uint32_t endpoint_ipv4() noexcept {
+        for (NetworkEndPoint_t* ep = FreeRTOS_FirstEndPoint(nullptr); ep != nullptr;
+             ep = FreeRTOS_NextEndPoint(nullptr, ep)) {
+            if ((ENDPOINT_IS_IPv4(ep) != 0) && (FreeRTOS_IsEndPointUp(ep) != 0)) {
+                // The stack keeps the address in network byte order.
+                return FreeRTOS_ntohl(ep->ipv4_settings.ulIPAddress);
+            }
+        }
+
+        return 0u;
+    }
+
+    /**
+     * @brief The address of an IPv6 endpoint that is up, a global one first.
+     *
+     * @param[out] out Receives the address; zeroed when none is up.
+     * @return `true` when an address was written.
+     */
+    static bool endpoint_ipv6(std::array<uint8_t, 16>& out) noexcept {
+        out.fill(0u);
+        NetworkEndPoint_t* preferred = nullptr;
+        for (NetworkEndPoint_t* ep = FreeRTOS_FirstEndPoint(nullptr); ep != nullptr;
+             ep = FreeRTOS_NextEndPoint(nullptr, ep)) {
+            if ((ENDPOINT_IS_IPv6(ep) == 0) || (FreeRTOS_IsEndPointUp(ep) == 0)) {
+                continue;
+            }
+
+            preferred = ep;
+            const uint8_t* a = ep->ipv6_settings.xIPAddress.ucBytes;
+            if ((a[0] != 0xFEu) || ((a[1] & 0xC0u) != 0x80u)) {
+                break;  // not fe80::/10
+            }
+        }
+
+        if (preferred == nullptr) {
+            return false;
+        }
+
+        std::memcpy(out.data(), preferred->ipv6_settings.xIPAddress.ucBytes, out.size());
+        return true;
     }
 
     rosette::net::AddressFamily family_;

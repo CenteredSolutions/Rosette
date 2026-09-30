@@ -4,7 +4,7 @@
  *        failure / timeout, restart-from-top after exhaustion or loss.
  */
 
-#include "fake_runtime.hpp"
+#include "fake_clock.hpp"
 #include "mock_provider.hpp"
 #include "test_util.hpp"
 

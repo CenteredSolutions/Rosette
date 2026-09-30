@@ -8,7 +8,7 @@
  * instantiate and drive without crashing.
  */
 
-#include "fake_runtime.hpp"
+#include "fake_clock.hpp"
 #include "fake_wiznet_chip.hpp"
 #include "test_util.hpp"
 

@@ -33,7 +33,6 @@
 #include <memory>
 #include <new>
 
-#include "rosette/platform/host_runtime.hpp"
 #include "rosette/platform/platform.hpp"
 
 #include "device.hpp"
@@ -278,7 +277,7 @@ public:
         }
 
         const uint32_t start = executor_type::now_ms();
-        typename executor_type::RxScope rx_scope(device_, socket_);
+        typename executor_type::RxScope rx_scope(executor_, *provider_, device_, socket_);
         for (;;) {
             UdpEndpoint source{};
             const std::ptrdiff_t rc = device_.udp_receive_from(
@@ -304,7 +303,7 @@ public:
                 return -1;
             }
 
-            executor_.wait_rx(receive_timeout_ms_ - elapsed);
+            (void)rx_scope.wait(receive_timeout_ms_ - elapsed);
         }
     }
 
@@ -349,8 +348,8 @@ private:
     /// time so a re-bind after a reset does not reuse an in-flight port.
     uint16_t ephemeral_port() const noexcept
     {
-        const uint32_t spread = rosette_platform_get_ms() +
-                                (static_cast<uint32_t>(socket_) * 2654435761u);
+        const uint32_t spread =
+            rosette::platform::monotonic_ms() + (static_cast<uint32_t>(socket_) * 2654435761u);
         return static_cast<uint16_t>(49152u + (spread % 16384u));
     }
 

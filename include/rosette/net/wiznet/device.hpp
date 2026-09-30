@@ -8,8 +8,6 @@
 #include <type_traits>
 #include <variant>
 
-#include "rosette/platform/host_runtime.hpp"  // rosette_platform_get_ms for the bounded ARP probe
-
 #if defined(ROSETTE_OS_FREERTOS)
 extern "C" {
 #include "FreeRTOS.h"

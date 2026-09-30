@@ -15,8 +15,8 @@
  *    erase/program/read primitives;
  *  - rosette/platform/littlefs_platform.hpp: mounting the LittleFS volume
  *    (stub_littlefs.cpp, compiled into rosette_storage, which has lfs.h);
- *  - rosette/platform/host_runtime.hpp: the older runtime API, until it is
- *    removed (docs/design/ports_move_plan.md, "Order", step 6).
+ *  - the `__atomic_*` helpers a core without atomic instructions needs
+ *    (stub_atomic.c).
  *
  * The clock counts calls rather than time, so waits that spin on it
  * (ports/os/stub) still end.
@@ -27,7 +27,6 @@
  */
 
 #include "rosette/platform/flash.hpp"
-#include "rosette/platform/host_runtime.hpp"
 #include "rosette/platform/platform.hpp"
 
 namespace rosette::platform {
@@ -79,35 +78,6 @@ void rosette_platform_flash_read(uint32_t addr, void* data, uint32_t size) {
     (void)addr;
     (void)data;
     (void)size;
-}
-
-uint32_t rosette_platform_get_ms(void) {
-    return rosette::platform::monotonic_ms();
-}
-
-uint32_t rosette_platform_get_ipv4_addr(void) {
-    return 0u;
-}
-
-bool rosette_platform_get_ipv6_addr(uint8_t out[16]) {
-    (void)out;
-    return false;
-}
-
-void rosette_platform_delay_ms(uint32_t ms) {
-    rosette::platform::sleep_ms(ms);
-}
-
-void rosette_platform_wait_for_event(uint32_t max_wait_ms) {
-    rosette::platform::sleep_ms(max_wait_ms);
-}
-
-void rosette_platform_set_ipv4_addr(uint32_t addr_host_order) {
-    (void)addr_host_order;
-}
-
-void rosette_platform_set_ipv6_addr(const uint8_t addr[16]) {
-    (void)addr;
 }
 
 }  // extern "C"

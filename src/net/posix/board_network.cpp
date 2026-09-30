@@ -10,24 +10,98 @@
  * program that does call it gets the same ready/timeout semantics as a
  * board, which lets firmware-shaped applications run on the host unchanged.
  *
- * The host address comes from rosette_platform_get_ipv4_addr(): the
- * `ROSETTE_LOCAL_IP` override, else the address the routing table picks for
- * outbound traffic, else loopback.
+ * The host address is the `ROSETTE_LOCAL_IP` override, else the address the
+ * routing table picks for outbound traffic, else loopback.
  */
 
 #include "rosette/net/board_network.hpp"
 
 #include <array>
 #include <cstdio>
+#include <cstdlib>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include "rosette/net/posix/socket.hpp"
-#include "rosette/platform/host_runtime.hpp"
 #include "rosette/platform/platform.hpp"
 
 namespace rosette::net {
 namespace {
 
 namespace pf = rosette::platform;
+
+/**
+ * @brief Parses a dotted-quad string into a host-order IPv4 address.
+ *
+ * @param[in] text Candidate address string; may be null.
+ * @return The parsed address in host byte order, or 0 when `text` is not a
+ *   valid IPv4 literal.
+ */
+uint32_t ipv4_host_from_string(const char* text) noexcept {
+    if (text == nullptr) {
+        return 0u;
+    }
+
+    in_addr addr{};
+    if (inet_pton(AF_INET, text, &addr) != 1) {
+        return 0u;
+    }
+
+    return ntohl(addr.s_addr);
+}
+
+/**
+ * @brief Asks the kernel which local IPv4 address would route to the internet.
+ *
+ * Opens an unconnected UDP socket, `connect()`s it toward a well-known public
+ * address (no packets are sent), and reads the source address the routing
+ * table selected.
+ *
+ * @return The selected local IPv4 address in host byte order, or 0 on failure.
+ */
+uint32_t detect_local_ipv4_host() noexcept {
+    const int fd = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (fd < 0) {
+        return 0u;
+    }
+
+    sockaddr_in remote{};
+    remote.sin_family = AF_INET;
+    remote.sin_port = htons(53u);
+    (void)inet_pton(AF_INET, "8.8.8.8", &remote.sin_addr);
+    (void)::connect(fd, reinterpret_cast<const sockaddr*>(&remote), sizeof(remote));
+
+    sockaddr_in local{};
+    socklen_t local_len = static_cast<socklen_t>(sizeof(local));
+    const int rc = ::getsockname(fd, reinterpret_cast<sockaddr*>(&local), &local_len);
+    (void)::close(fd);
+
+    return (rc == 0) ? ntohl(local.sin_addr.s_addr) : 0u;
+}
+
+/**
+ * @brief The host's IPv4 address, computed once per process.
+ *
+ * @return `ROSETTE_LOCAL_IP` if set and valid, else the routing table's
+ *   choice, else 127.0.0.1; in host byte order.
+ */
+uint32_t host_ipv4() noexcept {
+    static const uint32_t value = [] {
+        if (const uint32_t forced = ipv4_host_from_string(std::getenv("ROSETTE_LOCAL_IP"))) {
+            return forced;
+        }
+
+        if (const uint32_t detected = detect_local_ipv4_host()) {
+            return detected;
+        }
+
+        return static_cast<uint32_t>(0x7F000001u);  // 127.0.0.1
+    }();
+    return value;
+}
 
 /// The config bring-up accepted; `ready_when` is null until then.
 NetworkConfig g_config{};
@@ -41,7 +115,7 @@ bool g_started = false;
  */
 AddressSnapshot& host_snapshot() noexcept {
     static AddressSnapshot snapshot{};
-    const uint32_t host = rosette_platform_get_ipv4_addr();
+    const uint32_t host = host_ipv4();
     snapshot.active = true;
     snapshot.assigned = host != 0u;
     snapshot.v4.source = AddressSource::manual;
@@ -130,7 +204,7 @@ rosette::net::SocketProvider& board_socket_provider() noexcept {
 }
 
 uint32_t board_ipv4_address() noexcept {
-    return rosette_platform_get_ipv4_addr();
+    return host_ipv4();
 }
 
 const AddressSnapshot& board_address_snapshot() noexcept {

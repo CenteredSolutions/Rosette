@@ -66,6 +66,7 @@
 #include "rosette/net/address_provider.hpp"
 #include "rosette/net/interface.hpp"
 #include "rosette/net/ipv6_router_advert.hpp"
+#include "rosette/platform/platform.hpp"
 
 #include "device.hpp"
 #include "socket_provider.hpp"
@@ -115,7 +116,7 @@ public:
 
     void begin() noexcept override
     {
-        const uint32_t now_ms = rosette_platform_get_ms();
+        const uint32_t now_ms = rosette::platform::monotonic_ms();
         release_socket();
         reset_lease();
         lease_.state = rosette::net::AddressPhase::acquiring;

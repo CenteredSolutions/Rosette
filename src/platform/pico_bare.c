@@ -1,16 +1,12 @@
 /**
  * @file platform/pico_bare.c
- * @brief RP2040 / RP2350 platform runtime for a no-RTOS superloop build.
+ * @brief RP2040 / RP2350 flash hooks and newlib time shims for a no-RTOS build.
  *
- * Provides the `rosette_platform_*` primitives (clock, delay, local address,
- * flash) for boards that run a bare `for(;;)` loop over `rosette::App::spin_once()`
- * instead of FreeRTOS. This is the default for the W5100S-EVB-Pico2, where the
- * WIZnet chip does the TCP/IP work in hardware and no RTOS is needed.
- *
- * The FreeRTOS build gets the same symbols from `platform/pico_freertos.c`.
+ * Provides `rosette_platform_flash_*` (flash.hpp) for boards that run a bare
+ * superloop instead of FreeRTOS, and backs newlib's `clock_gettime()` /
+ * `_gettimeofday()` with the hardware timer. The FreeRTOS build gets the
+ * flash hooks from `platform/pico_freertos.c`.
  */
-
-#include "rosette/platform/host_runtime.hpp"
 
 #include "pico/stdlib.h"
 #include "pico/time.h"
@@ -20,60 +16,6 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
-
-// Set by the network bring-up layer once an address is assigned.
-static volatile uint32_t s_local_ipv4_host_order = 0u;
-static uint8_t s_local_ipv6[16] = {0};
-
-uint32_t rosette_platform_get_ms(void)
-{
-    return to_ms_since_boot(get_absolute_time());
-}
-
-void rosette_platform_delay_ms(uint32_t ms)
-{
-    sleep_ms(ms);
-}
-
-void rosette_platform_wait_for_event(uint32_t max_wait_ms)
-{
-    // WFE with a hardware-alarm backstop: returns on the alarm, or earlier when
-    // any enabled IRQ fires (e.g. the WIZnet INT GPIO edge wired in board_init).
-    (void)best_effort_wfe_or_timeout(make_timeout_time_ms(max_wait_ms));
-}
-
-void rosette_platform_set_ipv4_addr(uint32_t addr_host_order)
-{
-    s_local_ipv4_host_order = addr_host_order;
-}
-
-uint32_t rosette_platform_get_ipv4_addr(void)
-{
-    return s_local_ipv4_host_order;
-}
-
-void rosette_platform_set_ipv6_addr(const uint8_t addr[16])
-{
-    if (addr != NULL) {
-        memcpy(s_local_ipv6, addr, 16u);
-    } else {
-        memset(s_local_ipv6, 0, 16u);
-    }
-}
-
-bool rosette_platform_get_ipv6_addr(uint8_t out[16])
-{
-    int i;
-    uint8_t acc = 0u;
-    if (out == NULL) {
-        return false;
-    }
-    memcpy(out, s_local_ipv6, 16u);
-    for (i = 0; i < 16; ++i) {
-        acc |= s_local_ipv6[i];
-    }
-    return acc != 0u;
-}
 
 // ------------------------------------------------------------
 // Flash — bare-metal (single core, no scheduler to suspend).

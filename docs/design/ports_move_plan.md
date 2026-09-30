@@ -7,7 +7,7 @@ document states the rules, lists every file that moves or changes, and gives the
 written once the seams below exist, will explain how to add a port.
 
 `tools/style/check_port_boundaries.py` enforces the rules. It runs in `tools/style/run_style_checks.sh`, against
-`tools/style/port_boundary_baseline.txt` (98 entries today). New code must pass, and each step below deletes
+`tools/style/port_boundary_baseline.txt` (96 entries today). New code must pass, and each step below deletes
 baseline entries. When the baseline is empty, this plan is done and this file is replaced by PORTING.md.
 
 ## Layout
@@ -88,10 +88,20 @@ their ports: nothing outside a port constructs a backend. The board network does
 is promoted, `rclc_chatter` and `rtps_chatter` are portable as written.
 
 `host_runtime.hpp` (`rosette_platform_get_ms`, `delay_ms`, `wait_for_event`, `get/set_ipv4_addr`,
-`get/set_ipv6_addr`) is a second platform API that overlaps the first and also holds network state. It gets
-removed: the clock functions become `platform::monotonic_ms`, `sleep_ms` and `Event::wait`, and the address
-functions become reads of the `AddressState` the network layer already owns. Removing it also fixes a bug:
-the FreeRTOS `wait_for_event` is `vTaskDelay(max_wait_ms)` and never wakes early.
+`get/set_ipv6_addr`) was a second platform API that overlapped the first and also held network state. Step 6
+removed it:
+
+- the clock functions became `platform::monotonic_ms()` and `sleep_ms()`;
+- `wait_for_event` (WFE, woken by the INT pin's otherwise empty GPIO callback) became a `platform::Event` in the
+  WIZnet `PollingExecutor`, lent to the provider as its receive event for the length of a blocking
+  `recv_from()`, so `attach_rx_interrupt()` wakes it. The socket's RECV flag is cleared before the last check
+  for data, so each datagram produces an edge. The FreeRTOS `wait_for_event` was `vTaskDelay(max_wait_ms)` and
+  never woke early; it is gone with the rest;
+- the address setters had no reader on the WIZnet path (`NetworkAddress` published into them, nothing read
+  back), so they went. The two getters with a real source moved next to their one caller: the FreeRTOS+TCP
+  endpoint readout into `FreeRtosObserver` (which also fixes its byte order: the stack keeps `ulIPAddress` in
+  network order, and the old getter handed it on as host order), and the host's local-IPv4 detection into
+  `src/net/posix/board_network.cpp`.
 
 ## Move list
 
@@ -108,16 +118,16 @@ Actions: **move** (`git mv`, then fix includes), **split** (the contents go to s
 | `include/rosette/platform/os_baremetal.hpp` | move + refactor | `ports/os/baremetal/rosette_os_port.hpp`, built on the new chip hooks instead of `pico/critical_section.h`, `pico/mutex.h`, WFE |
 | `include/rosette/platform/bus_pico_spi.hpp` | move + refactor | `ports/chip/rp2/rp2_spi_bus.hpp`; FreeRTOS semaphore becomes `platform::Mutex` |
 | `include/rosette/platform/bus_pico_qspi.hpp` | move + refactor | `ports/chip/rp2/rp2_qspi_bus.hpp`; same |
-| `include/rosette/platform/host_runtime.hpp` | delete | see "Contracts"; callers: `net/address.hpp`, `wiznet/{device,executor,link,slaac_provider,socket_provider}.hpp`, `net/freertos/address_provider.hpp`, four `board_init.c`, `tests/host/fake_runtime.hpp` |
+| `include/rosette/platform/host_runtime.hpp` | done | deleted (see "What an application includes"); host tests fake `monotonic_us()` in `tests/host/fake_clock.hpp` |
 | `include/rosette/platform/flash.hpp`, `littlefs_platform.hpp`, `wall_clock.hpp` | stays | contracts |
 | `src/platform/wall_clock.cpp` | stays | portable |
 | `src/platform/chip/rp2/chip_rp2.cpp` | move | `ports/chip/rp2/chip_rp2.cpp` |
 | `src/platform/chip/host/chip_host.cpp` | move | `ports/chip/host/chip_host.cpp` |
-| `src/platform/pico_bare.c` | split | flash to `ports/chip/rp2/rp2_flash.c`; `clock_gettime`/`_gettimeofday` to `ports/chip/rp2/rp2_newlib_time.c`; the rest is deleted with `host_runtime.hpp` |
-| `src/platform/pico_freertos.c` | split | flash merges into the same `rp2_flash.c` (one version for both OSes, e.g. `flash_safe_execute`; check it on RP2350 with FreeRTOS SMP); endpoint address readout to `ports/net/freertos_tcp/freertos_tcp_address.cpp`; the rest is deleted |
+| `src/platform/pico_bare.c` | split | flash to `ports/chip/rp2/rp2_flash.c`; `clock_gettime`/`_gettimeofday` to `ports/chip/rp2/rp2_newlib_time.c` (the runtime functions are gone) |
+| `src/platform/pico_freertos.c` | split | flash merges into the same `rp2_flash.c` (one version for both OSes, e.g. `flash_safe_execute`; check it on RP2350 with FreeRTOS SMP); the endpoint address readout is already in `FreeRtosObserver` and moves with it |
 | `src/platform/pico_littlefs.cpp` | move | `ports/chip/rp2/rp2_littlefs_region.cpp` |
 | `src/platform/posix/host_littlefs.cpp` | move | `ports/chip/host/host_flash_file.cpp` |
-| `src/platform/posix/host_runtime.cpp` | split | local-IPv4 detection to `ports/net/posix/posix_local_address.cpp`; the rest is deleted |
+| `src/platform/posix/host_runtime.cpp` | done | deleted; its local-IPv4 detection is in `src/net/posix/board_network.cpp`, which moves to `ports/net/posix/` |
 | `src/platform/posix/rtps_posix_log.cpp` | move | `ports/os/posix/rtps_stderr_log.cpp` |
 
 ### Network
@@ -176,9 +186,10 @@ neither fetched nor linked. The comments in `device.hpp` and `w6x00.hpp` that ci
    `.github/workflows/port-stub.yml`. The image links every object of every portable library and the WIZnet
    driver for all three chips, on Cortex-M0+ with newlib only. `rosette_platform.cmake` already takes a port from
    `ports/<axis>/<name>/port.cmake` or `ROSETTE_PORT_DIRS`, and `platform.hpp` falls back to
-   `rosette_os_port.hpp`; the existing ports switch over in step 8. The stub also defines the `host_runtime.hpp`
-   functions, which step 6 deletes.)
-6. Remove `host_runtime.hpp` (the largest seam; touches the WIZnet driver, address code and boards).
+   `rosette_os_port.hpp`; the existing ports switch over in step 8.)
+6. Remove `host_runtime.hpp` (the largest seam; touches the WIZnet driver, address code and boards). (done: see
+   "What an application includes". The boards' empty INT callbacks went with it; `attach_rx_interrupt()` owns
+   the interrupt. `NetworkAddress::wait()` had no caller and went too.)
 7. Refactor the WIZnet driver onto `platform::Event` and the GPIO-interrupt contract; move DHCP to `src/net/`.
 8. Add the fixed-name OS header and move the OS ports; move the chip ports; split the pico runtime files.
 9. Move the network ports and `boards/common/rp2_wiznet/`; convert `cmake/` to per-port `port.cmake`.

@@ -8,10 +8,9 @@
  * *how you wait for a receive event*:
  *
  *  - @ref PollingExecutor — cooperative. `recv_from()` polls the chip's RX
- *    register; between polls it parks the CPU in `WFE`
- *    (`rosette_platform_wait_for_event`), woken by the chip's INT line if
- *    `board_init` wired that GPIO IRQ, or by a short backstop timeout
- *    otherwise. No interrupt task; the superloop owns the CPU.
+ *    register; between polls it sleeps on a `platform::Event` that the chip's
+ *    INT line signals (attach_rx_interrupt()), with a short backstop timeout.
+ *    No interrupt task; the superloop owns the CPU.
  *
  *  - @ref FreeRtosExecutor — event-driven. A dedicated task drains the chip's
  *    interrupt registers and unblocks the per-socket task parked in
@@ -26,8 +25,9 @@
  *   - `static uint32_t now_ms() noexcept`
  *   - `bool start() noexcept` / `void stop() noexcept` — dispatch lifecycle
  *   - `struct CriticalSection` — RAII guard around the socket-claim table
- *   - `struct RxScope` — RAII guard bracketing a `recv_from()` wait
- *   - `bool wait_rx(uint32_t remaining_ms) noexcept` — block up to the budget,
+ *   - `struct RxScope(Executor&, SocketProvider&, Device&, socket)` — RAII
+ *     guard bracketing a `recv_from()` wait, with
+ *     `bool wait(uint32_t remaining_ms) noexcept`: block up to the budget,
  *     then let the caller re-poll (the caller owns the deadline check)
  */
 
@@ -35,7 +35,8 @@
 
 #include <cstdint>
 
-#include "rosette/platform/host_runtime.hpp"
+#include "rosette/net/socket.hpp"
+#include "rosette/platform/platform.hpp"
 
 #if defined(ROSETTE_OS_FREERTOS)
 extern "C" {
@@ -50,17 +51,17 @@ namespace rosette::net::wiznet {
  * @brief Cooperative, single-threaded execution policy for a bare superloop.
  *
  * No interrupt task is spawned. `recv_from()` polls the chip directly; between
- * polls this policy parks the CPU in `WFE` via
- * `rosette_platform_wait_for_event()`. When `board_init` has wired the chip's
- * INT line to a GPIO IRQ, an arriving datagram wakes the wait in microseconds;
- * otherwise the backstop timeout bounds the latency. Critical sections are
- * no-ops because the superloop is the only context touching the driver.
+ * polls it sleeps on this policy's `platform::Event`, which it registers as
+ * the provider's receive event for the length of the wait, so the chip's INT
+ * interrupt (attach_rx_interrupt()) wakes it within microseconds of a
+ * datagram arriving. Critical sections are no-ops because the superloop is
+ * the only context touching the driver.
  */
 template<typename Device>
 struct PollingExecutor {
     explicit PollingExecutor(Device& /*device*/) noexcept {}
 
-    static uint32_t now_ms() noexcept { return rosette_platform_get_ms(); }
+    static uint32_t now_ms() noexcept { return rosette::platform::monotonic_ms(); }
 
     bool start() noexcept { return true; }
     void stop() noexcept {}
@@ -72,29 +73,61 @@ struct PollingExecutor {
         CriticalSection& operator=(const CriticalSection&) = delete;
     };
 
-    /// Nothing to arm: `recv_from()` polls the chip register itself.
+    /**
+     * @brief Routes INT to this executor's event while one socket waits.
+     *
+     * The event registered before the scope is put back when it ends. A
+     * datagram for its owner that arrives meanwhile is not lost: its owner
+     * checks the chip before it sleeps (WiznetSocketProvider::wait_readable()).
+     */
     struct RxScope {
-        RxScope(Device& /*device*/, uint8_t /*socket*/) noexcept {}
+        RxScope(PollingExecutor& executor, rosette::net::SocketProvider& provider, Device& device,
+                uint8_t socket) noexcept
+            : executor_(executor),
+              provider_(provider),
+              device_(device),
+              socket_(socket),
+              previous_(provider.receive_event()) {
+            provider_.set_receive_event(&executor_.rx_event_);
+        }
+
+        ~RxScope() { provider_.set_receive_event(previous_); }
         RxScope(const RxScope&) = delete;
         RxScope& operator=(const RxScope&) = delete;
+
+        /**
+         * @brief Sleeps until the chip interrupts or the backstop elapses.
+         *
+         * The socket's RECV flag is cleared before the receive size is read,
+         * so a datagram landing after that read still pulls INT low and
+         * signals the event. The backstop bounds the wait when INT is already
+         * held low by another socket's unserviced RECV flag, or not wired.
+         *
+         * @param[in] remaining_ms Rest of the caller's receive timeout.
+         * @return `true` when the socket may hold data; the caller re-polls either way.
+         */
+        bool wait(uint32_t remaining_ms) noexcept {
+            device_.rearm_socket_rx_interrupt(socket_);
+            if (device_.socket_rx_available(socket_) > 0u) {
+                return true;
+            }
+
+            return executor_.rx_event_.wait_for(remaining_ms < kBackstopMs ? remaining_ms
+                                                                           : kBackstopMs);
+        }
+
+    private:
+        PollingExecutor& executor_;
+        rosette::net::SocketProvider& provider_;
+        Device& device_;
+        uint8_t socket_;
+        rosette::platform::Event* previous_;
     };
 
-    /**
-     * @brief Parks in `WFE` until the chip interrupts or the backstop elapses.
-     *
-     * With the INT GPIO IRQ wired, a receive wakes this almost immediately. The
-     * cap only bounds the rare missed-edge case (a burst datagram landing while
-     * INT is already asserted low); the caller's `recv_from()` re-poll then
-     * picks it up on the next backstop tick, so no datagram is lost.
-     */
-    bool wait_rx(uint32_t remaining_ms) noexcept
-    {
-        rosette_platform_wait_for_event(
-            remaining_ms < kBackstopMs ? remaining_ms : kBackstopMs);
-        return true;
-    }
-
     static constexpr uint32_t kBackstopMs = 20u;
+
+private:
+    rosette::platform::Event rx_event_;
 };
 
 #if defined(ROSETTE_OS_FREERTOS)
@@ -160,29 +193,28 @@ public:
 
     /// Registers the calling task as the wake target for @p socket's RX events.
     struct RxScope {
-        RxScope(Device& device, uint8_t socket) noexcept
-            : device_(device), socket_(socket)
-        {
+        RxScope(FreeRtosExecutor& /*executor*/, rosette::net::SocketProvider& /*provider*/,
+                Device& device, uint8_t socket) noexcept
+            : device_(device), socket_(socket) {
             device_.register_socket_rx_task(socket_);
         }
         ~RxScope() { device_.unregister_socket_rx_task(socket_); }
         RxScope(const RxScope&) = delete;
         RxScope& operator=(const RxScope&) = delete;
 
+        /**
+         * @brief Blocks until the dispatch task signals RX data or the budget lapses.
+         *
+         * The return value is advisory; the caller re-polls and owns the deadline.
+         */
+        bool wait(uint32_t remaining_ms) noexcept {
+            return ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(remaining_ms)) != 0u;
+        }
+
     private:
         Device& device_;
         uint8_t socket_;
     };
-
-    /**
-     * @brief Blocks until the dispatch task signals RX data or the budget lapses.
-     *
-     * The return value is advisory; the caller re-polls and owns the deadline.
-     */
-    bool wait_rx(uint32_t remaining_ms) noexcept
-    {
-        return ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(remaining_ms)) != 0u;
-    }
 
 private:
     static void trampoline(void* arg) noexcept

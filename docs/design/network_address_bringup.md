@@ -40,8 +40,7 @@ Four small pieces bring an interface online:
   IPv6, the link, or the platform.
 
 * **`rosette::net::NetworkAddress`** — the object `main()` drives. Combines a v4
-  `AddressManager` and an optional v6 one into one `AddressSnapshot`, publishes
-  the addresses to the platform runtime (`rosette_platform_set_ipv{4,6}_addr`),
+  `AddressManager` and an optional v6 one into one `AddressSnapshot`,
   fires a single `on_change(const AddressSnapshot&)`, exposes `has_address()` /
   `stable()`, and — given a `NetInterface` — **supervises carrier**: a link drop
   releases the address, its return kicks a fresh acquisition. `poll(now_ms)`.
@@ -71,7 +70,7 @@ independent `AddressManager`s over independent provider lists.
 | `StaticAddressProvider` | v4 / v6 | writes the address via `NetInterface`, binds; a conflict → `failed` (a static address can't be renumbered) |
 | `wiznet::DhcpAddressProvider` | v4 | steps a `wiznet::DhcpClient` (RFC 2131 state machine, one non-blocking step per poll, a socket only while waiting for a reply); writes the lease through `NetInterface::apply()` on `bound`, removes it on `lost` (expiry or NAK), writes nothing on a renewal; as holder a conflict → DHCPDECLINE and a fresh DISCOVER ≥10 s later. Supports `begin_probe()` |
 | `Ipv4LinkLocalProvider` | v4 | RFC 3927 FSM (below); no internal clock; the terminal fallback — never reports `failed`, holds link-local and defends it |
-| `freertos::FreeRtosObserver` | one per family | observe-only: maps `rosette_platform_get_ipv{4,6}_addr()` into a lease; never fails, never blocks |
+| `freertos::FreeRtosObserver` | one per family | observe-only: maps the stack's up endpoints into a lease; never fails, never blocks |
 | `wiznet::WiznetSlaacProvider` | v6 | RFC 4862 SLAAC on the W6100 / W6300: link-local address with DAD, router solicitation, global address from an autonomous prefix, refresh before lifetimes end; see [W6100 / W6300 hardware IPv6](#w6100--w6300-hardware-ipv6) |
 
 ### Declaring it
@@ -264,8 +263,9 @@ exactly as it does after any later carrier loss.
 
 ## FreeRTOS+TCP path
 
-`freertos::FreeRtosObserver` only *observes* — it maps
-`rosette_platform_get_ipv{4,6}_addr()` into an `AddressLease`, classifying
+`freertos::FreeRtosObserver` only *observes* — it maps the first IPv4
+endpoint that is up (and an IPv6 one, a global address first) into an
+`AddressLease`, classifying
 `169.254/16` → `zeroconf_v4` and `fe80::/10` → `link_local_v6`. The stack does
 DHCP, AutoIP fallback (`ipconfigDHCP_FALL_BACK_AUTO_IP` = `1`), RA/SLAAC, and DAD
 itself. Give the v4 observer to a `v4` manager and the v6 observer to a `v6`
@@ -342,7 +342,7 @@ wire format, retransmission, unicast renewal, rebinding, decline, expiry),
 `address_upgrade_test` (DHCP probed while link-local holds, the conflict latch
 staying with the holder, the upgrade, renewal without an interface write),
 and `network_config_test` (config checking against a backend's methods,
-providers ordered by the config, the ready predicates). All fakeable — `fake_runtime.hpp` for `block_until_stable`'s clock,
+providers ordered by the config, the ready predicates). All fakeable — `fake_clock.hpp` for the platform clock (`monotonic_us()`),
 `fake_interface.hpp` for the `NetInterface` (address / conflict / carrier),
 `mock_provider.hpp` for a scriptable `AddressProvider`. The provider FSMs take
 `poll(now_ms)` so their tests use plain integers, no clock hook.

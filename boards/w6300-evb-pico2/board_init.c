@@ -16,12 +16,6 @@
 #include "pico/stdlib.h"
 #include "pico/unique_id.h"
 
-static void wiznet_int_callback(uint gpio, uint32_t events)
-{
-    (void)gpio;
-    (void)events;
-}
-
 void board_init(void)
 {
     stdio_init_all();
@@ -30,12 +24,11 @@ void board_init(void)
     gpio_set_dir(ROSETTE_PIN_WIZNET_RST, GPIO_OUT);
     gpio_put(ROSETTE_PIN_WIZNET_RST, 1);
 
+    // Active-low INT; the network bring-up attaches its interrupt
+    // (attach_rx_interrupt()) once the chip answers.
     gpio_init(ROSETTE_PIN_WIZNET_INT);
     gpio_set_dir(ROSETTE_PIN_WIZNET_INT, GPIO_IN);
     gpio_pull_up(ROSETTE_PIN_WIZNET_INT);
-    gpio_set_irq_enabled_with_callback(ROSETTE_PIN_WIZNET_INT,
-                                       GPIO_IRQ_EDGE_FALL, true,
-                                       &wiznet_int_callback);
 
     gpio_init(ROSETTE_PIN_LED);
     gpio_set_dir(ROSETTE_PIN_LED, GPIO_OUT);
