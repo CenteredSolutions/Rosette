@@ -91,9 +91,11 @@ _BANNED = frozenset({"wiznet_iolib"})
 _ZONES = (
     ("ports/chip/rp2/", {"pico_sdk", "board"}, "ports/chip/rp2/"),
     ("ports/chip/host/", {"posix"}, "ports/chip/host/"),
+    ("ports/chip/stub/", set(), "ports/chip/stub/"),
     ("ports/os/baremetal/", set(), "ports/os/baremetal/"),
     ("ports/os/freertos/", {"freertos_kernel"}, "ports/os/freertos/"),
     ("ports/os/posix/", {"posix"}, "ports/os/posix/"),
+    ("ports/os/stub/", set(), "ports/os/stub/"),
     ("ports/net/freertos_tcp/", {"freertos_kernel", "freertos_tcp"}, "ports/net/freertos_tcp/"),
     ("ports/net/lwip/", {"lwip"}, "ports/net/lwip/"),
     ("ports/net/posix/", {"posix"}, "ports/net/posix/"),

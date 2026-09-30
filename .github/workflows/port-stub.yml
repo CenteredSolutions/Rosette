@@ -1,0 +1,29 @@
+# Build the portable core on the stub port (tests/port_stub): a bare Cortex-M0+
+# with newlib and no Pico SDK, RTOS, or POSIX. A portable file that reaches a
+# chip SDK or host OS fails to link here.
+name: port-stub
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  port-stub:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Arm bare-metal toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+
+      - name: Configure
+        run: |
+          cmake -S tests/port_stub -B build-port-stub \
+                -DCMAKE_TOOLCHAIN_FILE="$PWD/tests/port_stub/arm-none-eabi.cmake"
+
+      - name: Build and link
+        run: cmake --build build-port-stub -j "$(nproc)"

@@ -7,7 +7,7 @@ document states the rules, lists every file that moves or changes, and gives the
 written once the seams below exist, will explain how to add a port.
 
 `tools/style/check_port_boundaries.py` enforces the rules. It runs in `tools/style/run_style_checks.sh`, against
-`tools/style/port_boundary_baseline.txt` (100 entries today). New code must pass, and each step below deletes
+`tools/style/port_boundary_baseline.txt` (98 entries today). New code must pass, and each step below deletes
 baseline entries. When the baseline is empty, this plan is done and this file is replaced by PORTING.md.
 
 ## Layout
@@ -15,9 +15,9 @@ baseline entries. When the baseline is empty, this plan is done and this file is
 ```
 ports/
   chip/<name>/          monotonic clock, unique id, flash, SPI/QSPI bus, GPIO edge interrupt, newlib shims
-    rp2/  host/
+    rp2/  host/  stub/
   os/<name>/            Mutex, Event, sleep_ms: rosette_os_port.hpp (fixed name, see below)
-    baremetal/  freertos/  posix/
+    baremetal/  freertos/  posix/  stub/
   net/<name>/           adapters from a third-party IP stack to rosette::net::SocketProvider
     freertos_tcp/  posix/  (lwip/ planned)
   <axis>/<name>/port.cmake   defines the port's CMake target; the directory's existence makes the name valid
@@ -69,7 +69,8 @@ Three decisions follow from this layout:
 | chip | `platform.hpp`: `monotonic_us`, `device_unique_id`, `realtime_hint_us` | add the hooks bare metal needs: `chip_critical_enter/exit`, `chip_wait_for_interrupt_until(deadline_us)` |
 | chip | `flash.hpp`: `rosette_platform_flash_*` | unchanged |
 | chip | *new* `gpio_interrupt.hpp`: `attach_falling_edge(pin, void (*)(void*), void*)` | replaces the Pico calls in `rx_interrupt_pico.hpp` |
-| chip | bus concept used by `WiznetDevice<Chip, Bus>` | written down as a documented concept; `Rp2SpiBus` / `Rp2QspiBus` implement it |
+| chip | bus concept used by `WiznetDevice<Chip, Bus>` | written down in `ports/chip/stub/stub_bus.hpp`; `Rp2SpiBus` / `Rp2QspiBus` implement it |
+| chip | `__atomic_*` helpers (`fetch_add`, `exchange`, `compare_exchange`, ...) on a core without atomic instructions | new to the contract: the RTPS buffer pool's `std::atomic` counts call them on Cortex-M0+; the Pico SDK's `pico_atomic` supplies them on the RP2040, `ports/chip/stub/stub_atomic.c` shows the set |
 | os | `rosette_os_port.hpp`: `Mutex`, `Event` (with `signal_from_isr`), `sleep_ms` | unchanged API; moves out of `include/` |
 | net | `rosette::net::SocketProvider`, `AddressProvider`, `Interface` | unchanged |
 | net | *promoted* `rosette/net/board_network.hpp`: `bring_up_board_network`, `poll_board_network`, `board_socket_provider`, `board_ipv4_address`, `board_network_watch`, ... | the WIZnet module's API, moved to namespace `rosette::net`; each network port or board composition implements it |
@@ -171,7 +172,12 @@ neither fetched nor linked. The comments in `device.hpp` and `w6x00.hpp` that ci
 4. Promote `board_network.hpp` to `rosette::net`, merge the rmw network ports, and switch the examples to it (done).
 5. Add a **stub chip port** (`ports/chip/stub/`, compile-only, every hook a trivial stub) and a CI job that builds the
    portable core against it with no Pico SDK. It's the first chip that isn't Pico or host, so leaks show up as
-   link errors, not just include findings.
+   link errors, not just include findings. (done: `ports/chip/stub/`, `ports/os/stub/`, `tests/port_stub/`, and
+   `.github/workflows/port-stub.yml`. The image links every object of every portable library and the WIZnet
+   driver for all three chips, on Cortex-M0+ with newlib only. `rosette_platform.cmake` already takes a port from
+   `ports/<axis>/<name>/port.cmake` or `ROSETTE_PORT_DIRS`, and `platform.hpp` falls back to
+   `rosette_os_port.hpp`; the existing ports switch over in step 8. The stub also defines the `host_runtime.hpp`
+   functions, which step 6 deletes.)
 6. Remove `host_runtime.hpp` (the largest seam; touches the WIZnet driver, address code and boards).
 7. Refactor the WIZnet driver onto `platform::Event` and the GPIO-interrupt contract; move DHCP to `src/net/`.
 8. Add the fixed-name OS header and move the OS ports; move the chip ports; split the pico runtime files.

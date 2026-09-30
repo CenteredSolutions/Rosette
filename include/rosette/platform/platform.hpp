@@ -10,6 +10,8 @@
  *   ROSETTE_OS    posix | freertos | baremetal   scheduling and synchronization
  *   ROSETTE_CHIP  host  | rp2                    clock and device identity
  *
+ * or any port directory ports/<axis>/<name>/ (stub, for one),
+ *
  * and the build defines ROSETTE_OS_POSIX / ROSETTE_OS_FREERTOS /
  * ROSETTE_OS_BAREMETAL plus ROSETTE_CHIP_HOST / ROSETTE_CHIP_RP2 accordingly.
  * FreeRTOS on a Pico is OS=freertos, CHIP=rp2; a two-core superloop is
@@ -17,12 +19,13 @@
  *
  * This header is the whole contract. A port provides:
  *
- *  - from the OS layer (`os_<os>.hpp`, header-only):
+ *  - from the OS layer (`os_<os>.hpp`, or `rosette_os_port.hpp` for a port
+ *    under ports/os/<name>/; header-only):
  *      Mutex        mutual exclusion between threads, tasks, and cores
  *      Event        auto-reset wakeup; signal() is safe from any thread, core,
  *                   and (via signal_from_isr()) interrupt handler
  *      sleep_ms()   yields the caller for a duration
- *  - from the chip layer (`src/platform/chip/<chip>/`):
+ *  - from the chip layer (`src/platform/chip/<chip>/`, or ports/chip/<name>/):
  *      monotonic_us()        the single time base; never steps
  *      device_unique_id()    8 octets unique per running Rosette instance
  *      realtime_hint_us()    wall-clock time when the platform knows it
@@ -118,7 +121,9 @@ bool realtime_hint_us(int64_t& unix_us) noexcept;
 #elif defined(ROSETTE_OS_BAREMETAL)
 #  include "rosette/platform/os_baremetal.hpp"
 #else
-#  error "No platform selected: set ROSETTE_OS (posix, freertos, baremetal) in the board's board.cmake"
+// A port under ports/os/<name>/ supplies its OS layer under this fixed name;
+// its port.cmake puts the directory on the include path.
+#include "rosette_os_port.hpp"
 #endif
 
 namespace rosette::platform {
