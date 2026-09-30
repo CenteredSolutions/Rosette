@@ -37,6 +37,7 @@
  */
 
 #include <array>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -56,6 +57,10 @@ namespace net = rosette::net;
 namespace pf = rosette::platform;
 
 constexpr uint16_t kEchoPort = 7u;
+/// Receive buffering the echo sockets ask for: a full 1472-octet datagram
+/// fits. A socket that asks for nothing gets the smallest free buffer, which
+/// on the W5100S is 1 KiB.
+constexpr std::size_t kEchoReceiveBytes = 2048u;
 /// Any datagram here is answered with the board's addresses and counters.
 constexpr uint16_t kStatusPort = 8u;
 constexpr uint32_t kWaitMs = 1000u;
@@ -79,14 +84,21 @@ std::array<uint8_t, 1500> g_buffer;
  * @param[in] sockets Board socket provider.
  * @param[in] domain  Address family.
  * @param[in] port    Local port.
+ * @param[in] receive_bytes Receive buffering to ask for; 0 takes the default.
  * @return The bound socket, non-blocking; null when the part lacks the family
  *   or binding fails.
  */
 std::unique_ptr<net::Socket> open_echo_socket(net::SocketProvider& sockets,
-                                              net::SocketDomain domain, uint16_t port) {
+                                              net::SocketDomain domain, uint16_t port,
+                                              std::size_t receive_bytes) {
     auto s = sockets.open(domain);
     if (!s) {
         return nullptr;
+    }
+
+    // Before bind(): a WIZnet socket picks its hardware buffer then.
+    if (receive_bytes > 0u) {
+        (void)s->set_receive_buffer_size(receive_bytes);
     }
 
     net::SocketAddress local{};
@@ -236,10 +248,12 @@ int main() {
     (void)net::bring_up_board_network("rosette-echo", network);
     net::SocketProvider& sockets = net::board_socket_provider();
 
-    EchoSocket v4{"ipv4", open_echo_socket(sockets, net::SocketDomain::ipv4, kEchoPort)};
-    EchoSocket v6{"ipv6", open_echo_socket(sockets, net::SocketDomain::ipv6, kEchoPort)};
-    auto status4 = open_echo_socket(sockets, net::SocketDomain::ipv4, kStatusPort);
-    auto status6 = open_echo_socket(sockets, net::SocketDomain::ipv6, kStatusPort);
+    EchoSocket v4{"ipv4",
+                  open_echo_socket(sockets, net::SocketDomain::ipv4, kEchoPort, kEchoReceiveBytes)};
+    EchoSocket v6{"ipv6",
+                  open_echo_socket(sockets, net::SocketDomain::ipv6, kEchoPort, kEchoReceiveBytes)};
+    auto status4 = open_echo_socket(sockets, net::SocketDomain::ipv4, kStatusPort, 0u);
+    auto status6 = open_echo_socket(sockets, net::SocketDomain::ipv6, kStatusPort, 0u);
     std::printf("[echo] udp/%u ipv4 %s, ipv6 %s; status on udp/%u\n", kEchoPort,
                 v4.socket ? "open" : "unavailable", v6.socket ? "open" : "unavailable",
                 kStatusPort);
