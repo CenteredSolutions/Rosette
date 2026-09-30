@@ -4,15 +4,15 @@
 # network, DHCP, and SNTP services.
 #
 # Set ROSETTE_NET_STACK before including this file:
-#   wiznet_iolib   — WIZnet ioLibrary (requires wiznet.cmake already included)
+#   wiznet         — the WIZnet chip's hardware sockets (Rosette's register-level driver)
 #   freertos_tcp   — FreeRTOS+TCP (requires freertos_tcp.cmake already included)
 #
 # The selected stack target is aliased as rosette_net so callers only need to
 # link one name regardless of which stack was chosen.
 
-set(ROSETTE_NET_STACK "wiznet_iolib" CACHE STRING
-    "Rosette network stack: wiznet_iolib or freertos_tcp")
-set_property(CACHE ROSETTE_NET_STACK PROPERTY STRINGS wiznet_iolib freertos_tcp)
+set(ROSETTE_NET_STACK "wiznet" CACHE STRING
+    "Rosette network stack: wiznet or freertos_tcp")
+set_property(CACHE ROSETTE_NET_STACK PROPERTY STRINGS wiznet freertos_tcp)
 
 # Optional: name of an existing CMake target that provides FreeRTOS headers.
 # rosette_net links against it so the FreeRTOS socket sources can find
@@ -29,13 +29,7 @@ option(ROSETTE_ROS_BACKEND_AGENT
     "The firmware uses the micro-ROS agent backend (the agent is the time source; SNTP off by default)"
     ${ROSETTE_ENABLE_MICRO_ROS})
 
-if(ROSETTE_NET_STACK STREQUAL "wiznet_iolib")
-    if(NOT TARGET wiznet_iolib)
-        message(FATAL_ERROR
-            "rosette_net.cmake: ROSETTE_NET_STACK=wiznet_iolib but wiznet_iolib "
-            "target does not exist. Include wiznet.cmake before rosette_net.cmake.")
-    endif()
-
+if(ROSETTE_NET_STACK STREQUAL "wiznet")
     # The register-level WIZnet driver (WiznetSocketProvider / WiznetLink) is
     # header-only and templated on <Chip, Bus>; the consuming firmware
     # instantiates it for the fitted part. The DHCP client and address manager
@@ -56,8 +50,6 @@ if(ROSETTE_NET_STACK STREQUAL "wiznet_iolib")
     target_include_directories(rosette_net_wiznet PUBLIC
         "${_rosette_root}/include"
         "${_rosette_root}/include/rosette/net")
-
-    target_link_libraries(rosette_net_wiznet PUBLIC wiznet_iolib)
 
     if(NOT ROSETTE_FREERTOS_TARGET STREQUAL "")
         target_link_libraries(rosette_net_wiznet PUBLIC "${ROSETTE_FREERTOS_TARGET}")
@@ -113,5 +105,5 @@ elseif(ROSETTE_NET_STACK STREQUAL "freertos_tcp")
 else()
     message(FATAL_ERROR
         "rosette_net.cmake: Unknown ROSETTE_NET_STACK='${ROSETTE_NET_STACK}'. "
-        "Valid values: wiznet_iolib, freertos_tcp.")
+        "Valid values: wiznet, freertos_tcp.")
 endif()

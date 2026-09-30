@@ -13,7 +13,7 @@ extern "C" {
 #endif
 
 /**
- * @brief Initializes SPI, GPIO, the W5100S reset, and the ioLibrary callbacks.
+ * @brief Initializes SPI, GPIO, and the W5100S reset.
  *
  * Call once at the top of `main()`, before constructing a `WiznetLink`.
  */

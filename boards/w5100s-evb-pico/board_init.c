@@ -2,15 +2,11 @@
  * @file boards/w5100s-evb-pico/board_init.c
  * @brief Board bring-up for the WIZnet W5100S-EVB-Pico (RP2040), no-RTOS build.
  *
- * Sets up SPI0, the GPIO pin functions, the W5100S hardware-reset sequence, and
- * registers the WIZnet ioLibrary's SPI / chip-select / critical-section
- * callbacks. Chip network configuration (buffer sizes, PHY, DHCP) is
- * `rosette::net::wiznet::WiznetLink`, called from the application after
- * `board_init()`.
- *
- * The critical-section callbacks disable interrupts rather than taking an RTOS
- * lock: on a single-core superloop that is the only reentrancy the ioLibrary's
- * multi-byte SPI accesses need protection from.
+ * Sets up SPI0, the GPIO pin functions and the W5100S hardware-reset sequence.
+ * Everything past the SPI peripheral (register setup, buffer sizing, PHY,
+ * DHCP) is `rosette::net::wiznet::WiznetLink`, called from the application
+ * after `board_init()`. The register-level driver drives the bus through
+ * `rosette::platform::PicoSpiBus`.
  */
 
 #include "board.h"
@@ -18,42 +14,8 @@
 
 #include "hardware/spi.h"
 #include "hardware/gpio.h"
-#include "hardware/sync.h"
 #include "pico/stdlib.h"
 #include "pico/unique_id.h"
-
-#include "wizchip_conf.h"
-
-// ── SPI transfer primitives (called per byte by the ioLibrary) ───────────────
-static void spi_cs_assert(void)   { gpio_put(ROSETTE_PIN_SPI_CS, 0); }
-static void spi_cs_deassert(void) { gpio_put(ROSETTE_PIN_SPI_CS, 1); }
-
-static uint8_t spi_read_byte(void)
-{
-    uint8_t rx = 0u;
-    spi_read_blocking(ROSETTE_SPI_INST, 0xFFu, &rx, 1);
-    return rx;
-}
-
-static void spi_write_byte(uint8_t tx)
-{
-    spi_write_blocking(ROSETTE_SPI_INST, &tx, 1);
-}
-
-static void spi_read_burst(uint8_t* buf, uint16_t len)
-{
-    spi_read_blocking(ROSETTE_SPI_INST, 0xFFu, buf, len);
-}
-
-static void spi_write_burst(uint8_t* buf, uint16_t len)
-{
-    spi_write_blocking(ROSETTE_SPI_INST, buf, len);
-}
-
-// ── Critical section: mask interrupts around multi-byte register access ──────
-static uint32_t s_crit_save;
-static void crit_enter(void) { s_crit_save = save_and_disable_interrupts(); }
-static void crit_exit(void)  { restore_interrupts(s_crit_save); }
 
 // ── WIZnet INT line ─────────────────────────────────────────────────────────
 // Active-low, asserted while a socket has an unserviced interrupt (RX). The
@@ -101,11 +63,6 @@ void board_init(void)
     sleep_ms(ROSETTE_W5100S_RST_HOLD_MS);
     gpio_put(ROSETTE_PIN_W5100S_RST, 1);
     sleep_ms(ROSETTE_W5100S_RST_WAIT_MS);
-
-    reg_wizchip_cris_cbfunc(crit_enter, crit_exit);
-    reg_wizchip_cs_cbfunc(spi_cs_assert, spi_cs_deassert);
-    reg_wizchip_spi_cbfunc(spi_read_byte, spi_write_byte);
-    reg_wizchip_spiburst_cbfunc(spi_read_burst, spi_write_burst);
 }
 
 void board_get_mac_address(uint8_t mac[6])

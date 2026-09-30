@@ -18,8 +18,7 @@
 // ── WIZnet part ──────────────────────────────────────────────────────────────
 // Names the chip-trait struct (rosette::net::wiznet::<token>) that the
 // register-level driver builds against; see include/rosette/net/wiznet/
-// chip_select.hpp. The ioLibrary equivalent is the ROSETTE_WIZNET_CHIP cache
-// variable in cmake/wiznet.cmake.
+// chip_select.hpp.
 #define ROSETTE_WIZNET_CHIP        W5100S
 
 // ── SPI peripheral ───────────────────────────────────────────────────────────

@@ -19,15 +19,6 @@ if(ROSETTE_BOARD_ENABLE_FREERTOS)
     include(cmake/freertos_tcp.cmake)
 endif()
 
-if(ROSETTE_BOARD_ENABLE_WIZNET)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/wiznet.cmake")
-        include(cmake/wiznet.cmake)
-    else()
-        message(FATAL_ERROR
-            "Selected board '${ROSETTE_BOARD}' requires cmake/wiznet.cmake, but it is missing.")
-    endif()
-endif()
-
 # ------------------------------------------------------------
 # rosette_fs — the LittleFS sources
 #
@@ -130,13 +121,10 @@ if(ROSETTE_BOARD_ENABLE_FREERTOS)
     target_link_libraries(rosette_net PUBLIC freertos_kernel freertos_tcp)
 endif()
 
-if(ROSETTE_BOARD_ENABLE_WIZNET)
-    target_link_libraries(rosette_net PUBLIC wiznet_iolib)
-    # The register-level WIZnet driver (WiznetDevice / WiznetSocketProvider /
-    # WiznetLink / Dhcp*) is header-only and templated on <Chip, Bus>; the
-    # firmware TU that builds the board's BoardLink instantiates it. No source
-    # here picks a concrete chip/bus.
-endif()
+# The register-level WIZnet driver (WiznetDevice / WiznetSocketProvider /
+# WiznetLink / Dhcp*) is header-only and templated on <Chip, Bus>; the
+# firmware TU that builds the board's BoardLink instantiates it. No source
+# here picks a concrete chip/bus.
 
 if(ROSETTE_BOARD_ENABLE_PICO_SDK)
     target_link_libraries(rosette_net PUBLIC
@@ -183,7 +171,6 @@ if(ROSETTE_BOARD_BUILD_BSP)
         hardware_spi hardware_flash hardware_sync hardware_gpio
     )
     if(ROSETTE_BOARD_ENABLE_WIZNET)
-        target_link_libraries(rosette_bsp PUBLIC wiznet_iolib)
         # Receive-buffer KiB per hardware socket, one entry per socket; empty
         # keeps the chip's default (see kBoardRxLayoutKib in
         # include/rosette/net/wiznet/board.hpp, which checks it at compile time).

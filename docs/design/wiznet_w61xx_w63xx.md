@@ -16,9 +16,9 @@ parts as compile-time `Chip` traits so a board selects one with
 `#define ROSETTE_WIZNET_CHIP W6100` (or `W6300`), reusing the whole
 `WiznetDevice` / `WiznetSocketProvider` / `WiznetLink` / `Dhcp*` stack unchanged.
 
-The vendored WIZnet ioLibrary (`cmake/wiznet.cmake`) is **not** involved — it is
-legacy, only the W5100S board_init callbacks still touch it, and its pinned tag
-does not even ship W6100/W6300. The register-level driver is header-only.
+Rosette does not use the WIZnet ioLibrary: the register-level driver is
+header-only and is the only code that talks to the chip. The io(6)Library
+sources are cited as references for chip behavior.
 
 ## SPI frame formats
 

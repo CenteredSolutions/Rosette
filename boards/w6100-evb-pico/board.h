@@ -17,7 +17,7 @@ extern "C" {
  *
  * Call once at the top of `main()`, before constructing a `WiznetLink`. The
  * register-level driver (`rosette::net::wiznet`) owns everything past the SPI
- * peripheral and reset pin — there are no ioLibrary callbacks to register.
+ * peripheral and reset pin.
  */
 void board_init(void);
 

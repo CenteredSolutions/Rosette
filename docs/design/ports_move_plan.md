@@ -148,37 +148,26 @@ Actions: **move** (`git mv`, then fix includes), **split** (the contents go to s
 |---|---|---|
 | `cmake/pico_sdk.cmake` | move | `ports/chip/rp2/port.cmake`, plus `rosette_port_add_image_outputs(target)` so the root CMakeLists and the contract test stop calling `pico_*` |
 | `cmake/freertos_tcp.cmake` | move | `ports/net/freertos_tcp/port.cmake` |
-| `cmake/wiznet.cmake` | delete | Rosette doesn't use the WIZnet ioLibrary (see "Removing the WIZnet ioLibrary") |
 | `cmake/rosette_platform.cmake` | refactor | sources and targets from `ports/chip/${ROSETTE_CHIP}/port.cmake` + `ports/os/${ROSETTE_OS}/port.cmake`; validity is "the directory exists" |
 | `cmake/rosette_net.cmake` | refactor | stack from `ports/net/${ROSETTE_NET_STACK}/port.cmake`; the portable source list is written once, not per stack |
 | `CMakeLists.txt` | refactor | no `pico_*`, `hardware_*` or `src/platform/pico_*` references; `rosette_bsp` comes from the board and its ports |
 | `config/FreeRTOSConfig.h` | move | `boards/common/freertos/FreeRTOSConfig.h` (per-board values, so it's board composition) |
 | `config/FreeRTOSIPConfig.h` | move | `ports/net/freertos_tcp/FreeRTOSIPConfig.h` (default a board may override) |
-| `boards/w5100s-evb-pico{,2}/board_init.c` | refactor | delete the `reg_wizchip_*_cbfunc` registrations and their SPI/CS/critical-section callbacks; nothing calls them |
 | `boards/bc-gen2/` | deleted | an RP2040 + W5100S board with a debug port; when a debug target is needed again it returns as a board over `boards/common/rp2_wiznet/`: the W5100S-EVB-Pico wiring plus two LEDs on GPIO 22 and 23 |
 | `boards/*/board.cmake` | refactor | `ROSETTE_CHIP`, `ROSETTE_OS`, `ROSETTE_NET_STACK` (`wiznet`, `freertos_tcp`, `posix`, later `lwip`) + pins; the `ROSETTE_BOARD_ENABLE_PICO_SDK/FREERTOS/WIZNET` flags are derived, not set |
 | `bindings/micropython/modrosette.c` | refactor | `sys/time.h` replaced by `mp_hal_ticks_*` (MicroPython is the port there) |
 
-## Removing the WIZnet ioLibrary
+## The WIZnet ioLibrary
 
-Rosette drives WIZnet chips through its own register-level driver, `WiznetDevice<Chip, Bus>`. The ioLibrary is still
-fetched (`cmake/wiznet.cmake`) and linked into `rosette_net`, `rosette_bsp` and every WIZnet build, but no code in
-`src/`, `include/`, `examples/`, `rmw_rosette/` or `tests/` calls its API. Only the two W5100S-EVB-Pico boards touch it, and
-only to register callbacks nothing uses (`boards/w5100s-evb-pico{,2}/board_init.c`). The check bans `wiznet_iolib`
-headers in every zone, boards included, and those two files are its baseline entries.
-
-To remove it: delete the callback registrations, `cmake/wiznet.cmake`, the `wiznet_iolib` links in `CMakeLists.txt`
-and `cmake/rosette_net.cmake`, the `ROSETTE_NET_STACK=wiznet_iolib` value (the stack becomes `wiznet`, the chip's
-hardware sockets), the ioLibrary mention in GETTING_STARTED.md, and the stale `ROSETTE_WIZNET_CHIP` note in
-`boards/w5100s-evb-pico2/board_config.h`. The comments in `device.hpp` that cite the ioLibrary's `socket.c` and
-`wizchip_conf.c` stay: they are references for chip behavior, not dependencies. Build and run
-`examples/wiznet_udp_echo` on a W5100S-EVB-Pico to prove the callbacks weren't load-bearing.
+Rosette drives WIZnet chips only through its own register-level driver, `WiznetDevice<Chip, Bus>`; the ioLibrary is
+neither fetched nor linked. The comments in `device.hpp` and `w6x00.hpp` that cite the io(6)Library's `socket.c` and
+`wizchip_conf.c` are references for chip behavior. The check bans ioLibrary headers in every zone, boards included.
 
 ## Order
 
 1. Commit the open work on `feature/rmw-rtps` so the moves start from a clean tree.
 2. Add the check and baseline (done).
-3. Remove the WIZnet ioLibrary (small, independent, and one fetched dependency fewer for every build).
+3. Remove the WIZnet ioLibrary (done).
 4. Promote `board_network.hpp` to `rosette::net`, merge the rmw network ports, and switch the examples to it.
 5. Add a **stub chip port** (`ports/chip/stub/`, compile-only, every hook a trivial stub) and a CI job that builds the
    portable core against it with no Pico SDK. It's the first chip that isn't Pico or host, so leaks show up as

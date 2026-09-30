@@ -25,15 +25,15 @@ every example and which boards it runs on.
 | --- | --- |
 | Host tests | CMake ≥ 3.20, a C++17 compiler |
 | `rmw_rosette` on a host, interop tests | ROS 2 Humble (`/opt/ros/humble`), `colcon` |
-| Firmware | `arm-none-eabi-gcc`, Python 3; the Pico SDK, WIZnet ioLibrary, and LittleFS are fetched at configure time |
+| Firmware | `arm-none-eabi-gcc`, Python 3; the Pico SDK and LittleFS are fetched at configure time |
 | The C client stack (step 4) | ROS 2 Humble, network access for micro_ros_setup, 20–30 minutes per CPU |
 | A board | a WIZnet EVB-Pico board (this guide uses the W5100S-EVB-Pico2 and the W6100-EVB-Pico) wired to the same IPv4 subnet as your ROS 2 host, with a DHCP server or link-local addressing |
 
 Step 1 installs all of it on Ubuntu 22.04.
 
 To build offline or against pinned checkouts, point CMake at them:
-`PICO_SDK_PATH`, `WIZNET_IOLIB_PATH`, `LITTLEFS_PATH`, and for FreeRTOS
-boards `FREERTOS_KERNEL_PATH` and `FREERTOS_TCP_PATH`.
+`PICO_SDK_PATH`, `LITTLEFS_PATH`, and for FreeRTOS boards
+`FREERTOS_KERNEL_PATH` and `FREERTOS_TCP_PATH`.
 
 ## 1. Install ROS 2 and the toolchain
 

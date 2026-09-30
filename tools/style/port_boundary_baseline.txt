@@ -3,8 +3,6 @@
 # Format: <path> <kind> <detail>; see docs/design/ports_move_plan.md.
 
 bindings/micropython/modrosette.c header posix:sys/time.h
-boards/w5100s-evb-pico/board_init.c header wiznet_iolib:wizchip_conf.h
-boards/w5100s-evb-pico2/board_init.c header wiznet_iolib:wizchip_conf.h
 config/FreeRTOSConfig.h header board:board_config.h
 include/rosette/net/freertos/address_provider.hpp header freertos_kernel:FreeRTOS.h
 include/rosette/net/freertos/address_provider.hpp header freertos_tcp:FreeRTOS_IP.h

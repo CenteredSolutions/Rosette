@@ -6,7 +6,7 @@
  * Everything past the SPI peripheral — register unlock, buffer sizing, PHY,
  * DHCP — is `rosette::net::wiznet::WiznetLink`, called from the application
  * after `board_init()`. The register-level driver drives the bus through
- * `rosette::platform::PicoSpiBus`, so there are no ioLibrary callbacks here.
+ * `rosette::platform::PicoSpiBus`.
  */
 
 #include "board.h"
