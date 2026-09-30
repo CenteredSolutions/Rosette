@@ -35,6 +35,7 @@ void ReaderProxy::clear() noexcept {
     unicastLocatorCount = 0;
     highestAckedSN      = SEQUENCENUMBER_ZERO;
     lastAcknackCount    = 0;
+    lastNackFragCount   = 0;
     nackPending         = false;
     nackPendingSinceMs  = 0;
     firstRelevantSN_    = SequenceNumber::from_int64(1);

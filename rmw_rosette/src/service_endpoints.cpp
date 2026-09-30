@@ -40,8 +40,14 @@ ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
     // before this reply writer has matched the client's reply reader. A
     // TRANSIENT_LOCAL reply writer delivers retained replies to readers that
     // match late, so a reply sent in that window still arrives; clients drop
-    // replies correlated with other clients' requests.
-    if (server) wcfg.durability = rtps::DurabilityKind::TRANSIENT_LOCAL;
+    // replies correlated with other clients' requests. Each reply leaves the
+    // history once its requester has it, so the history holds only replies
+    // still in flight rather than the last depth replies.
+    if (server) {
+        wcfg.durability = rtps::DurabilityKind::TRANSIENT_LOCAL;
+        wcfg.releaseRepliesOnDelivery = true;
+    }
+
     wcfg.topicName.assign(server ? reply_topic : request_topic);
     wcfg.typeName.assign(server ? reply_type : request_type);
 

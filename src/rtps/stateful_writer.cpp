@@ -40,7 +40,9 @@ StatefulWriter::StatefulWriter(const Guid& guid, ReliabilityKind reliability,
 
 CacheChange* StatefulWriter::new_change(ChangeKind kind, BufRef& out_payload,
                                         size_t payload_size) noexcept {
-    if (staging_.payload.valid()) staging_.payload.reset();
+    if (staging_.payload.valid())
+        staging_.payload.reset();
+
     out_payload = buf_alloc(payload_size);
     if (!out_payload.valid()) {
         RTPS_LOG_E("writer", "buf_alloc failed (%zu) for new_change (pool exhausted)", payload_size);
@@ -198,7 +200,14 @@ bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* 
 
 void StatefulWriter::matched_reader_remove(const Guid& reader_guid) noexcept {
     ReaderProxy* p = find_proxy(reader_guid);
-    if (p) p->clear();
+    if (p) {
+        if (fragRepair_.proxy == p) {
+            fragRepair_ = FragmentRepair{};
+        }
+
+        p->clear();
+        release_finished_changes();
+    }
 }
 
 void StatefulWriter::heartbeat_range(SequenceNumber& first, SequenceNumber& last) const noexcept {
@@ -286,19 +295,57 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
         && msg.readerSNState.bitmapBase < nextSN_) {
         send_heartbeat(false, sg);
     }
+
+    release_finished_changes();
 }
 
 void StatefulWriter::on_nack_frag(const ParseContext& ctx, const ParsedNackFrag& msg) noexcept {
     Guid sg{ctx.senderGuidPrefix, msg.readerId};
     ReaderProxy* proxy = find_proxy(sg);
-    if (!proxy) return;
+    if (!proxy || msg.count <= proxy->lastNackFragCount) {
+        return;
+    }
 
-    // Treat as a whole-sample NACK for the affected SN.
+    proxy->lastNackFragCount = msg.count;
+    record_fragment_repair(*proxy, msg.writerSN, msg.fragmentNumberState);
+
+    // The change itself is requested like a NACKed one, so the repair waits
+    // out nackResponseDelay and a change no longer held is answered with GAP.
     SequenceNumberSet sn_set{};
     sn_set.bitmapBase = msg.writerSN;
     sn_set.numBits    = 1;
     sn_set.bitmap[0]  = 0x80000000u;  // bit 0 = bitmapBase itself.
     answer_nack(*proxy, sn_set, rosette::platform::monotonic_ms());
+}
+
+void StatefulWriter::record_fragment_repair(const ReaderProxy& proxy, const SequenceNumber& sn,
+                                            const FragmentNumberSet& fragments) noexcept {
+    uint64_t mask = 0u;
+    bool whole = fragments.empty();
+    fragments.for_each([&](uint32_t frag) noexcept {
+        if (frag < 1u || frag > 64u) {
+            whole = true;
+            return;
+        }
+
+        mask |= uint64_t{1} << (frag - 1u);
+    });
+
+    const bool same = fragRepair_.proxy == &proxy && fragRepair_.sn == sn;
+    if (whole) {
+        // A request the mask cannot express: the whole change goes.
+        if (same) {
+            fragRepair_ = FragmentRepair{};
+        }
+
+        return;
+    }
+
+    if (same) {
+        fragRepair_.fragments |= mask;
+    } else if (fragRepair_.proxy == nullptr) {
+        fragRepair_ = FragmentRepair{&proxy, sn, mask};
+    }
 }
 
 void StatefulWriter::tick(uint32_t now_ms) noexcept {
@@ -316,7 +363,8 @@ void StatefulWriter::tick(uint32_t now_ms) noexcept {
             proxy.mark_underway(sn);
             const CacheChange* ch = writer_cache_.get_change(sn);
             if (ch) {
-                send_data_to(*ch, proxy);
+                const bool fragments_only = fragRepair_.proxy == &proxy && fragRepair_.sn == sn;
+                send_data_to(*ch, proxy, false, fragments_only ? &fragRepair_.fragments : nullptr);
                 any_sent = true;
             } else {
                 // Evicted or removed since it was requested: irrelevant now.
@@ -325,6 +373,9 @@ void StatefulWriter::tick(uint32_t now_ms) noexcept {
         }
         send_gap(proxy, evicted);
         proxy.clear_nack_pending();
+        if (fragRepair_.proxy == &proxy) {
+            fragRepair_ = FragmentRepair{};
+        }
 
         // Post-retransmit directed HEARTBEAT (F=true), §8.4.2.2.
         if (any_sent) {
@@ -436,8 +487,12 @@ ReaderProxy* StatefulWriter::find_free_slot() noexcept {
     return nullptr;
 }
 
-bool StatefulWriter::send_data_to(const CacheChange& ch, ReaderProxy& proxy,
-                                  bool heartbeat) noexcept {
+// Kept out of line: at -O3 it would be inlined whole into
+// send_unsent_changes(), costing about 2.5 KB of flash on a Cortex-M0+ build
+// for no measurable gain on a path bounded by the transport.
+[[gnu::noinline]] bool StatefulWriter::send_data_to(const CacheChange& ch, ReaderProxy& proxy,
+                                                    bool heartbeat,
+                                                    const uint64_t* only_fragments) noexcept {
     const Locator& dest = proxy.best_locator();
     if (dest == LOCATOR_INVALID) return false;
 
@@ -449,7 +504,7 @@ bool StatefulWriter::send_data_to(const CacheChange& ch, ReaderProxy& proxy,
                                    (ch.preframed ? 0u : kEncapsulationSize) + ch.payload.size;
     const uint32_t limit = transport_.max_datagram_size();
     if (data_datagram > limit) {
-        return send_fragments_to(ch, proxy, dest, heartbeat);
+        return send_fragments_to(ch, proxy, dest, heartbeat, only_fragments);
     }
 
     // A payload allocated with headroom is framed in place (§9.4.5.3); the
@@ -555,7 +610,8 @@ bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& prox
 }
 
 bool StatefulWriter::send_fragments_to(const CacheChange& ch, ReaderProxy& proxy,
-                                       const Locator& dest, bool heartbeat) noexcept {
+                                       const Locator& dest, bool heartbeat,
+                                       const uint64_t* only_fragments) noexcept {
     static constexpr Octet kCdrLe[kEncapsulationSize] = {0x00u, 0x01u, 0x00u, 0x00u};
     const uint16_t prefix_len = ch.preframed ? 0u : kEncapsulationSize;
     const uint32_t data_size = prefix_len + ch.payload.size;
@@ -578,6 +634,10 @@ bool StatefulWriter::send_fragments_to(const CacheChange& ch, ReaderProxy& proxy
     bool all_sent = true;
     bool hb_sent = false;
     for (uint32_t k = 1u; k <= frag_count; ++k) {
+        if (only_fragments && (k > 64u || ((*only_fragments >> (k - 1u)) & 1u) == 0u)) {
+            continue;
+        }
+
         const uint32_t offset = (k - 1u) * frag_size;
         const uint32_t len = (data_size - offset < frag_size) ? data_size - offset : frag_size;
         uint16_t pre_len = 0u;
@@ -645,9 +705,15 @@ void StatefulWriter::send_unsent_changes(bool with_heartbeat) noexcept {
             send_data_to(*writer_cache_.get_change(sn), proxy, with_heartbeat && sn == newest);
         }
     }
+
+    release_finished_changes();
 }
 
 uint32_t StatefulWriter::piggyback_interval() const noexcept {
+    if (releaseRepliesOnDelivery_) {
+        return 1u;
+    }
+
     const uint32_t half_depth = writer_cache_.capacity() / 2u;
     return half_depth > 0u ? half_depth : 1u;
 }
@@ -681,6 +747,58 @@ bool StatefulWriter::all_readers_acked(const SequenceNumber& sn) const noexcept 
         if (proxies_[i].is_matched() && proxies_[i].highestAckedSN < sn) return false;
     }
     return true;
+}
+
+void StatefulWriter::release_finished_changes() noexcept {
+    const bool is_volatile = durability_ == DurabilityKind::VOLATILE;
+    if (!is_volatile && !releaseRepliesOnDelivery_) {
+        return;
+    }
+
+    const bool reliable = reliability_ == ReliabilityKind::RELIABLE;
+    writer_cache_.for_each_change([&](CacheChange& c) noexcept {
+        if (releaseRepliesOnDelivery_ && reply_delivered(c, reliable)) {
+            c.clear();
+            return;
+        }
+
+        if (!is_volatile) {
+            return;
+        }
+
+        for (uint8_t i = 0; i < max_readers_; ++i) {
+            if (proxies_[i].is_matched() && !proxies_[i].is_done_with(c.sequenceNumber, reliable)) {
+                return;
+            }
+        }
+
+        c.clear();
+    });
+}
+
+bool StatefulWriter::reply_delivered(const CacheChange& reply, bool reliable) const noexcept {
+    if (!reply.inlineQos.hasRelatedSampleIdentity) {
+        return false;
+    }
+
+    // The requester's reply reader shares the GUID prefix of the request
+    // writer the reply names: both belong to the client's participant.
+    const GuidPrefix& requester = reply.inlineQos.relatedSampleIdentity.writerGuid.prefix;
+    bool matched = false;
+    for (uint8_t i = 0; i < max_readers_; ++i) {
+        const ReaderProxy& proxy = proxies_[i];
+        if (!proxy.is_matched() || proxy.remoteReaderGuid.prefix != requester) {
+            continue;
+        }
+
+        if (!proxy.is_done_with(reply.sequenceNumber, reliable)) {
+            return false;
+        }
+
+        matched = true;
+    }
+
+    return matched;
 }
 
 }  // namespace rtps

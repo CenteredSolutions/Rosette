@@ -141,6 +141,30 @@
       "statement": "A reliable StatefulWriter piggybacks a non-final HEARTBEAT on the DATA of every depth/2-th write, in the same RTPS message when the DATA can end on a 4-octet boundary within the datagram limit (a copied DATA is padded and the padding recorded in the encapsulation options), and in a datagram of its own otherwise; a periodic HEARTBEAT restarts the count.",
       "status": "implemented",
       "test_ids": ["TC-SWR-8.4.15-001", "TC-SWR-8.4.15-002", "TC-SWR-8.4.15-003", "TC-SWR-8.4.15-004"]
+    },
+    {
+      "id": "REQ-SWR-8.4.7-RELEASE-FINISHED",
+      "section": "8.4.7.1",
+      "normativity": "may",
+      "statement": "A VOLATILE StatefulWriter removes a change from its history once every matched reader has acknowledged it (RELIABLE) or been sent it (BEST_EFFORT), or at once when no reader is matched, returning its payload to the pool; a TRANSIENT_LOCAL writer keeps acknowledged changes for late-joining readers; a NACK for a removed change is answered with GAP.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.7-003", "TC-SWR-8.4.7-004", "TC-SWR-8.4.7-005", "TC-SWR-8.4.7-006"]
+    },
+    {
+      "id": "REQ-SWR-8.4.7-RELEASE-REPLIES",
+      "section": "8.4.7.1",
+      "normativity": "may",
+      "statement": "A service reply writer (TRANSIENT_LOCAL) removes a reply once every matched reader sharing the GUID prefix of the request writer named in its related sample identity has acknowledged it, independent of other readers; a reply whose requester has no matched reader stays and is delivered when that reader matches.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.7-007", "TC-SWR-8.4.7-008"]
+    },
+    {
+      "id": "REQ-SWR-8.3.7.5-NACKFRAG-REPAIR",
+      "section": "8.3.7.5",
+      "normativity": "shall",
+      "statement": "A reliable StatefulWriter answers a NACK_FRAG, once nackResponseDelay has passed, by resending exactly the named fragments of the change followed by a HEARTBEAT; a NACK_FRAG whose count is not above the last processed from that reader is ignored; one for a change no longer held is answered with GAP.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.4-002", "TC-SWR-8.4.4-003"]
     }
   ]
 }

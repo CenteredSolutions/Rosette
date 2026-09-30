@@ -112,6 +112,9 @@ struct WriterConfig {
     TopicKind       topicKind   = TopicKind::NO_KEY;
     uint32_t        nackDelayMs = RTPS_NACK_RESPONSE_DELAY_MS;
     uint32_t        hbPeriodMs  = RTPS_HEARTBEAT_PERIOD_MS;
+    /// A service reply writer: drop each reply once its requester has it
+    /// (StatefulWriter::release_replies_on_delivery()).
+    bool            releaseRepliesOnDelivery = false;
 };
 
 struct ReaderConfig {
@@ -183,6 +186,7 @@ public:
         W* w = new (writer_storage_[slot]) W(
             writer_guid, cfg.reliability, cfg.durability,
             transport_, cfg.nackDelayMs, cfg.hbPeriodMs);
+        w->release_replies_on_delivery(cfg.releaseRepliesOnDelivery);
 
         writers_[slot] = w;
         writer_alive_[slot] = true;

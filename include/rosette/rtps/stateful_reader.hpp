@@ -31,9 +31,11 @@
  * Fragment reassembly
  * -------------------
  * DATA_FRAG submessages go to a DefaultFragmentAssembler (§8.4.14). A
- * completed sample is accepted exactly as a DATA would be; HEARTBEAT_FRAG is
- * answered with a NACK_FRAG built from the assembler's missing fragments,
- * and un-matching a writer discards its partial samples.
+ * completed sample is accepted exactly as a DATA would be. A missing
+ * fragment is requested with a NACK_FRAG built from the assembler's missing
+ * fragments, in answer to a HEARTBEAT_FRAG or, for a sample the writer's
+ * HEARTBEAT shows as missing, alongside the ACKNACK (send_acknack()).
+ * Un-matching a writer discards its partial samples.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -71,6 +73,11 @@ struct ITransport;
 
 class StatefulReader {
 public:
+
+    /// Partly received changes requested by NACK_FRAG in one ACKNACK message
+    /// (send_acknack()); two fit a control-message block
+    /// (MessageBuilder::kControlMessageCapacity) with the ACKNACK beside them.
+    static constexpr uint8_t kMaxNackFragsPerAcknack = 2u;
 
     /// Consumer callback — fired when a complete CacheChange arrives. The
     /// change is valid only for the duration of the call; a consumer that
@@ -210,6 +217,16 @@ public:
      * request_next_repair() asks for the next one as soon as it arrives. A
      * pure ACK (empty set, F-flag set) is sent when nothing is missing.
      *
+     * A MISSING change of which some fragments have arrived is requested
+     * with a NACK_FRAG naming only the missing fragments, in the same
+     * message, and is left out of readerSNState (bitmapBase unchanged), as
+     * Fast DDS's reader does. A NACK of the whole change would have the
+     * writer resend every fragment back to back; on a link whose receive
+     * buffer holds fewer than all of them, the same fragments are lost on
+     * every retry, while each NACK_FRAG round keeps what arrived and asks
+     * only for the rest. Up to kMaxNackFragsPerAcknack such changes go in
+     * one message; further ones are NACKed whole in readerSNState.
+     *
      * @param[in,out] proxy      Writer to acknowledge; its count is not
      *   advanced here (the caller calls on_acknack_sent()).
      * @param[in]     final_flag F-flag: the writer need not answer with a
@@ -217,12 +234,16 @@ public:
      *
      * Verification:
      * - Correct means: bitmapBase is at most the lowest MISSING change, every
-     *   set bit is MISSING, and on a narrow link exactly one bit is set.
-     * - Covered by: TC-SRR-8.4.7-002, TC-SRR-8.4.7-003,
-     *   tests/ros2/run_rmw_frag_loopback.sh (stock peer).
+     *   set bit is MISSING and has no fragment received, on a narrow link at
+     *   most one change is requested, and a partly received change is
+     *   requested by a NACK_FRAG listing exactly its missing fragments.
+     * - Covered by: TC-SRR-8.4.7-002, TC-SRR-8.4.7-003, TC-SRR-8.4.12-001,
+     *   TC-SRR-8.4.12-002, tests/ros2/run_rmw_frag_loopback.sh (stock peer).
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.4.7.3, §8.4.12 (reader behavior), §8.3.7.1 (ACKNACK)
+     * - OMG DDSI-RTPS 2.5 §8.4.7.3, §8.4.12 (reader behavior), §8.3.7.1
+     *   (ACKNACK), §8.3.7.5 (NACK_FRAG)
+     * - Fast DDS 2.6 StatefulReader::send_acknack (NACK_FRAG for incomplete changes)
      */
     void send_acknack(WriterProxy& proxy,
                       bool         final_flag = false) noexcept;

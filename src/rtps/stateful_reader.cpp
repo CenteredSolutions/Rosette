@@ -447,9 +447,32 @@ void StatefulReader::send_acknack(WriterProxy& proxy,
     const Locator& dest = proxy.best_locator();
     if (dest == LOCATOR_INVALID) return;
 
+    SequenceNumberSet missing{};
+    proxy.missing_changes(missing, narrow_repairs() ? 1u : SequenceNumberSet::kMaxBits);
+
+    // A MISSING change with fragments already here is requested fragment by
+    // fragment (NACK_FRAG) and left out of the ACKNACK, which would have the
+    // writer resend every fragment, including the ones that arrived. The
+    // bitmap keeps its base, so the cumulative acknowledgement is unchanged.
     SequenceNumberSet sn_state{};
-    proxy.missing_changes(sn_state, narrow_repairs() ? 1u : SequenceNumberSet::kMaxBits);
-    if (sn_state.empty()) final_flag = true;
+    sn_state.bitmapBase = missing.bitmapBase;
+    SequenceNumber partial[kMaxNackFragsPerAcknack]{};
+    FragmentNumberSet partial_missing[kMaxNackFragsPerAcknack]{};
+    uint8_t partial_count = 0;
+    missing.for_each([&](const SequenceNumber& sn) noexcept {
+        if (partial_count < kMaxNackFragsPerAcknack
+            && assembler_.missing_fragments(proxy.remoteWriterGuid, sn, UINT32_MAX,
+                                            partial_missing[partial_count])
+            && !partial_missing[partial_count].empty()) {
+            partial[partial_count++] = sn;
+            return;
+        }
+
+        (void)sn_state.set(static_cast<uint32_t>(sn - missing.bitmapBase));
+    });
+    if (sn_state.empty() && partial_count == 0u) {
+        final_flag = true;
+    }
 
     if (!builder_.begin(guid_.prefix)) return;
 
@@ -461,6 +484,10 @@ void StatefulReader::send_acknack(WriterProxy& proxy,
         sn_state,
         proxy.acknackCount + 1,
         final_flag);
+    for (uint8_t i = 0; ok && i < partial_count; ++i) {
+        ok = builder_.append_nack_frag(guid_.entityId, proxy.remoteWriterGuid.entityId,
+                                       partial[i], partial_missing[i], proxy.acknackCount + 1);
+    }
 
     if (ok) {
         RTPS_LOG_D("reader", "ACKNACK sent base=%d:%lu final=%d",

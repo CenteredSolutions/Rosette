@@ -90,6 +90,14 @@
       "statement": "A best-effort reader delivers a change only when it is newer than every change already seen from that writer.",
       "status": "implemented",
       "test_ids": ["TC-SRR-8.4.12-001"]
+    },
+    {
+      "id": "REQ-SRR-8.4.12-NACKFRAG-ON-HEARTBEAT",
+      "section": "8.4.12",
+      "normativity": "may",
+      "statement": "A reliable StatefulReader answering a HEARTBEAT requests each MISSING change of which some fragments have arrived with a NACK_FRAG naming exactly its missing fragments, in the ACKNACK's message, and leaves the change out of the ACKNACK's readerSNState (bitmapBase unchanged); a change with no fragment received stays in readerSNState.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.12-002", "TC-SRR-8.4.12-003"]
     }
   ]
 }

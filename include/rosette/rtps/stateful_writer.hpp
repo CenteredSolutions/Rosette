@@ -61,6 +61,20 @@
  * the DATA, in kRtpsHeartbeatTailroom reserved after the payload, so it
  * costs 32 octets rather than a datagram; only when the DATA already fills
  * the datagram limit does it go in a datagram of its own.
+ *
+ * Releasing finished changes
+ * --------------------------
+ * KEEP_LAST(depth) bounds a history; it does not keep it full. A VOLATILE
+ * writer drops a change as soon as every matched reader has acknowledged it
+ * (RELIABLE) or been sent it (BEST_EFFORT), since a reader matched later
+ * starts after it (§8.7.2.2.1). A TRANSIENT_LOCAL writer keeps depth changes
+ * for readers that match later, except a service reply writer
+ * (release_replies_on_delivery()): it is TRANSIENT_LOCAL so a reply reaches
+ * a client whose reply reader matches late, and it drops each reply once
+ * that client has it. Payload blocks then stay in the pool only while some
+ * reader may still ask for them, which matters on a board whose pool holds a
+ * few large blocks: a reply writer holding its last depth replies exhausts
+ * it. A NACK for a dropped change is answered with GAP, as for an evicted one.
  */
 
 #pragma once
@@ -328,13 +342,27 @@ public:
     void on_acknack(const ParseContext& ctx, const ParsedAckNack& msg) noexcept;
 
     /**
-     * @brief Processes a NACK_FRAG: the whole change is resent after nackResponseDelay.
+     * @brief Processes a NACK_FRAG: the named fragments are resent after nackResponseDelay.
+     *
+     * A reader that has part of a fragmented change asks for the rest with
+     * a NACK_FRAG. The change is requested as for a NACK, so the repair goes
+     * out from tick() once nackResponseDelay has passed, and a change no
+     * longer held is answered with GAP; the repair carries only the named
+     * fragments (record_fragment_repair()). Resending every fragment would
+     * put the fragments the reader lacks back behind the ones it holds, and
+     * on a link whose receive buffer takes fewer than all of them the same
+     * ones would be lost on every retry. A NACK_FRAG whose count is not above
+     * the last one processed for the reader is a duplicate and is ignored.
      *
      * @param[in] ctx Parse context; supplies the sender's GUID prefix.
      * @param[in] msg The decoded NACK_FRAG.
      *
      * Verification:
-     * - Covered by: TC-SWR-8.4.4-001.
+     * - Correct means: after nackResponseDelay the reader receives exactly the
+     *   fragments it named (the whole change when it is not fragmented, or
+     *   when the request cannot be recorded), a HEARTBEAT follows, and a
+     *   repeated count sends nothing.
+     * - Covered by: TC-SWR-8.4.4-001, TC-SWR-8.4.4-002, TC-SWR-8.4.4-003.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.4, §8.3.7.7 (NACK_FRAG)
@@ -373,6 +401,40 @@ public:
     /// heartbeat_period() — §8.4.1.1, p. 104.
     uint32_t heartbeat_period()               const noexcept { return hb_period_ms_; }
     void     heartbeat_period(uint32_t ms)          noexcept { hb_period_ms_ = ms; }
+
+    /**
+     * @brief Makes this a service reply writer that drops each reply once its requester has it.
+     *
+     * A ROS 2 service answers every request on one reply writer, and each
+     * reply names its request in PID_RELATED_SAMPLE_IDENTITY. The requesting
+     * client's reply reader lives in the same participant as the request
+     * writer named there, so it shares that GUID prefix. With this on, a
+     * reply leaves the history as soon as every matched reader with that
+     * prefix is done with it (ReaderProxy::is_done_with), whatever the
+     * writer's durability and whatever other clients' readers have seen:
+     * those readers discard replies to other clients' requests. A reply
+     * whose requester has no matched reader yet stays, so a TRANSIENT_LOCAL
+     * reply writer still delivers it when that reader matches late, until
+     * KEEP_LAST evicts it. A change without a related sample identity is
+     * left to the writer's durability rule.
+     *
+     * @param[in] on True for a service reply writer.
+     *
+     * Verification:
+     * - Correct means: a reply is released once, and only once, the
+     *   requester's matched readers are done with it; a reply whose
+     *   requester has not matched stays and reaches that reader when it
+     *   matches.
+     * - Covered by: TC-SWR-8.4.7-007 (with its per-reply HEARTBEAT), TC-SWR-8.4.7-008.
+     *
+     * References:
+     * - OMG DDS-RPC 1.0 §7.8.2 (related sample identity)
+     * - rmw_rosette/src/service_endpoints.cpp (reply writer configuration)
+     */
+    void release_replies_on_delivery(bool on) noexcept { releaseRepliesOnDelivery_ = on; }
+
+    /// @brief True for a service reply writer (see release_replies_on_delivery(bool)).
+    bool release_replies_on_delivery() const noexcept { return releaseRepliesOnDelivery_; }
 
     /**
      * @brief True when every matched reader has acknowledged the newest change.
@@ -506,6 +568,9 @@ private:
      * @param[in] proxy     Reader to send to, at its best unicast locator.
      * @param[in] heartbeat Also send a HEARTBEAT advertising the history's
      *   current range; heartbeatCount_ must already be advanced for it.
+     * @param[in] only_fragments For a fragmented change, the fragments to
+     *   send (bit k-1 for fragment k, see send_fragments_to()); null for all.
+     *   Ignored for a change sent as one DATA.
      * @return `true` when every DATA or DATA_FRAG datagram was handed to the
      *   transport.
      *
@@ -520,7 +585,8 @@ private:
      *   §8.4.15.4 (piggybacked HEARTBEAT), §8.3.3 (a message carries any
      *   number of submessages)
      */
-    bool send_data_to(const CacheChange& ch, ReaderProxy& proxy, bool heartbeat = false) noexcept;
+    bool send_data_to(const CacheChange& ch, ReaderProxy& proxy, bool heartbeat = false,
+                      const uint64_t* only_fragments = nullptr) noexcept;
 
     /**
      * @brief Frames a change as DATA inside its own payload block and sends it.
@@ -561,7 +627,8 @@ private:
      * per datagram, fits the transport's datagram limit. Fragment 1 carries
      * the encapsulation header; inline QoS rides in every fragment, so a
      * reader holding any fragment knows the sample's related identity. A
-     * NACK_FRAG or NACK for the change resends every fragment.
+     * NACK resends every fragment; a NACK_FRAG resends the fragments it names
+     * (`only_fragments`).
      *
      * With `heartbeat`, the HEARTBEAT rides after the last fragment when that
      * datagram has room for it under the limit, and otherwise follows in a
@@ -571,6 +638,8 @@ private:
      * @param[in] proxy     Reader to send to.
      * @param[in] dest      The reader's locator.
      * @param[in] heartbeat Also send a HEARTBEAT, as for send_data_to().
+     * @param[in] only_fragments Bit k-1 set for each fragment k to send
+     *   (fragments above 64 are never selected); null sends every fragment.
      * @return `true` when every fragment was handed to the transport.
      *
      * Verification:
@@ -584,7 +653,36 @@ private:
      * - OMG DDSI-RTPS 2.5 §8.4.14.1, §9.4.5.4 (DATA_FRAG), §8.4.15.4
      */
     bool send_fragments_to(const CacheChange& ch, ReaderProxy& proxy, const Locator& dest,
-                           bool heartbeat) noexcept;
+                           bool heartbeat, const uint64_t* only_fragments = nullptr) noexcept;
+
+    /**
+     * @brief Records which fragments of change `sn` a NACK_FRAG from `proxy` asked for.
+     *
+     * The writer holds one pending fragment repair: a board rarely has more
+     * than one reader repairing a fragmented change at once, and the record
+     * costs a pointer, a sequence number and a 64-bit mask rather than a
+     * FragmentNumberSet per reader proxy. A second NACK_FRAG from the same
+     * reader for the same change adds its fragments; one from another
+     * reader, or for another change, while the record is taken, leaves its
+     * change to be resent whole, as is one naming a fragment above 64. tick()
+     * consumes the record when it repairs that reader.
+     *
+     * @param[in] proxy     Reader that sent the NACK_FRAG.
+     * @param[in] sn        The fragmented change it names.
+     * @param[in] fragments The fragment numbers it asks for.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.7.5 (NACK_FRAG), §8.4.14.1
+     */
+    void record_fragment_repair(const ReaderProxy& proxy, const SequenceNumber& sn,
+                                const FragmentNumberSet& fragments) noexcept;
+
+    /// A NACK_FRAG waiting for nackResponseDelay (record_fragment_repair()).
+    struct FragmentRepair {
+        const ReaderProxy* proxy     = nullptr;  ///< Requesting reader; null when free.
+        SequenceNumber     sn        = {};
+        uint64_t           fragments = 0u;       ///< Bit k-1 for fragment k.
+    };
 
     /**
      * @brief Sends every UNSENT change to every matched reader.
@@ -627,11 +725,17 @@ private:
 
     /**
      * @brief Writes since the last HEARTBEAT that make the next one due: half
-     *   the history depth, at least 1.
+     *   the history depth, at least 1; 1 for a service reply writer.
      *
      * Half the depth leaves the other half of the history holding a lost
      * change while the reader's NACK and the repair travel, so a reader that
      * answers the HEARTBEAT promptly gets the change itself rather than a GAP.
+     * A service reply is the last write of its exchange, and the requester
+     * acknowledges it only in answer to a HEARTBEAT; carrying one on every
+     * reply brings that acknowledgement back within a round trip, so the
+     * reply's block returns to the pool (release_replies_on_delivery())
+     * before the next request's reply needs one, instead of after a
+     * heartbeatPeriod.
      */
     uint32_t piggyback_interval() const noexcept;
 
@@ -645,6 +749,38 @@ private:
 
     /// @brief True when every matched reader has acknowledged `sn`.
     bool all_readers_acked(const SequenceNumber& sn) const noexcept;
+
+    /**
+     * @brief Drops every change no reader still needs.
+     *
+     * Runs after each event that can finish a change: an ACKNACK, a send
+     * pass, and an unmatch. Two rules release a change, and dropping it
+     * returns its payload block to the pool instead of holding it until
+     * KEEP_LAST evicts it:
+     * - VOLATILE durability: a reader that matches later is sent only later
+     *   changes, so a change every matched reader is done with
+     *   (ReaderProxy::is_done_with) is never sent again. With no reader
+     *   matched, every change goes.
+     * - A service reply writer (release_replies_on_delivery()): a reply
+     *   goes once its requester's matched readers are done with it
+     *   (reply_delivered()), whatever the durability.
+     * Otherwise a TRANSIENT_LOCAL writer keeps its history for readers that
+     * match later.
+     *
+     * Verification:
+     * - Correct means: after the call the history holds exactly the changes
+     *   neither rule releases; a NACK for a dropped change is answered with GAP.
+     * - Covered by: TC-SWR-8.4.7-003 through TC-SWR-8.4.7-008.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.7.1 (is_acked_by_all), §8.7.2.2.1 (VOLATILE
+     *   durability); OMG DDS 1.4 §2.2.3.4 (DURABILITY)
+     */
+    void release_finished_changes() noexcept;
+
+    /// @brief True when `reply` names a requester whose matched readers are
+    ///   all done with it, and at least one of them is matched.
+    bool reply_delivered(const CacheChange& reply, bool reliable) const noexcept;
 
     Guid            guid_;
     ReliabilityKind reliability_;
@@ -662,6 +798,8 @@ private:
     uint32_t       hb_period_ms_;
     uint32_t       lastHbSentMs_   = 0;
     uint32_t       writesSinceHb_  = 0;  ///< RELIABLE writes since any HEARTBEAT.
+    bool           releaseRepliesOnDelivery_ = false;  ///< Service reply writer.
+    FragmentRepair fragRepair_{};  ///< Pending NACK_FRAG repair.
     MessageBuilder builder_;
 };
 

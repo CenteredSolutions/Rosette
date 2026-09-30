@@ -54,6 +54,8 @@ void append_stateful_writer_tests_8_2_2(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_9_irrelevant_gap(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_6_requested_window(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_9_announcing(std::vector<TestCase>& tests);
+void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& tests);
+void append_stateful_writer_tests_8_4_4_fragment_repair(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_15_piggyback_heartbeat(std::vector<TestCase>& tests);
 
 void register_all_stateful_writer_tests(std::vector<TestCase>& tests);
@@ -62,6 +64,7 @@ void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests);
 void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests);
 void append_stateful_reader_tests_8_4_9_gap_ranges(std::vector<TestCase>& tests);
 void append_stateful_reader_tests_8_4_10_4(std::vector<TestCase>& tests);
+void append_stateful_reader_tests_8_4_12_nack_frag_on_heartbeat(std::vector<TestCase>& tests);
 
 void register_all_stateful_reader_tests(std::vector<TestCase>& tests);
 

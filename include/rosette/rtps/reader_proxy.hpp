@@ -125,6 +125,10 @@ public:
     /// — §8.4.7.3, p. 140 (by analogy: count is monotone).
     int32_t lastAcknackCount = 0;
 
+    /// Count field from the last NACK_FRAG processed for this proxy; a
+    /// NACK_FRAG whose count is not above it is a duplicate. — §8.3.7.5.
+    int32_t lastNackFragCount = 0;
+
     /// True when a NACK has been received and nackResponseDelay is pending.
     /// Set by requested_changes_set(); cleared by StatefulWriter::tick()
     /// after firing. — §8.4.1.1 nackResponseDelay, p. 104.
@@ -188,6 +192,33 @@ public:
      * - OMG DDSI-RTPS 2.5 §8.4.9.2.12, §8.7.2.2.1 (VOLATILE durability)
      */
     bool is_relevant(const SequenceNumber& sn) const noexcept { return !(sn < firstRelevantSN_); }
+
+    /**
+     * @brief True when the writer owes this reader nothing more for the change `sn`.
+     *
+     * A VOLATILE writer asks every matched proxy this before it drops a
+     * change from its history. The reader is done with a change it was
+     * never to receive (irrelevant), and otherwise with one it has
+     * acknowledged (RELIABLE) or been sent (BEST_EFFORT, which repairs
+     * nothing).
+     *
+     * @param[in] sn       Any sequence number the writer has assigned.
+     * @param[in] reliable True for a RELIABLE writer, false for BEST_EFFORT.
+     * @return `true` when no send or repair of `sn` to this reader can follow.
+     *
+     * Verification:
+     * - Correct means: a RELIABLE proxy is done only with changes at or
+     *   below highestAckedSN or below firstRelevantSN; a BEST_EFFORT proxy
+     *   also with changes at or below highestSentSN.
+     * - Covered by: TC-SWR-8.4.7-003, TC-SWR-8.4.7-005.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.7.1 (is_acked_by_all), §8.4.8.1 (best-effort),
+     *   §8.7.2.2.1 (VOLATILE durability)
+     */
+    bool is_done_with(const SequenceNumber& sn, bool reliable) const noexcept {
+        return !is_relevant(sn) || !(highestAckedSN < sn) || (!reliable && !(highestSentSN_ < sn));
+    }
 
     /**
      * @brief Marks every change up to `committed_sn` ACKNOWLEDGED.
