@@ -1,12 +1,13 @@
 /**
- * @file net/wiznet/board.hpp
- * @brief Board-configured WIZnet stack: chip + bus + socket provider.
+ * @file boards/common/rp2_wiznet/wiznet_board_types.hpp
+ * @brief The WIZnet EVB-Pico boards' driver types: chip + bus + socket provider.
  *
  * One include resolves the concrete types for the current board from
  * `board_config.h` (`ROSETTE_WIZNET_CHIP`, `ROSETTE_SPI_INST`,
- * `ROSETTE_PIN_SPI_CS`):
+ * `ROSETTE_PIN_SPI_CS`), over the portable driver
+ * (include/rosette/net/wiznet/) and the rp2 chip port's buses:
  *
- *     #include "rosette/net/wiznet/board.hpp"
+ *     #include "wiznet_board_types.hpp"
  *     namespace wiz = rosette::net::wiznet;
  *
  *     auto bus = wiz::make_board_bus();
@@ -17,18 +18,25 @@
  * SPI peripheral setup (baud rate, pin alt-functions, reset sequencing) stays
  * in board bring-up; `make_board_bus()` only binds the configured pins.
  *
- * The bus is chosen by `board_config.h`: define `ROSETTE_WIZNET_BUS_QSPI` for
- * the W6300's QSPI wiring (single-lane for now, see `rp2_qspi_bus.hpp`);
- * otherwise the hardware SPI peripheral `ROSETTE_SPI_INST` is used.
+ * `board_config.h` names the fitted part as the register trait's name in
+ * `rosette::net::wiznet` (`w5100s.hpp`, `w6x00.hpp`):
+ *
+ *     #define ROSETTE_WIZNET_CHIP  W5100S
+ *
+ * and chooses the bus: define `ROSETTE_WIZNET_BUS_QSPI` for the W6300's QSPI
+ * wiring (single-lane for now, see `rp2_qspi_bus.hpp`); otherwise the
+ * hardware SPI peripheral `ROSETTE_SPI_INST` is used.
  */
 
 #pragma once
 
 #include "board_config.h"
 
-#include "chip_select.hpp"
-#include "device.hpp"
-#include "socket_provider.hpp"
+#include "rosette/net/wiznet/device.hpp"
+#include "rosette/net/wiznet/link.hpp"
+#include "rosette/net/wiznet/socket_provider.hpp"
+#include "rosette/net/wiznet/w5100s.hpp"
+#include "rosette/net/wiznet/w6x00.hpp"
 
 #if defined(ROSETTE_WIZNET_BUS_QSPI)
 #include "rp2_qspi_bus.hpp"
@@ -36,7 +44,14 @@
 #include "rp2_spi_bus.hpp"
 #endif
 
+#ifndef ROSETTE_WIZNET_CHIP
+#error "board_config.h must define ROSETTE_WIZNET_CHIP (e.g. W5100S)"
+#endif
+
 namespace rosette::net::wiznet {
+
+/// The register trait for the part this board is built for.
+using BoardChip = ROSETTE_WIZNET_CHIP;
 
 #if defined(ROSETTE_WIZNET_BUS_QSPI)
 using BoardBus = rosette::platform::Rp2QspiBus;
@@ -63,6 +78,7 @@ inline BoardBus make_board_bus() noexcept
 
 using BoardDevice = WiznetDevice<BoardChip, BoardBus>;
 using BoardSocketProvider = WiznetSocketProvider<BoardChip, BoardBus>;
+using BoardLink = WiznetLink<BoardChip, BoardBus>;
 
 /**
  * @brief The board's receive-buffer KiB per hardware socket (WiznetDevice::set_rx_layout()).

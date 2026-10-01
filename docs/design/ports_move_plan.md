@@ -7,7 +7,7 @@ document states the rules, lists every file that moves or changes, and gives the
 written once the seams below exist, will explain how to add a port.
 
 `tools/style/check_port_boundaries.py` enforces the rules. It runs in `tools/style/run_style_checks.sh`, against
-`tools/style/port_boundary_baseline.txt` (48 entries today). New code must pass, and each step below deletes
+`tools/style/port_boundary_baseline.txt` (2 entries today). New code must pass, and each step below deletes
 baseline entries. When the baseline is empty, this plan is done and this file is replaced by PORTING.md.
 
 ## Layout
@@ -19,11 +19,14 @@ ports/
   os/<name>/            Mutex, Event, sleep_ms: rosette_os_port.hpp (fixed name, see below)
     baremetal/  freertos/  posix/  stub/
   net/<name>/           adapters from a third-party IP stack to rosette::net::SocketProvider
-    freertos_tcp/  posix/  (lwip/ planned)
-  <axis>/<name>/port.cmake   defines the port's CMake target; the directory's existence makes the name valid
+    freertos_tcp/  posix/  wiznet/ (hardware sockets: adds DHCP, no adapter)  (lwip/ planned)
+  <axis>/<name>/port.cmake   adds the port to its CMake target; the directory's existence makes the name valid
+  chip/<name>/prelude.cmake  optional: runs before project(), to set up a cross toolchain
 boards/
-  <board>/              board.cmake (ROSETTE_CHIP / ROSETTE_OS / ROSETTE_NET_STACK + pins), board_init.c
-  common/rp2_wiznet/    composition shared by the WIZnet EVB-Pico boards: bus choice, board network bring-up
+  <board>/              board.cmake (ROSETTE_CHIP / ROSETTE_OS / ROSETTE_NET_STACK, ROSETTE_BOARD_COMMON, pins),
+                        board_config.h, board_init.c
+  common/rp2_wiznet/    composition shared by the WIZnet EVB-Pico boards: bus choice, driver types, board network
+  common/freertos/      FreeRTOSConfig.h
 include/rosette/, src/  portable only
 ```
 
@@ -36,9 +39,11 @@ Three decisions follow from this layout:
 - **The build selects the OS port through a fixed-name header.** `platform.hpp` includes `"rosette_os_port.hpp"`,
   and only the selected `ports/os/<name>/` is on the include path. That replaces the `#if ROSETTE_OS_*` chain,
   the same way each FreeRTOS port supplies its own `portmacro.h`.
-- **A port name is a directory, not a hard-coded list.** `rosette_platform.cmake` accepts `ROSETTE_CHIP=foo` when
-  `ports/chip/foo/port.cmake` exists (also searched in `ROSETTE_PORT_DIRS`), so an out-of-tree port needs no
-  edit to Rosette.
+- **A port name is a directory, not a hard-coded list.** `cmake/rosette_ports.cmake` accepts `ROSETTE_CHIP=foo`
+  when `ports/chip/foo/port.cmake` exists (also searched in `ROSETTE_PORT_DIRS`), and the same for `ROSETTE_OS`
+  and `ROSETTE_NET_STACK`, so an out-of-tree port needs no edit to Rosette. A chip port's `port.cmake` may define
+  `rosette_chip_add_image_outputs(target)`, which `rosette_add_image_outputs(target)` calls (the rp2 port: .uf2
+  files and USB stdio), so the root CMakeLists and the examples name no chip SDK function.
 
 ## Rules
 
@@ -48,6 +53,7 @@ Three decisions follow from this layout:
 |---|---|
 | `ports/chip/rp2/` | Pico SDK, `board_config.h` |
 | `ports/chip/host/`, `ports/os/posix/`, `ports/net/posix/` | POSIX |
+| `ports/net/wiznet/` | nothing third-party (it only has a `port.cmake`) |
 | `ports/os/baremetal/` | nothing third-party: it is built on chip-layer hooks |
 | `ports/os/freertos/` | FreeRTOS kernel |
 | `ports/net/freertos_tcp/` | FreeRTOS kernel, FreeRTOS+TCP |
@@ -74,16 +80,16 @@ Three decisions follow from this layout:
 | chip | `__atomic_*` helpers (`fetch_add`, `exchange`, `compare_exchange`, ...) on a core without atomic instructions | new to the contract: the RTPS buffer pool's `std::atomic` counts call them on Cortex-M0+; the Pico SDK's `pico_atomic` supplies them on the RP2040, `ports/chip/stub/stub_atomic.c` shows the set |
 | os | `rosette_os_port.hpp`: `Mutex`, `Event` (with `signal_from_isr`), `sleep_ms` | unchanged API; moved to `ports/os/<name>/` in step 8 |
 | net | `rosette::net::SocketProvider`, `AddressProvider`, `Interface` | unchanged |
-| net | *promoted* `rosette/net/board_network.hpp`: `bring_up_board_network`, `poll_board_network`, `board_socket_provider`, `board_ipv4_address`, `board_network_watch`, ... | the WIZnet module's API, moved to namespace `rosette::net`; each network port or board composition implements it |
+| net | *promoted* `rosette/net/board_network.hpp`: `bring_up_board_network`, `poll_board_network`, `board_socket_provider`, `board_ipv4_address`, `board_network_watch`, ... | the WIZnet module's API, moved to namespace `rosette::net`; each network port (`ports/net/posix/`) or board composition (`boards/common/rp2_wiznet/`) implements it |
 | net | `rmw_rosette/network_port.hpp` | one portable `network_port.cpp` over `board_network.hpp` replaces `network_port_{wiznet,posix}.cpp` |
 
 ### What an application includes
 
 Applications include portable headers only: `rosette/net/socket.hpp` (the `SocketProvider` / `Socket` contract),
 `rosette/net/network_config.hpp`, `rosette/net/board_network.hpp`, `rosette/platform/platform.hpp`, and the
-`rosette/ros/`, `rosette/storage/` headers. Backend-specific headers (`rosette/net/posix/socket.hpp`'s
-`PosixSocketProvider`, the rp2 bus classes, `rosette/net/wiznet/board_network.hpp` as it stands) become private to
-their ports: nothing outside a port constructs a backend. The board network does that, and hands out
+`rosette/ros/`, `rosette/storage/` headers. Backend-specific headers (`ports/net/posix/posix_socket.hpp`'s
+`PosixSocketProvider`, the rp2 bus classes, the former `rosette/net/wiznet/board_network.hpp`) are private to
+their ports: nothing outside a port or a board composition constructs a backend. The board network does that, and hands out
 `board_socket_provider()` as a plain `SocketProvider&`. Today every example includes
 `rosette/net/wiznet/board_network.hpp`, which is why none of them builds on a non-WIZnet network. Once the header
 is promoted, `rclc_chatter` and `rtps_chatter` are portable as written.
@@ -101,7 +107,7 @@ removed it:
   back), so they went. The two getters with a real source moved next to their one caller: the FreeRTOS+TCP
   endpoint readout into `FreeRtosObserver` (which also fixes its byte order: the stack keeps `ulIPAddress` in
   network order, and the old getter handed it on as host order), and the host's local-IPv4 detection into
-  `src/net/posix/board_network.cpp`.
+  the host board network (now `ports/net/posix/posix_board_network.cpp`).
 
 ## Move list
 
@@ -128,41 +134,45 @@ Done in step 8. Each port is one directory with a `port.cmake`; `cmake/rosette_p
 
 ### Network
 
-| Current | Action | Destination / change |
-|---|---|---|
-| `include/rosette/net/posix/socket.hpp`, `src/net/posix/socket.cpp` | move | `ports/net/posix/posix_socket.{hpp,cpp}` (its `__linux__` branch is fine inside a port) |
-| `include/rosette/net/freertos/{address_provider,igmp,interface,socket}.hpp` | move | `ports/net/freertos_tcp/freertos_tcp_*.hpp` |
-| `src/net/freertos/{igmp,interface,socket}.cpp` | move | `ports/net/freertos_tcp/freertos_tcp_*.cpp` (see "Open decisions": `igmp.cpp` includes a header that doesn't exist) |
-| `include/rosette/net/wiznet/macraw.{h,hpp}`, `src/net/wiznet/macraw.cpp` | move | `ports/net/freertos_tcp/wiznet_macraw_interface.*`: a FreeRTOS+TCP NetworkInterface over the portable WIZnet driver (since step 7 it notifies its own RX task from the interrupt; the driver has no FreeRTOS code) |
-| `include/rosette/net/wiznet/rx_interrupt_pico.hpp` | done | deleted: `WiznetSocketProvider::attach_interrupt()` attaches through `gpio_interrupt.hpp`; the Pico GPIO calls are in `src/platform/chip/rp2/chip_rp2.cpp`, which moves to `ports/chip/rp2/` |
-| `include/rosette/net/wiznet/device.hpp` | done | the FreeRTOS task wake-ups and interrupt-dispatch task are gone; `clear_rx_interrupts()` clears every flagged socket's RECV so INT can raise a fresh edge |
-| `include/rosette/net/wiznet/executor.hpp` | done | deleted rather than merged: `WiznetSocketProvider<Chip, Bus>` waits on `platform::Event` itself (a per-socket event for `recv_from()`, the caller's for `wait_readable()`), signals them all from the INT interrupt, and guards its socket table with `platform::Mutex` |
-| `include/rosette/net/wiznet/board.hpp` | move | `boards/common/rp2_wiznet/wiznet_board_types.hpp` (chooses `Rp2SpiBus`/`Rp2QspiBus` from `board_config.h`) |
-| `include/rosette/net/wiznet/chip_select.hpp` | refactor | chip model comes from a compile definition set by `board.cmake`, not `board_config.h`; drop the missing `w5500.hpp` branch or add the part |
-| `include/rosette/net/wiznet/board_network.hpp` | done | `include/rosette/net/board_network.hpp`, namespace `rosette::net`: the public contract (see "What an application includes") |
-| `src/net/wiznet/board_network.cpp` | move | `boards/common/rp2_wiznet/wiznet_board_network.cpp`, the WIZnet implementation of that contract |
-| *new* | add | the same contract over host sockets (done: `src/net/posix/board_network.cpp`, moves to `ports/net/posix/` with the POSIX port) and FreeRTOS+TCP (`ports/net/freertos_tcp/freertos_tcp_board_network.cpp`) |
-| `examples/*/main.cpp` | done | include `rosette/net/board_network.hpp`, call `rosette::net::bring_up_board_network()` |
-| `include/rosette/net/wiznet/dhcp_{client,provider,wire}.hpp`, `src/net/wiznet/dhcp_*.cpp` | stays | portable code (only the socket and provider interfaces), but only a socket-offload chip needs it: a MAC-level stack (FreeRTOS+TCP, lwIP) and the host OS run their own DHCP |
-| `include/rosette/net/wiznet/{device,socket_provider,link,interface,slaac_provider,w5100s,w6x00}.hpp` | stays | portable WIZnet driver |
-| everything else in `include/rosette/net/`, `src/net/` | stays | portable |
-| `rmw_rosette/src/network_port_wiznet.cpp`, `network_port_posix.cpp` | done | `rmw_rosette/src/network_port.cpp`, forwarding to `rosette/net/board_network.hpp`; rmw no longer knows which network it runs on |
-| `tests/agent/agent_live_probe.cpp`, `tests/net/sntp_live_probe.cpp` | stays | host test drivers may name `PosixSocketProvider` (the `tests/` zone allows port headers) |
+Done in step 9, except where a row says otherwise.
+
+| Former path | Now |
+|---|---|
+| `include/rosette/net/posix/socket.hpp`, `src/net/posix/socket.cpp` | `ports/net/posix/posix_socket.{hpp,cpp}` (its `__linux__` branch is fine inside a port) |
+| `src/net/posix/board_network.cpp` | `ports/net/posix/posix_board_network.cpp`, the host implementation of `board_network.hpp` |
+| `include/rosette/net/freertos/{address_provider,igmp,interface,socket}.hpp` | `ports/net/freertos_tcp/freertos_tcp_*.hpp` |
+| `src/net/freertos/{igmp,socket}.cpp` | `ports/net/freertos_tcp/freertos_tcp_*.cpp`; `igmp.cpp` now includes its real header. `interface.cpp` (a forwarding include) is deleted |
+| `include/rosette/net/wiznet/macraw.{h,hpp}` | `ports/net/freertos_tcp/wiznet_macraw_interface.{h,hpp}`: a FreeRTOS+TCP NetworkInterface over the portable WIZnet driver |
+| `src/net/wiznet/macraw.cpp` | `boards/common/rp2_wiznet/wiznet_macraw_interface.cpp`: it instantiates that interface for the board's chip, bus and pins, so it is composition, not port |
+| `include/rosette/net/wiznet/board.hpp` | `boards/common/rp2_wiznet/wiznet_board_types.hpp` (chooses `Rp2SpiBus`/`Rp2QspiBus` from `board_config.h`); it also holds `BoardLink`, which was the one board type in the portable `link.hpp` |
+| `include/rosette/net/wiznet/chip_select.hpp` | deleted: the `BoardChip` alias from `board_config.h`'s `ROSETTE_WIZNET_CHIP` is in `wiznet_board_types.hpp`; the missing `w5500.hpp` branch is gone |
+| `src/net/wiznet/board_network.cpp` | `boards/common/rp2_wiznet/wiznet_board_network.cpp`, the WIZnet implementation of `board_network.hpp` |
+| *new* `ports/net/freertos_tcp/freertos_tcp_board_network.cpp` | **not done**: see "Open decisions" |
+| `include/rosette/net/wiznet/rx_interrupt_pico.hpp`, `executor.hpp` | deleted in step 7: `WiznetSocketProvider<Chip, Bus>` attaches the INT pin through `gpio_interrupt.hpp` and waits on `platform::Event` |
+| `include/rosette/net/wiznet/device.hpp` | step 7: no FreeRTOS code; `clear_rx_interrupts()` clears every flagged socket's RECV so INT can raise a fresh edge |
+| `include/rosette/net/wiznet/board_network.hpp` | step 4: `include/rosette/net/board_network.hpp`, namespace `rosette::net`: the public contract (see "What an application includes") |
+| `rmw_rosette/src/network_port_wiznet.cpp`, `network_port_posix.cpp` | step 4: `rmw_rosette/src/network_port.cpp`, forwarding to `rosette/net/board_network.hpp` |
+| `include/rosette/net/wiznet/dhcp_{client,provider,wire}.hpp`, `src/net/wiznet/dhcp_*.cpp` | stay: portable code, but only a socket-offload chip needs it (a MAC-level stack and the host OS run their own DHCP), so `ports/net/wiznet/port.cmake` compiles it |
+| `include/rosette/net/wiznet/{device,socket_provider,link,interface,slaac_provider,w5100s,w6x00}.hpp` | stay: the portable WIZnet driver |
+| `tests/agent/agent_live_probe.cpp`, `tests/net/sntp_live_probe.cpp` | stay: host test drivers may name `PosixSocketProvider` (the `tests/` zone allows port headers) |
 
 ### Build, config, boards
 
-| Current | Action | Destination / change |
-|---|---|---|
-| `cmake/pico_sdk.cmake` | move | `ports/chip/rp2/port.cmake`, plus `rosette_port_add_image_outputs(target)` so the root CMakeLists and the contract test stop calling `pico_*` |
-| `cmake/freertos_tcp.cmake` | move | `ports/net/freertos_tcp/port.cmake` |
-| `cmake/rosette_platform.cmake` | done | sources and targets from `ports/chip/${ROSETTE_CHIP}/port.cmake` + `ports/os/${ROSETTE_OS}/port.cmake`; validity is "the directory exists" |
-| `cmake/rosette_net.cmake` | refactor | stack from `ports/net/${ROSETTE_NET_STACK}/port.cmake`; the portable source list is written once, not per stack |
-| `CMakeLists.txt` | refactor | no `pico_*`, `hardware_*` or `src/platform/pico_*` references; `rosette_bsp` comes from the board and its ports |
-| `config/FreeRTOSConfig.h` | move | `boards/common/freertos/FreeRTOSConfig.h` (per-board values, so it's board composition) |
-| `config/FreeRTOSIPConfig.h` | move | `ports/net/freertos_tcp/FreeRTOSIPConfig.h` (default a board may override) |
-| `boards/bc-gen2/` | deleted | an RP2040 + W5100S board with a debug port; when a debug target is needed again it returns as a board over `boards/common/rp2_wiznet/`: the W5100S-EVB-Pico wiring plus two LEDs on GPIO 22 and 23 |
-| `boards/*/board.cmake` | refactor | `ROSETTE_CHIP`, `ROSETTE_OS`, `ROSETTE_NET_STACK` (`wiznet`, `freertos_tcp`, `posix`, later `lwip`) + pins; the `ROSETTE_BOARD_ENABLE_PICO_SDK/FREERTOS/WIZNET` flags are derived, not set |
-| `bindings/micropython/modrosette.c` | refactor | `sys/time.h` replaced by `mp_hal_ticks_*` (MicroPython is the port there) |
+Done in step 9, except where a row says otherwise.
+
+| Former path | Now |
+|---|---|
+| `cmake/pico_sdk.cmake` | `ports/chip/rp2/prelude.cmake`, run by `rosette_prelude.cmake` before `project()` for whichever chip port has one; `pico_sdk_init()` is in `ports/chip/rp2/port.cmake`, which also defines `rosette_chip_add_image_outputs()` and `ROSETTE_CHIP_TEST_LIBRARIES` (`pico_multicore`, for the contract test) |
+| `cmake/freertos_tcp.cmake` | split: the kernel fetch and `freertos_config` into `ports/os/freertos/port.cmake`, the FreeRTOS+TCP fetch into `ports/net/freertos_tcp/port.cmake` |
+| `cmake/rosette_platform.cmake` | step 8: sources and targets from `ports/chip/${ROSETTE_CHIP}/port.cmake` + `ports/os/${ROSETTE_OS}/port.cmake`; the lookup is in `cmake/rosette_ports.cmake`, shared with the prelude and `rosette_net.cmake` |
+| `cmake/rosette_net.cmake` | defines `rosette_net` once: the portable sources, then `ports/net/${ROSETTE_NET_STACK}/port.cmake`. The root CMakeLists and `tests/port_stub` both use it |
+| `CMakeLists.txt` | no `pico_*`, `hardware_*` or `src/platform/pico_*` references; `rosette_bsp` is the board's `board_init.c` plus `boards/common/${ROSETTE_BOARD_COMMON}/bsp.cmake` |
+| `config/FreeRTOSConfig.h` | `boards/common/freertos/FreeRTOSConfig.h` (per-board values, so board composition); a board may point `ROSETTE_FREERTOS_CONFIG_DIR` elsewhere |
+| `config/FreeRTOSIPConfig.h` | `ports/net/freertos_tcp/FreeRTOSIPConfig.h` |
+| `boards/bc-gen2/` | deleted: an RP2040 + W5100S board with a debug port; when a debug target is needed again it returns as a board over `boards/common/rp2_wiznet/`: the W5100S-EVB-Pico wiring plus two LEDs on GPIO 22 and 23 |
+| `boards/*/board.cmake` | set `ROSETTE_CHIP`, `ROSETTE_OS`, `ROSETTE_NET_STACK`, `ROSETTE_BOARD_COMMON` and pins. `ROSETTE_BOARD_FAMILY` and `ROSETTE_BOARD_BUILD_BSP` are gone; `ROSETTE_BOARD_ENABLE_PICO_SDK/FREERTOS/WIZNET` are set by the rp2, freertos and wiznet ports, for the examples that use those directly |
+| `examples/*/CMakeLists.txt` | `rosette_add_image_outputs()` instead of the `pico_*` calls (not `led_files`, which has uncommitted work); their `main.cpp` still include `pico/stdlib.h` and `board.h`, so they build on rp2 only |
+| `bindings/micropython/modrosette.c` | **not done**: `sys/time.h` replaced by `mp_hal_ticks_*` (MicroPython is the port there) |
 
 ## The WIZnet ioLibrary
 
@@ -192,7 +202,10 @@ neither fetched nor linked. The comments in `device.hpp` and `w6x00.hpp` that ci
 8. Add the fixed-name OS header and move the OS ports; move the chip ports; split the pico runtime files. (done:
    see "Platform". Still in shared files until step 9: `pico_sdk_init()` and the `pico_*` / `hardware_*` links in
    the root `CMakeLists.txt` and `cmake/rosette_net.cmake`, and `wiznet/board.hpp`'s include of the rp2 buses.)
-9. Move the network ports and `boards/common/rp2_wiznet/`; convert `cmake/` to per-port `port.cmake`.
+9. Move the network ports and `boards/common/rp2_wiznet/`; convert `cmake/` to per-port `port.cmake`. (done: see
+   "Network" and "Build, config, boards". Two baseline entries remain: `modrosette.c`'s and
+   `ports/chip/rp2/rp2_newlib_time.c`'s `sys/time.h`, which newlib supplies on every target, so the second may
+   only need the checker to know that newlib's `sys/time.h` is not POSIX.)
 10. Write PORTING.md: the contracts table, the zone rules, "pass `rosette_platform_contract` and the socket-provider
    contract test", and a worked example (the stub port).
 
@@ -207,10 +220,18 @@ Moves (`git mv`) and edits go in separate commits, so `git log --follow` keeps e
   gains a recursive mutex or the device takes the lock once per public call and the bus never does.
 - **FreeRTOS+TCP stays until lwIP exists.** lwIP is the long-term IP stack (it runs on bare metal and on any RTOS);
   FreeRTOS+TCP stays because it fits FreeRTOS best. With bc-gen2 gone, no board uses FreeRTOS, and the port
-  already doesn't build (`src/net/freertos/igmp.cpp` includes `igmp_freertos.hpp`, which doesn't exist). A port
-  nobody builds decays, so it gets a CI build: `w5100s-evb-pico2` with `ROSETTE_OS=freertos` and
-  `ROSETTE_NET_STACK=freertos_tcp` (MACRAW). The same board with a different OS and stack also shows the
-  composition model working. Fix the missing header while moving the port.
+  didn't configure or build. Step 9 fixed the IGMP source's include of a header that didn't exist and the
+  build's name for FreeRTOS+TCP's target (`freertos_plus_tcp`, not `freertos_tcp`), so a board with
+  `ROSETTE_OS=freertos` and `ROSETTE_NET_STACK=freertos_tcp` now configures. It doesn't compile yet: on the
+  RP2350 the kernel's `ARM_CM33_NTZ` port needs `configENABLE_FPU`, `configENABLE_MPU` and
+  `configENABLE_TRUSTZONE` in `FreeRTOSConfig.h`, and `secure_context.h`; the Raspberry Pi kernel fork's RP2350
+  port is probably the better base. Rosette's own FreeRTOS+TCP sources have not been compiled. Nor can it link an
+  image: nothing implements `board_network.hpp` over FreeRTOS+TCP (`ports/net/freertos_tcp/
+  freertos_tcp_board_network.cpp`: start the IP task, register the MACRAW interface the board instantiates, and
+  hand out a `FreeRtosSocketProvider`), and nothing starts the scheduler. A port nobody builds decays, so once
+  that exists it gets a CI build: a WIZnet board with `ROSETTE_OS=freertos` and `ROSETTE_NET_STACK=freertos_tcp`
+  (MACRAW), which also shows the composition model working. `board.cmake` values are not overridable from the
+  command line today, so that is a second board directory or an override mechanism.
 - **lwIP.** It will be `ports/net/lwip/`. The check already has its zone and header family, so lwIP headers can't
   leak into portable code when the port lands.
 - **MicroPython binding.** `rosette_mpy_backend_runtime.cpp` and `rosette_mpy_transport.cpp` include

@@ -294,10 +294,11 @@ stream history × MTU). Transmit memory stays split evenly: a socket holds one
 outgoing datagram at a time.
 
 Set `ROSETTE_WIZNET_RX_LAYOUT_KIB` (for example `8;4;1;1;1;1;0;0`) to override
-the layout; `board.hpp` rejects at compile time a size that is not 0 or a power
-of two, or a layout that exceeds the chip's memory, and a socket given 0 KiB is
-never handed out. When the user socket's buffer is smaller than a sample's
-fragments (the W5100S's 4 KiB against a full 4096-octet sample), the reader
+the layout; `boards/common/rp2_wiznet/wiznet_board_types.hpp` rejects at
+compile time a size that is not 0 or a power of two, or a layout that exceeds
+the chip's memory, and a socket given 0 KiB is never handed out. When the user
+socket's buffer is smaller than a sample's fragments (the W5100S's 4 KiB against
+a full 4096-octet sample), the reader
 requests the dropped fragments with NACK_FRAG and the sample still arrives, one
 writer heartbeat period later.
 

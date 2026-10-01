@@ -28,9 +28,9 @@ void wiznet_macraw_set_mac_address(const uint8_t mac[6]);
 #include <utility>
 #include <variant>
 
-#include "rosette/net/freertos/interface.hpp"
+#include "freertos_tcp_interface.hpp"
 #include "rosette/net/mac.hpp"
-#include "device.hpp"
+#include "rosette/net/wiznet/device.hpp"
 
 namespace rosette::net::wiznet {
 

@@ -11,8 +11,8 @@
  * the link comes up.
  *
  *     namespace wiz = rosette::net::wiznet;
- *     auto bus = wiz::make_board_bus();
- *     wiz::BoardDevice device{bus};
+ *     auto bus = wiz::make_board_bus();      // a board's types, e.g.
+ *     wiz::BoardDevice device{bus};          // boards/common/rp2_wiznet/wiznet_board_types.hpp
  *     wiz::BoardLink link{device, mac};
  *     while (!link.bring_chip_up()) { rosette::platform::sleep_ms(500u); }
  *
@@ -27,7 +27,6 @@
 #include <cstdio>
 #include <variant>
 
-#include "board.hpp"
 #include "device.hpp"
 
 namespace rosette::net::wiznet {
@@ -90,7 +89,5 @@ private:
     std::array<uint8_t, 6> mac_{};
     bool chip_ready_ = false;
 };
-
-using BoardLink = WiznetLink<BoardChip, BoardBus>;
 
 }  // namespace rosette::net::wiznet

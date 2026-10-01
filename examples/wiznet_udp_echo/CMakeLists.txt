@@ -21,7 +21,5 @@ set(WIZNET_UDP_ECHO_NTP_SERVER "" CACHE STRING
 add_executable(wiznet_udp_echo main.cpp)
 target_compile_definitions(wiznet_udp_echo PRIVATE
     WIZNET_UDP_ECHO_NTP_SERVER="${WIZNET_UDP_ECHO_NTP_SERVER}")
-target_link_libraries(wiznet_udp_echo PRIVATE rosette_bsp pico_stdlib)
-pico_add_extra_outputs(wiznet_udp_echo)
-pico_enable_stdio_usb(wiznet_udp_echo 1)
-pico_enable_stdio_uart(wiznet_udp_echo 0)
+target_link_libraries(wiznet_udp_echo PRIVATE rosette_bsp)
+rosette_add_image_outputs(wiznet_udp_echo)

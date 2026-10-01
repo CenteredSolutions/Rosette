@@ -11,13 +11,30 @@ set(CMAKE_CXX_STANDARD 17)
 include(cmake/micro_ros.cmake)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if(ROSETTE_BOARD_ENABLE_PICO_SDK)
-    pico_sdk_init()
-endif()
+# ------------------------------------------------------------
+# The ports the board selected (boards/<board>/board.cmake):
+#
+#   rosette_platform  ports/chip/${ROSETTE_CHIP} + ports/os/${ROSETTE_OS}
+#   rosette_net       the portable network core + ports/net/${ROSETTE_NET_STACK}
+#
+# The sockets, address management, and SNTP that the RTPS core
+# (cmake/rosette_rtps.cmake), rmw_rosette (cmake/rmw_rosette_firmware.cmake),
+# and the board BSP open go through rosette_net. See docs/architecture.md.
+# ------------------------------------------------------------
+set(ROSETTE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
+include(cmake/rosette_platform.cmake)
+include(cmake/rosette_net.cmake)
 
-if(ROSETTE_BOARD_ENABLE_FREERTOS)
-    include(cmake/freertos_tcp.cmake)
-endif()
+set(ROSETTE_INTERNAL_INCLUDE_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/net
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/platform
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/ros)
+
+target_include_directories(rosette_net PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${ROSETTE_BOARD_DIR}
+    ${ROSETTE_INTERNAL_INCLUDE_DIRS}
+)
 
 # ------------------------------------------------------------
 # rosette_fs — the LittleFS sources
@@ -36,54 +53,6 @@ target_include_directories(rosette_fs PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# ------------------------------------------------------------
-# rosette_net — socket abstraction layer (rosette::net)
-#
-# The transport-neutral SocketProvider interface and its host backend. The
-# RTPS core (cmake/rosette_rtps.cmake), rmw_rosette
-# (cmake/rmw_rosette_firmware.cmake), and the board BSP all open their
-# sockets through it. See docs/architecture.md.
-# ------------------------------------------------------------
-add_library(rosette_net STATIC
-    src/net/socket.cpp
-    src/net/address_candidate.cpp
-    src/net/address_list.cpp
-    src/net/address_manager.cpp
-    src/net/network_config.cpp
-    src/net/sntp_client.cpp
-    src/net/sntp_wire.cpp
-    src/net/wiznet/dhcp_client.cpp
-    src/net/wiznet/dhcp_provider.cpp
-    src/net/wiznet/dhcp_wire.cpp
-    src/support/fnv1a.cpp
-)
-
-set(ROSETTE_INTERNAL_INCLUDE_DIRS
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/net
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/platform
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/rosette/ros)
-
-target_include_directories(rosette_net PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${ROSETTE_BOARD_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/config
-    ${ROSETTE_INTERNAL_INCLUDE_DIRS}
-)
-
-# The platform port the board selected (ROSETTE_OS / ROSETTE_CHIP in its
-# board.cmake); carries ROSETTE_OS_* / ROSETTE_CHIP_* to every consumer.
-set(ROSETTE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
-include(cmake/rosette_platform.cmake)
-target_link_libraries(rosette_net PUBLIC rosette_platform)
-
-# A build tree targets one ROS backend. On the micro-ROS agent backend the agent
-# is the time source, so the board network's SNTP client defaults to off
-# (net/sntp_client.hpp). PUBLIC, so every target in the tree sees one value.
-if(ROSETTE_ENABLE_MICRO_ROS)
-    target_compile_definitions(rosette_net PUBLIC ROSETTE_ROS_BACKEND_AGENT)
-endif()
-
 # rosette_session — the ROS session supervisor (include/rosette/ros/session_supervisor.hpp),
 # the micro-ROS agent's gate for it (agent_session_gate.hpp), and the ROS view of
 # the wall clock (time_sync.hpp). Backend-neutral:
@@ -98,89 +67,33 @@ target_link_libraries(rosette_session PUBLIC rosette_net)
 # Platform conformance test for the selected board's port. On a Pico it
 # reports over USB serial; on the host it is also tests/platform's ctest.
 add_executable(rosette_platform_contract tests/platform/platform_contract_test.cpp)
-target_link_libraries(rosette_platform_contract PRIVATE rosette_platform)
-if(ROSETTE_BOARD_ENABLE_PICO_SDK)
-    target_link_libraries(rosette_platform_contract PRIVATE pico_stdlib pico_multicore)
-    pico_enable_stdio_usb(rosette_platform_contract 1)
-    pico_enable_stdio_uart(rosette_platform_contract 0)
-    pico_add_extra_outputs(rosette_platform_contract)
-endif()
+target_link_libraries(rosette_platform_contract PRIVATE rosette_platform ${ROSETTE_CHIP_TEST_LIBRARIES})
+rosette_add_image_outputs(rosette_platform_contract)
 
-if(NOT ROSETTE_BOARD_ENABLE_PICO_SDK)
-    # Host: the POSIX socket backend and the host board network live here.
-    target_sources(rosette_net PRIVATE
-        src/net/posix/socket.cpp
-        src/net/posix/board_network.cpp)
-
+if(ROSETTE_NET_STACK STREQUAL "posix")
     # The SNTP client against a real NTP server, checked against the host clock.
     add_executable(sntp_live_probe tests/net/sntp_live_probe.cpp)
     target_link_libraries(sntp_live_probe PRIVATE rosette_net)
 endif()
 
-if(ROSETTE_BOARD_ENABLE_FREERTOS)
-    target_link_libraries(rosette_net PUBLIC freertos_kernel freertos_tcp)
-endif()
-
-# The register-level WIZnet driver (WiznetDevice / WiznetSocketProvider /
-# WiznetLink / Dhcp*) is header-only and templated on <Chip, Bus>; the
-# firmware TU that builds the board's BoardLink instantiates it. No source
-# here picks a concrete chip/bus.
-
-if(ROSETTE_BOARD_ENABLE_PICO_SDK)
-    target_link_libraries(rosette_net PUBLIC
-        pico_stdlib hardware_spi hardware_flash hardware_sync
-    )
-endif()
-
 # ------------------------------------------------------------
-# rosette_bsp — board bring-up and the board's network for a real board.
-#
-# The FreeRTOS variant carries the MACRAW driver and FreeRTOS+TCP glue; the
-# no-RTOS variant is board init plus the WIZnet board network. The chip's
-# runtime (flash, newlib time) is in rosette_platform (ports/chip/<chip>).
+# rosette_bsp — a real board: its board_init.c, and the composition it shares
+# with other boards (boards/common/${ROSETTE_BOARD_COMMON}/bsp.cmake), which
+# for a WIZnet board instantiates the driver and implements the board network.
+# A host board has neither; its board network is in rosette_net
+# (ports/net/posix).
 # ------------------------------------------------------------
-if(ROSETTE_BOARD_BUILD_BSP)
-    add_library(rosette_bsp STATIC
-        ${ROSETTE_BOARD_DIR}/board_init.c
-    )
-
-    if(ROSETTE_BOARD_ENABLE_FREERTOS)
-        target_sources(rosette_bsp PRIVATE
-            src/net/freertos/igmp.cpp
-            src/net/freertos/socket.cpp
-            src/net/wiznet/macraw.cpp
-        )
-    elseif(ROSETTE_BOARD_ENABLE_WIZNET)
-        # No RTOS: UDP/IP runs in the chip's hardware sockets, and the
-        # board network module owns the chip, link, and addressing.
-        target_sources(rosette_bsp PRIVATE src/net/wiznet/board_network.cpp)
-    endif()
-
+if(EXISTS ${ROSETTE_BOARD_DIR}/board_init.c)
+    add_library(rosette_bsp STATIC ${ROSETTE_BOARD_DIR}/board_init.c)
     target_include_directories(rosette_bsp PUBLIC
         ${ROSETTE_BOARD_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${ROSETTE_INTERNAL_INCLUDE_DIRS}
     )
-
-    target_link_libraries(rosette_bsp PUBLIC
-        rosette_net pico_stdlib pico_unique_id
-        hardware_spi hardware_flash hardware_sync hardware_gpio
-    )
-    if(ROSETTE_BOARD_ENABLE_WIZNET)
-        # Receive-buffer KiB per hardware socket, one entry per socket; empty
-        # keeps the chip's default (see kBoardRxLayoutKib in
-        # include/rosette/net/wiznet/board.hpp, which checks it at compile time).
-        set(ROSETTE_WIZNET_RX_LAYOUT_KIB "" CACHE STRING
-            "WIZnet receive-buffer KiB per socket, e.g. 8;2;1;1;1;1;1;1 (empty: chip default)")
-        if(ROSETTE_WIZNET_RX_LAYOUT_KIB)
-            string(REPLACE ";" "," _rosette_rx_layout "${ROSETTE_WIZNET_RX_LAYOUT_KIB}")
-            target_compile_definitions(rosette_bsp PUBLIC
-                "ROSETTE_WIZNET_RX_LAYOUT_KIB=${_rosette_rx_layout}")
-        endif()
-    endif()
-    if(ROSETTE_BOARD_ENABLE_FREERTOS)
-        target_link_libraries(rosette_bsp PUBLIC freertos_kernel freertos_tcp)
+    target_link_libraries(rosette_bsp PUBLIC rosette_net)
+    if(ROSETTE_BOARD_COMMON)
+        include(boards/common/${ROSETTE_BOARD_COMMON}/bsp.cmake)
     endif()
 endif()
 
@@ -207,7 +120,7 @@ target_include_directories(rosette_storage PUBLIC
 target_include_directories(rosette_storage PRIVATE ${ROSETTE_BOARD_DIR})
 target_link_libraries(rosette_storage PUBLIC rosette_fs rosette_platform)
 
-if(NOT ROSETTE_BOARD_ENABLE_PICO_SDK)
+if(NOT CMAKE_CROSSCOMPILING)
     # DeviceConfig records on the host volume, including a stored version-1 record.
     add_executable(device_config_test tests/storage/device_config_test.cpp)
     target_link_libraries(device_config_test PRIVATE rosette_storage)
@@ -238,7 +151,7 @@ if(ROSETTE_ENABLE_MICRO_ROS)
         ROSETTE_XRCE_SOCKET_RECEIVE_BUFFER=${_rosette_xrce_rx_bytes}u)
 
     # The agent path on a host, against a real micro_ros_agent (tests/agent/run_agent_live.sh).
-    if(NOT ROSETTE_BOARD_ENABLE_PICO_SDK)
+    if(ROSETTE_NET_STACK STREQUAL "posix")
         add_executable(agent_live_probe tests/agent/agent_live_probe.cpp)
         target_link_libraries(agent_live_probe PRIVATE rosette_agent)
     endif()
@@ -261,13 +174,13 @@ add_subdirectory(examples/wiznet_udp_echo)
 message(STATUS "")
 message(STATUS "Rosette build configuration")
 message(STATUS "  Board       : ${ROSETTE_BOARD}")
-message(STATUS "  Family      : ${ROSETTE_BOARD_FAMILY}")
 message(STATUS "  Board dir   : ${ROSETTE_BOARD_DIR}")
-if(ROSETTE_BOARD_ENABLE_PICO_SDK)
+message(STATUS "  Ports       : chip ${ROSETTE_CHIP}, os ${ROSETTE_OS}, net ${ROSETTE_NET_STACK}")
+if(PICO_BOARD)
     message(STATUS "  PICO_BOARD  : ${PICO_BOARD}")
 endif()
 message(STATUS "  Processor   : ${ROSETTE_PROCESSOR}")
-if(ROSETTE_BOARD_ENABLE_WIZNET)
+if(ROSETTE_BOARD_COMMON STREQUAL "rp2_wiznet")
     message(STATUS "  SPI pins    : SCK=${ROSETTE_SPI_SCK} TX=${ROSETTE_SPI_TX} RX=${ROSETTE_SPI_RX} CS=${ROSETTE_SPI_CS}")
     message(STATUS "  WIZnet RST  : ${ROSETTE_WIZNET_RST}")
     message(STATUS "  WIZnet INT  : ${ROSETTE_WIZNET_INT}")

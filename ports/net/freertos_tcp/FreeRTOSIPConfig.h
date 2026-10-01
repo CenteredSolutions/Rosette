@@ -1,5 +1,5 @@
 /**
- * @file config/FreeRTOSIPConfig.h
+ * @file ports/net/freertos_tcp/FreeRTOSIPConfig.h
  * @brief FreeRTOS+TCP configuration for the RTPS stack.
  *
  * Tuned for a UDP-only workload (RTPS uses UDP; TCP is not required).

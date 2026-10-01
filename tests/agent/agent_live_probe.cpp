@@ -43,9 +43,9 @@
 #include <std_msgs/msg/string.h>
 #include <std_srvs/srv/set_bool.h>
 
+#include "posix_socket.hpp"
 #include "rosette/net/address_state.hpp"
 #include "rosette/net/network_watch.hpp"
-#include "rosette/net/posix/socket.hpp"
 #include "rosette/platform/platform.hpp"
 #include "rosette/platform/wall_clock.hpp"
 #include "rosette/ros/agent_session_gate.hpp"

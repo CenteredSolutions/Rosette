@@ -1,80 +1,59 @@
-# cmake/freertos_tcp.cmake
+# ports/net/freertos_tcp — FreeRTOS+TCP, adapted to rosette::net::SocketProvider.
 #
-# Locates or fetches FreeRTOS-Kernel and FreeRTOS-Plus-TCP and exposes them as
-# the CMake targets `freertos_kernel` and `freertos_tcp`.
+# Included by cmake/rosette_net.cmake with ROSETTE_PORT_DIR set to this
+# directory, after the `rosette_net` target exists. Needs ROSETTE_OS=freertos.
+# Outputs, in rosette_net:
+#   freertos_tcp_socket.cpp, freertos_tcp_igmp.cpp
+#                                 the socket provider, and IGMP / MLD membership
+#                                 (FreeRTOS+TCP has neither)
+#   freertos_tcp_interface.hpp, wiznet_macraw_interface.{h,hpp}
+#                                 a NetworkInterface over a MAC-level device; a board
+#                                 instantiates it (boards/common/rp2_wiznet/ does,
+#                                 over the WIZnet chip in MACRAW mode)
+#   FreeRTOSIPConfig.h            the stack's configuration; a board may supply its
+#                                 own by putting its directory first
 #
-# Set FREERTOS_KERNEL_PATH / FREERTOS_TCP_PATH (env or -D) to use local
-# checkouts; otherwise FetchContent pulls them from GitHub.
+# FreeRTOS+TCP comes from FREERTOS_TCP_PATH (environment or -D) when set, or is
+# fetched.
 #
-# FreeRTOS-Kernel V11 requires FREERTOS_PORT and a `freertos_config` INTERFACE
-# target to exist *before* the kernel is added, so those come first here.
+# Not yet complete: nothing implements rosette/net/board_network.hpp over this
+# stack, so no image links (docs/design/ports_move_plan.md, "Open decisions").
+
+if(NOT TARGET freertos_kernel)
+  message(FATAL_ERROR "ROSETTE_NET_STACK=freertos_tcp needs ROSETTE_OS=freertos")
+endif()
 
 include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
 
-# ── Port + heap (must precede the kernel) ─────────────────────────────────────
-if(ROSETTE_PROCESSOR STREQUAL "RP2350")
-    set(FREERTOS_PORT GCC_ARM_CM33_NTZ_NONSECURE CACHE STRING "" FORCE)
-else()
-    set(FREERTOS_PORT GCC_ARM_CM0 CACHE STRING "" FORCE)
-endif()
-set(FREERTOS_HEAP 4 CACHE STRING "" FORCE)
-
-# Rosette supplies the network interface itself (the WIZnet MACRAW driver,
-# src/net/wiznet/macraw.cpp). Left unset, FreeRTOS+TCP picks a port from the
-# host system (libpcap on Linux/macOS), which is wrong for a firmware build.
+# The board supplies the network interface. Left unset, FreeRTOS+TCP picks a
+# port from the host system (libpcap on Linux/macOS), which is wrong for a
+# firmware build.
 set(FREERTOS_PLUS_TCP_NETWORK_IF "A_CUSTOM_NETWORK_IF" CACHE STRING "" FORCE)
 
-# ── freertos_config: where FreeRTOSConfig.h / FreeRTOSIPConfig.h live ─────────
-if(NOT TARGET freertos_config)
-    add_library(freertos_config INTERFACE)
-    target_include_directories(freertos_config SYSTEM INTERFACE
-        "${ROSETTE_SOURCE_DIR}/config"
-        "${ROSETTE_BOARD_DIR}")            # board_config.h -> BOARD_IS_RP2350
-    if(TARGET pico_base_headers)
-        # FreeRTOSConfig.h pulls in SystemCoreClock / pico headers.
-        target_link_libraries(freertos_config INTERFACE pico_base_headers)
-    endif()
-endif()
-
-# ── FreeRTOS Kernel ─────────────────────────────────────────────────────────
-if(DEFINED ENV{FREERTOS_KERNEL_PATH})
-    set(FREERTOS_KERNEL_PATH "$ENV{FREERTOS_KERNEL_PATH}")
-endif()
-
-if(DEFINED FREERTOS_KERNEL_PATH AND EXISTS "${FREERTOS_KERNEL_PATH}")
-    message(STATUS "Using local FreeRTOS-Kernel: ${FREERTOS_KERNEL_PATH}")
-    add_subdirectory(${FREERTOS_KERNEL_PATH} freertos_kernel EXCLUDE_FROM_ALL)
-else()
-    message(STATUS "Fetching FreeRTOS-Kernel V11.1.0 — first run only")
-    FetchContent_Declare(freertos_kernel
-        GIT_REPOSITORY https://github.com/FreeRTOS/FreeRTOS-Kernel.git
-        GIT_TAG        V11.1.0
-        GIT_SHALLOW    TRUE
-        GIT_PROGRESS   TRUE
-        GIT_SUBMODULES ""
-    )
-    FetchContent_MakeAvailable(freertos_kernel)
-endif()
-
-# ── FreeRTOS+TCP ────────────────────────────────────────────────────────────
 if(DEFINED ENV{FREERTOS_TCP_PATH})
-    set(FREERTOS_TCP_PATH "$ENV{FREERTOS_TCP_PATH}")
+  set(FREERTOS_TCP_PATH "$ENV{FREERTOS_TCP_PATH}")
 endif()
 
-if(DEFINED FREERTOS_TCP_PATH AND EXISTS "${FREERTOS_TCP_PATH}")
+if(NOT TARGET freertos_plus_tcp)
+  if(DEFINED FREERTOS_TCP_PATH AND EXISTS "${FREERTOS_TCP_PATH}")
     message(STATUS "Using local FreeRTOS+TCP: ${FREERTOS_TCP_PATH}")
     add_subdirectory(${FREERTOS_TCP_PATH} freertos_tcp EXCLUDE_FROM_ALL)
-else()
+  else()
     message(STATUS "Fetching FreeRTOS-Plus-TCP V4.2.2 — first run only")
     FetchContent_Declare(freertos_tcp
-        GIT_REPOSITORY https://github.com/FreeRTOS/FreeRTOS-Plus-TCP.git
-        GIT_TAG        V4.2.2
-        GIT_SHALLOW    TRUE
-        GIT_PROGRESS   TRUE
-        GIT_SUBMODULES ""
-    )
+      GIT_REPOSITORY https://github.com/FreeRTOS/FreeRTOS-Plus-TCP.git
+      GIT_TAG        V4.2.2
+      GIT_SHALLOW    TRUE
+      GIT_PROGRESS   TRUE
+      GIT_SUBMODULES "")
     FetchContent_MakeAvailable(freertos_tcp)
+  endif()
+  target_include_directories(freertos_plus_tcp PUBLIC "${ROSETTE_PORT_DIR}")
 endif()
 
-target_include_directories(freertos_tcp PUBLIC "${ROSETTE_SOURCE_DIR}/config")
+target_sources(rosette_net PRIVATE
+  ${ROSETTE_PORT_DIR}/freertos_tcp_socket.cpp
+  ${ROSETTE_PORT_DIR}/freertos_tcp_igmp.cpp)
+target_include_directories(rosette_net PUBLIC ${ROSETTE_PORT_DIR})
+target_link_libraries(rosette_net PUBLIC freertos_plus_tcp)

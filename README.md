@@ -166,12 +166,12 @@ starting your own firmware project.
 | --- | --- |
 | `include/rosette/rtps`, `src/rtps` | DDSI-RTPS protocol stack |
 | `rmw_rosette/` | ROS 2 `rmw` implementation (colcon package) |
-| `include/rosette/net`, `src/net` | socket backends, WIZnet driver, address providers |
+| `include/rosette/net`, `src/net` | socket contract, WIZnet driver, address providers |
 | `include/rosette/platform` | the platform contract (OS × chip) |
-| `ports/` | platform ports: `ports/os/<name>`, `ports/chip/<name>`; `stub` in each is the template for a new one |
+| `ports/` | ports: `ports/os/<name>`, `ports/chip/<name>` (`stub` in each is the template for a new one), `ports/net/<name>` |
 | `include/rosette/storage`, `src/storage` | LittleFS volume and file store |
-| `boards/` | board definitions |
-| `cmake/` | board selection, RTPS and firmware build modules, dependency fetchers |
+| `boards/` | board definitions, and `boards/common/` compositions they share |
+| `cmake/` | board selection, port lookup, RTPS and firmware build modules, dependency fetchers |
 | `examples/` | firmware and host examples, current and planned: [examples/README.md](examples/README.md) |
 | `tests/` | `spec` (conformance), `loopback`, `host`, `platform`, `ros2` (interop) |
 | `tools/` | `pico_uf2_flash.py` (flash a board, follow its console), `wiznet_udp_echo_probe.py` (ping and echo every board address) |

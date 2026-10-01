@@ -7,13 +7,20 @@
 #   ROSETTE_PORT_DIRS further directories laid out like ports/, searched after
 #                     it, for ports kept outside this repository
 #
-# A name is a port when <dir>/<axis>/<name>/port.cmake exists (axis `os` or
-# `chip`); nothing here lists the names. That file adds the port's sources,
+# A name is a port when <dir>/<axis>/<name>/port.cmake exists
+# (cmake/rosette_ports.cmake); nothing here lists the names. That file adds the port's sources,
 # include directories, and libraries to `rosette_platform`, and a chip port
 # sets ROSETTE_CHIP_STORAGE_SOURCES to its LittleFS block device;
 # ROSETTE_PORT_DIR names the port's directory while it runs. The OS port's
 # include directory holds `rosette_os_port.hpp`, which platform.hpp includes
-# by that fixed name.
+# by that fixed name. A chip port's optional prelude.cmake runs earlier,
+# before project() (cmake/rosette_prelude.cmake), to set up a cross toolchain.
+#
+# A chip port may also define rosette_chip_add_image_outputs(<target>), which
+# rosette_add_image_outputs(<target>) calls to make a firmware image's
+# flashable files and console (the rp2 port: .uf2 and USB stdio); on a port
+# without one it does nothing. ROSETTE_CHIP_TEST_LIBRARIES names what the
+# platform contract test needs to start a second core, if the chip has one.
 #
 # Output: STATIC library target `rosette_platform`. It compiles the chip layer
 # and WallClock, and carries PUBLIC ROSETTE_OS_<OS> / ROSETTE_CHIP_<CHIP>
@@ -29,29 +36,9 @@ if(NOT DEFINED ROSETTE_ROOT)
   get_filename_component(ROSETTE_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." REALPATH)
 endif()
 
-# Sets <out> to the directory of port <name> on <axis>, or "" when there is none.
-function(_rosette_find_port out axis name)
-  foreach(_dir IN LISTS ROSETTE_ROOT_PORTS ROSETTE_PORT_DIRS)
-    if(NOT name STREQUAL "" AND EXISTS "${_dir}/${axis}/${name}/port.cmake")
-      set(${out} "${_dir}/${axis}/${name}" PARENT_SCOPE)
-      return()
-    endif()
-  endforeach()
-  set(${out} "" PARENT_SCOPE)
-endfunction()
-
-set(ROSETTE_ROOT_PORTS "${ROSETTE_ROOT}/ports")
-_rosette_find_port(_rp_os_port os "${ROSETTE_OS}")
-_rosette_find_port(_rp_chip_port chip "${ROSETTE_CHIP}")
-
-if(NOT _rp_os_port)
-  message(FATAL_ERROR "ROSETTE_OS='${ROSETTE_OS}' names no port: no os/${ROSETTE_OS}/port.cmake "
-                      "under ${ROSETTE_ROOT_PORTS} or ROSETTE_PORT_DIRS")
-endif()
-if(NOT _rp_chip_port)
-  message(FATAL_ERROR "ROSETTE_CHIP='${ROSETTE_CHIP}' names no port: no chip/${ROSETTE_CHIP}/port.cmake "
-                      "under ${ROSETTE_ROOT_PORTS} or ROSETTE_PORT_DIRS")
-endif()
+include(${CMAKE_CURRENT_LIST_DIR}/rosette_ports.cmake)
+rosette_require_port(_rp_os_port os "${ROSETTE_OS}" ROSETTE_OS)
+rosette_require_port(_rp_chip_port chip "${ROSETTE_CHIP}" ROSETTE_CHIP)
 
 add_library(rosette_platform STATIC ${ROSETTE_ROOT}/src/platform/wall_clock.cpp)
 target_include_directories(rosette_platform PUBLIC ${ROSETTE_ROOT}/include)
@@ -73,3 +60,10 @@ target_compile_definitions(rosette_platform PUBLIC
 if(CMAKE_POSITION_INDEPENDENT_CODE)
   set_target_properties(rosette_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endif()
+
+# Makes <target>'s flashable outputs and console, as its chip port defines them.
+function(rosette_add_image_outputs target)
+  if(COMMAND rosette_chip_add_image_outputs)
+    rosette_chip_add_image_outputs(${target})
+  endif()
+endfunction()

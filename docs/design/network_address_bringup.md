@@ -77,7 +77,7 @@ independent `AddressManager`s over independent provider lists.
 
 There are no `ROSETTE_NET_*` policy macros. The providers are declared in
 fallback order, straight into an `AddressManager`; this is what
-`src/net/wiznet/board_network.cpp` does:
+`boards/common/rp2_wiznet/wiznet_board_network.cpp` does:
 
 ```cpp
 namespace wiz = rosette::net::wiznet;

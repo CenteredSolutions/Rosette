@@ -99,6 +99,7 @@ _ZONES = (
     ("ports/net/freertos_tcp/", {"freertos_kernel", "freertos_tcp"}, "ports/net/freertos_tcp/"),
     ("ports/net/lwip/", {"lwip"}, "ports/net/lwip/"),
     ("ports/net/posix/", {"posix"}, "ports/net/posix/"),
+    ("ports/net/wiznet/", set(), "ports/net/wiznet/"),
     ("boards/", _ALL, None),
     ("tests/", _ALL, None),
     ("rmw_rosette/test/", _ALL, None),
@@ -263,7 +264,7 @@ def scan_file(path: str, sources: set) -> dict:
     Verification:
         Correct means: hardware/spi.h included from src/rtps/participant.cpp
         yields ("header", "pico_sdk:hardware/spi.h"); "rp2_spi_bus.hpp"
-        included from include/rosette/net/wiznet/board.hpp yields
+        included from include/rosette/net/wiznet/device.hpp yields
         ("port-include", "ports/chip/rp2/rp2_spi_bus.hpp"); platform.hpp's
         "rosette_os_port.hpp" yields nothing; a boards/ file yields nothing.
     """

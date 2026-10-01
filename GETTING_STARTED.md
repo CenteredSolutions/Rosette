@@ -275,10 +275,8 @@ set(CMAKE_CXX_STANDARD 17)
 add_subdirectory(${ROSETTE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/rosette)
 
 add_executable(my_firmware main.cpp)
-target_link_libraries(my_firmware PRIVATE rmw_rosette_firmware rosette_bsp pico_stdlib)
-pico_enable_stdio_usb(my_firmware 1)
-pico_enable_stdio_uart(my_firmware 0)
-pico_add_extra_outputs(my_firmware)
+target_link_libraries(my_firmware PRIVATE rmw_rosette_firmware rosette_bsp)
+rosette_add_image_outputs(my_firmware)   # the chip port's images: .uf2 and USB stdio on rp2
 ```
 
 Rosette usually lives in the project as a git submodule at `rosette/`. Declare

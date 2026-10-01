@@ -8,14 +8,14 @@
  * session supervisor all use it without knowing which stack is underneath.
  * The build links exactly one implementation:
  *
- *   - WIZnet boards (src/net/wiznet/board_network.cpp): the chip's hardware
- *     UDP sockets. The board network owns the chip driver (bus, device,
- *     socket provider, link), the address providers the config names, and
- *     the INT-pin routing, configured from the board's `board.h` /
+ *   - WIZnet boards (boards/common/rp2_wiznet/wiznet_board_network.cpp): the
+ *     chip's hardware UDP sockets. The board network owns the chip driver
+ *     (bus, device, socket provider, link), the address providers the config
+ *     names, and the INT-pin routing, configured from the board's `board.h` /
  *     `board_config.h`.
- *   - Hosts (src/net/posix/board_network.cpp): BSD sockets. The operating
- *     system owns the interface and its addresses; the board network reports
- *     them.
+ *   - Hosts (ports/net/posix/posix_board_network.cpp): BSD sockets. The
+ *     operating system owns the interface and its addresses; the board
+ *     network reports them.
  *
  * What the board does for addresses is the firmware's `NetworkConfig`
  * (`net/network_config.hpp`): an IPv4 method list drawn from DHCP, IPv4

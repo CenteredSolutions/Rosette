@@ -14,7 +14,7 @@ extern "C" {
 #include "NetworkInterface.h"
 }
 
-#include "rosette/net/freertos/igmp.hpp"
+#include "freertos_tcp_igmp.hpp"
 #include "rosette/net/mac.hpp"
 
 namespace rosette::net::freertos {

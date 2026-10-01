@@ -1,5 +1,5 @@
 /**
- * @file config/FreeRTOSConfig.h
+ * @file boards/common/freertos/FreeRTOSConfig.h
  * @brief FreeRTOS kernel configuration for the RTPS stack on RP2040/RP2350.
  *
  * This file is included by FreeRTOS-Kernel headers.  The values below are

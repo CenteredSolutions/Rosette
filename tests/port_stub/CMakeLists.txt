@@ -27,11 +27,11 @@ set(ROSETTE_CHIP stub)
 
 include(${ROSETTE_ROOT}/cmake/rosette_platform.cmake)
 
-# The WIZnet stack's library is the portable network core (sockets, address
-# management, DHCP, SNTP); the WIZnet driver itself is header-only.
-set(ROSETTE_NET_STACK wiznet CACHE STRING "" FORCE)
+# The portable network core (sockets, address management, SNTP) and the
+# WIZnet network port, which adds DHCP; the WIZnet driver itself is
+# header-only.
+set(ROSETTE_NET_STACK wiznet)
 include(${ROSETTE_ROOT}/cmake/rosette_net.cmake)
-target_link_libraries(rosette_net_wiznet PUBLIC rosette_platform)
 
 include(${ROSETTE_ROOT}/cmake/rosette_rtps.cmake)
 
@@ -57,7 +57,7 @@ target_link_libraries(rosette_session PUBLIC rosette_net)
 # Every object of every library goes into the image, not just the ones main()
 # reaches, so each needs every symbol it calls. Linking the libraries as well
 # brings their include paths and definitions, and pulls nothing more.
-set(_stub_libraries rosette_platform rosette_net_wiznet rosette_rtps rosette_storage
+set(_stub_libraries rosette_platform rosette_net rosette_rtps rosette_storage
     rosette_session rosette_fs)
 add_executable(rosette_port_stub_image stub_image.cpp)
 target_include_directories(rosette_port_stub_image PRIVATE ${ROSETTE_ROOT}/ports/chip/stub)

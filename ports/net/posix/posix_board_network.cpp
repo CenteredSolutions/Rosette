@@ -1,5 +1,5 @@
 /**
- * @file src/net/posix/board_network.cpp
+ * @file ports/net/posix/posix_board_network.cpp
  * @brief The board network on a host: BSD sockets and the operating system's address.
  *
  * See rosette/net/board_network.hpp. On a host the operating system owns the
@@ -25,7 +25,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "rosette/net/posix/socket.hpp"
+#include "posix_socket.hpp"
 #include "rosette/platform/platform.hpp"
 
 namespace rosette::net {

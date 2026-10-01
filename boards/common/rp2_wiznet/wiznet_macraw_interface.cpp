@@ -1,6 +1,6 @@
-#include "wiznet/macraw.hpp"
+#include "wiznet_macraw_interface.hpp"
 
-#include "wiznet/board.hpp"
+#include "wiznet_board_types.hpp"
 
 #include <cstring>
 

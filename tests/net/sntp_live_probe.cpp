@@ -23,8 +23,8 @@
 #include <cstdlib>
 #include <ctime>
 
+#include "posix_socket.hpp"
 #include "rosette/net/inet.h"
-#include "rosette/net/posix/socket.hpp"
 #include "rosette/net/sntp_client.hpp"
 #include "rosette/platform/platform.hpp"
 #include "rosette/platform/wall_clock.hpp"

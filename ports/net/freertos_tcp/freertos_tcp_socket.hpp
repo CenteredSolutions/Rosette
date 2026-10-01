@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../socket.hpp"
+#include "rosette/net/socket.hpp"
 
 namespace rosette::net::freertos {
 
@@ -12,4 +12,4 @@ public:
         SocketProtocol protocol = SocketProtocol::udp) noexcept override;
 };
 
-}  // namespace rosette::net
+}  // namespace rosette::net::freertos

@@ -1,5 +1,5 @@
 /**
- * @file src/net/wiznet/board_network.cpp
+ * @file boards/common/rp2_wiznet/wiznet_board_network.cpp
  * @brief The board network on a WIZnet chip; see rosette/net/board_network.hpp.
  *
  * The chip objects and every provider the board can run live in one struct,
@@ -31,12 +31,12 @@
 #include "rosette/net/ipv4ll_provider.hpp"
 #include "rosette/net/sntp_client.hpp"
 #include "rosette/net/static_provider.hpp"
-#include "rosette/net/wiznet/board.hpp"
 #include "rosette/net/wiznet/dhcp_provider.hpp"
 #include "rosette/net/wiznet/interface.hpp"
 #include "rosette/net/wiznet/link.hpp"
 #include "rosette/net/wiznet/slaac_provider.hpp"
 #include "rosette/platform/platform.hpp"
+#include "wiznet_board_types.hpp"
 
 namespace rosette::net::wiznet {
 namespace {

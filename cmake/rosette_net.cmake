@@ -1,109 +1,61 @@
 # cmake/rosette_net.cmake
 #
-# Defines the `rosette_net` CMake target that boards link against for Rosette
-# network, DHCP, and SNTP services.
+# Defines `rosette_net`: the portable network core (rosette::net sockets,
+# address management, SNTP) and the IP stack the board selected.
 #
-# Set ROSETTE_NET_STACK before including this file:
-#   wiznet         — the WIZnet chip's hardware sockets (Rosette's register-level driver)
-#   freertos_tcp   — FreeRTOS+TCP (requires freertos_tcp.cmake already included)
+# Inputs:
+#   ROSETTE_NET_STACK  a network port: wiznet | freertos_tcp | posix | ... A name
+#                      is a port when ports/net/<name>/port.cmake exists here or
+#                      under ROSETTE_PORT_DIRS (cmake/rosette_ports.cmake)
+#   ROSETTE_ROOT       repository root (defaults to this file's parent directory)
+#   rosette_platform   the platform target (cmake/rosette_platform.cmake), which
+#                      must exist already
 #
-# The selected stack target is aliased as rosette_net so callers only need to
-# link one name regardless of which stack was chosen.
-
-set(ROSETTE_NET_STACK "wiznet" CACHE STRING
-    "Rosette network stack: wiznet or freertos_tcp")
-set_property(CACHE ROSETTE_NET_STACK PROPERTY STRINGS wiznet freertos_tcp)
-
-# Optional: name of an existing CMake target that provides FreeRTOS headers.
-# rosette_net links against it so the FreeRTOS socket sources can find
-# FreeRTOS.h at compile time.
-set(ROSETTE_FREERTOS_TARGET "" CACHE STRING
-    "CMake target that provides FreeRTOS kernel headers (e.g. app_freertos_kernel)")
-
-set(_rosette_root "${CMAKE_CURRENT_LIST_DIR}/..")
-
+# The port's port.cmake runs with ROSETTE_PORT_DIR set to its directory, and
+# adds its sources, include directories, and libraries to `rosette_net`.
+#
 # Firmware on the micro-ROS agent backend takes its time from the agent, so
-# SNTP defaults to off there (net/sntp_client.hpp). The define goes on the
-# stack library PUBLIC, so the whole firmware sees one value.
-option(ROSETTE_ROS_BACKEND_AGENT
-    "The firmware uses the micro-ROS agent backend (the agent is the time source; SNTP off by default)"
-    ${ROSETTE_ENABLE_MICRO_ROS})
+# SNTP defaults to off there (net/sntp_client.hpp). ROSETTE_ROS_BACKEND_AGENT
+# goes on rosette_net PUBLIC, so the whole firmware sees one value; it is on
+# with ROSETTE_ENABLE_MICRO_ROS, or when a build that links the agent backend
+# some other way asks for it.
 
-if(ROSETTE_NET_STACK STREQUAL "wiznet")
-    # The register-level WIZnet driver (WiznetSocketProvider / WiznetLink) is
-    # header-only and templated on <Chip, Bus>; the consuming firmware
-    # instantiates it for the fitted part. The DHCP client and address manager
-    # depend only on the socket and provider interfaces and are compiled here.
-    add_library(rosette_net_wiznet STATIC
-        "${_rosette_root}/src/net/socket.cpp"
-        "${_rosette_root}/src/net/sntp_client.cpp"
-        "${_rosette_root}/src/net/sntp_wire.cpp"
-        "${_rosette_root}/src/net/address_candidate.cpp"
-        "${_rosette_root}/src/net/address_list.cpp"
-        "${_rosette_root}/src/net/address_manager.cpp"
-        "${_rosette_root}/src/net/network_config.cpp"
-        "${_rosette_root}/src/net/wiznet/dhcp_client.cpp"
-        "${_rosette_root}/src/net/wiznet/dhcp_provider.cpp"
-        "${_rosette_root}/src/net/wiznet/dhcp_wire.cpp"
-        "${_rosette_root}/src/support/fnv1a.cpp")
-
-    target_include_directories(rosette_net_wiznet PUBLIC
-        "${_rosette_root}/include"
-        "${_rosette_root}/include/rosette/net")
-
-    if(NOT ROSETTE_FREERTOS_TARGET STREQUAL "")
-        target_link_libraries(rosette_net_wiznet PUBLIC "${ROSETTE_FREERTOS_TARGET}")
-    endif()
-
-    # Additional pico-sdk targets for WIZnet SPI and GPIO drivers.
-    if(TARGET hardware_spi)
-        target_link_libraries(rosette_net_wiznet PUBLIC hardware_spi hardware_gpio)
-    endif()
-
-    if(ROSETTE_ROS_BACKEND_AGENT)
-        target_compile_definitions(rosette_net_wiznet PUBLIC ROSETTE_ROS_BACKEND_AGENT)
-    endif()
-
-    add_library(rosette_net ALIAS rosette_net_wiznet)
-
-elseif(ROSETTE_NET_STACK STREQUAL "freertos_tcp")
-    if(NOT TARGET freertos_tcp)
-        message(FATAL_ERROR
-            "rosette_net.cmake: ROSETTE_NET_STACK=freertos_tcp but freertos_tcp "
-            "target does not exist. Include freertos_tcp.cmake before rosette_net.cmake.")
-    endif()
-
-    add_library(rosette_net_freertos_tcp STATIC
-        "${_rosette_root}/src/net/socket.cpp"
-        "${_rosette_root}/src/net/sntp_client.cpp"
-        "${_rosette_root}/src/net/sntp_wire.cpp"
-        "${_rosette_root}/src/net/address_candidate.cpp"
-        "${_rosette_root}/src/net/address_list.cpp"
-        "${_rosette_root}/src/net/address_manager.cpp"
-        "${_rosette_root}/src/net/network_config.cpp"
-        "${_rosette_root}/src/support/fnv1a.cpp"
-        "${_rosette_root}/src/net/freertos/socket.cpp"
-        "${_rosette_root}/src/net/freertos/interface.cpp"
-        "${_rosette_root}/src/net/freertos/igmp.cpp")
-
-    target_include_directories(rosette_net_freertos_tcp PUBLIC
-        "${_rosette_root}/include"
-        "${_rosette_root}/include/rosette/net")
-
-    target_link_libraries(rosette_net_freertos_tcp PUBLIC freertos_tcp)
-
-    if(NOT ROSETTE_FREERTOS_TARGET STREQUAL "")
-        target_link_libraries(rosette_net_freertos_tcp PUBLIC "${ROSETTE_FREERTOS_TARGET}")
-    endif()
-
-    if(ROSETTE_ROS_BACKEND_AGENT)
-        target_compile_definitions(rosette_net_freertos_tcp PUBLIC ROSETTE_ROS_BACKEND_AGENT)
-    endif()
-
-    add_library(rosette_net ALIAS rosette_net_freertos_tcp)
-
-else()
-    message(FATAL_ERROR
-        "rosette_net.cmake: Unknown ROSETTE_NET_STACK='${ROSETTE_NET_STACK}'. "
-        "Valid values: wiznet, freertos_tcp.")
+if(TARGET rosette_net)
+  return()
 endif()
+
+if(NOT DEFINED ROSETTE_ROOT)
+  get_filename_component(ROSETTE_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." REALPATH)
+endif()
+
+if(NOT TARGET rosette_platform)
+  message(FATAL_ERROR "rosette_net.cmake: include cmake/rosette_platform.cmake first")
+endif()
+
+include(${CMAKE_CURRENT_LIST_DIR}/rosette_ports.cmake)
+rosette_require_port(_rn_port net "${ROSETTE_NET_STACK}" ROSETTE_NET_STACK)
+
+option(ROSETTE_ROS_BACKEND_AGENT
+  "The firmware uses the micro-ROS agent backend (the agent is the time source; SNTP off by default)"
+  OFF)
+
+add_library(rosette_net STATIC
+  ${ROSETTE_ROOT}/src/net/socket.cpp
+  ${ROSETTE_ROOT}/src/net/sntp_client.cpp
+  ${ROSETTE_ROOT}/src/net/sntp_wire.cpp
+  ${ROSETTE_ROOT}/src/net/address_candidate.cpp
+  ${ROSETTE_ROOT}/src/net/address_list.cpp
+  ${ROSETTE_ROOT}/src/net/address_manager.cpp
+  ${ROSETTE_ROOT}/src/net/network_config.cpp
+  ${ROSETTE_ROOT}/src/support/fnv1a.cpp)
+target_include_directories(rosette_net PUBLIC
+  ${ROSETTE_ROOT}/include
+  ${ROSETTE_ROOT}/include/rosette/net)
+target_link_libraries(rosette_net PUBLIC rosette_platform)
+if(ROSETTE_ROS_BACKEND_AGENT OR ROSETTE_ENABLE_MICRO_ROS)
+  target_compile_definitions(rosette_net PUBLIC ROSETTE_ROS_BACKEND_AGENT)
+endif()
+
+set(ROSETTE_PORT_DIR "${_rn_port}")
+include("${_rn_port}/port.cmake")
+unset(ROSETTE_PORT_DIR)

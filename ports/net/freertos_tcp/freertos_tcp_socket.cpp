@@ -1,10 +1,10 @@
-#include "rosette/net/freertos/socket.hpp"
+#include "freertos_tcp_socket.hpp"
 
 #include <array>
 #include <cstring>
 #include <new>
 
-#include "rosette/net/freertos/igmp.hpp"
+#include "freertos_tcp_igmp.hpp"
 
 extern "C" {
 #include "FreeRTOS.h"

@@ -1,10 +1,6 @@
-# Platform port (include/rosette/platform/platform.hpp): OS layer and chip layer.
-set(ROSETTE_OS   "posix" PARENT_SCOPE)
-set(ROSETTE_CHIP "host" PARENT_SCOPE)
-set(ROSETTE_BOARD_FAMILY "posix" PARENT_SCOPE)
-set(ROSETTE_BOARD_ENABLE_PICO_SDK OFF PARENT_SCOPE)
-set(ROSETTE_BOARD_ENABLE_FREERTOS OFF PARENT_SCOPE)
-set(ROSETTE_BOARD_ENABLE_WIZNET OFF PARENT_SCOPE)
-set(ROSETTE_BOARD_BUILD_BSP OFF PARENT_SCOPE)
-set(ROSETTE_BOARD_BUILD_EXAMPLE OFF PARENT_SCOPE)
-set(ROSETTE_PROCESSOR "HOST" PARENT_SCOPE)
+# Ports (ports/<axis>/<name>/): the host chip, POSIX threads, and the host's
+# own IP stack through BSD sockets.
+set(ROSETTE_CHIP      "host"  PARENT_SCOPE)
+set(ROSETTE_OS        "posix" PARENT_SCOPE)
+set(ROSETTE_NET_STACK "posix" PARENT_SCOPE)
+set(ROSETTE_PROCESSOR "HOST"  PARENT_SCOPE)

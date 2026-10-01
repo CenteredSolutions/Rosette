@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file net/freertos/address_provider.hpp
+ * @file ports/net/freertos_tcp/freertos_tcp_address_provider.hpp
  * @brief `AddressProvider`s that observe FreeRTOS+TCP's own addressing.
  *
  * FreeRTOS+TCP already runs DHCP, RFC 3927 AutoIP fallback

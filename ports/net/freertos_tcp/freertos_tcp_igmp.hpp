@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "socket.hpp"
+#include "rosette/net/socket.hpp"
 
 extern "C" {
 #include "FreeRTOS.h"

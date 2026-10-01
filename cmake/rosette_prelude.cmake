@@ -41,16 +41,10 @@ set_property(CACHE ROSETTE_BOARD PROPERTY STRINGS
 include("${CMAKE_CURRENT_LIST_DIR}/boards.cmake")
 rosette_select_board(${ROSETTE_BOARD})
 
-if(ROSETTE_BOARD_ENABLE_PICO_SDK AND NOT DEFINED ENV{PICO_SDK_PATH} AND NOT DEFINED PICO_SDK_PATH)
-    message(STATUS "")
-    message(STATUS "Rosette: first configure for '${ROSETTE_BOARD}' fetches the Pico SDK,")
-    message(STATUS "  and FreeRTOS (a few minutes; progress shown below). Set")
-    message(STATUS "  PICO_SDK_PATH / FREERTOS_KERNEL_PATH / FREERTOS_TCP_PATH to use")
-    message(STATUS "  existing checkouts. The micro-ROS library")
-    message(STATUS "  is cross-built later, during 'cmake --build' (~20-30 min, one time).")
-    message(STATUS "")
-endif()
-
-if(ROSETTE_BOARD_ENABLE_PICO_SDK)
-    include("${CMAKE_CURRENT_LIST_DIR}/pico_sdk.cmake")
+# The board's chip port may set up a cross toolchain, which must happen before
+# project(): ports/chip/<chip>/prelude.cmake, when it exists.
+include("${CMAKE_CURRENT_LIST_DIR}/rosette_ports.cmake")
+rosette_require_port(_rosette_prelude_chip chip "${ROSETTE_CHIP}" ROSETTE_CHIP)
+if(EXISTS "${_rosette_prelude_chip}/prelude.cmake")
+    include("${_rosette_prelude_chip}/prelude.cmake")
 endif()

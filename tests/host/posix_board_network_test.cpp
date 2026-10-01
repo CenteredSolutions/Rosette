@@ -7,7 +7,7 @@
  * configs run first because a refused bring-up starts nothing, while an
  * accepted one is final for the process.
  *
- * References: rosette/net/board_network.hpp; src/net/posix/board_network.cpp.
+ * References: rosette/net/board_network.hpp; ports/net/posix/posix_board_network.cpp.
  */
 
 #include <cstdint>
