@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file net/wiznet/dhcp_wire.hpp
+ * @file ports/net/wiznet/dhcp_wire.hpp
  * @brief DHCPv4 message encoding and decoding for a client (RFC 2131, RFC 2132).
  *
  * The DHCP client (`dhcp_client.hpp`) sends four messages and reads three.

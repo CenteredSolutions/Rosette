@@ -1,9 +1,9 @@
 /**
- * @file src/net/wiznet/dhcp_wire.cpp
+ * @file ports/net/wiznet/dhcp_wire.cpp
  * @brief DHCPv4 client message codec; see rosette/net/wiznet/dhcp_wire.hpp.
  */
 
-#include "rosette/net/wiznet/dhcp_wire.hpp"
+#include "ports/net/wiznet/dhcp_wire.hpp"
 
 #include <cstring>
 

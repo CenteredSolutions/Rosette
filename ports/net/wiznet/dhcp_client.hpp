@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file net/wiznet/dhcp_client.hpp
+ * @file ports/wiznet/dhcp_client.hpp
  * @brief A DHCPv4 client that advances one step per `poll()` and never blocks (RFC 2131).
  *
  * `DhcpClient` runs the RFC 2131 client state machine (§4.4, Figure 5) over

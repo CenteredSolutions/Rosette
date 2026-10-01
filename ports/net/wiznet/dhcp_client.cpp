@@ -1,9 +1,9 @@
 /**
- * @file src/net/wiznet/dhcp_client.cpp
+ * @file ports/net/wiznet/dhcp_client.cpp
  * @brief The non-blocking DHCPv4 client state machine; see rosette/net/wiznet/dhcp_client.hpp.
  */
 
-#include "rosette/net/wiznet/dhcp_client.hpp"
+#include "ports/net/wiznet/dhcp_client.hpp"
 
 #include "rosette/support/fnv1a.hpp"
 

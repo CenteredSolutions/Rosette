@@ -9,9 +9,9 @@
 # boards). This port adds the DHCP client to rosette_net: it is portable, but
 # only a socket-offload chip needs it, since a MAC-level stack brings its own.
 target_sources(rosette_net PRIVATE
-  ${ROSETTE_ROOT}/src/net/wiznet/dhcp_client.cpp
-  ${ROSETTE_ROOT}/src/net/wiznet/dhcp_provider.cpp
-  ${ROSETTE_ROOT}/src/net/wiznet/dhcp_wire.cpp)
+  ${ROSETTE_ROOT}/ports/net/wiznet/dhcp_client.cpp
+  ${ROSETTE_ROOT}/ports/net/wiznet/dhcp_provider.cpp
+  ${ROSETTE_ROOT}/ports/net/wiznet/dhcp_wire.cpp)
 
 # Examples that use the WIZnet driver directly check this.
 set(ROSETTE_BOARD_ENABLE_WIZNET ON)

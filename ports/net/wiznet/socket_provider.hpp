@@ -41,7 +41,7 @@
 #include "rosette/platform/gpio_interrupt.hpp"
 #include "rosette/platform/platform.hpp"
 
-#include "../socket.hpp"
+#include "rosette/net/socket.hpp"
 #include "device.hpp"
 
 namespace rosette::net::wiznet {

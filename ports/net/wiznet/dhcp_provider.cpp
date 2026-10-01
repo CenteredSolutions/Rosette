@@ -1,9 +1,9 @@
 /**
- * @file src/net/wiznet/dhcp_provider.cpp
+ * @file ports/net/wiznet/dhcp_provider.cpp
  * @brief The WIZnet DHCP address provider; see rosette/net/wiznet/dhcp_provider.hpp.
  */
 
-#include "rosette/net/wiznet/dhcp_provider.hpp"
+#include "ports/net/wiznet/dhcp_provider.hpp"
 
 namespace rosette::net::wiznet {
 namespace {

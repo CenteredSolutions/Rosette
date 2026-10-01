@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file net/wiznet/dhcp_provider.hpp
+ * @file ports/net/wiznet/dhcp_provider.hpp
  * @brief The IPv4 `AddressProvider` that runs DHCP on a WIZnet hardware-socket chip.
  *
  * `DhcpAddressProvider` owns a `DhcpClient` and is the only place a DHCP

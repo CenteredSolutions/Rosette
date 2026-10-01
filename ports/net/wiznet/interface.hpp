@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file net/wiznet/interface.hpp
+ * @file ports/net/wiznet/interface.hpp
  * @brief `NetInterface` for a WIZnet hardware-socket chip.
  *
  * `apply()` programs `SIPR` / `SUBR` / `GAR` (writing `SIPR` makes the chip emit

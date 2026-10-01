@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * @file net/wiznet/slaac_provider.hpp
+ * @file ports/net/wiznet/slaac_provider.hpp
  * @brief IPv6 stateless address autoconfiguration (RFC 4862) on the W6100 / W6300.
  *
  * The W6100 and W6300 carry a hardware IPv6 stack: once the host programs a
