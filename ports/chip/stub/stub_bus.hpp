@@ -2,7 +2,7 @@
  * @file ports/chip/stub/stub_bus.hpp
  * @brief Compile-only register bus for the WIZnet driver: reads return 0xFF, writes vanish.
  *
- * `WiznetDevice<Chip, Bus>` (rosette/net/wiznet/device.hpp) reaches the chip's
+ * `WiznetDevice<Chip, Bus>` (ports/net/wiznet/device.hpp) reaches the chip's
  * registers through a `Bus` it is templated on; this is the smallest type
  * that satisfies it. A chip port supplies a real one over its SPI or QSPI
  * peripheral (the rp2 port's Rp2SpiBus and Rp2QspiBus). What the driver

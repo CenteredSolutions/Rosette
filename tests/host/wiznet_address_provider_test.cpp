@@ -12,12 +12,12 @@
 #include "fake_wiznet_chip.hpp"
 #include "test_util.hpp"
 
+#include "ports/net/wiznet/dhcp_provider.hpp"
+#include "ports/net/wiznet/interface.hpp"
+#include "ports/net/wiznet/socket_provider.hpp"
+#include "ports/net/wiznet/w5100s.hpp"
 #include "rosette/net/address.hpp"
 #include "rosette/net/ipv4ll_provider.hpp"
-#include "rosette/net/wiznet/dhcp_provider.hpp"
-#include "rosette/net/wiznet/interface.hpp"
-#include "rosette/net/wiznet/socket_provider.hpp"
-#include "rosette/net/wiznet/w5100s.hpp"
 
 #include <cstddef>
 #include <cstdint>

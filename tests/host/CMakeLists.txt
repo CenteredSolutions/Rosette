@@ -23,14 +23,17 @@ add_library(rosette_host_address STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/address_list.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/address_manager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/network_config.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/wiznet/dhcp_client.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/wiznet/dhcp_provider.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/wiznet/dhcp_wire.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/wiznet/dhcp_client.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/wiznet/dhcp_provider.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/wiznet/dhcp_wire.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/support/fnv1a.cpp)
-target_include_directories(rosette_host_address PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
+# The repository root makes port headers reachable as "ports/net/wiznet/...".
+target_include_directories(rosette_host_address PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 target_compile_options(rosette_host_address PRIVATE -Wall -Wextra)
 
-# add_host_test(<name>) — one .cpp against include/, linking only rosette_host_address.
+# add_host_test(<name>) — one .cpp against include/ and the port headers, linking only rosette_host_address.
 function(add_host_test name)
     add_executable(${name} ${name}.cpp)
     target_link_libraries(${name} PRIVATE rosette_host_address)
@@ -57,6 +60,9 @@ add_host_test(wiznet_udp_socket_test)
 # Receive-buffer layout and the size-aware socket claim (Socket::set_receive_buffer_size()).
 add_host_test(wiznet_socket_layout_test)
 add_host_test(wiznet_slaac_provider_test)
+
+# WIZnet MACRAW mode behind the rosette::net::MacDevice contract.
+add_host_test(wiznet_macraw_device_test)
 
 # RFC 4861 Router Advertisement decoding, chip-neutral.
 add_host_test(ipv6_router_advert_test)

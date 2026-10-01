@@ -5,7 +5,7 @@
  * One include resolves the concrete types for the current board from
  * `board_config.h` (`ROSETTE_WIZNET_CHIP`, `ROSETTE_SPI_INST`,
  * `ROSETTE_PIN_SPI_CS`), over the portable driver
- * (include/rosette/net/wiznet/) and the rp2 chip port's buses:
+ * (ports/net/wiznet/) and the rp2 chip port's buses:
  *
  *     #include "wiznet_board_types.hpp"
  *     namespace wiz = rosette::net::wiznet;

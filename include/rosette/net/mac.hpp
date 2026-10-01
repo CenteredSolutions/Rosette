@@ -4,17 +4,27 @@
  * @file mac.hpp
  * @brief Hardware-neutral contract for an Ethernet MAC / link device.
  *
- * rosette::net::MacDevice is the abstract interface that the FreeRTOS+TCP
- * network interface (rosette::net::freertos::NetworkInterface) and any other
- * link-layer consumer program against. A concrete driver -- today the WIZnet
- * MACRAW device -- derives from it and implements the data-plane and PHY
- * status operations against real hardware.
+ * rosette::net::MacDevice is the contract between a link-layer device and a
+ * software IP stack that runs on the microcontroller. Three roles meet here:
+ *
+ *  - this header defines the contract and nothing else; it names no RTOS,
+ *    no IP stack, and no chip;
+ *  - a MAC provider implements it against hardware, for example the WIZnet
+ *    chip in MACRAW mode (ports/net/wiznet/macraw_device.hpp);
+ *  - an IP-stack port consumes it, for example the FreeRTOS+TCP network
+ *    interface (ports/net/freertos_tcp/freertos_tcp_interface.hpp), which is
+ *    a template over the provider type and owns the provider by value.
+ *
+ * A board composes the two, e.g.
+ * `freertos::NetworkInterface<wiznet::WiznetMacrawDevice<Chip, Bus>>`, and
+ * wires the controller's interrupt pin to the consumer. Neither the provider
+ * nor the consumer knows the other's concrete type.
  *
  * The interface mirrors rosette::net::AddressProvider in style: a small set
- * of pure virtual operations, no templates, no compile-time capability
- * probing. Consumers hold a MacDevice reference and call it directly; the
- * vtable indirection is negligible next to the SPI burst that backs every
- * frame operation.
+ * of pure virtual operations and no compile-time capability probing. A
+ * consumer that holds a `final` provider by concrete type calls it without
+ * vtable dispatch; one that holds a MacDevice reference pays one indirect call,
+ * negligible next to the bus transfer behind every frame operation.
  */
 
 #include <array>
@@ -60,6 +70,14 @@ struct PhyStatus {
  * owns the controller's data path: callers never touch chip registers, they
  * hand down frames and query link state.
  *
+ * Receive notification: a consumer drains the receive queue with
+ * peek_frame_size() and receive_frame() until it is empty, then sleeps until
+ * the controller's interrupt line falls (or a poll interval passes, on a
+ * board with no line). A provider whose controller has an interrupt line
+ * must leave it so that any frame queued after receive_frame() returns
+ * produces a fresh falling edge. Which GPIO carries that line is a board
+ * fact, so the provider never attaches it.
+ *
  * Lifetime and threading: a MacDevice is constructed once and lives for the
  * duration of the network stack. receive_frame() and peek_frame_size() run
  * on the network interface's RX task; send_frame() runs on the IP task and
@@ -74,9 +92,12 @@ public:
     /**
      * @brief Bring the controller out of reset and program @p mac.
      *
-     * Called once, before any frame traffic, from the network interface's
-     * initialise path. Implementations verify the chip, place it in the
-     * mode that presents raw Ethernet frames, and latch the station address.
+     * Called before any frame traffic from the consumer's initialise path,
+     * and again whenever the IP stack re-initialises its interface (after a
+     * link-down, or after an earlier call failed). The first successful call
+     * verifies the chip, places it in the mode that presents raw Ethernet
+     * frames, and latches the station address; a later call only latches
+     * the address, so frames already queued survive.
      *
      * @param[in] mac Station hardware address to program.
      * @return True once the device is ready to carry frames; false on any
@@ -87,7 +108,7 @@ public:
     /**
      * @brief Update the station hardware address on an initialised controller.
      *
-     * Invoked when FreeRTOS+TCP resolves its endpoint MAC after the device
+     * Invoked when the IP stack settles its endpoint MAC after the device
      * is already running. Safe to call at any point after initialise().
      *
      * @param[in] mac New station hardware address.
@@ -133,11 +154,15 @@ public:
     /**
      * @brief Length of the head-of-queue received frame without consuming it.
      *
-     * Drives the RX task loop: a non-zero result means receive_frame() has a
-     * frame to hand over; zero means the task blocks until the next RX
-     * notification.
+     * Drives the consumer's receive loop: a non-zero result is the size of
+     * the buffer the consumer allocates and hands to receive_frame(); zero
+     * means the consumer sleeps until the next receive notification. The
+     * result is the head frame's own length, never the total of several
+     * queued frames, because a consumer with fixed-size network buffers
+     * cannot allocate more than max_frame_size().
      *
-     * @return Byte length of the next frame, or 0 when the RX queue is empty.
+     * @return Byte length of the next frame, at most max_frame_size() when
+     *         that is non-zero, or 0 when the RX queue is empty.
      */
     virtual std::size_t peek_frame_size() noexcept = 0;
 

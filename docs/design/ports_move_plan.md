@@ -142,8 +142,8 @@ Done in step 9, except where a row says otherwise.
 | `src/net/posix/board_network.cpp` | `ports/net/posix/posix_board_network.cpp`, the host implementation of `board_network.hpp` |
 | `include/rosette/net/freertos/{address_provider,igmp,interface,socket}.hpp` | `ports/net/freertos_tcp/freertos_tcp_*.hpp` |
 | `src/net/freertos/{igmp,socket}.cpp` | `ports/net/freertos_tcp/freertos_tcp_*.cpp`; `igmp.cpp` now includes its real header. `interface.cpp` (a forwarding include) is deleted |
-| `include/rosette/net/wiznet/macraw.{h,hpp}` | `ports/net/freertos_tcp/wiznet_macraw_interface.{h,hpp}`: a FreeRTOS+TCP NetworkInterface over the portable WIZnet driver |
-| `src/net/wiznet/macraw.cpp` | `boards/common/rp2_wiznet/wiznet_macraw_interface.cpp`: it instantiates that interface for the board's chip, bus and pins, so it is composition, not port |
+| `include/rosette/net/wiznet/macraw.{h,hpp}` | split along the `rosette/net/mac.hpp` contract: `ports/net/wiznet/macraw_device.hpp` provides it (`WiznetMacrawDevice<Chip, Bus>`, no RTOS, no IP stack), and `ports/net/freertos_tcp/freertos_tcp_interface.hpp` consumes it (`NetworkInterface<Device>`, which owns the device and wakes its receive task through `gpio_interrupt.hpp` and `platform::Event`). The C shim (`wiznet_macraw_init()`, `xNetworkInterfaceInitialise()`, ...) is gone |
+| `src/net/wiznet/macraw.cpp` | `boards/common/rp2_wiznet/wiznet_macraw_interface.cpp`: composition, not port. It instantiates `NetworkInterface<WiznetMacrawDevice<BoardChip, BoardBus>>` and implements `ports/net/freertos_tcp/freertos_tcp_board_interface.hpp`, the one hook the FreeRTOS+TCP port asks of a board |
 | `include/rosette/net/wiznet/board.hpp` | `boards/common/rp2_wiznet/wiznet_board_types.hpp` (chooses `Rp2SpiBus`/`Rp2QspiBus` from `board_config.h`); it also holds `BoardLink`, which was the one board type in the portable `link.hpp` |
 | `include/rosette/net/wiznet/chip_select.hpp` | deleted: the `BoardChip` alias from `board_config.h`'s `ROSETTE_WIZNET_CHIP` is in `wiznet_board_types.hpp`; the missing `w5500.hpp` branch is gone |
 | `src/net/wiznet/board_network.cpp` | `boards/common/rp2_wiznet/wiznet_board_network.cpp`, the WIZnet implementation of `board_network.hpp` |
@@ -225,9 +225,10 @@ Moves (`git mv`) and edits go in separate commits, so `git log --follow` keeps e
   `ROSETTE_OS=freertos` and `ROSETTE_NET_STACK=freertos_tcp` now configures. It doesn't compile yet: on the
   RP2350 the kernel's `ARM_CM33_NTZ` port needs `configENABLE_FPU`, `configENABLE_MPU` and
   `configENABLE_TRUSTZONE` in `FreeRTOSConfig.h`, and `secure_context.h`; the Raspberry Pi kernel fork's RP2350
-  port is probably the better base. Rosette's own FreeRTOS+TCP sources have not been compiled. Nor can it link an
+  port is probably the better base. Of Rosette's own FreeRTOS+TCP sources, only the network interface and the
+  rp2_wiznet composition have been compiled, off-target, against FreeRTOS+TCP V4.2.2 headers. Nor can it link an
   image: nothing implements `board_network.hpp` over FreeRTOS+TCP (`ports/net/freertos_tcp/
-  freertos_tcp_board_network.cpp`: start the IP task, register the MACRAW interface the board instantiates, and
+  freertos_tcp_board_network.cpp`: call `add_board_network_interface()`, add endpoints, start the IP task, and
   hand out a `FreeRtosSocketProvider`), and nothing starts the scheduler. A port nobody builds decays, so once
   that exists it gets a CI build: a WIZnet board with `ROSETTE_OS=freertos` and `ROSETTE_NET_STACK=freertos_tcp`
   (MACRAW), which also shows the composition model working. `board.cmake` values are not overridable from the

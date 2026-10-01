@@ -7,9 +7,14 @@
 #   wiznet_board_types.hpp        BoardChip / BoardBus / BoardDevice from board_config.h
 #   wiznet_board_network.cpp      rosette/net/board_network.hpp over the chip's hardware
 #                                 sockets (ROSETTE_NET_STACK=wiznet)
-#   wiznet_macraw_interface.cpp   the chip in MACRAW mode as FreeRTOS+TCP's network
-#                                 interface (ROSETTE_NET_STACK=freertos_tcp)
-target_include_directories(rosette_bsp PUBLIC ${CMAKE_CURRENT_LIST_DIR})
+#   wiznet_macraw_interface.cpp   ports/net/freertos_tcp/freertos_tcp_board_interface.hpp:
+#                                 the chip in MACRAW mode (ports/net/wiznet/macraw_device.hpp)
+#                                 as FreeRTOS+TCP's network interface
+#                                 (ROSETTE_NET_STACK=freertos_tcp)
+#
+# Both compositions use the WIZnet driver, named from the repository root
+# ("ports/net/wiznet/device.hpp"), whichever network port the build selected.
+target_include_directories(rosette_bsp PUBLIC ${CMAKE_CURRENT_LIST_DIR} ${ROSETTE_ROOT})
 
 if(ROSETTE_NET_STACK STREQUAL "wiznet")
   target_sources(rosette_bsp PRIVATE ${CMAKE_CURRENT_LIST_DIR}/wiznet_board_network.cpp)

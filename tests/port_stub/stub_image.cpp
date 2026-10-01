@@ -6,16 +6,18 @@
  * The compiled libraries go in whole, so they need no reference from here.
  * The WIZnet driver is header-only, so this file instantiates it for each
  * chip model on ports/chip/stub's bus: the driver then compiles and links for a chip that
- * is not an RP2040 / RP2350.
+ * is not an RP2040 / RP2350. The MACRAW device is instantiated too, on an OS
+ * port with no RTOS, which shows the MAC provider depends on no IP stack.
  */
 
 #include "stub_bus.hpp"
 
-#include "rosette/net/wiznet/device.hpp"
-#include "rosette/net/wiznet/slaac_provider.hpp"
-#include "rosette/net/wiznet/socket_provider.hpp"
-#include "rosette/net/wiznet/w5100s.hpp"
-#include "rosette/net/wiznet/w6x00.hpp"
+#include "ports/net/wiznet/device.hpp"
+#include "ports/net/wiznet/macraw_device.hpp"
+#include "ports/net/wiznet/slaac_provider.hpp"
+#include "ports/net/wiznet/socket_provider.hpp"
+#include "ports/net/wiznet/w5100s.hpp"
+#include "ports/net/wiznet/w6x00.hpp"
 
 namespace wiznet = rosette::net::wiznet;
 using rosette::platform::StubBus;
@@ -26,6 +28,9 @@ template class wiznet::WiznetSocketProvider<wiznet::W6100, StubBus>;
 template class wiznet::WiznetSocketProvider<wiznet::W6300, StubBus>;
 template class wiznet::WiznetSlaacProvider<wiznet::W6100, StubBus>;
 template class wiznet::WiznetSlaacProvider<wiznet::W6300, StubBus>;
+template class wiznet::WiznetMacrawDevice<wiznet::W5100S, StubBus>;
+template class wiznet::WiznetMacrawDevice<wiznet::W6100, StubBus>;
+template class wiznet::WiznetMacrawDevice<wiznet::W6300, StubBus>;
 
 /**
  * @brief Instantiates the W5100S driver as a board would use it.

@@ -21,8 +21,8 @@
 #include "fake_wiznet_chip.hpp"
 #include "test_util.hpp"
 
-#include "rosette/net/wiznet/interface.hpp"
-#include "rosette/net/wiznet/slaac_provider.hpp"
+#include "ports/net/wiznet/interface.hpp"
+#include "ports/net/wiznet/slaac_provider.hpp"
 
 #include <algorithm>
 #include <array>

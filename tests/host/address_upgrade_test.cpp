@@ -16,9 +16,9 @@
 
 #include "fake_dhcp_network.hpp"
 #include "fake_interface.hpp"
+#include "ports/net/wiznet/dhcp_provider.hpp"
 #include "rosette/net/address_manager.hpp"
 #include "rosette/net/ipv4ll_provider.hpp"
-#include "rosette/net/wiznet/dhcp_provider.hpp"
 #include "test_util.hpp"
 
 namespace {

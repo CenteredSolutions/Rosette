@@ -1,63 +1,45 @@
-#include "wiznet_macraw_interface.hpp"
+/**
+ * @file boards/common/rp2_wiznet/wiznet_macraw_interface.cpp
+ * @brief The WIZnet EVB-Pico boards' FreeRTOS+TCP interface: the chip in MACRAW mode.
+ *
+ * Composition only: the FreeRTOS+TCP port supplies NetworkInterface<Device>
+ * (ports/net/freertos_tcp/freertos_tcp_interface.hpp), the WIZnet port
+ * supplies the MAC (ports/net/wiznet/macraw_device.hpp), and this file picks
+ * the board's chip, bus, and interrupt pin from `board_config.h` and
+ * implements freertos_tcp_board_interface.hpp over them.
+ */
 
+#include "freertos_tcp_board_interface.hpp"
+
+#include <cstdio>
+
+#include "freertos_tcp_interface.hpp"
+#include "ports/net/wiznet/macraw_device.hpp"
 #include "wiznet_board_types.hpp"
 
-#include <cstring>
-
+namespace rosette::net::freertos {
 namespace {
 
-using DefaultChip = rosette::net::wiznet::BoardChip;
-using DefaultBus = rosette::net::wiznet::BoardBus;
-using DefaultMacDevice = rosette::net::wiznet::WiznetMacrawDevice<DefaultChip, DefaultBus>;
+using BoardMacrawDevice = wiznet::WiznetMacrawDevice<wiznet::BoardChip, wiznet::BoardBus>;
 
-// The device holds a reference to its own bus and is referenced by the
-// interface, so it must be a named object that outlives both -- never a
-// temporary. Declared before g_default_interface to fix construction order.
-DefaultMacDevice g_default_device{DefaultBus{ROSETTE_SPI_INST, ROSETTE_PIN_SPI_CS}};
+// The interface owns the device, and the device owns the bus, so one
+// file-scope object carries the whole chain with its construction order fixed.
+NetworkInterface<BoardMacrawDevice> g_wiz0{MacAddress ROSETTE_MAC_ADDR_DEFAULT,
+                                           wiznet::make_board_bus()};
 
-rosette::net::freertos::NetworkInterface g_default_interface{
-    g_default_device,
-    std::array<uint8_t, 6> ROSETTE_MAC_ADDR_DEFAULT
-};
-
-NetworkInterface_t g_default_network_interface;
+NetworkInterface_t g_wiz0_descriptor;
 
 }  // namespace
 
-extern "C" void wiznet_macraw_init(void)
-{
-    (void)g_default_interface.fill_interface_descriptor(g_default_network_interface, "wiz0");
-}
-
-extern "C" bool wiznet_macraw_link_status(void)
-{
-    return g_default_interface.link_status() == pdTRUE;
-}
-
-extern "C" void wiznet_macraw_interrupt_from_isr(void)
-{
-    g_default_interface.handle_interrupt_from_isr();
-}
-
-extern "C" void wiznet_macraw_set_mac_address(const uint8_t mac[6])
-{
-    if (mac == nullptr) {
-        return;
+NetworkInterface_t* add_board_network_interface(const MacAddress& mac) noexcept {
+    g_wiz0.set_station_mac_address(mac);
+    NetworkInterface_t* descriptor = g_wiz0.add_to_freertos(g_wiz0_descriptor, "wiz0");
+    if (!g_wiz0.attach_rx_interrupt(ROSETTE_PIN_WIZNET_INT)) {
+        std::printf("[wiznet] INT pin %u not attached; receive polls\n",
+                    static_cast<unsigned>(ROSETTE_PIN_WIZNET_INT));
     }
 
-    std::array<uint8_t, 6> mac_array{};
-    std::memcpy(mac_array.data(), mac, mac_array.size());
-    g_default_interface.set_fallback_mac_address(mac_array);
+    return descriptor;
 }
 
-extern "C" BaseType_t xNetworkInterfaceInitialise(void)
-{
-    return g_default_interface.initialise();
-}
-
-extern "C" BaseType_t xNetworkInterfaceOutput(
-    NetworkBufferDescriptor_t* pxDescriptor,
-    BaseType_t xReleaseAfterSend)
-{
-    return g_default_interface.output(pxDescriptor, xReleaseAfterSend);
-}
+}  // namespace rosette::net::freertos

@@ -17,6 +17,10 @@
 
 #pragma once
 
+/* FreeRTOS+TCP's FreeRTOSIPConfigDefaults.h checks this name to confirm the
+ * kernel configuration was included first. */
+#define FREERTOS_CONFIG_H
+
 #include "board_config.h"   /* BOARD_IS_RP2350 for port selection */
 
 // ── Processor / port ──────────────────────────────────────────────────────────

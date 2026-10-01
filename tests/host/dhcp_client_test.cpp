@@ -11,7 +11,7 @@
 #include <cstdint>
 
 #include "fake_dhcp_network.hpp"
-#include "rosette/net/wiznet/dhcp_client.hpp"
+#include "ports/net/wiznet/dhcp_client.hpp"
 #include "test_util.hpp"
 
 namespace {

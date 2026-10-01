@@ -6,10 +6,12 @@
 #   freertos_tcp_socket.cpp, freertos_tcp_igmp.cpp
 #                                 the socket provider, and IGMP / MLD membership
 #                                 (FreeRTOS+TCP has neither)
-#   freertos_tcp_interface.hpp, wiznet_macraw_interface.{h,hpp}
-#                                 a NetworkInterface over a MAC-level device; a board
-#                                 instantiates it (boards/common/rp2_wiznet/ does,
-#                                 over the WIZnet chip in MACRAW mode)
+#   freertos_tcp_interface.hpp    NetworkInterface<Device>: a FreeRTOS+TCP interface
+#                                 over any rosette::net::MacDevice (rosette/net/mac.hpp)
+#   freertos_tcp_board_interface.hpp
+#                                 the hook a board implements to register its
+#                                 interface (boards/common/rp2_wiznet/ does, over
+#                                 the WIZnet chip in MACRAW mode)
 #   FreeRTOSIPConfig.h            the stack's configuration; a board may supply its
 #                                 own by putting its directory first
 #

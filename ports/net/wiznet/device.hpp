@@ -472,6 +472,61 @@ public:
         });
     }
 
+    /**
+     * @brief Length of the MACRAW frame at the head of the receive ring, without consuming it.
+     *
+     * The MACRAW socket stores each received frame behind a length header
+     * (`Chip::macraw_rx_header_bytes()` octets, big-endian, counting itself),
+     * and the received-size register counts every frame queued. A network
+     * interface sizes its receive buffer from this call, so it decodes the
+     * head frame's header rather than returning the queue total.
+     *
+     * A header that cannot describe a frame (shorter than itself, or longer
+     * than `Chip::max_frame_bytes()`) means the ring is not at a frame
+     * boundary; that record is discarded here, exactly as read_frame() would,
+     * so the caller is never asked to allocate for it.
+     *
+     * @return Frame length in octets, without the length header, at most
+     *   `Chip::max_frame_bytes()`; 0 when no complete header is queued or the
+     *   head record was discarded.
+     *
+     * Verification:
+     * - Correct means: with frames of lengths a and b queued, the call returns
+     *   a, read_frame() then returns a, the call returns b, and the ring is
+     *   unchanged by the call itself.
+     * - Covered by: tests/host/wiznet_macraw_device_test.cpp
+     *   (TC-NET-WIZ-MACRAW-003, TC-NET-WIZ-MACRAW-004).
+     *
+     * References:
+     * - W5100S datasheet §Sn_RX_RSR, §Sn_RX_RD, and the MACRAW receive data format
+     * - W6100 / W6300 datasheets §Sn_RX_RSR, §Sn_RX_RD, and the MACRAW PACKET INFO
+     */
+    std::size_t peek_frame_size() noexcept {
+        const auto lock = bus_.acquire();
+        const socket_type socket = Chip::macraw_socket();
+        if (socket_rx_received_size(socket) < Chip::macraw_rx_header_bytes()) {
+            return 0u;
+        }
+
+        uint8_t header[Chip::macraw_rx_header_bytes()] = {0};
+        const uint16_t start = socket_rx_read_pointer(socket);
+        const uint16_t after_header = static_cast<uint16_t>(
+            ring_read(socket, start, header, static_cast<uint16_t>(sizeof(header))));
+        const uint16_t total_len =
+            static_cast<uint16_t>((static_cast<uint16_t>(header[0]) << 8) | header[1]);
+        const uint16_t frame_len =
+            static_cast<uint16_t>(total_len - Chip::macraw_rx_header_bytes());
+        if ((total_len > Chip::macraw_rx_header_bytes())
+            && (frame_len <= Chip::max_frame_bytes())) {
+            return frame_len;
+        }
+
+        const uint16_t skip = total_len > Chip::macraw_rx_header_bytes() ? frame_len : 0u;
+        set_socket_rx_read_pointer(socket, static_cast<uint16_t>(ring_skip(after_header, skip)));
+        issue_socket_command(socket, Chip::command_receive_done());
+        return 0u;
+    }
+
     std::size_t read_frame(uint8_t* frame, std::size_t capacity) noexcept
     {
         const auto lock = bus_.acquire();

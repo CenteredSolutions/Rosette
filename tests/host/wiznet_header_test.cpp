@@ -19,8 +19,8 @@
 
 #include "fake_clock.hpp"
 
-#include "rosette/net/wiznet/w5100s.hpp"
-#include "rosette/net/wiznet/w6x00.hpp"
+#include "ports/net/wiznet/w5100s.hpp"
+#include "ports/net/wiznet/w6x00.hpp"
 
 #include <algorithm>
 #include <array>

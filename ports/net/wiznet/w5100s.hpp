@@ -3,7 +3,7 @@
 #include <array>
 #include <cstdint>
 
-#include "ports/net/wiznet/device.hpp"
+#include "device.hpp"
 
 namespace rosette::net::wiznet {
 

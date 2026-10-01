@@ -23,10 +23,10 @@
 #include "fake_wiznet_chip.hpp"
 #include "test_util.hpp"
 
-#include "rosette/net/wiznet/device.hpp"
-#include "rosette/net/wiznet/socket_provider.hpp"
-#include "rosette/net/wiznet/w5100s.hpp"
-#include "rosette/net/wiznet/w6x00.hpp"
+#include "ports/net/wiznet/device.hpp"
+#include "ports/net/wiznet/socket_provider.hpp"
+#include "ports/net/wiznet/w5100s.hpp"
+#include "ports/net/wiznet/w6x00.hpp"
 
 #include <array>
 #include <cstdint>
