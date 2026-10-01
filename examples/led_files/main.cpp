@@ -1,25 +1,30 @@
 /**
  * @file examples/led_files/main.cpp
- * @brief Stock rclc services on a WIZnet board through a micro-ROS agent: an LED and a file store.
+ * @brief Stock rclc services on a WIZnet board: an LED and a file store, on either ROS 2 backend.
  *
  * The firmware is an ordinary rclc application: the node, its five services
- * and the executor are built with the stock rclc API, and rmw_microxrcedds
- * carries them over XRCE-DDS to a `micro_ros_agent` on the LAN, which joins
- * the ROS 2 graph on the board's behalf. Rosette supplies what is below and
- * around rclc:
+ * and the executor are built with the stock rclc API, and the same source
+ * builds against both backends Rosette supports (the build picks one, see
+ * CMakeLists.txt):
+ *
+ *   - rmw_rosette: the board is a DDS participant and answers every client
+ *     directly, with no extra process;
+ *   - micro-ROS agent: rmw_microxrcedds carries the services over XRCE-DDS
+ *     to a `micro_ros_agent` on the LAN, which joins the ROS 2 graph on the
+ *     board's behalf.
+ *
+ * Only session setup differs, and it is confined to session_gate(): the
+ * agent backend hands the supervisor a `rosette::ros::AgentSessionGate`,
+ * which locates the agent (a fixed address, mDNS/DNS-SD, or the XRCE
+ * multicast probe), pings it before a session is created and while it runs,
+ * and syncs the epoch clock; rmw_rosette has no far end to check and hands
+ * it nothing. Rosette supplies everything else below and around rclc:
  *
  *   - the board network (DHCP, link-local fallback, SLAAC), brought up from
  *     `net::board_default_network()`;
- *   - the XRCE transport over the chip's hardware UDP sockets
- *     (`rosette::UdpSocketTransport`);
- *   - agent location: a fixed address, mDNS/DNS-SD, or the XRCE multicast
- *     probe, chosen at configure time;
- *   - `rosette::ros::AgentSessionGate`, which pings the agent before a
- *     session is created, keeps pinging while it runs, and syncs the epoch
- *     clock (ros/time_sync.hpp);
  *   - `rosette::ros::SessionSupervisor`, which builds the session when the
- *     network is ready and the agent answers, and rebuilds it when the
- *     address moves or the agent goes away;
+ *     network is ready (and the agent answers), and rebuilds it when the
+ *     address moves (or the agent goes away);
  *   - the on-device file store (`rosette::storage::FileStore`).
  *
  * Services, under /led_files (rosette_msgs, this example's own package):
@@ -29,17 +34,23 @@
  *   ros2 service call /led_files/files/list rosette_msgs/srv/ListFiles "{}"
  *   ros2 service call /led_files/files/erase rosette_msgs/srv/EraseFile "{key: k1}"
  *
- * Agent on the host:
+ * Agent on the host (agent backend only):
  *   docker run --rm --net=host microros/micro-ros-agent:humble udp4 --port 8888
  *
- * Verification: every service answers through a stock agent; stopping the
- * agent ends the session within three ping periods and starting it again
- * brings a new session up; the report line shows the epoch time matching the
- * host's `date +%s` after the first session; the heap in use returns to the
- * same value after every rebuild.
+ * tests/perf/led_files_service_bench.py measures the call latency of these
+ * services from a stock rclpy client, on either backend.
  *
- * References: rclc (ros2/rclc, Humble) service and executor API; micro-ROS
- * "Handle reconnections and liveliness" and "Custom transports" tutorials.
+ * Verification: every service answers a stock client (Fast DDS directly on
+ * rmw_rosette, through a stock agent on the agent backend), including a
+ * kBodyMax-octet file through put and get; on the agent backend, stopping
+ * the agent ends the session within three ping periods, starting it again
+ * brings a new session up, and the report line shows the epoch time
+ * matching the host's `date +%s`; the heap in use returns to the same value
+ * after every rebuild.
+ *
+ * References: rclc (ros2/rclc, Humble) service and executor API; ROS 2
+ * service name mangling (rq/, rr/ prefixes); micro-ROS "Handle reconnections
+ * and liveliness" and "Custom transports" tutorials.
  */
 
 #include <malloc.h>
@@ -59,16 +70,19 @@
 #include "board.h"
 #include "rosette/net/board_network.hpp"
 #include "rosette/platform/platform.hpp"
-#include "rosette/ros/agent_locator_mdns.hpp"
-#include "rosette/ros/agent_locator_xrce.hpp"
-#include "rosette/ros/agent_session_gate.hpp"
 #include "rosette/ros/session_supervisor.hpp"
-#include "rosette/ros/socket_transport.hpp"
 #include "rosette/ros/time_sync.hpp"
 #include "rosette/storage/file_store.hpp"
 #include "rosette/storage/volume.hpp"
 
 #include "pico/stdlib.h"
+
+#if ROSETTE_LED_FILES_AGENT_BACKEND
+#include "rosette/ros/agent_locator_mdns.hpp"
+#include "rosette/ros/agent_locator_xrce.hpp"
+#include "rosette/ros/agent_session_gate.hpp"
+#include "rosette/ros/socket_transport.hpp"
+#endif
 
 #define LED_FILES_STR2(x) #x
 #define LED_FILES_STR(x) LED_FILES_STR2(x)
@@ -83,7 +97,12 @@ namespace storage = rosette::storage;
 constexpr uint32_t kReportPeriodMs = 5000u;
 constexpr int64_t kSpinTimeoutNs = RCL_MS_TO_NS(50);
 constexpr size_t kKeyCapacity = storage::kFileStoreKeyMax + 1u;
-constexpr size_t kBodyCapacity = 4096u;
+// The largest file body. A GetFile response carries the body plus a CDR
+// header, a flag, two string lengths and a status message, and a PutFile
+// request carries it plus a key; 4000 octets keeps both inside the 4096-octet
+// serialized sample both backends are configured for (RMW_ROSETTE_MAX_SAMPLE_SIZE).
+constexpr size_t kBodyMax = 4000u;
+constexpr size_t kBodyCapacity = kBodyMax + 1u;
 constexpr uint8_t kMaxListedKeys = 16u;
 constexpr size_t kExecutorHandles = 5u;
 
@@ -225,19 +244,23 @@ bool ok(rcl_ret_t ret, const char* what) noexcept {
 /**
  * @brief Builds the rclc session: support, node, five services, executor.
  *
- * The supervisor calls this once the network is ready and the agent answers
- * a ping, and again after every destroy_session(). The XRCE transport was
- * installed as the default by the agent gate, so support is initialized with
- * stock default options. Every object is zero-initialized first, so a
- * failure part way leaves destroy_session() finalizing only what was built.
+ * The supervisor calls this once the network is ready (and, on the agent
+ * backend, the agent answers a ping), and again after every
+ * destroy_session(). Support is initialized with stock default options on
+ * both backends: rmw_rosette needs none, and the agent gate installed the
+ * XRCE transport as the default. Every object is zero-initialized first, so
+ * a failure part way leaves destroy_session() finalizing only what was
+ * built. On rmw_rosette the five services need RMW_ROSETTE_MAX_SERVICES of
+ * at least five; with fewer, the fifth service init fails and is printed.
  *
  * @return True when every object was created; false at the first failure (printed).
  *
  * Verification:
- * - Correct means: after a true return, each service answers through the
- *   agent; after a false one destroy_session() returns the heap to its
+ * - Correct means: after a true return, each service answers a stock
+ *   client; after a false one destroy_session() returns the heap to its
  *   level before the call.
- * - Covered by: the file's hardware check (agent stopped and restarted).
+ * - Covered by: tests/perf/led_files_service_bench.py (every service, both
+ *   backends) and the file's hardware check (agent stopped and restarted).
  *
  * References:
  * - rclc (ros2/rclc, Humble) rclc_support_init, rclc_service_init_default,
@@ -318,6 +341,7 @@ void destroy_session() {
     rcl_reset_error();
 }
 
+#if ROSETTE_LED_FILES_AGENT_BACKEND
 /**
  * @brief The agent locator this build was configured with.
  *
@@ -347,6 +371,36 @@ rosette::AgentLocator& configured_locator(rosette::net::SocketProvider& sockets)
     return xrce;
 #endif
 }
+#endif
+
+/**
+ * @brief The backend's far-end check for the session supervisor, or null when it has none.
+ *
+ * This is the one place the two backends differ. The agent backend returns
+ * an AgentSessionGate over the XRCE transport on the chip's UDP sockets, so
+ * the supervisor creates a session only while the agent answers pings;
+ * rmw_rosette talks to its peers directly and returns null, so the
+ * supervisor creates the session as soon as the network is ready.
+ *
+ * @return A gate with static storage duration (agent backend), or null (rmw_rosette).
+ *
+ * References:
+ * - include/rosette/ros/session_supervisor.hpp (SessionGate)
+ * - micro-ROS "Handle reconnections and liveliness" tutorial
+ */
+ros::SessionGate* session_gate() {
+#if ROSETTE_LED_FILES_AGENT_BACKEND
+    rosette::net::SocketProvider& sockets = net::board_socket_provider();
+    static rosette::UdpSocketTransport transport(
+        sockets, rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u),
+        rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u), 50u);
+    static ros::AgentSessionGate gate(transport, configured_locator(sockets),
+                                      ros::rmw_agent_link());
+    return &gate;
+#else
+    return nullptr;
+#endif
+}
 
 /// @brief Prints the session count, the agent's state, the epoch time, and the heap in use.
 void report(const ros::SessionSupervisor& session) {
@@ -367,10 +421,11 @@ int main() {
         sleep_ms(100);
     }
 
-    std::printf("[led_files] rclc services through a micro-ROS agent\n");
+    std::printf("[led_files] rclc services over %s\n",
+                ROSETTE_LED_FILES_AGENT_BACKEND ? "a micro-ROS agent" : "rmw_rosette");
 
     static storage::Volume volume;
-    static storage::FileStore store(volume, "/files", "", kBodyCapacity - 1u);
+    static storage::FileStore store(volume, "/files", "", kBodyMax);
     g_store = &store;
     bind_messages();
 
@@ -378,15 +433,8 @@ int main() {
     rosette::net::NetworkConfig network = net::board_default_network();
     network.ready_timeout_ms = 0u;
     (void)net::bring_up_board_network("rosette-led-files", network);
-
-    rosette::net::SocketProvider& sockets = net::board_socket_provider();
-    static rosette::UdpSocketTransport transport(
-        sockets, rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u),
-        rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u), 50u);
-    static ros::AgentSessionGate gate(transport, configured_locator(sockets),
-                                      ros::rmw_agent_link());
     ros::SessionSupervisor session(net::board_network_watch(), {create_session, destroy_session},
-                                   &gate);
+                                   session_gate());
 
     uint32_t next_report = pf::monotonic_ms() + kReportPeriodMs;
     for (;;) {

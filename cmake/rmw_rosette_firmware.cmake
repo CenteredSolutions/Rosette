@@ -80,6 +80,10 @@ set(RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE 0 CACHE STRING "Publishers each node
 set(RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS 8 CACHE STRING "Remote DDS participants tracked")
 set(RMW_ROSETTE_MAX_MATCHED_ENDPOINTS 8 CACHE STRING "Remote matches per local endpoint")
 set(RMW_ROSETTE_MAX_REMOTE_ENDPOINTS 64 CACHE STRING "Remote writers (and readers) known from SEDP; when full, only those matching a local endpoint are admitted")
+# The link's datagram limit is the board's (cmake/rosette_rtps.cmake declares
+# the same cache entry); declaring it here too keeps this file independent of
+# which firmware target the tree configures first.
+set(ROSETTE_RTPS_MAX_DATAGRAM_SIZE 1472 CACHE STRING "Largest UDP payload the link carries")
 set(RMW_ROSETTE_MAX_DATAGRAM_SIZE ${ROSETTE_RTPS_MAX_DATAGRAM_SIZE} CACHE STRING "Largest UDP datagram")
 set(RMW_ROSETTE_MAX_SAMPLE_SIZE 4096 CACHE STRING "Largest serialized message")
 set(RMW_ROSETTE_LARGE_BUFFERS 2 CACHE STRING "Blocks of RMW_ROSETTE_MAX_SAMPLE_SIZE")
