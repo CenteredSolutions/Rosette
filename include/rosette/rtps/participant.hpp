@@ -91,6 +91,16 @@ GuidPrefix make_participant_guid_prefix(uint8_t participant_id) noexcept;
 #  define RTPS_TICK_PERIOD_MS 10u
 #endif
 
+/// 1: SEDP rebuilds each local endpoint's announcement for every send from
+/// the endpoint table, so no pool block stays allocated per endpoint; 0:
+/// SEDP serializes each announcement once and keeps it (see "Announcement
+/// storage" in sedp.hpp). Firmware capacity profiles select 1, where the
+/// 512-octet blocks are scarce; hosts keep 0, where replaying stored bytes
+/// to many peers is cheaper than serializing them again.
+#ifndef RTPS_SEDP_REBUILD_ANNOUNCEMENTS
+#define RTPS_SEDP_REBUILD_ANNOUNCEMENTS 0
+#endif
+
 /// Maximum byte size of one writer slot in the participant's storage table.
 /// Must be >= sizeof(StatefulWriterStorage<D,R>) for all D and R you intend to use.
 /// Default covers StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>.
@@ -354,6 +364,37 @@ private:
                                      void*) noexcept;
     static void on_endpoint_unmatch (const Guid&, const Guid&, void*) noexcept;
     static void on_endpoints_changed(void*) noexcept;
+
+    /**
+     * @brief The LocalEndpointSource SEDP rebuilds announcements from, or an
+     *   invalid one when RTPS_SEDP_REBUILD_ANNOUNCEMENTS is 0.
+     *
+     * Called while the participant is constructed; the source only captures
+     * `this`, and its functions run after construction.
+     */
+    LocalEndpointSource sedp_endpoint_source() noexcept;
+
+    /**
+     * @brief LocalEndpointSource::DescribeWriter over the match table's
+     *   record of a local writer plus the participant's unicast locators.
+     *
+     * @param[in]  user The participant.
+     * @param[in]  guid A local writer's GUID.
+     * @param[out] out  The writer's DiscoveredWriterData as
+     *   register_writer_endpoint() announced it, with the current locators.
+     * @return `false` when the writer is not (or no longer) in the table.
+     *
+     * Verification:
+     * - Correct means: SEDP rebuilds the same PL_CDR bytes it would have
+     *   stored at creation, apart from locators added or removed since.
+     * - Covered by: TC-SEDP-8.5.4-017.
+     */
+    static bool describe_local_writer(void* user, const Guid& guid,
+                                      DiscoveredWriterData& out) noexcept;
+
+    /// @brief As describe_local_writer(), for a local reader.
+    static bool describe_local_reader(void* user, const Guid& guid,
+                                      DiscoveredReaderData& out) noexcept;
 
     /// @brief Tells the graph observer, if any, that the graph changed.
     void notify_graph_change() noexcept {

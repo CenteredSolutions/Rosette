@@ -155,12 +155,16 @@ add_test(
     COMMAND spdp_spec_tests --emit-pass-json ${SPDP_PASSED_JSON}
 )
 
-add_executable(sedp_spec_tests
+# Built twice: sedp_spec_tests_rebuild runs every SEDP writer test with
+# announcements rebuilt for each send (RTPS_SEDP_REBUILD_ANNOUNCEMENTS, the
+# firmware profile's mode) instead of stored.
+set(SEDP_SPEC_TEST_SOURCES
     src/sedp_spec_tests.cpp
     src/spec_test_common.cpp
     src/spec_sedp_test_registry.cpp
     src/test_stateful_writer_clock_stub.cpp
     src/test_sedp_8_5_4_behavior.cpp
+    src/test_sedp_8_5_4_rebuild.cpp
     src/test_sedp_8_5_4_repairs.cpp
     src/test_sedp_8_5_5_1_matching.cpp
     src/test_sedp_9_6_3_2_plcdr.cpp
@@ -176,14 +180,18 @@ add_executable(sedp_spec_tests
     ../../src/rtps/buf_pool.cpp
 )
 
-target_include_directories(sedp_spec_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/../..
-)
-
-target_compile_definitions(sedp_spec_tests PRIVATE
-    RTPS_LOG_LEVEL=0
-)
+add_executable(sedp_spec_tests ${SEDP_SPEC_TEST_SOURCES})
+add_executable(sedp_spec_tests_rebuild ${SEDP_SPEC_TEST_SOURCES})
+foreach(_sedp_target sedp_spec_tests sedp_spec_tests_rebuild)
+    target_include_directories(${_sedp_target} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    )
+    target_compile_definitions(${_sedp_target} PRIVATE
+        RTPS_LOG_LEVEL=0
+    )
+endforeach()
+target_compile_definitions(sedp_spec_tests_rebuild PRIVATE SPEC_SEDP_REBUILD_ANNOUNCEMENTS=1)
 
 set(SEDP_PASSED_JSON
     ${CMAKE_CURRENT_BINARY_DIR}/sedp_passed.json)
@@ -191,6 +199,11 @@ set(SEDP_PASSED_JSON
 add_test(
     NAME sedp_spec_conformance
     COMMAND sedp_spec_tests --emit-pass-json ${SEDP_PASSED_JSON}
+)
+
+add_test(
+    NAME sedp_spec_conformance_rebuild
+    COMMAND sedp_spec_tests_rebuild
 )
 
 add_executable(history_cache_spec_tests
@@ -297,7 +310,9 @@ add_test(
     COMMAND stateful_reader_spec_tests --emit-pass-json ${STATEFUL_READER_PASSED_JSON}
 )
 
-add_executable(participant_spec_tests
+# Built twice: participant_spec_tests_rebuild runs the participant with SEDP
+# announcements rebuilt from its endpoint table (RTPS_SEDP_REBUILD_ANNOUNCEMENTS=1).
+set(PARTICIPANT_SPEC_TEST_SOURCES
     src/participant_spec_tests.cpp
     src/spec_test_common.cpp
     src/spec_participant_test_registry.cpp
@@ -317,6 +332,8 @@ add_executable(participant_spec_tests
     ../../src/rtps/buf_pool.cpp
 )
 
+add_executable(participant_spec_tests ${PARTICIPANT_SPEC_TEST_SOURCES})
+
 target_include_directories(participant_spec_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
@@ -332,6 +349,20 @@ set(PARTICIPANT_PASSED_JSON
 add_test(
     NAME participant_spec_conformance
     COMMAND participant_spec_tests --emit-pass-json ${PARTICIPANT_PASSED_JSON}
+)
+
+add_executable(participant_spec_tests_rebuild ${PARTICIPANT_SPEC_TEST_SOURCES})
+target_include_directories(participant_spec_tests_rebuild PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+)
+target_compile_definitions(participant_spec_tests_rebuild PRIVATE
+    RTPS_LOG_LEVEL=0
+    RTPS_SEDP_REBUILD_ANNOUNCEMENTS=1
+)
+add_test(
+    NAME participant_spec_conformance_rebuild
+    COMMAND participant_spec_tests_rebuild
 )
 
 find_package(Python3 COMPONENTS Interpreter)

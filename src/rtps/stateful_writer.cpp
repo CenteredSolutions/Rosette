@@ -170,6 +170,38 @@ bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* seriali
     return true;
 }
 
+// Cold, like send_built_data_to(): on-demand changes are SEDP announcements,
+// written once per endpoint and sent on discovery and repair, so this path is
+// optimized for flash rather than speed.
+[[gnu::cold]] bool StatefulWriter::write_on_demand_async(ChangeKind kind,
+                                                         const InlineQos& inline_qos,
+                                                         SequenceNumber* out_sn) noexcept {
+    if (payloadBuilder_ == nullptr) {
+        RTPS_LOG_E("writer", "write_on_demand_async: no payload builder installed");
+        return false;
+    }
+
+    if (staging_.payload.valid()) {
+        staging_.payload.reset();
+    }
+
+    staging_.kind = kind;
+    staging_.writerGuid = guid_;
+    staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
+    staging_.inlineQos = inline_qos;
+    staging_.preframed = true;
+    if (!add_change(static_cast<CacheChange&&>(staging_))) {
+        return false;
+    }
+
+    if (out_sn) {
+        *out_sn = nextSN_ - 1;
+    }
+
+    send_unsent_changes(heartbeat_due());
+    return true;
+}
+
 bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* unicast_locators,
                                         uint8_t locator_count, bool expects_inline_qos) noexcept {
     if (find_proxy(reader_guid)) return false;
@@ -493,6 +525,10 @@ ReaderProxy* StatefulWriter::find_free_slot() noexcept {
 [[gnu::noinline]] bool StatefulWriter::send_data_to(const CacheChange& ch, ReaderProxy& proxy,
                                                     bool heartbeat,
                                                     const uint64_t* only_fragments) noexcept {
+    if (!ch.payload.valid() && payloadBuilder_ != nullptr) {
+        return send_built_data_to(ch, proxy, heartbeat, only_fragments);
+    }
+
     const Locator& dest = proxy.best_locator();
     if (dest == LOCATOR_INVALID) return false;
 
@@ -552,6 +588,33 @@ ReaderProxy* StatefulWriter::find_free_slot() noexcept {
     }
 
     return sent;
+}
+
+// Cold: on-demand changes are sent on discovery and repair, never per sample.
+[[gnu::cold]] bool StatefulWriter::send_built_data_to(const CacheChange& ch, ReaderProxy& proxy,
+                                                      bool heartbeat,
+                                                      const uint64_t* only_fragments) noexcept {
+    CacheChange built{};
+    built.kind = ch.kind;
+    built.writerGuid = ch.writerGuid;
+    built.sequenceNumber = ch.sequenceNumber;
+    built.sourceTimestamp = ch.sourceTimestamp;
+    built.inlineQos = ch.inlineQos;
+    built.preframed = ch.preframed;
+    built.payload = payloadBuilder_(payloadBuilderUser_, ch);
+    if (!built.payload.valid()) {
+        RTPS_LOG_W("writer", "payload of SN=%ld:%lu could not be built; left for repair",
+                   ch.sequenceNumber.high, (unsigned long)ch.sequenceNumber.low);
+        const Locator& dest = proxy.best_locator();
+        if (heartbeat && dest != LOCATOR_INVALID) {
+            send_heartbeat_to(proxy.remoteReaderGuid.entityId, dest, /*final=*/false);
+        }
+
+        return false;
+    }
+
+    // `built` owns the block, so it returns to the pool when this returns.
+    return send_data_to(built, proxy, heartbeat, only_fragments);
 }
 
 bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& proxy,

@@ -261,6 +261,73 @@ public:
                                const InlineQos& inline_qos = InlineQos{}) noexcept;
 
     /**
+     * @brief Builds the serializedPayload of a change the history holds without one.
+     *
+     * Called each time such a change is sent (first send, repair, or replay
+     * to a reader that matches later), with the stored change: its kind,
+     * sequence number, and inline QoS identify what to build.
+     *
+     * @param[in] user   The pointer given to set_payload_builder().
+     * @param[in] change The stored change; its payload is empty.
+     * @return A complete serializedPayload (encapsulation header included)
+     *   in a pool block the writer releases after the send. Allocating it
+     *   with buf_alloc_with_headroom(size + kRtpsHeartbeatTailroom,
+     *   kRtpsDataHeadroom + kMaxInlineQosSize) lets the DATA be framed in
+     *   place. An invalid BufRef means the payload cannot be built now; the
+     *   send is then a lost datagram.
+     */
+    using PayloadBuilder = BufRef (*)(void* user, const CacheChange& change) noexcept;
+
+    /**
+     * @brief Installs the builder that supplies payloads for write_on_demand_async() changes.
+     *
+     * A writer whose changes are a pure function of state its owner already
+     * keeps (SEDP announcements, rebuilt from the participant's endpoint
+     * table) stores no payload block per change; the builder recreates the
+     * bytes for each send instead, trading a serialization per send for the
+     * pool block the history would otherwise hold for the change's lifetime.
+     *
+     * @param[in] builder Builder, or null to remove it.
+     * @param[in] user    Passed back to `builder`; must outlive the writer.
+     *
+     * Verification:
+     * - Correct means: a change stored without a payload goes on the wire
+     *   exactly as if its built payload had been stored.
+     * - Covered by: TC-SEDP-8.5.4-015, TC-SEDP-8.5.4-016.
+     */
+    void set_payload_builder(PayloadBuilder builder, void* user) noexcept {
+        payloadBuilder_ = builder;
+        payloadBuilderUser_ = user;
+    }
+
+    /**
+     * @brief Writes a change whose payload the PayloadBuilder builds each time it is sent.
+     *
+     * Adds a change with no payload, then sends every UNSENT change, as
+     * write_preframed_async() does. The builder must be installed first, and
+     * the change's `inline_qos` (for SEDP, its key hash) must identify what
+     * it builds. The history slot costs its CacheChange alone; no pool block
+     * stays allocated for the change.
+     *
+     * @param[in]  kind       ChangeKind of the change.
+     * @param[in]  inline_qos Inline QoS sent with the change; the builder
+     *   reads it to know which payload to build.
+     * @param[out] out_sn     Receives the assigned sequence number when non-null.
+     * @return `false` when no builder is installed or the history rejects
+     *   the change; `true` otherwise, whether or not every send succeeded.
+     *
+     * Verification:
+     * - Correct means: the change takes a sequence number like any other,
+     *   and every reader receives the payload the builder returns for it.
+     * - Covered by: TC-SEDP-8.5.4-015.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (add_change), §9.4.5.3 (DATA)
+     */
+    bool write_on_demand_async(ChangeKind kind, const InlineQos& inline_qos,
+                               SequenceNumber* out_sn = nullptr) noexcept;
+
+    /**
      * @brief Matches a remote reader.
      *
      * A TRANSIENT_LOCAL writer then sends the new reader every cached change
@@ -589,6 +656,30 @@ private:
                       const uint64_t* only_fragments = nullptr) noexcept;
 
     /**
+     * @brief Sends a change stored without a payload, building the payload for this send.
+     *
+     * Asks the PayloadBuilder for the bytes, sends a copy of the change
+     * carrying them through send_data_to(), and releases the block when the
+     * send returns (ITransport::send_unicast() does not keep it). When the
+     * builder returns nothing the change is treated as a lost datagram: a
+     * requested HEARTBEAT still goes out, so a reliable reader learns the
+     * range and NACKs the change again.
+     *
+     * @param[in] ch             Stored change with an empty payload.
+     * @param[in] proxy          Reader to send to.
+     * @param[in] heartbeat      As for send_data_to().
+     * @param[in] only_fragments As for send_data_to().
+     * @return `true` when every datagram was handed to the transport.
+     *
+     * Verification:
+     * - Correct means: the reader receives the same DATA it would for a
+     *   stored payload; a failed build leaves the change for repair.
+     * - Covered by: TC-SEDP-8.5.4-015, TC-SEDP-8.5.4-016.
+     */
+    bool send_built_data_to(const CacheChange& ch, ReaderProxy& proxy, bool heartbeat,
+                            const uint64_t* only_fragments) noexcept;
+
+    /**
      * @brief Frames a change as DATA inside its own payload block and sends it.
      *
      * The zero-copy path of §9.4.5.3: the RTPS header, DATA submessage
@@ -800,6 +891,8 @@ private:
     uint32_t       writesSinceHb_  = 0;  ///< RELIABLE writes since any HEARTBEAT.
     bool           releaseRepliesOnDelivery_ = false;  ///< Service reply writer.
     FragmentRepair fragRepair_{};  ///< Pending NACK_FRAG repair.
+    PayloadBuilder payloadBuilder_ = nullptr;  ///< Builds payloads of on-demand changes.
+    void* payloadBuilderUser_ = nullptr;
     MessageBuilder builder_;
 };
 

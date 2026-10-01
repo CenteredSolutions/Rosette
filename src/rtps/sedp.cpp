@@ -174,6 +174,74 @@ static SequenceNumber write_announcement(SedpWriter::BuiltinWriter& writer,
     return ok ? sn : SEQUENCENUMBER_UNKNOWN;
 }
 
+// Writes a live announcement keyed by the endpoint GUID and stores no
+// payload: the builtin writer's PayloadBuilder (SedpWriter::
+// build_announcement()) serializes it for each send. Returns the change's
+// SN, or SEQUENCENUMBER_UNKNOWN.
+static SequenceNumber write_rebuilt_announcement(SedpWriter::BuiltinWriter& writer,
+                                                 const Guid& endpoint_guid) noexcept {
+    InlineQos key{};
+    key.set_key_hash(endpoint_guid);
+    make_room_for_change(writer);
+    SequenceNumber sn = SEQUENCENUMBER_UNKNOWN;
+    const bool ok = writer.write_on_demand_async(ChangeKind::ALIVE, key, &sn);
+    return ok ? sn : SEQUENCENUMBER_UNKNOWN;
+}
+
+// Serialises one endpoint into a fresh pool block laid out as
+// StatefulWriter::write_preframed_async() lays out a stored announcement
+// (headroom for the RTPS, DATA, and inline QoS headers; tailroom for a
+// HEARTBEAT), so the DATA is framed in place exactly as a stored one is.
+// Returns an invalid BufRef when the pool is exhausted or the data does
+// not fit.
+template <typename EndpointData, typename SerialiseFn>
+static BufRef serialise_for_send(const EndpointData& endpoint, uint32_t size_estimate,
+                                 SerialiseFn serialise) noexcept {
+    BufRef payload = buf_alloc_with_headroom(size_estimate + kRtpsHeartbeatTailroom,
+                                             kRtpsDataHeadroom + kMaxInlineQosSize);
+    if (!payload.valid()) {
+        return payload;
+    }
+
+    payload.size = serialise(endpoint, payload.data, payload.capacity() - kRtpsHeartbeatTailroom);
+    if (payload.size == 0u) {
+        payload.reset();
+    }
+
+    return payload;
+}
+
+// Cold: it runs on discovery and repair, never per sample, so it is
+// optimized for size rather than inlined into a hot path.
+[[gnu::cold]] BufRef SedpWriter::build_announcement(void* user,
+                                                    const CacheChange& change) noexcept {
+    const SedpWriter& self = *static_cast<const SedpWriter*>(user);
+    const Guid endpoint_guid = change.inlineQos.key_hash_guid();
+    if (change.writerGuid.entityId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
+        DiscoveredWriterData wd{};
+        if (!self.endpoints_.writer(self.endpoints_.user, endpoint_guid, wd)) {
+            return BufRef{};
+        }
+
+        return serialise_for_send(
+            wd, writer_payload_size_estimate(wd),
+            [&self](const DiscoveredWriterData& d, Octet* buf, uint32_t cap) noexcept {
+                return self.serialise_writer(d, buf, cap);
+            });
+    }
+
+    DiscoveredReaderData rd{};
+    if (!self.endpoints_.reader(self.endpoints_.user, endpoint_guid, rd)) {
+        return BufRef{};
+    }
+
+    return serialise_for_send(
+        rd, reader_payload_size_estimate(rd),
+        [&self](const DiscoveredReaderData& d, Octet* buf, uint32_t cap) noexcept {
+            return self.serialise_reader(d, buf, cap);
+        });
+}
+
 // Withdraws an endpoint: drops its live announcement and writes a disposal
 // whose serialized key is PID_ENDPOINT_GUID (§9.6.3.2) and whose inline QoS
 // carries PID_KEY_HASH and PID_STATUS_INFO = DISPOSED|UNREGISTERED.
@@ -216,9 +284,8 @@ static bool write_disposal(SedpWriter::BuiltinWriter& writer,
 //   PID_SENTINEL         (0x0001)
 // ============================================================
 
-uint32_t SedpWriter::serialise_writer(const DiscoveredWriterData& wd,
-                                      Octet* buf, uint32_t cap) const noexcept
-{
+[[gnu::noinline]] uint32_t SedpWriter::serialise_writer(const DiscoveredWriterData& wd, Octet* buf,
+                                                        uint32_t cap) const noexcept {
     uint32_t off = 0;
 
     // RepresentationHeader — PL_CDR_LE.
@@ -278,9 +345,8 @@ uint32_t SedpWriter::serialise_writer(const DiscoveredWriterData& wd,
 //   PID_SENTINEL.
 // ============================================================
 
-uint32_t SedpWriter::serialise_reader(const DiscoveredReaderData& rd,
-                                      Octet* buf, uint32_t cap) const noexcept
-{
+[[gnu::noinline]] uint32_t SedpWriter::serialise_reader(const DiscoveredReaderData& rd, Octet* buf,
+                                                        uint32_t cap) const noexcept {
     uint32_t off = 0;
 
     if (off + 4u > cap) return 0;
@@ -328,16 +394,37 @@ uint32_t SedpWriter::serialise_reader(const DiscoveredReaderData& rd,
 bool SedpWriter::register_writer(const DiscoveredWriterData& wd) noexcept
 {
     for (Announced& slot : local_writers_) {
-        if (slot.guid != GUID_UNKNOWN) continue;
-        const SequenceNumber sn = write_announcement(
-            publications_writer_, wd, wd.writerGuid, writer_payload_size_estimate(wd),
-            [this](const DiscoveredWriterData& d, Octet* buf, uint32_t cap) noexcept {
-                return serialise_writer(d, buf, cap);
-            });
-        if (sn == SEQUENCENUMBER_UNKNOWN) return false;
+        if (slot.guid != GUID_UNKNOWN) {
+            continue;
+        }
+
+        SequenceNumber sn = SEQUENCENUMBER_UNKNOWN;
+        if (rebuilds_announcements()) {
+            // Every later send rebuilds from the source, so it must know the
+            // endpoint now: the participant records it before announcing it.
+            DiscoveredWriterData known{};
+            if (!endpoints_.writer(endpoints_.user, wd.writerGuid, known)) {
+                RTPS_LOG_E("sedp", "writer to announce is unknown to the endpoint source");
+                return false;
+            }
+
+            sn = write_rebuilt_announcement(publications_writer_, wd.writerGuid);
+        } else {
+            sn = write_announcement(
+                publications_writer_, wd, wd.writerGuid, writer_payload_size_estimate(wd),
+                [this](const DiscoveredWriterData& d, Octet* buf, uint32_t cap) noexcept {
+                    return serialise_writer(d, buf, cap);
+                });
+        }
+
+        if (sn == SEQUENCENUMBER_UNKNOWN) {
+            return false;
+        }
+
         slot = Announced{wd.writerGuid, sn};
         return true;
     }
+
     RTPS_LOG_E("sedp", "local writer table full (RTPS_MAX_LOCAL_ENDPOINTS=%d)",
                RTPS_MAX_LOCAL_ENDPOINTS);
     return false;
@@ -346,16 +433,35 @@ bool SedpWriter::register_writer(const DiscoveredWriterData& wd) noexcept
 bool SedpWriter::register_reader(const DiscoveredReaderData& rd) noexcept
 {
     for (Announced& slot : local_readers_) {
-        if (slot.guid != GUID_UNKNOWN) continue;
-        const SequenceNumber sn = write_announcement(
-            subscriptions_writer_, rd, rd.readerGuid, reader_payload_size_estimate(rd),
-            [this](const DiscoveredReaderData& d, Octet* buf, uint32_t cap) noexcept {
-                return serialise_reader(d, buf, cap);
-            });
-        if (sn == SEQUENCENUMBER_UNKNOWN) return false;
+        if (slot.guid != GUID_UNKNOWN) {
+            continue;
+        }
+
+        SequenceNumber sn = SEQUENCENUMBER_UNKNOWN;
+        if (rebuilds_announcements()) {
+            DiscoveredReaderData known{};
+            if (!endpoints_.reader(endpoints_.user, rd.readerGuid, known)) {
+                RTPS_LOG_E("sedp", "reader to announce is unknown to the endpoint source");
+                return false;
+            }
+
+            sn = write_rebuilt_announcement(subscriptions_writer_, rd.readerGuid);
+        } else {
+            sn = write_announcement(
+                subscriptions_writer_, rd, rd.readerGuid, reader_payload_size_estimate(rd),
+                [this](const DiscoveredReaderData& d, Octet* buf, uint32_t cap) noexcept {
+                    return serialise_reader(d, buf, cap);
+                });
+        }
+
+        if (sn == SEQUENCENUMBER_UNKNOWN) {
+            return false;
+        }
+
         slot = Announced{rd.readerGuid, sn};
         return true;
     }
+
     RTPS_LOG_E("sedp", "local reader table full (RTPS_MAX_LOCAL_ENDPOINTS=%d)",
                RTPS_MAX_LOCAL_ENDPOINTS);
     return false;

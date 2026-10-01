@@ -412,6 +412,29 @@ public:
      */
     uint32_t count(const char* topic, bool writers) const noexcept;
 
+    /**
+     * @brief Fills the discovery data of a local writer the table holds.
+     *
+     * Lets SEDP rebuild a local writer's announcement from the record kept
+     * here for matching instead of storing its own copy (see
+     * LocalEndpointSource in sedp.hpp). The table keeps no locators, so
+     * `out` carries none; the caller adds the participant's.
+     *
+     * @param[in]  guid A local writer's GUID.
+     * @param[out] out  Its GUID, topic and type names, reliability, and
+     *   durability; written only when the writer is found.
+     * @return `false` when the table holds no local writer with that GUID.
+     *
+     * Verification:
+     * - Correct means: the fields equal those of the DiscoveredWriterData
+     *   add_writer() recorded.
+     * - Covered by: TC-SEDP-8.5.4-017.
+     */
+    bool local_writer_data(const Guid& guid, DiscoveredWriterData& out) const noexcept;
+
+    /// @brief As local_writer_data(), for a local reader; also fills expectsInlineQos.
+    bool local_reader_data(const Guid& guid, DiscoveredReaderData& out) const noexcept;
+
 private:
 
     struct LocalEndpoint {

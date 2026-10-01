@@ -437,4 +437,41 @@ uint32_t EndpointMatchTable::count(const char* topic, bool writers) const noexce
     return n;
 }
 
+[[gnu::cold]] bool EndpointMatchTable::local_writer_data(const Guid& guid,
+                                                         DiscoveredWriterData& out) const noexcept {
+    for (const LocalEndpoint& w : local_writers_) {
+        if (!w.valid() || w.guid != guid) {
+            continue;
+        }
+
+        out.writerGuid = w.guid;
+        out.topicName = w.topicName;
+        out.typeName = w.typeName;
+        out.reliabilityKind = w.reliability;
+        out.durabilityKind = w.durability;
+        return true;
+    }
+
+    return false;
+}
+
+[[gnu::cold]] bool EndpointMatchTable::local_reader_data(const Guid& guid,
+                                                         DiscoveredReaderData& out) const noexcept {
+    for (const LocalEndpoint& r : local_readers_) {
+        if (!r.valid() || r.guid != guid) {
+            continue;
+        }
+
+        out.readerGuid = r.guid;
+        out.topicName = r.topicName;
+        out.typeName = r.typeName;
+        out.reliabilityKind = r.reliability;
+        out.durabilityKind = r.durability;
+        out.expectsInlineQos = r.expectsInlineQos;
+        return true;
+    }
+
+    return false;
+}
+
 }  // namespace rtps

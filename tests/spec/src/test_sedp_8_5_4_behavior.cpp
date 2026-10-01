@@ -1,5 +1,6 @@
-#include "spec_test_common.hpp"
 #include "sedp_peer_driver.hpp"
+#include "sedp_recorded_endpoints.hpp"
+#include "spec_test_common.hpp"
 
 #include "rosette/rtps/sedp.hpp"
 #include "rosette/rtps/transport.hpp"
@@ -186,7 +187,7 @@ static bool tc_sedp_8_5_4_001(std::string& err) {
     FakeTransport tx{};
     const GuidPrefix local_prefix = make_guid(
         0x11u, 0x12u, 0x13u, entity_id::PARTICIPANT).prefix;
-    SedpWriter w(local_prefix, tx);
+    SpecSedpWriter w(local_prefix, tx);
 
     const Guid local_writer = make_guid(0x11u, 0x12u, 0x13u, make_entity(1u, 2u, 3u, 0xC2u));
     const Guid local_reader = make_guid(0x11u, 0x12u, 0x13u, make_entity(4u, 5u, 6u, 0xC7u));
@@ -283,7 +284,7 @@ static bool tc_sedp_8_5_4_004(std::string& err) {
     FakeTransport tx{};
     const GuidPrefix local_prefix = make_guid(
         0x61u, 0x62u, 0x63u, entity_id::PARTICIPANT).prefix;
-    SedpWriter w(local_prefix, tx);
+    SpecSedpWriter w(local_prefix, tx);
 
     const Guid local_writer_a = make_guid(0x61u, 0x62u, 0x63u, make_entity(1u, 0u, 1u, 0xC2u));
     const Guid local_writer_b = make_guid(0x61u, 0x62u, 0x63u, make_entity(1u, 0u, 2u, 0xC2u));
@@ -352,7 +353,7 @@ static bool tc_sedp_8_5_4_005(std::string& err) {
     FakeTransport tx{};
     const GuidPrefix local_prefix = make_guid(
         0x71u, 0x72u, 0x73u, entity_id::PARTICIPANT).prefix;
-    SedpWriter w(local_prefix, tx);
+    SpecSedpWriter w(local_prefix, tx);
 
     const Guid local_writer = make_guid(0x71u, 0x72u, 0x73u, make_entity(1u, 1u, 1u, 0xC2u));
     const Guid local_reader = make_guid(0x71u, 0x72u, 0x73u, make_entity(2u, 2u, 2u, 0xC7u));
@@ -379,7 +380,7 @@ static bool tc_sedp_8_5_4_005(std::string& err) {
 static bool tc_sedp_8_5_4_007(std::string& err) {
     FakeTransport tx{};
     const GuidPrefix local_prefix = make_guid(0xC1u, 0xC2u, 0xC3u, entity_id::PARTICIPANT).prefix;
-    SedpWriter w(local_prefix, tx);
+    SpecSedpWriter w(local_prefix, tx);
     const GuidPrefix peer_prefix = make_guid(0xD1u, 0xD2u, 0xD3u, entity_id::PARTICIPANT).prefix;
     const Locator dest = make_udpv4_locator(0xC0A80110u, 7410u);
     w.announce_to_peer(peer_prefix, dest);
@@ -399,7 +400,7 @@ static bool tc_sedp_8_5_4_007(std::string& err) {
 static bool tc_sedp_8_5_4_008(std::string& err) {
     FakeTransport tx{};
     const GuidPrefix local_prefix = make_guid(0xE1u, 0xE2u, 0xE3u, entity_id::PARTICIPANT).prefix;
-    SedpWriter w(local_prefix, tx);
+    SpecSedpWriter w(local_prefix, tx);
     const Guid writer_guid = make_guid(0xE1u, 0xE2u, 0xE3u, make_entity(4u, 4u, 4u, 0x03u));
     CHECK(w.register_writer(make_writer_data(writer_guid, "gone", "std_msgs::msg::String")),
           "register_writer failed");

@@ -63,8 +63,9 @@ math(EXPR _rtps_match_records "8 * 8")
 # wire), and alloc() takes the smallest class that fits, so each class is
 # sized for what it holds:
 #   256   control messages (HEARTBEAT, ACKNACK, GAP) and short samples
-#   512   discovery: each SEDP builtin writer keeps one announcement per
-#         local endpoint plus one disposal (about 150-350 octets each)
+#   512   discovery: SPDP's announcement, each SEDP announcement while it
+#         is rebuilt and sent (RTPS_SEDP_REBUILD_ANNOUNCEMENTS, sedp.hpp), and
+#         received discovery data while it is applied
 #   1024  received discovery data and mid-size samples
 #   datagram  one datagram plus its RTPS headers (kRtpsDataHeadroom, 44
 #         octets), rounded to 8: received DATA, built messages, and samples
@@ -72,7 +73,17 @@ math(EXPR _rtps_match_records "8 * 8")
 #   MAX_SAMPLE  whole samples larger than a datagram; never used by smaller
 #         requests (buf_pool.hpp)
 math(EXPR _rtps_pool_datagram "((${ROSETTE_RTPS_MAX_DATAGRAM_SIZE} + 44 + 7) / 8) * 8")
-math(EXPR _rtps_pool_discovery "2 * (${_rtps_local_endpoints} + 1)")
+# SEDP rebuilds each announcement for every send (sedp.hpp), so the 512 class
+# holds only blocks in flight; -DRTPS_SEDP_REBUILD_ANNOUNCEMENTS=0 stores them
+# instead, one block per local endpoint per builtin writer plus a disposal each.
+if(NOT DEFINED RTPS_SEDP_REBUILD_ANNOUNCEMENTS)
+  set(RTPS_SEDP_REBUILD_ANNOUNCEMENTS 1)
+endif()
+if(RTPS_SEDP_REBUILD_ANNOUNCEMENTS)
+  set(_rtps_pool_discovery 8)
+else()
+  math(EXPR _rtps_pool_discovery "2 * (${_rtps_local_endpoints} + 1)")
+endif()
 if(NOT ROSETTE_RTPS_MAX_SAMPLE_SIZE GREATER _rtps_pool_datagram)
   message(FATAL_ERROR "ROSETTE_RTPS_MAX_SAMPLE_SIZE (${ROSETTE_RTPS_MAX_SAMPLE_SIZE}) must exceed "
                       "the datagram class (${_rtps_pool_datagram} octets)")
@@ -87,6 +98,7 @@ target_compile_definitions(rosette_rtps PUBLIC
   RTPS_MAX_USER_WRITERS=4
   RTPS_MAX_USER_READERS=4
   RTPS_MAX_LOCAL_ENDPOINTS=${_rtps_local_endpoints}
+  RTPS_SEDP_REBUILD_ANNOUNCEMENTS=${RTPS_SEDP_REBUILD_ANNOUNCEMENTS}
   RTPS_MAX_PEERS=${ROSETTE_RTPS_MAX_PEERS}
   RTPS_MAX_MATCHED_READERS=8
   RTPS_MAX_MATCHED_WRITERS=8

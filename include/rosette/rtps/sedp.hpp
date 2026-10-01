@@ -119,6 +119,22 @@ inline bool plcdr_write_string(Octet*      buf,
 // is dropped first, so a live announcement is never evicted; a late
 // joiner asking for a dropped SN receives a GAP.
 //
+// Announcement storage. A SedpWriter constructed with a LocalEndpointSource
+// rebuilds each live announcement every time it is sent: the history keeps
+// only the change (its SN and key hash), and the PL_CDR bytes are serialized
+// into a pool block that is released when the send returns. Without a
+// source, each announcement is serialized once and its block stays in the
+// history for as long as the endpoint exists. Rebuilding trades one
+// serialization per send (first send, NACK repair, replay to a new peer)
+// for a 512-octet block per local endpoint per builtin writer; the
+// participant picks one with RTPS_SEDP_REBUILD_ANNOUNCEMENTS. Disposals
+// are a few dozen octets and are always stored.
+//
+// A rebuilt announcement carries the participant's unicast locators as
+// they are when it is sent. A reader that already holds the change discards
+// a duplicate by its SN, so no reader ever sees two versions of one change;
+// a peer that joins after an address change receives the current locators.
+//
 // §8.5.4.3, p. 167: the publications and subscriptions writers use
 // the SEDPbuiltin EntityIds defined in entity_id::.
 // ============================================================
@@ -130,6 +146,31 @@ inline bool plcdr_write_string(Octet*      buf,
 static_assert(RTPS_MAX_LOCAL_ENDPOINTS >= 1 && RTPS_MAX_LOCAL_ENDPOINTS < 255,
               "RTPS_MAX_LOCAL_ENDPOINTS must fit the uint8_t history depth");
 
+/**
+ * @brief Where a SedpWriter that rebuilds its announcements reads a local endpoint's data.
+ *
+ * The participant already keeps every local endpoint's topic, type, and QoS
+ * (EndpointMatchTable) and its unicast locators, so a SedpWriter given this
+ * source stores no copy of an announcement and rebuilds it for each send.
+ * Each function fills the complete DiscoveredWriterData or
+ * DiscoveredReaderData that register_writer() or register_reader() was
+ * given, with the locators as they are now, and returns false for a GUID
+ * the participant no longer has.
+ */
+struct LocalEndpointSource {
+    using DescribeWriter = bool (*)(void* user, const Guid& guid,
+                                    DiscoveredWriterData& out) noexcept;
+    using DescribeReader = bool (*)(void* user, const Guid& guid,
+                                    DiscoveredReaderData& out) noexcept;
+
+    DescribeWriter writer = nullptr;  ///< Describes a local writer.
+    DescribeReader reader = nullptr;  ///< Describes a local reader.
+    void* user = nullptr;             ///< Passed back to both; outlives the SedpWriter.
+
+    /// @brief True when both functions are set, so announcements are rebuilt.
+    bool valid() const noexcept { return writer != nullptr && reader != nullptr; }
+};
+
 class SedpWriter {
 public:
 
@@ -140,37 +181,73 @@ public:
 
     using BuiltinWriter = StatefulWriterStorage<kSedpHistoryDepth, RTPS_MAX_PEERS>;
 
-    explicit SedpWriter(const GuidPrefix& local_prefix,
-                        ITransport&       transport) noexcept
-        : publications_writer_(
-              Guid{local_prefix, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER},
-              ReliabilityKind::RELIABLE,
-              DurabilityKind::TRANSIENT_LOCAL,
-              transport)
-        , subscriptions_writer_(
-              Guid{local_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER},
-              ReliabilityKind::RELIABLE,
-              DurabilityKind::TRANSIENT_LOCAL,
-              transport)
-    {}
+    /**
+     * @brief Creates the two builtin SEDP writers with empty histories.
+     *
+     * @param[in] local_prefix This participant's GUID prefix.
+     * @param[in] transport    Transport both writers send on; outlives them.
+     * @param[in] endpoints    When valid, announcements are rebuilt from it
+     *   for every send instead of stored (see "Announcement storage" above);
+     *   the SedpWriter must then stay at its address, since both builtin
+     *   writers call back into it.
+     */
+    explicit SedpWriter(const GuidPrefix& local_prefix, ITransport& transport,
+                        const LocalEndpointSource& endpoints = LocalEndpointSource{}) noexcept
+        : publications_writer_(Guid{local_prefix, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER},
+                               ReliabilityKind::RELIABLE, DurabilityKind::TRANSIENT_LOCAL,
+                               transport),
+          subscriptions_writer_(Guid{local_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER},
+                                ReliabilityKind::RELIABLE, DurabilityKind::TRANSIENT_LOCAL,
+                                transport),
+          endpoints_(endpoints) {
+        if (endpoints_.valid()) {
+            publications_writer_.set_payload_builder(&SedpWriter::build_announcement, this);
+            subscriptions_writer_.set_payload_builder(&SedpWriter::build_announcement, this);
+        }
+    }
 
-    // ----------------------------------------------------------
-    // register_writer() / register_reader()
-    //
-    // Record a local endpoint and announce it to every matched peer,
-    // now and (through TRANSIENT_LOCAL replay) to peers discovered later.
-    //
-    // §8.5.4, p. 163: "The SEDPbuiltinPublicationsWriter sends
-    //  DiscoveredWriterData for all local DataWriters"; likewise for
-    //  subscriptions.
-    //
-    // Verification: TC-SEDP-8.5.4-001/004 (announced on first match),
-    // TC-SEDP-8.5.4-007 (endpoint created after the peer was matched).
-    //
-    // @returns false when RTPS_MAX_LOCAL_ENDPOINTS endpoints of this kind
-    //          are already registered or the payload cannot be allocated.
-    // ----------------------------------------------------------
+    SedpWriter(const SedpWriter&) = delete;
+    SedpWriter& operator=(const SedpWriter&) = delete;
+
+    /// @brief True when announcements are rebuilt for each send rather than stored.
+    bool rebuilds_announcements() const noexcept { return endpoints_.valid(); }
+
+    /**
+     * @brief Records a local writer and announces it to every matched peer.
+     *
+     * The participant calls this once per endpoint it creates. The
+     * announcement goes to every matched peer now and, through
+     * TRANSIENT_LOCAL replay, to every peer discovered later, until
+     * unregister_writer() withdraws it.
+     *
+     * The announcement becomes one change in the publications writer's
+     * history. A rebuilding SedpWriter stores only that change and first
+     * confirms the endpoint source already knows the GUID, since every send
+     * rebuilds from it; otherwise the PL_CDR bytes are serialized now and
+     * stored with the change.
+     *
+     * @param[in] wd The writer's discovery data; copied, not retained.
+     * @return `false` when RTPS_MAX_LOCAL_ENDPOINTS writers are already
+     *   registered, the payload cannot be allocated, or (rebuilding) the
+     *   endpoint source does not know the writer; `true` once the
+     *   announcement is in the history.
+     *
+     * Verification:
+     * - Correct means: every matched peer, whenever it matched, receives
+     *   the endpoint's DiscoveredWriterData under one SN until it is
+     *   withdrawn.
+     * - Covered by: TC-SEDP-8.5.4-001/004 (announced on first match),
+     *   TC-SEDP-8.5.4-007 (endpoint created after the peer was matched),
+     *   TC-SEDP-8.5.4-015 (rebuilt announcements).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4 ("The SEDPbuiltinPublicationsWriter sends
+     *   DiscoveredWriterData for all local DataWriters"), §8.7.2.2
+     *   (TRANSIENT_LOCAL)
+     */
     bool register_writer(const DiscoveredWriterData& wd) noexcept;
+
+    /// @brief As register_writer(), for a local reader on the subscriptions writer.
     bool register_reader(const DiscoveredReaderData& rd) noexcept;
 
     // ----------------------------------------------------------
@@ -238,6 +315,33 @@ private:
     };
     Announced local_writers_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
     Announced local_readers_[RTPS_MAX_LOCAL_ENDPOINTS] = {};
+
+    /// Source of rebuilt announcements; invalid when they are stored.
+    LocalEndpointSource endpoints_{};
+
+    /**
+     * @brief Rebuilds the announcement a builtin writer's history change stands for.
+     *
+     * The StatefulWriter::PayloadBuilder of both builtin writers. The
+     * change's key hash is the endpoint GUID and its writer GUID names the
+     * builtin writer, which says whether the endpoint is a writer or a
+     * reader; the source describes it and serialise_writer() or
+     * serialise_reader() encodes it with in-place framing headroom.
+     *
+     * @param[in] user   This SedpWriter.
+     * @param[in] change A live announcement from either builtin writer.
+     * @return The serializedPayload in a fresh pool block; invalid when the
+     *   source no longer has the endpoint or the pool is exhausted.
+     *
+     * Verification:
+     * - Correct means: the bytes equal what register_writer() or
+     *   register_reader() would have stored for the same endpoint data.
+     * - Covered by: TC-SEDP-8.5.4-015, TC-SEDP-8.5.4-016.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §9.6.3.2 (PL_CDR endpoint data), §9.4.5.3 (DATA)
+     */
+    static BufRef build_announcement(void* user, const CacheChange& change) noexcept;
 
     /// Serialise one DiscoveredWriterData as PL_CDR_LE.
     uint32_t serialise_writer(const DiscoveredWriterData& wd,

@@ -95,8 +95,10 @@ endif()
 #             class 3  16 KiB      medium samples
 #             class 4  MAX_SAMPLE  large samples
 #   firmware  class 0  256 B       control messages and short samples
-#             class 1  512 B       one announcement per local endpoint plus
-#                                  one disposal, per SEDP builtin writer
+#             class 1  512 B       SPDP's announcement, each SEDP
+#                                  announcement while it is rebuilt and sent,
+#                                  received discovery data while it is
+#                                  applied, samples of 257-512 octets
 #             class 2  1 KiB       received discovery data, mid-size samples
 #             class 3  datagram    one datagram plus its RTPS headers (44
 #                                  octets), rounded to 8: received DATA,
@@ -104,6 +106,15 @@ endif()
 #             class 4  MAX_SAMPLE  samples larger than one datagram
 #   The firmware counts follow what a board holds at once; the host counts
 #   leave room for many peers and deep histories.
+#
+# SEDP announcements (RTPS_SEDP_REBUILD_ANNOUNCEMENTS, rosette/rtps/sedp.hpp)
+# follow the profile too. The firmware profile rebuilds each announcement
+# from the endpoint table whenever it is sent, so class 1 holds only blocks
+# in flight rather than two per local endpoint for the endpoint's lifetime:
+# at 33 local endpoints that is 8 blocks instead of 68 (about 30 KiB). The
+# host profile keeps each announcement serialized, so replaying it to many
+# peers costs no serialization. -DRTPS_SEDP_REBUILD_ANNOUNCEMENTS=0 or =1
+# overrides the profile's choice, and class 1 is sized for the mode chosen.
 set(RMW_ROSETTE_POOL_PROFILE host CACHE STRING
     "Buffer-pool layout: host (large, many peers) or firmware (sized by role for a microcontroller)")
 set_property(CACHE RMW_ROSETTE_POOL_PROFILE PROPERTY STRINGS host firmware)
@@ -114,6 +125,17 @@ function(_rr_clamp_count out value)
   endif()
   set(${out} ${value} PARENT_SCOPE)
 endfunction()
+
+if(DEFINED RTPS_SEDP_REBUILD_ANNOUNCEMENTS)
+  set(_rr_sedp_rebuild ${RTPS_SEDP_REBUILD_ANNOUNCEMENTS})
+elseif(RMW_ROSETTE_POOL_PROFILE STREQUAL "firmware")
+  set(_rr_sedp_rebuild 1)
+else()
+  set(_rr_sedp_rebuild 0)
+endif()
+if(NOT _rr_sedp_rebuild MATCHES "^[01]$")
+  message(FATAL_ERROR "RTPS_SEDP_REBUILD_ANNOUNCEMENTS must be 0 or 1")
+endif()
 
 if(RMW_ROSETTE_POOL_PROFILE STREQUAL "host")
   set(_rr_size0 256)
@@ -134,7 +156,11 @@ elseif(RMW_ROSETTE_POOL_PROFILE STREQUAL "firmware")
                         "exceed the datagram class (${_rr_size3} octets) in the firmware profile")
   endif()
   math(EXPR _rr_pool0 "16 + ${_rr_local_endpoints}")
-  math(EXPR _rr_pool1 "2 * (${_rr_local_endpoints} + 1)")
+  if(_rr_sedp_rebuild)
+    set(_rr_pool1 8)
+  else()
+    math(EXPR _rr_pool1 "2 * (${_rr_local_endpoints} + 1)")
+  endif()
   set(_rr_pool2 8)
   set(_rr_pool3 4)
 else()
@@ -170,6 +196,7 @@ function(rmw_rosette_apply_capacity target)
     RMW_ROSETTE_MAX_DATAGRAM_SIZE=${RMW_ROSETTE_MAX_DATAGRAM_SIZE}
     RMW_ROSETTE_MAX_SAMPLE_SIZE=${RMW_ROSETTE_MAX_SAMPLE_SIZE}
     RMW_ROSETTE_MAX_PENDING_CHANGES=${RMW_ROSETTE_MAX_PENDING_CHANGES}
+    RTPS_SEDP_REBUILD_ANNOUNCEMENTS=${_rr_sedp_rebuild}
     RTPS_MAX_USER_WRITERS=${_rr_rtps_writers}
     RTPS_MAX_USER_READERS=${_rr_rtps_readers}
     RTPS_MAX_LOCAL_ENDPOINTS=${_rr_local_endpoints}

@@ -141,24 +141,18 @@ GuidPrefix make_participant_guid_prefix(uint8_t participant_id) noexcept
 
 // ============================================================
 
-RTPSParticipant::RTPSParticipant(uint8_t     domain_id,
-                                 uint8_t     participant_id,
-                                 ITransport& transport,
-                                 VendorId    vendor_id) noexcept
-    : domain_id_(domain_id)
-    , participant_id_(participant_id)
-    , transport_(transport)
-    , participant_guid_{make_participant_guid_prefix(participant_id),
-                        entity_id::PARTICIPANT}
-    , spdp_multicast_locator_(LOCATOR_INVALID)
-    , match_table_(on_endpoint_match, on_endpoint_unmatch, this, on_endpoints_changed)
-    , spdp_writer_(local_participant_data_,
-                   transport,
-                   LOCATOR_INVALID)
-    , spdp_reader_(on_spdp_new_peer, on_spdp_peer_removed, this)
-    , sedp_writer_(participant_guid_.prefix, transport)
-    , sedp_reader_(participant_guid_.prefix, transport, match_table_)
-{
+RTPSParticipant::RTPSParticipant(uint8_t domain_id, uint8_t participant_id, ITransport& transport,
+                                 VendorId vendor_id) noexcept
+    : domain_id_(domain_id),
+      participant_id_(participant_id),
+      transport_(transport),
+      participant_guid_{make_participant_guid_prefix(participant_id), entity_id::PARTICIPANT},
+      spdp_multicast_locator_(LOCATOR_INVALID),
+      match_table_(on_endpoint_match, on_endpoint_unmatch, this, on_endpoints_changed),
+      spdp_writer_(local_participant_data_, transport, LOCATOR_INVALID),
+      spdp_reader_(on_spdp_new_peer, on_spdp_peer_removed, this),
+      sedp_writer_(participant_guid_.prefix, transport, sedp_endpoint_source()),
+      sedp_reader_(participant_guid_.prefix, transport, match_table_) {
     memset(writers_, 0, sizeof(writers_));
     memset(writer_alive_, 0, sizeof(writer_alive_));
     memset(reader_alive_, 0, sizeof(reader_alive_));
@@ -262,8 +256,10 @@ StatefulReader* RTPSParticipant::create_reader(
     rd.unicastLocatorCount =
         append_default_unicast_locators(rd.unicastLocatorList,
                                         RTPS_MAX_LOCATORS_PER_PARTICIPANT);
-    sedp_writer_.register_reader(rd);
+    // The match table records the reader before SEDP announces it: a
+    // rebuilding SedpWriter reads it back from there for every send.
     match_table_.add_reader(rd);
+    sedp_writer_.register_reader(rd);
 
     RTPS_LOG_I("participant", "reader created: slot=%d topic=%s type=%s",
                slot, cfg.topicName.str, cfg.typeName.str);
@@ -324,8 +320,46 @@ void RTPSParticipant::register_writer_endpoint(const Guid&         writer_guid,
     wd.unicastLocatorCount =
         append_default_unicast_locators(wd.unicastLocatorList,
                                         RTPS_MAX_LOCATORS_PER_PARTICIPANT);
-    sedp_writer_.register_writer(wd);
+    // The match table records the writer before SEDP announces it: a
+    // rebuilding SedpWriter reads it back from there for every send.
     match_table_.add_writer(wd);
+    sedp_writer_.register_writer(wd);
+}
+
+// ============================================================
+// SEDP endpoint source
+// ============================================================
+
+LocalEndpointSource RTPSParticipant::sedp_endpoint_source() noexcept {
+    if (RTPS_SEDP_REBUILD_ANNOUNCEMENTS == 0) {
+        return LocalEndpointSource{};
+    }
+
+    return LocalEndpointSource{describe_local_writer, describe_local_reader, this};
+}
+
+[[gnu::cold]] bool RTPSParticipant::describe_local_writer(void* user, const Guid& guid,
+                                                          DiscoveredWriterData& out) noexcept {
+    const auto& self = *static_cast<const RTPSParticipant*>(user);
+    if (!self.match_table_.local_writer_data(guid, out)) {
+        return false;
+    }
+
+    out.unicastLocatorCount = self.append_default_unicast_locators(
+        out.unicastLocatorList, RTPS_MAX_LOCATORS_PER_PARTICIPANT);
+    return true;
+}
+
+[[gnu::cold]] bool RTPSParticipant::describe_local_reader(void* user, const Guid& guid,
+                                                          DiscoveredReaderData& out) noexcept {
+    const auto& self = *static_cast<const RTPSParticipant*>(user);
+    if (!self.match_table_.local_reader_data(guid, out)) {
+        return false;
+    }
+
+    out.unicastLocatorCount = self.append_default_unicast_locators(
+        out.unicastLocatorList, RTPS_MAX_LOCATORS_PER_PARTICIPANT);
+    return true;
 }
 
 // ============================================================
