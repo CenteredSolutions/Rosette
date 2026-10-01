@@ -167,7 +167,8 @@ starting your own firmware project.
 | `include/rosette/rtps`, `src/rtps` | DDSI-RTPS protocol stack |
 | `rmw_rosette/` | ROS 2 `rmw` implementation (colcon package) |
 | `include/rosette/net`, `src/net` | socket backends, WIZnet driver, address providers |
-| `include/rosette/platform`, `src/platform` | platform ports (OS × chip) |
+| `include/rosette/platform` | the platform contract (OS × chip) |
+| `ports/` | platform ports: `ports/os/<name>`, `ports/chip/<name>`; `stub` in each is the template for a new one |
 | `include/rosette/storage`, `src/storage` | LittleFS volume and file store |
 | `boards/` | board definitions |
 | `cmake/` | board selection, RTPS and firmware build modules, dependency fetchers |

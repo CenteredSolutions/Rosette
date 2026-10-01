@@ -2,8 +2,10 @@
 #
 # Builds every portable library (RTPS, the network core with DHCP and SNTP,
 # storage, the ROS session supervisor) and the header-only WIZnet driver for a chip that is neither an RP2040 /
-# RP2350 nor a host, on ports/chip/stub and ports/os/stub, with no Pico SDK,
-# no RTOS, and no POSIX. The image links every object of each library, so a portable
+# RP2350 nor a host, on ports/chip/stub and an OS port with no Pico SDK, no
+# RTOS, and no POSIX: ports/os/stub, or ports/os/baremetal
+# (-DROSETTE_OS=baremetal), which shows the bare-metal OS layer needs only
+# the chip's sync hooks. The image links every object of each library, so a portable
 # file that calls a Pico SDK, RTOS, or host OS function fails to link here
 # even when nothing in the image calls that file.
 #
@@ -20,7 +22,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
 get_filename_component(ROSETTE_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." REALPATH)
-set(ROSETTE_OS stub)
+set(ROSETTE_OS stub CACHE STRING "OS port to build the stub chip with: stub or baremetal")
 set(ROSETTE_CHIP stub)
 
 include(${ROSETTE_ROOT}/cmake/rosette_platform.cmake)

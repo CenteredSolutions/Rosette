@@ -1,5 +1,5 @@
 /**
- * @file chip_host.cpp
+ * @file ports/chip/host/chip_host.cpp
  * @brief Host (Linux, macOS) chip layer of the platform contract.
  *
  * The monotonic clock is CLOCK_MONOTONIC. A host runs many Rosette processes

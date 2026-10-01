@@ -5,7 +5,7 @@
  * `WiznetDevice<Chip, Bus>` (rosette/net/wiznet/device.hpp) reaches the chip's
  * registers through a `Bus` it is templated on; this is the smallest type
  * that satisfies it. A chip port supplies a real one over its SPI or QSPI
- * peripheral (the rp2 port's PicoSpiBus and PicoQspiBus). What the driver
+ * peripheral (the rp2 port's Rp2SpiBus and Rp2QspiBus). What the driver
  * needs of it:
  *
  *  - `acquire()` returns an object that holds the bus for its lifetime, so a

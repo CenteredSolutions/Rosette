@@ -1,3 +1,19 @@
+/**
+ * @file ports/chip/rp2/rp2_spi_bus.hpp
+ * @brief WIZnet register bus over an RP2040 / RP2350 hardware SPI peripheral.
+ *
+ * Implements the bus `WiznetDevice<Chip, Bus>` is templated on (see
+ * ports/chip/stub/stub_bus.hpp for the concept): each write() or read() is one
+ * chip-select-framed transaction of the chip's address/control prefix and its
+ * data. The board configures the peripheral (baud rate, pin functions) and
+ * the chip-select pin before the first transaction.
+ *
+ * acquire() holds nothing. The driver nests it (one register access inside
+ * another), so a bus shared between threads or cores would need a re-entrant
+ * lock, which the platform contract does not offer; every board drives its
+ * chip from one thread.
+ */
+
 #pragma once
 
 #include <cstddef>
@@ -6,24 +22,11 @@
 #include "hardware/gpio.h"
 #include "hardware/spi.h"
 
-#if defined(ROSETTE_OS_FREERTOS)
-#  include "FreeRTOS.h"
-#  include "semphr.h"
-#  include "task.h"
-#endif
-
 namespace rosette::platform {
 
-class PicoSpiBus {
+class Rp2SpiBus {
 public:
     using address_type = uint32_t;
-#if defined(ROSETTE_OS_FREERTOS)
-    using lock_timeout_type = TickType_t;
-    static constexpr lock_timeout_type wait_forever = portMAX_DELAY;
-#else
-    using lock_timeout_type = uint32_t;
-    static constexpr lock_timeout_type wait_forever = 0u;
-#endif
 
     struct Config {
         spi_inst_t* spi = nullptr;
@@ -31,179 +34,54 @@ public:
         uint8_t read_fill = 0xFFu;
     };
 
-    explicit PicoSpiBus(const Config& config) noexcept
-        : spi_(config.spi)
-        , cs_pin_(config.cs_pin)
-        , read_fill_(config.read_fill)
-    {
-#if defined(ROSETTE_OS_FREERTOS)
-        mutex_ = xSemaphoreCreateMutex();
-#endif
-    }
+    explicit Rp2SpiBus(const Config& config) noexcept
+        : spi_(config.spi), cs_pin_(config.cs_pin), read_fill_(config.read_fill) {}
 
-    PicoSpiBus(const PicoSpiBus& other) noexcept
-        : spi_(other.spi_)
-        , cs_pin_(other.cs_pin_)
-        , read_fill_(other.read_fill_)
-    {
-#if defined(ROSETTE_OS_FREERTOS)
-        mutex_ = xSemaphoreCreateMutex();
-#endif
-    }
+    Rp2SpiBus(spi_inst_t* spi, uint cs_pin) noexcept : Rp2SpiBus(Config{spi, cs_pin, 0xFFu}) {}
 
-    PicoSpiBus(PicoSpiBus&& other) noexcept
-        : spi_(other.spi_)
-        , cs_pin_(other.cs_pin_)
-        , read_fill_(other.read_fill_)
-    {
-#if defined(ROSETTE_OS_FREERTOS)
-        mutex_ = xSemaphoreCreateMutex();
-#endif
-    }
-
-    PicoSpiBus& operator=(const PicoSpiBus&) = delete;
-    PicoSpiBus& operator=(PicoSpiBus&&) = delete;
-
-    PicoSpiBus(spi_inst_t* spi, uint cs_pin) noexcept
-        : PicoSpiBus(Config{spi, cs_pin, 0xFFu}) {}
-
-    class LockGuard {
-    public:
-        explicit LockGuard(PicoSpiBus& bus, lock_timeout_type timeout = wait_forever) noexcept
-            : bus_(&bus)
-            , locked_(bus.lock(timeout)) {}
-
-        LockGuard(const LockGuard&) = delete;
-        LockGuard& operator=(const LockGuard&) = delete;
-
-        LockGuard(LockGuard&& other) noexcept
-            : bus_(other.bus_)
-            , locked_(other.locked_)
-        {
-            other.bus_ = nullptr;
-            other.locked_ = false;
-        }
-
-        LockGuard& operator=(LockGuard&&) = delete;
-
-        ~LockGuard()
-        {
-            if (locked_ && (bus_ != nullptr)) {
-                bus_->unlock();
-            }
-        }
-
-        /**
-         * @brief Explicit conversion operator to bool.
-         *
-         * Allows objects of this class to be explicitly converted to a boolean value,
-         * indicating whether the object is currently locked.
-         *
-         * @return true if the object is locked, false otherwise.
-         *
-         * @note The 'explicit' keyword prevents implicit conversions to bool,
-         *       requiring the user to write 'if (static_cast<bool>(obj))' or 'if (obj.operator bool())'
-         *       instead of just 'if (obj)'. This helps avoid unintended conversions.
-         */
-        explicit operator bool() const noexcept
-        {
-            return locked_;
-        }
-
-    private:
-        PicoSpiBus* bus_ = nullptr;
-        bool locked_ = false;
+    /// Holds the bus while it lives; see the file comment for why it holds nothing.
+    struct Lock {
+        ~Lock() {}
     };
 
-    LockGuard acquire(lock_timeout_type timeout = wait_forever) noexcept
-    {
-        return LockGuard(*this, timeout);
+    /// @brief Holds the bus for the returned object's lifetime.
+    Lock acquire() noexcept { return {}; }
+
+    /// @brief Sends `prefix`, then `length` octets of `data`, in one transaction.
+    void write(const uint8_t* prefix, std::size_t prefix_length, const uint8_t* data,
+               std::size_t length) noexcept {
+        if (spi_ == nullptr || prefix == nullptr || prefix_length == 0u || data == nullptr
+            || length == 0u) {
+            return;
+        }
+
+        gpio_put(cs_pin_, 0);
+        spi_write_blocking(spi_, prefix, prefix_length);
+        spi_write_blocking(spi_, data, length);
+        gpio_put(cs_pin_, 1);
     }
 
-    void write(const uint8_t* prefix,
-               std::size_t prefix_length,
-               const uint8_t* data,
-               std::size_t length) {
-        if (spi_ == nullptr || prefix == nullptr || prefix_length == 0u ||
-            data == nullptr || length == 0u) {
+    /// @brief Sends `prefix`, then clocks `length` octets into `data`, in one transaction.
+    void read(const uint8_t* prefix, std::size_t prefix_length, uint8_t* data,
+              std::size_t length) noexcept {
+        if (spi_ == nullptr || prefix == nullptr || prefix_length == 0u || data == nullptr
+            || length == 0u) {
             return;
         }
 
-        const auto lock = acquire();
-        if (!lock) {
-            return;
-        }
-
-        begin_transaction();
+        gpio_put(cs_pin_, 0);
         spi_write_blocking(spi_, prefix, prefix_length);
-        spi_write_blocking(spi_, data, static_cast<size_t>(length));
-        end_transaction();
-    }
-
-    void read(const uint8_t* prefix,
-              std::size_t prefix_length,
-              uint8_t* data,
-              std::size_t length) {
-        if (spi_ == nullptr || prefix == nullptr || prefix_length == 0u ||
-            data == nullptr || length == 0u) {
-            return;
-        }
-
-        const auto lock = acquire();
-        if (!lock) {
-            return;
-        }
-
-        begin_transaction();
-        spi_write_blocking(spi_, prefix, prefix_length);
-        spi_read_blocking(spi_, read_fill_, data, static_cast<size_t>(length));
-        end_transaction();
+        spi_read_blocking(spi_, read_fill_, data, length);
+        gpio_put(cs_pin_, 1);
     }
 
     spi_inst_t* spi() const noexcept { return spi_; }
     uint cs_pin() const noexcept { return cs_pin_; }
 
 private:
-    bool lock(lock_timeout_type timeout) noexcept
-    {
-#if defined(ROSETTE_OS_FREERTOS)
-        return (mutex_ == nullptr) ||
-               (xSemaphoreTake(mutex_, timeout) == pdTRUE);
-#else
-        (void)timeout;
-        return true;
-#endif
-    }
-
-    void unlock() noexcept
-    {
-#if defined(ROSETTE_OS_FREERTOS)
-        if (mutex_ != nullptr) {
-            (void)xSemaphoreGive(mutex_);
-        }
-#endif
-    }
-
-    void begin_transaction() {
-#if defined(ROSETTE_OS_FREERTOS)
-        taskENTER_CRITICAL();
-#endif
-        gpio_put(cs_pin_, 0);
-    }
-
-    void end_transaction() {
-        gpio_put(cs_pin_, 1);
-#if defined(ROSETTE_OS_FREERTOS)
-        taskEXIT_CRITICAL();
-#endif
-    }
-
     spi_inst_t* spi_;
     uint cs_pin_;
     uint8_t read_fill_;
-#if defined(ROSETTE_OS_FREERTOS)
-    SemaphoreHandle_t mutex_ = nullptr;
-#endif
 };
 
 }  // namespace rosette::platform

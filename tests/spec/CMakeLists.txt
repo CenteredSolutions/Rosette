@@ -18,6 +18,7 @@ enable_testing()
 # see rosette_spec_use_platform() below.
 add_compile_definitions(ROSETTE_OS_POSIX ROSETTE_CHIP_HOST)
 set(ROSETTE_SPEC_PLATFORM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform)
+set(ROSETTE_SPEC_HOST_CHIP ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host/chip_host.cpp)
 
 # Links a spec target against the platform: WallClock always, plus the real
 # host chip layer unless the target supplies its own test chip layer.
@@ -26,13 +27,14 @@ function(rosette_spec_use_platform target)
     get_target_property(_srcs ${target} SOURCES)
     list(FILTER _srcs INCLUDE REGEX "(_clock_stub|_platform_stub)\\.cpp$")
     if(NOT _srcs)
-        target_sources(${target} PRIVATE ${ROSETTE_SPEC_PLATFORM_DIR}/chip/host/chip_host.cpp)
+        target_sources(${target} PRIVATE ${ROSETTE_SPEC_HOST_CHIP})
     endif()
 endfunction()
 
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/rtps
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/os/posix
 )
 
 add_executable(message_parser_spec_tests

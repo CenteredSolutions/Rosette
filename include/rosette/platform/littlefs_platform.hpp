@@ -7,11 +7,12 @@
  * client key, calibration blobs) survives power cycles and reflashing of the
  * application image.
  *
- * Board support code owns the flash geometry and the erase/program/read
+ * The chip port owns the flash geometry and the erase/program/read
  * primitives. It implements `littlefs_mount()` / `littlefs_unmount()` for its
- * MCU (see `src/platform/`), binding an `lfs_config` to a reserved flash
- * region. Application and Rosette code above this layer only ever touch the
- * mounted `lfs_t`; the block-device details stay in `platform/`.
+ * MCU (ports/chip/<chip>/, through ROSETTE_CHIP_STORAGE_SOURCES), binding an
+ * `lfs_config` to a reserved flash region. Application and Rosette code above
+ * this layer only ever touch the mounted `lfs_t`; the block-device details
+ * stay in the port.
  *
  * References:
  * - littlefs design: https://github.com/littlefs-project/littlefs/blob/master/DESIGN.md

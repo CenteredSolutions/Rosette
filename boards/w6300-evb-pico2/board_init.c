@@ -2,7 +2,7 @@
  * @file boards/w6300-evb-pico2/board_init.c
  * @brief Board bring-up for the WIZnet W6300-EVB-Pico2 (RP2350), no-RTOS build.
  *
- * The W6300 bus is `rosette::platform::PicoQspiBus`, which configures its own
+ * The W6300 bus is `rosette::platform::Rp2QspiBus`, which configures its own
  * SCK / IO0 / IO1 / CS pins. `board_init()` therefore only handles the reset
  * line, the (optional) interrupt line and the user LED, then pulses the W6300
  * hardware reset. Register unlock / buffer sizing / PHY / DHCP are

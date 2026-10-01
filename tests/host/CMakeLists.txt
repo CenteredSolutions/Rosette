@@ -12,8 +12,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 enable_testing()
 
-# Host tests run on the POSIX platform port (include/rosette/platform/platform.hpp).
+# Host tests run on the POSIX platform port (include/rosette/platform/platform.hpp):
+# its OS layer is ports/os/posix/rosette_os_port.hpp.
 add_compile_definitions(ROSETTE_OS_POSIX ROSETTE_CHIP_HOST)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../ports/os/posix)
 
 # The out-of-line pieces of the address layer (candidates, lists, manager, config, WIZnet DHCP).
 add_library(rosette_host_address STATIC
@@ -75,7 +77,7 @@ add_host_test(posix_board_network_test)
 target_sources(posix_board_network_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/posix/board_network.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/posix/socket.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform/chip/host/chip_host.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host/chip_host.cpp)
 
 # The ROS session supervisor, against a fake network, application, and agent gate.
 add_host_test(session_supervisor_test)

@@ -4,11 +4,12 @@
  *
  * Rosette keeps a small LittleFS volume in a region of on-board flash that the
  * application image never touches. These `extern "C"` primitives are the only
- * flash operations the storage layer needs; each board implements them for its
- * MCU:
+ * flash operations the storage layer needs; each chip port implements them:
  *
- *  - `src/platform/pico_freertos.c` — RP2040 / RP2350 via the Pico SDK
- *  - `src/platform/posix/host_littlefs.cpp` — a RAM/file stand-in for host tests
+ *  - `ports/chip/rp2/rp2_flash.c` and `rp2_littlefs_region.cpp` — RP2040 /
+ *    RP2350 via the Pico SDK
+ *  - `ports/chip/host/host_flash_file.cpp` — a file stand-in for host builds
+ *  - `ports/chip/stub/` — the hooks a new chip port must supply
  *
  * Offsets are byte offsets from the start of flash, not absolute addresses.
  * `rosette_platform_flash_region()` reports where the storage volume lives and

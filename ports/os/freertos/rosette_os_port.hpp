@@ -1,9 +1,10 @@
 /**
- * @file rosette/platform/os_freertos.hpp
+ * @file ports/os/freertos/rosette_os_port.hpp
  * @brief FreeRTOS OS layer of the platform contract.
  *
- * Included through platform.hpp when ROSETTE_OS_FREERTOS is defined; see that
- * header for the contract each type satisfies. Both types create their kernel
+ * platform.hpp includes this header by its fixed name when the build selects
+ * ROSETTE_OS=freertos (port.cmake beside it); see platform.hpp for the
+ * contract each type satisfies. Both types create their kernel
  * object once, at construction (which may precede the scheduler start):
  * statically when the board's FreeRTOSConfig.h sets
  * configSUPPORT_STATIC_ALLOCATION, otherwise from the kernel heap. Nothing

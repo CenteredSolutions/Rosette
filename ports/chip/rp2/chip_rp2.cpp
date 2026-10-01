@@ -1,5 +1,5 @@
 /**
- * @file chip_rp2.cpp
+ * @file ports/chip/rp2/chip_rp2.cpp
  * @brief RP2040 / RP2350 chip layer of the platform contract.
  *
  * The monotonic clock is the 64-bit microsecond hardware timer, which runs
@@ -12,17 +12,26 @@
  * application keeps the single shared GPIO callback
  * (gpio_set_irq_enabled_with_callback()) for its own pins.
  *
- * References: Pico SDK hardware_gpio gpio_add_raw_irq_handler().
+ * The bare-metal sync hooks (chip_sync.hpp) hold hardware spin lock
+ * PICO_SPINLOCK_ID_OS1, which the SDK reserves for an OS layer; only the
+ * bare-metal OS port calls them, so no RTOS shares the lock. Waits sleep in
+ * WFE, and send_event() is SEV, which reaches both cores.
+ *
+ * References: Pico SDK hardware_gpio gpio_add_raw_irq_handler(),
+ * hardware_sync spin_lock_blocking(), pico_time best_effort_wfe_or_timeout().
  */
 
 #include <cstddef>
 
+#include "rosette/platform/chip_sync.hpp"
 #include "rosette/platform/gpio_interrupt.hpp"
 #include "rosette/platform/platform.hpp"
 
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
+#include "hardware/sync.h"
 #include "hardware/timer.h"
+#include "pico/time.h"
 #include "pico/unique_id.h"
 
 namespace rosette::platform {
@@ -112,3 +121,28 @@ bool realtime_hint_us(int64_t& unix_us) noexcept {
 }
 
 }  // namespace rosette::platform
+
+namespace rosette::platform::chip {
+
+uint32_t critical_enter() noexcept {
+    return spin_lock_blocking(spin_lock_instance(PICO_SPINLOCK_ID_OS1));
+}
+
+void critical_exit(uint32_t state) noexcept {
+    spin_unlock(spin_lock_instance(PICO_SPINLOCK_ID_OS1), state);
+}
+
+void wait_for_event_until(uint64_t deadline_us) noexcept {
+    if (deadline_us == UINT64_MAX) {
+        __wfe();
+        return;
+    }
+
+    (void)best_effort_wfe_or_timeout(from_us_since_boot(deadline_us));
+}
+
+void send_event() noexcept {
+    __sev();
+}
+
+}  // namespace rosette::platform::chip

@@ -133,10 +133,11 @@ if(ROSETTE_BOARD_ENABLE_PICO_SDK)
 endif()
 
 # ------------------------------------------------------------
-# rosette_bsp — board bring-up + the platform runtime for a real board.
+# rosette_bsp — board bring-up and the board's network for a real board.
 #
 # The FreeRTOS variant carries the MACRAW driver and FreeRTOS+TCP glue; the
-# no-RTOS variant is just board init + the bare pico platform runtime.
+# no-RTOS variant is board init plus the WIZnet board network. The chip's
+# runtime (flash, newlib time) is in rosette_platform (ports/chip/<chip>).
 # ------------------------------------------------------------
 if(ROSETTE_BOARD_BUILD_BSP)
     add_library(rosette_bsp STATIC
@@ -148,15 +149,11 @@ if(ROSETTE_BOARD_BUILD_BSP)
             src/net/freertos/igmp.cpp
             src/net/freertos/socket.cpp
             src/net/wiznet/macraw.cpp
-            src/platform/pico_freertos.c
         )
-    else()
-        target_sources(rosette_bsp PRIVATE src/platform/pico_bare.c)
-        if(ROSETTE_BOARD_ENABLE_WIZNET)
-            # No RTOS: UDP/IP runs in the chip's hardware sockets, and the
-            # board network module owns the chip, link, and addressing.
-            target_sources(rosette_bsp PRIVATE src/net/wiznet/board_network.cpp)
-        endif()
+    elseif(ROSETTE_BOARD_ENABLE_WIZNET)
+        # No RTOS: UDP/IP runs in the chip's hardware sockets, and the
+        # board network module owns the chip, link, and addressing.
+        target_sources(rosette_bsp PRIVATE src/net/wiznet/board_network.cpp)
     endif()
 
     target_include_directories(rosette_bsp PUBLIC
@@ -194,26 +191,23 @@ endif()
 #   rosette::storage::FileStore     content-agnostic keyed blob store
 #   rosette::storage::DeviceConfig  Rosette's own boot configuration record
 #
-# The board block-device implementation is compiled in per target: the Pico
-# flash binding for FreeRTOS boards, a file-backed volume for host builds.
+# The block device comes from the chip port (ROSETTE_CHIP_STORAGE_SOURCES):
+# the board's flash region on a microcontroller, a file-backed volume on a host.
 # ------------------------------------------------------------
 add_library(rosette_storage STATIC
     src/storage/volume.cpp
     src/storage/file_store.cpp
     src/storage/device_config.cpp
+    ${ROSETTE_CHIP_STORAGE_SOURCES}
 )
 target_include_directories(rosette_storage PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(rosette_storage PUBLIC rosette_fs)
+# The board's board_config.h places the volume in flash.
+target_include_directories(rosette_storage PRIVATE ${ROSETTE_BOARD_DIR})
+target_link_libraries(rosette_storage PUBLIC rosette_fs rosette_platform)
 
-if(ROSETTE_BOARD_ENABLE_PICO_SDK)
-    target_sources(rosette_storage PRIVATE src/platform/pico_littlefs.cpp)
-    target_include_directories(rosette_storage PRIVATE ${ROSETTE_BOARD_DIR})
-    target_link_libraries(rosette_storage PUBLIC rosette_bsp)
-else()
-    target_sources(rosette_storage PRIVATE src/platform/posix/host_littlefs.cpp)
-
+if(NOT ROSETTE_BOARD_ENABLE_PICO_SDK)
     # DeviceConfig records on the host volume, including a stored version-1 record.
     add_executable(device_config_test tests/storage/device_config_test.cpp)
     target_link_libraries(device_config_test PRIVATE rosette_storage)

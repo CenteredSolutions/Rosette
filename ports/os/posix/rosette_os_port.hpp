@@ -1,9 +1,10 @@
 /**
- * @file rosette/platform/os_posix.hpp
+ * @file ports/os/posix/rosette_os_port.hpp
  * @brief POSIX OS layer of the platform contract (Linux, macOS).
  *
- * Included through platform.hpp when ROSETTE_OS_POSIX is defined; see that
- * header for the contract each type satisfies.
+ * platform.hpp includes this header by its fixed name when the build selects
+ * ROSETTE_OS=posix (port.cmake beside it); see platform.hpp for the contract
+ * each type satisfies.
  *
  * Event is a non-blocking self-pipe rather than a condition variable so that
  * its read end can sit in the same poll() as the transport's sockets: one

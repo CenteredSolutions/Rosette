@@ -131,6 +131,40 @@ void test_event_cross_core() {
     multicore_reset_core1();
     check(woke && waited < 500000u, "EventCrossCore", "core 1's signal ends core 0's WFE wait");
 }
+
+pf::Mutex g_shared_lock;
+volatile uint32_t g_shared_count = 0u;
+volatile bool g_core1_done = false;
+constexpr uint32_t kIncrementsPerCore = 100000u;
+
+/// Increments the shared count under the mutex, as many times as core 0 does.
+void core1_increment() {
+    for (uint32_t i = 0; i < kIncrementsPerCore; ++i) {
+        pf::LockGuard guard(g_shared_lock);
+        g_shared_count = g_shared_count + 1u;
+    }
+
+    g_core1_done = true;
+}
+
+/// Mutex: both cores incrementing one count under it lose no increment.
+void test_mutex_cross_core() {
+    g_shared_count = 0u;
+    g_core1_done = false;
+    multicore_launch_core1(core1_increment);
+    for (uint32_t i = 0; i < kIncrementsPerCore; ++i) {
+        pf::LockGuard guard(g_shared_lock);
+        g_shared_count = g_shared_count + 1u;
+    }
+
+    const uint64_t deadline = pf::monotonic_us() + 2000000u;
+    while (!g_core1_done && pf::monotonic_us() < deadline) {
+    }
+
+    multicore_reset_core1();
+    check(g_core1_done && g_shared_count == 2u * kIncrementsPerCore, "MutexCrossCore",
+          "two cores incrementing under the mutex lose no increment");
+}
 #endif
 
 /// WallClock: tracks the monotonic base plus the offset it was given.
@@ -166,6 +200,7 @@ int run_contract() {
 #endif
 #if defined(ROSETTE_OS_BAREMETAL)
     test_event_cross_core();
+    test_mutex_cross_core();
 #endif
     test_wall_clock();
     std::printf("platform contract: %s (%d failure%s)\n", g_failures ? "FAIL" : "PASS",

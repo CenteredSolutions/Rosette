@@ -11,6 +11,11 @@ on:
 jobs:
   port-stub:
     runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        # stub: the compile-only OS layer; baremetal: the real superloop OS
+        # layer, which must need nothing from a chip but its sync hooks.
+        os: [stub, baremetal]
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +28,8 @@ jobs:
       - name: Configure
         run: |
           cmake -S tests/port_stub -B build-port-stub \
-                -DCMAKE_TOOLCHAIN_FILE="$PWD/tests/port_stub/arm-none-eabi.cmake"
+                -DCMAKE_TOOLCHAIN_FILE="$PWD/tests/port_stub/arm-none-eabi.cmake" \
+                -DROSETTE_OS=${{ matrix.os }}
 
       - name: Build and link
         run: cmake --build build-port-stub -j "$(nproc)"

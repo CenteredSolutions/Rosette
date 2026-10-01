@@ -14,7 +14,7 @@
  * `W6x00` carries everything common; `W6100` / `W6300` add the three differences.
  * Both are driven over an ordinary 4-wire SPI: on the W6300 this is QSPI in
  * single-lane mode, which is electrically identical. 4-bit QSPI is a separate
- * bus implementation (see `platform/bus_pico_qspi.hpp`) and does not change
+ * bus implementation (see `ports/chip/rp2/rp2_qspi_bus.hpp`) and does not change
  * these traits.
  *
  * Addresses are packed into a 24-bit value: `(offset << 8) | block`, where

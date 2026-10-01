@@ -2,7 +2,7 @@
  * @file test_participant_platform_stub.cpp
  * @brief Test chip layer for participant tests: a clock the tests set explicitly.
  *
- * Replaces src/platform/chip/host/chip_host.cpp in this test binary, so
+ * Replaces ports/chip/host/chip_host.cpp in this test binary, so
  * platform::monotonic_ms() returns g_participant_test_now_ms and timer behavior is deterministic.
  */
 

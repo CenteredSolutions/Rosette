@@ -7,8 +7,8 @@
  * lives in `WiznetDevice<Chip, Bus>`; this layer maps the `Socket` vtable onto
  * it and tracks which hardware sockets are in use.
  *
- *   WiznetDevice<W5100S, PicoSpiBus> device{bus};
- *   WiznetSocketProvider<W5100S, PicoSpiBus> sockets{device};
+ *   WiznetDevice<W5100S, Rp2SpiBus> device{bus};
+ *   WiznetSocketProvider<W5100S, Rp2SpiBus> sockets{device};
  *   auto s = sockets.open(SocketDomain::ipv4);
  *   s->bind({.port = 0});
  *   s->send_to(data, len, remote);

@@ -1,5 +1,5 @@
 /**
- * @file platform/posix/host_littlefs.cpp
+ * @file ports/chip/host/host_flash_file.cpp
  * @brief File-backed LittleFS block device for host builds.
  *
  * Gives `ROSETTE_BOARD=posix` builds a real, persistent LittleFS volume so the

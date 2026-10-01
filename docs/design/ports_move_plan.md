@@ -7,7 +7,7 @@ document states the rules, lists every file that moves or changes, and gives the
 written once the seams below exist, will explain how to add a port.
 
 `tools/style/check_port_boundaries.py` enforces the rules. It runs in `tools/style/run_style_checks.sh`, against
-`tools/style/port_boundary_baseline.txt` (89 entries today). New code must pass, and each step below deletes
+`tools/style/port_boundary_baseline.txt` (48 entries today). New code must pass, and each step below deletes
 baseline entries. When the baseline is empty, this plan is done and this file is replaced by PORTING.md.
 
 ## Layout
@@ -66,12 +66,13 @@ Three decisions follow from this layout:
 
 | Axis | Contract | Change |
 |---|---|---|
-| chip | `platform.hpp`: `monotonic_us`, `device_unique_id`, `realtime_hint_us` | add the hooks bare metal needs: `chip_critical_enter/exit`, `chip_wait_for_interrupt_until(deadline_us)` |
+| chip | `platform.hpp`: `monotonic_us`, `device_unique_id`, `realtime_hint_us` | unchanged |
+| chip | `chip_sync.hpp`: `chip::critical_enter/exit`, `chip::wait_for_event_until(deadline_us)`, `chip::send_event` | added in step 8: the bare-metal OS layer is built on these alone; rp2 uses spin lock `PICO_SPINLOCK_ID_OS1` and WFE/SEV |
 | chip | `flash.hpp`: `rosette_platform_flash_*` | unchanged |
 | chip | `gpio_interrupt.hpp`: `attach_falling_edge(pin, void (*)(void*), void*)` | added in step 7; replaced the Pico calls in `rx_interrupt_pico.hpp`; the host and stub chips return false |
-| chip | bus concept used by `WiznetDevice<Chip, Bus>` | written down in `ports/chip/stub/stub_bus.hpp`; `Rp2SpiBus` / `Rp2QspiBus` implement it |
+| chip | bus concept used by `WiznetDevice<Chip, Bus>` | written down in `ports/chip/stub/stub_bus.hpp`; `Rp2SpiBus` / `Rp2QspiBus` implement it. `acquire()` holds nothing: the driver nests it, so a bus shared between threads needs a re-entrant lock (see "Open decisions") |
 | chip | `__atomic_*` helpers (`fetch_add`, `exchange`, `compare_exchange`, ...) on a core without atomic instructions | new to the contract: the RTPS buffer pool's `std::atomic` counts call them on Cortex-M0+; the Pico SDK's `pico_atomic` supplies them on the RP2040, `ports/chip/stub/stub_atomic.c` shows the set |
-| os | `rosette_os_port.hpp`: `Mutex`, `Event` (with `signal_from_isr`), `sleep_ms` | unchanged API; moves out of `include/` |
+| os | `rosette_os_port.hpp`: `Mutex`, `Event` (with `signal_from_isr`), `sleep_ms` | unchanged API; moved to `ports/os/<name>/` in step 8 |
 | net | `rosette::net::SocketProvider`, `AddressProvider`, `Interface` | unchanged |
 | net | *promoted* `rosette/net/board_network.hpp`: `bring_up_board_network`, `poll_board_network`, `board_socket_provider`, `board_ipv4_address`, `board_network_watch`, ... | the WIZnet module's API, moved to namespace `rosette::net`; each network port or board composition implements it |
 | net | `rmw_rosette/network_port.hpp` | one portable `network_port.cpp` over `board_network.hpp` replaces `network_port_{wiznet,posix}.cpp` |
@@ -109,25 +110,21 @@ Actions: **move** (`git mv`, then fix includes), **split** (the contents go to s
 
 ### Platform
 
-| Current | Action | Destination / change |
-|---|---|---|
-| `include/rosette/platform/platform.hpp` | refactor | `#include "rosette_os_port.hpp"` replaces the `#if ROSETTE_OS_*` chain |
-| `include/rosette/platform/os_posix.hpp` | move | `ports/os/posix/rosette_os_port.hpp` |
-| `include/rosette/platform/os_freertos.hpp` | move | `ports/os/freertos/rosette_os_port.hpp` |
-| `include/rosette/platform/os_baremetal.hpp` | move + refactor | `ports/os/baremetal/rosette_os_port.hpp`, built on the new chip hooks instead of `pico/critical_section.h`, `pico/mutex.h`, WFE |
-| `include/rosette/platform/bus_pico_spi.hpp` | move + refactor | `ports/chip/rp2/rp2_spi_bus.hpp`; FreeRTOS semaphore becomes `platform::Mutex` |
-| `include/rosette/platform/bus_pico_qspi.hpp` | move + refactor | `ports/chip/rp2/rp2_qspi_bus.hpp`; same |
-| `include/rosette/platform/host_runtime.hpp` | done | deleted (see "What an application includes"); host tests fake `monotonic_us()` in `tests/host/fake_clock.hpp` |
-| `include/rosette/platform/flash.hpp`, `littlefs_platform.hpp`, `wall_clock.hpp` | stays | contracts |
-| `src/platform/wall_clock.cpp` | stays | portable |
-| `src/platform/chip/rp2/chip_rp2.cpp` | move | `ports/chip/rp2/chip_rp2.cpp` |
-| `src/platform/chip/host/chip_host.cpp` | move | `ports/chip/host/chip_host.cpp` |
-| `src/platform/pico_bare.c` | split | flash to `ports/chip/rp2/rp2_flash.c`; `clock_gettime`/`_gettimeofday` to `ports/chip/rp2/rp2_newlib_time.c` (the runtime functions are gone) |
-| `src/platform/pico_freertos.c` | split | flash merges into the same `rp2_flash.c` (one version for both OSes, e.g. `flash_safe_execute`; check it on RP2350 with FreeRTOS SMP); the endpoint address readout is already in `FreeRtosObserver` and moves with it |
-| `src/platform/pico_littlefs.cpp` | move | `ports/chip/rp2/rp2_littlefs_region.cpp` |
-| `src/platform/posix/host_littlefs.cpp` | move | `ports/chip/host/host_flash_file.cpp` |
-| `src/platform/posix/host_runtime.cpp` | done | deleted; its local-IPv4 detection is in `src/net/posix/board_network.cpp`, which moves to `ports/net/posix/` |
-| `src/platform/posix/rtps_posix_log.cpp` | move | `ports/os/posix/rtps_stderr_log.cpp` |
+Done in step 8. Each port is one directory with a `port.cmake`; `cmake/rosette_platform.cmake` lists no port names.
+
+| Former path | Now |
+|---|---|
+| `include/rosette/platform/platform.hpp` | stays; includes `"rosette_os_port.hpp"` with no `#if` chain |
+| `include/rosette/platform/os_{posix,freertos}.hpp` | `ports/os/{posix,freertos}/rosette_os_port.hpp` |
+| `include/rosette/platform/os_baremetal.hpp` | `ports/os/baremetal/rosette_os_port.hpp`, rewritten over `chip_sync.hpp` (no Pico SDK); CI also builds it on the stub chip |
+| `include/rosette/platform/bus_pico_{spi,qspi}.hpp` | `ports/chip/rp2/rp2_{spi,qspi}_bus.hpp`, classes `Rp2SpiBus` / `Rp2QspiBus`; the FreeRTOS semaphore and critical section are gone (see the contracts table) |
+| `src/platform/chip/{rp2,host}/chip_*.cpp` | `ports/chip/{rp2,host}/chip_*.cpp` |
+| `src/platform/pico_bare.c`, `pico_freertos.c` | `ports/chip/rp2/rp2_flash.c`, one version for every OS over `flash_safe_execute()`, falling back to interrupts off when the other core has not opted in; and `ports/chip/rp2/rp2_newlib_time.c` |
+| `src/platform/pico_littlefs.cpp` | `ports/chip/rp2/rp2_littlefs_region.cpp`, via `ROSETTE_CHIP_STORAGE_SOURCES` |
+| `src/platform/posix/host_littlefs.cpp` | `ports/chip/host/host_flash_file.cpp`, via `ROSETTE_CHIP_STORAGE_SOURCES` |
+| `src/platform/posix/rtps_posix_log.cpp` | `src/rtps/rtps_stderr_log.cpp`: it uses only `<cstdio>`, so it is portable |
+| `include/rosette/platform/host_runtime.hpp`, `src/platform/posix/host_runtime.cpp` | deleted in step 6 |
+| `include/rosette/platform/flash.hpp`, `littlefs_platform.hpp`, `wall_clock.hpp`, `gpio_interrupt.hpp`, `chip_sync.hpp`; `src/platform/wall_clock.cpp` | stay: contracts and portable code |
 
 ### Network
 
@@ -158,7 +155,7 @@ Actions: **move** (`git mv`, then fix includes), **split** (the contents go to s
 |---|---|---|
 | `cmake/pico_sdk.cmake` | move | `ports/chip/rp2/port.cmake`, plus `rosette_port_add_image_outputs(target)` so the root CMakeLists and the contract test stop calling `pico_*` |
 | `cmake/freertos_tcp.cmake` | move | `ports/net/freertos_tcp/port.cmake` |
-| `cmake/rosette_platform.cmake` | refactor | sources and targets from `ports/chip/${ROSETTE_CHIP}/port.cmake` + `ports/os/${ROSETTE_OS}/port.cmake`; validity is "the directory exists" |
+| `cmake/rosette_platform.cmake` | done | sources and targets from `ports/chip/${ROSETTE_CHIP}/port.cmake` + `ports/os/${ROSETTE_OS}/port.cmake`; validity is "the directory exists" |
 | `cmake/rosette_net.cmake` | refactor | stack from `ports/net/${ROSETTE_NET_STACK}/port.cmake`; the portable source list is written once, not per stack |
 | `CMakeLists.txt` | refactor | no `pico_*`, `hardware_*` or `src/platform/pico_*` references; `rosette_bsp` comes from the board and its ports |
 | `config/FreeRTOSConfig.h` | move | `boards/common/freertos/FreeRTOSConfig.h` (per-board values, so it's board composition) |
@@ -192,7 +189,9 @@ neither fetched nor linked. The comments in `device.hpp` and `w6x00.hpp` that ci
 7. Refactor the WIZnet driver onto `platform::Event` and the GPIO-interrupt contract. (done: see the
    `device.hpp`, `executor.hpp` and `rx_interrupt_pico.hpp` rows. DHCP stays with the WIZnet driver, since
    every other network stack brings its own.)
-8. Add the fixed-name OS header and move the OS ports; move the chip ports; split the pico runtime files.
+8. Add the fixed-name OS header and move the OS ports; move the chip ports; split the pico runtime files. (done:
+   see "Platform". Still in shared files until step 9: `pico_sdk_init()` and the `pico_*` / `hardware_*` links in
+   the root `CMakeLists.txt` and `cmake/rosette_net.cmake`, and `wiznet/board.hpp`'s include of the rp2 buses.)
 9. Move the network ports and `boards/common/rp2_wiznet/`; convert `cmake/` to per-port `port.cmake`.
 10. Write PORTING.md: the contracts table, the zone rules, "pass `rosette_platform_contract` and the socket-provider
    contract test", and a worked example (the stub port).
@@ -201,6 +200,11 @@ Moves (`git mv`) and edits go in separate commits, so `git log --follow` keeps e
 
 ## Open decisions
 
+- **A bus shared between threads.** `WiznetDevice` nests `Bus::acquire()` (`open_udp_socket()` calls
+  `close_socket()`, and each register access acquires again), so a lock there must be re-entrant. The old FreeRTOS
+  bus used a plain mutex and would have deadlocked on the first nested call. Every board drives its chip from
+  one thread, so the rp2 buses hold nothing. Before a second thread uses the chip, either the platform contract
+  gains a recursive mutex or the device takes the lock once per public call and the bus never does.
 - **FreeRTOS+TCP stays until lwIP exists.** lwIP is the long-term IP stack (it runs on bare metal and on any RTOS);
   FreeRTOS+TCP stays because it fits FreeRTOS best. With bc-gen2 gone, no board uses FreeRTOS, and the port
   already doesn't build (`src/net/freertos/igmp.cpp` includes `igmp_freertos.hpp`, which doesn't exist). A port

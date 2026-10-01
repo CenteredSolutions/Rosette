@@ -13,13 +13,14 @@ add_executable(rtps_loopback_smoke
     rtps_loopback_smoke.cpp
     ${ROSETTE_RTPS_PROTOCOL_SOURCES}
     ../../src/platform/wall_clock.cpp
-    ../../src/platform/chip/host/chip_host.cpp
+    ../../ports/chip/host/chip_host.cpp
 )
 
 target_include_directories(rtps_loopback_smoke PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/rtps
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/os/posix
 )
 
 target_compile_definitions(rtps_loopback_smoke PRIVATE

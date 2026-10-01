@@ -13,6 +13,8 @@
  *    realtime_hint_us();
  *  - rosette/platform/gpio_interrupt.hpp: attach_falling_edge(), which a
  *    chip without GPIO interrupts answers with false;
+ *  - rosette/platform/chip_sync.hpp: the critical section and event wait
+ *    the bare-metal OS layer (ports/os/baremetal) is built on;
  *  - rosette/platform/flash.hpp: the storage flash region and its
  *    erase/program/read primitives;
  *  - rosette/platform/littlefs_platform.hpp: mounting the LittleFS volume
@@ -21,13 +23,15 @@
  *    (stub_atomic.c).
  *
  * The clock counts calls rather than time, so waits that spin on it
- * (ports/os/stub) still end.
+ * (ports/os/stub, or ports/os/baremetal, whose event wait returns at once)
+ * still end.
  *
  * Verification:
  * - Correct means: tests/port_stub links, so every symbol the portable core
  *   needs from a chip is defined here and nowhere else is needed.
  */
 
+#include "rosette/platform/chip_sync.hpp"
 #include "rosette/platform/flash.hpp"
 #include "rosette/platform/gpio_interrupt.hpp"
 #include "rosette/platform/platform.hpp"
@@ -58,6 +62,24 @@ bool attach_falling_edge(uint32_t pin, GpioInterruptHandler handler, void* conte
 }
 
 }  // namespace rosette::platform
+
+namespace rosette::platform::chip {
+
+uint32_t critical_enter() noexcept {
+    return 0u;
+}
+
+void critical_exit(uint32_t state) noexcept {
+    (void)state;
+}
+
+void wait_for_event_until(uint64_t deadline_us) noexcept {
+    (void)deadline_us;
+}
+
+void send_event() noexcept {}
+
+}  // namespace rosette::platform::chip
 
 extern "C" {
 

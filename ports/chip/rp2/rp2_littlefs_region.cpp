@@ -1,5 +1,5 @@
 /**
- * @file platform/pico_littlefs.c
+ * @file ports/chip/rp2/rp2_littlefs_region.cpp
  * @brief LittleFS block device for the RP2040 / RP2350 on-board flash.
  *
  * Binds a LittleFS `lfs_config` to the raw flash primitives in

@@ -148,14 +148,14 @@ reference).
 The bus seam is already in place:
 
 * `board.hpp` selects `BoardBus` from `ROSETTE_WIZNET_BUS_QSPI` in
-  `board_config.h` — `PicoSpiBus` (hardware SPI) otherwise, `PicoQspiBus` when
+  `board_config.h` — `Rp2SpiBus` (hardware SPI) otherwise, `Rp2QspiBus` when
   set.
-* `platform/bus_pico_qspi.hpp` is a **single-lane** `PicoQspiBus` today: GPIO
+* `ports/chip/rp2/rp2_qspi_bus.hpp` is a **single-lane** `Rp2QspiBus` today: GPIO
   bit-bang, SPI mode 0, same `acquire()` / `write(prefix,…)` / `read(prefix,…)`
   surface. The `w6300-evb-pico2` board uses it (the EVB routes the W6300 onto a
   non-hardware-SPI pin set, so even 1-bit needs bit-bang or PIO).
 * A W6300 frame's OP-code + address phase is always single-lane; only the data
   phase goes wide. That boundary is exactly the `prefix` / `data` split in the
-  transfer methods, so phase 2 is contained to `PicoQspiBus::transfer_data()`
+  transfer methods, so phase 2 is contained to `Rp2QspiBus::transfer_data()`
   (plus a `QMODE` bit in `W6300::make_header` and the PIO program). Neither
   `device.hpp` nor the traits' register maps change.

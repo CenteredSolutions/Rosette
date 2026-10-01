@@ -2,8 +2,9 @@
  * @file test_stateful_reader_clock_stub.cpp
  * @brief Test chip layer for StatefulReader tests: a clock the tests set explicitly.
  *
- * Replaces src/platform/chip/host/chip_host.cpp in this test binary, so
- * platform::monotonic_ms() returns g_stateful_reader_test_now_ms and timer behavior is deterministic.
+ * Replaces ports/chip/host/chip_host.cpp in this test binary, so
+ * platform::monotonic_ms() returns g_stateful_reader_test_now_ms and timer behavior is
+ * deterministic.
  */
 
 #include "rosette/platform/platform.hpp"

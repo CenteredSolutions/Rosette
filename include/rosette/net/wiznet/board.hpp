@@ -18,7 +18,7 @@
  * in board bring-up; `make_board_bus()` only binds the configured pins.
  *
  * The bus is chosen by `board_config.h`: define `ROSETTE_WIZNET_BUS_QSPI` for
- * the W6300's QSPI wiring (single-lane for now, see `bus_pico_qspi.hpp`);
+ * the W6300's QSPI wiring (single-lane for now, see `rp2_qspi_bus.hpp`);
  * otherwise the hardware SPI peripheral `ROSETTE_SPI_INST` is used.
  */
 
@@ -31,15 +31,15 @@
 #include "socket_provider.hpp"
 
 #if defined(ROSETTE_WIZNET_BUS_QSPI)
-#  include "rosette/platform/bus_pico_qspi.hpp"
+#include "rp2_qspi_bus.hpp"
 #else
-#  include "rosette/platform/bus_pico_spi.hpp"
+#include "rp2_spi_bus.hpp"
 #endif
 
 namespace rosette::net::wiznet {
 
 #if defined(ROSETTE_WIZNET_BUS_QSPI)
-using BoardBus = rosette::platform::PicoQspiBus;
+using BoardBus = rosette::platform::Rp2QspiBus;
 
 /// Binds the QSPI pins named in `board_config.h` (single-lane driver for now).
 inline BoardBus make_board_bus() noexcept
@@ -52,7 +52,7 @@ inline BoardBus make_board_bus() noexcept
     }};
 }
 #else
-using BoardBus = rosette::platform::PicoSpiBus;
+using BoardBus = rosette::platform::Rp2SpiBus;
 
 /// Binds the SPI instance and CS pin named in `board_config.h`.
 inline BoardBus make_board_bus() noexcept

@@ -199,7 +199,8 @@ application. `examples/storage_demo` exercises it on a host.
 | `rmw_rosette/` | the `rmw` implementation (a colcon package); `cmake/rmw_rosette_capacity.cmake` is the capacity model |
 | `include/rosette/net`, `src/net` | `SocketProvider` backends (POSIX, WIZnet, FreeRTOS+TCP), the board network, address providers, mDNS and NTP helpers |
 | `include/rosette/net/wiznet` | register-level WIZnet driver templated on chip and bus |
-| `include/rosette/platform`, `src/platform` | platform ports: OS layers, chip layers, Pico flash and LittleFS glue |
+| `include/rosette/platform`, `src/platform` | the platform contract (`platform.hpp`, `flash.hpp`, `gpio_interrupt.hpp`, `chip_sync.hpp`) and WallClock |
+| `ports/os/<name>`, `ports/chip/<name>` | platform ports: OS layers (`rosette_os_port.hpp`), chip layers (clock, flash, GPIO, buses, LittleFS volume); each has a `port.cmake`, and `stub` is the template |
 | `include/rosette/storage`, `src/storage` | LittleFS volume and file store |
 | `boards/<name>` | `board.cmake` (OS, chip, features), `board_config.h` (pins, chip), `board_init.c` |
 | `cmake/` | board selection (`rosette_prelude.cmake`, `boards.cmake`), `rosette_rtps.cmake`, `rmw_rosette_firmware.cmake`, dependency fetchers |

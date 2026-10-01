@@ -115,7 +115,8 @@ _INCLUDE = re.compile(r'^\s*#\s*include\s*([<"])([^>"]+)[>"]')
 _CONDITIONAL = re.compile(r"^\s*#\s*(if|ifdef|ifndef|elif)\b(.*)")
 
 # Directories the build puts on the include path, in search order after the
-# including file's own directory (CMakeLists.txt, cmake/*.cmake).
+# including file's own directory (CMakeLists.txt, cmake/*.cmake). Each port's
+# own directory follows them: its port.cmake puts it on the include path.
 _INCLUDE_ROOTS = (
     "include",
     "include/rosette/net",
@@ -123,6 +124,11 @@ _INCLUDE_ROOTS = (
     "rmw_rosette/include",
     "ports",
 )
+
+# Headers every port of an axis supplies under one name, found through
+# whichever port the build selected: including one is the contract's seam,
+# not a reach into a particular port (platform.hpp -> rosette_os_port.hpp).
+_FIXED_NAME_HEADERS = frozenset({"rosette_os_port.hpp"})
 _EXCLUDED_PREFIXES = ("third_party/", "external/", "build")
 
 
@@ -183,7 +189,7 @@ def port_of(path: str):
         "ports/<axis>/<name>/" when the path is inside one, otherwise None.
 
     Verification:
-        Correct means: "ports/os/freertos/os_freertos.hpp" gives
+        Correct means: "ports/os/freertos/rosette_os_port.hpp" gives
         "ports/os/freertos/", and "include/rosette/net/socket.hpp" gives None.
     """
     parts = path.split("/")
@@ -210,10 +216,13 @@ def resolve_include(including: str, target: str, quoted: bool, sources: set):
     Verification:
         Correct means: `"socket.hpp"` from include/rosette/net/inet.h resolves
         to include/rosette/net/socket.hpp, `"wiznet/device.hpp"` resolves
-        through the include/rosette/net root, and `<lfs.h>` resolves to None.
+        through the include/rosette/net root, `"rp2_spi_bus.hpp"` resolves
+        to ports/chip/rp2/rp2_spi_bus.hpp, and `<lfs.h>` resolves to None.
     """
     directories = [str(pathlib.PurePosixPath(including).parent)] if quoted else []
     directories.extend(_INCLUDE_ROOTS)
+    directories.extend(sorted({port_of(source).rstrip("/") for source in sources
+                               if port_of(source) is not None}))
     for directory in directories:
         candidate = pathlib.PurePosixPath(directory, target).as_posix()
         normalized = pathlib.Path(candidate).as_posix()
@@ -252,9 +261,11 @@ def scan_file(path: str, sources: set) -> dict:
         `detail` is `family:header`, the included path, or the macro name.
 
     Verification:
-        Correct means: include/rosette/platform/bus_pico_spi.hpp yields
-        ("header", "pico_sdk:hardware/spi.h") and ("header",
-        "freertos_kernel:FreeRTOS.h"); a boards/ file yields nothing.
+        Correct means: hardware/spi.h included from src/rtps/participant.cpp
+        yields ("header", "pico_sdk:hardware/spi.h"); "rp2_spi_bus.hpp"
+        included from include/rosette/net/wiznet/board.hpp yields
+        ("port-include", "ports/chip/rp2/rp2_spi_bus.hpp"); platform.hpp's
+        "rosette_os_port.hpp" yields nothing; a boards/ file yields nothing.
     """
     allowed, own_port = zone_of(path)
     exempt = allowed == set(_ALL) and own_port is None
@@ -267,6 +278,9 @@ def scan_file(path: str, sources: set) -> dict:
             for family, pattern in _FAMILIES.items():
                 if pattern.search(target) and (family not in allowed or family in _BANNED):
                     found.setdefault((path, "header", f"{family}:{target}"), number)
+
+            if pathlib.PurePosixPath(target).name in _FIXED_NAME_HEADERS:
+                continue
 
             resolved = resolve_include(path, target, quoted, sources)
             target_port = port_of(resolved) if resolved else None

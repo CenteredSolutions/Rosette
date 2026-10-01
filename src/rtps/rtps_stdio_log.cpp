@@ -2,8 +2,8 @@
  * @file rtps_stdio_log.cpp
  * @brief rtps_log_write() sink on stdout, for firmware (USB CDC or UART stdio).
  *
- * One line per record: "[L][tag] message". Hosts use
- * src/platform/posix/rtps_posix_log.cpp, which writes to stderr instead.
+ * One line per record: "[L][tag] message". Hosts use rtps_stderr_log.cpp,
+ * which writes to stderr instead.
  */
 
 #include <cstdarg>

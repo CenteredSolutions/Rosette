@@ -7,28 +7,32 @@
  * therefore chosen at build time, not through a runtime object: each board's
  * `board.cmake` sets two independent axes,
  *
- *   ROSETTE_OS    posix | freertos | baremetal   scheduling and synchronization
- *   ROSETTE_CHIP  host  | rp2                    clock and device identity
+ *   ROSETTE_OS    posix | freertos | baremetal | stub   scheduling and synchronization
+ *   ROSETTE_CHIP  host  | rp2 | stub                   clock, device identity, flash
  *
- * or any port directory ports/<axis>/<name>/ (stub, for one),
- *
- * and the build defines ROSETTE_OS_POSIX / ROSETTE_OS_FREERTOS /
- * ROSETTE_OS_BAREMETAL plus ROSETTE_CHIP_HOST / ROSETTE_CHIP_RP2 accordingly.
- * FreeRTOS on a Pico is OS=freertos, CHIP=rp2; a two-core superloop is
- * OS=baremetal, CHIP=rp2.
+ * Each name is a port directory, ports/os/<name>/ or ports/chip/<name>/ (or
+ * the same layout under a directory in ROSETTE_PORT_DIRS), and the build
+ * defines ROSETTE_OS_<NAME> and ROSETTE_CHIP_<NAME> for tests that report
+ * which port they ran on. FreeRTOS on a Pico is OS=freertos, CHIP=rp2; a
+ * two-core superloop is OS=baremetal, CHIP=rp2.
  *
  * This header is the whole contract. A port provides:
  *
- *  - from the OS layer (`os_<os>.hpp`, or `rosette_os_port.hpp` for a port
- *    under ports/os/<name>/; header-only):
+ *  - from the OS layer (ports/os/<name>/rosette_os_port.hpp; header-only):
  *      Mutex        mutual exclusion between threads, tasks, and cores
  *      Event        auto-reset wakeup; signal() is safe from any thread, core,
  *                   and (via signal_from_isr()) interrupt handler
  *      sleep_ms()   yields the caller for a duration
- *  - from the chip layer (`src/platform/chip/<chip>/`, or ports/chip/<name>/):
+ *  - from the chip layer (ports/chip/<name>/):
  *      monotonic_us()        the single time base; never steps
  *      device_unique_id()    8 octets unique per running Rosette instance
  *      realtime_hint_us()    wall-clock time when the platform knows it
+ *    and, in their own headers, flash (flash.hpp), GPIO interrupts
+ *    (gpio_interrupt.hpp), and the critical section and event wait the
+ *    bare-metal OS layer is built on (chip_sync.hpp).
+ *
+ * ports/chip/stub/ and ports/os/stub/ implement every item and are the
+ * starting point for a new port.
  *
  * tests/platform/platform_contract_test.cpp exercises every item and is built
  * for each port, so a port that misses or mis-implements part of the contract
@@ -113,18 +117,11 @@ bool realtime_hint_us(int64_t& unix_us) noexcept;
 
 // ------------------------------------------------------------------
 // OS layer: Mutex, Event, sleep_ms()
+//
+// The selected OS port supplies them under this fixed name; its port.cmake
+// puts ports/os/<name>/ on the include path, and no other OS port is on it.
 // ------------------------------------------------------------------
-#if defined(ROSETTE_OS_POSIX)
-#  include "rosette/platform/os_posix.hpp"
-#elif defined(ROSETTE_OS_FREERTOS)
-#  include "rosette/platform/os_freertos.hpp"
-#elif defined(ROSETTE_OS_BAREMETAL)
-#  include "rosette/platform/os_baremetal.hpp"
-#else
-// A port under ports/os/<name>/ supplies its OS layer under this fixed name;
-// its port.cmake puts the directory on the include path.
 #include "rosette_os_port.hpp"
-#endif
 
 namespace rosette::platform {
 
