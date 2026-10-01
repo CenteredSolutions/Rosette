@@ -143,9 +143,13 @@ if(BUILD_TESTING)
     # Tests include rmw_rosette headers whose layouts depend on the capacity model.
     rmw_rosette_apply_capacity(${test_name})
     target_include_directories(${test_name} PRIVATE ${ROSETTE_ROOT}/include)
-    # Same platform selection as the library, without a second copy of its state.
+    # Same platform selection as the library, without a second copy of its
+    # state: the OS and chip ports' definitions, and their include
+    # directories, where platform.hpp finds rosette_os_port.hpp.
     target_compile_definitions(${test_name} PRIVATE
       $<TARGET_PROPERTY:rosette_platform,INTERFACE_COMPILE_DEFINITIONS>)
+    target_include_directories(${test_name} PRIVATE
+      $<TARGET_PROPERTY:rosette_platform,INTERFACE_INCLUDE_DIRECTORIES>)
     ament_target_dependencies(${test_name} geometry_msgs rmw_dds_common sensor_msgs std_msgs)
   endforeach()
 endif()
