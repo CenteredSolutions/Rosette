@@ -35,39 +35,51 @@ namespace rosette::net {
 /**
  * @brief One provider's current address contribution.
  *
+ * A lease carries every address the provider holds for its family (the
+ * SLAAC provider holds a link-local and a global address; the IPv4 providers
+ * hold one), plus the family's routing and NTP information. `NetInterface::apply()`
+ * programs the whole lease at once, so the hardware always matches it.
+ *
  * `flags`' `duplicate` bit latches true for the single `poll()` that first
  * observes one; the provider then recovers on its own (DHCPDECLINE +
- * re-DISCOVER, a fresh `169.254` candidate) and, if it had to release the
+ * re-DISCOVER, the next address candidate) and, if it had to release the
  * address to do so, moves back to `AddressPhase::acquiring`.
  */
 struct AddressLease {
     AddressFamily family = AddressFamily::ipv4;
     AddressSource source = AddressSource::manual;
-    AddressPhase  state  = AddressPhase::idle;
-    AddressFlags  flags  = AddressFlags::none;    ///< provider-reported bits only
-                                                   ///< (duplicate/temporary/permanent) —
-                                                   ///< link_local/routable are derived.
-    bool          has_address = false;
-    std::array<uint8_t, 16> address{};    ///< `[0..3]` for IPv4, `[0..15]` for IPv6.
-    uint8_t       prefix_len = 0u;
+    AddressPhase state = AddressPhase::idle;
+    AddressFlags flags = AddressFlags::none;  ///< Family-level event bits (`duplicate`).
+    AddressList addresses{};
     std::array<uint8_t, 4> gateway_v4{};
-    uint32_t      lease_remaining_s = 0u;
+    std::array<uint8_t, 16> gateway_v6{};  ///< Default router (link-local), zero when none.
     std::array<std::array<uint8_t, 4>, 2> ntp_v4{};
-    uint8_t       ntp_count = 0u;
+    uint8_t ntp_count = 0u;
 
-    /// A cleared lease that keeps only the family (what a provider reports while idle).
+    /// A cleared lease that keeps only the family and source (what a provider reports while idle).
     AddressLease empty() const noexcept {
         AddressLease l{};
         l.family = family;
+        l.source = source;
         return l;
     }
 
-    bool link_local() const noexcept {
-        return has_flag(classify(family, address, has_address), AddressFlags::link_local);
+    /// Appends @p address to this lease's family list; see `AddressList::add()`.
+    bool add(const std::array<uint8_t, 16>& address, uint8_t prefix_len,
+             uint32_t valid_s = kInfiniteLifetime, uint32_t preferred_s = kInfiniteLifetime,
+             bool deprecated = false) noexcept {
+        return addresses.add(family, address, prefix_len, valid_s, preferred_s, deprecated);
     }
-    bool routable() const noexcept {
-        return has_flag(classify(family, address, has_address), AddressFlags::routable);
-    }
+
+    bool has_address() const noexcept { return !addresses.empty(); }
+
+    const AddressEntry& primary() const noexcept { return addresses.primary(); }
+
+    const std::array<uint8_t, 16>& address() const noexcept { return primary().address; }
+
+    bool link_local() const noexcept { return has_address() && primary().link_local(); }
+
+    bool routable() const noexcept { return has_address() && primary().routable(); }
     bool duplicate() const noexcept { return has_flag(flags, AddressFlags::duplicate); }
 
     /// Fold this lease into the matching family slot of a combined snapshot.
@@ -75,10 +87,8 @@ struct AddressLease {
         FamilyAddressSnapshot& f = (family == AddressFamily::ipv4) ? s.v4 : s.v6;
         f.state = state;
         f.source = source;
-        f.has_address = has_address;
-        f.address = address;
-        f.lease_remaining_s = lease_remaining_s;
-        f.flags = flags | classify(family, address, has_address);
+        f.flags = flags;
+        f.addresses = addresses;
         if (family == AddressFamily::ipv4 && ntp_count > 0u) {
             const uint8_t n = ntp_count > 2u ? 2u : ntp_count;
             s.ntp_server_count = n;
@@ -96,10 +106,41 @@ class AddressProvider {
 public:
     virtual ~AddressProvider() = default;
 
-    /// Begin acquisition. Non-blocking kick-off; `poll()` does the work.
+    /// Begin acquisition as the interface's address holder. Non-blocking; `poll()` does the work.
     virtual void begin() noexcept = 0;
 
-    /// Return to idle. A bound address is released.
+    /**
+     * @brief Begin a trial acquisition while another provider holds the interface.
+     *
+     * An `AddressManager` holding a lower-preference address (IPv4 link-local)
+     * probes the providers ahead of it in its list (DHCP) to find out whether
+     * a better address is available again. A probing provider acquires as
+     * usual but never writes the interface and never reads its conflict
+     * signal: the address on the chip, and every conflict reported for it,
+     * belong to the holder. When its `poll()` reports `bound`, the manager
+     * stops the holder and calls `claim()`.
+     *
+     * @return `false` when the provider cannot acquire without writing the
+     *   interface (the default), so the manager never probes it.
+     *
+     * Verification:
+     * - Correct means: between begin_probe() and claim(), the provider makes
+     *   no NetInterface::apply() or NetInterface::conflict() call.
+     * - Covered by: tests/host/address_upgrade_test.cpp (TC-NET-UPG-001, TC-NET-UPG-003).
+     *
+     * References: RFC 3927 §1.9 (a link-local host keeps looking for a routable address).
+     */
+    virtual bool begin_probe() noexcept { return false; }
+
+    /**
+     * @brief Takes over the interface with the address a probe acquired.
+     *
+     * Writes the probed lease through the `NetInterface` and from then on
+     * behaves exactly as after `begin()`: it renews, and it reacts to conflicts.
+     */
+    virtual void claim() noexcept {}
+
+    /// Return to idle. An address this provider wrote to the interface is removed.
     virtual void stop() noexcept = 0;
 
     /**

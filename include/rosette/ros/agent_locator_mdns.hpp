@@ -14,8 +14,8 @@
  * How it fits in
  * --------------
  * This is a drop-in `AgentLocator`, a sibling of `StaticAgentLocator` and
- * `MulticastAgentLocator`. `Context` calls `resolve()` during start-up and
- * feeds the result into the UDP or custom transport.
+ * `MulticastAgentLocator`. `AgentSessionGate` calls `resolve()` while no
+ * session exists and hands the result to the XRCE transport.
  *
  * Two modes, chosen by configuration:
  * - "by advertisement": browse a DNS-SD service type and take the first

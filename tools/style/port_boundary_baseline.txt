@@ -1,0 +1,6 @@
+# Port-boundary violations the tree still carries (check_port_boundaries.py).
+# An entry may be deleted but not added by hand: fix new code instead.
+# Format: <path> <kind> <detail>; see docs/design/ports_move_plan.md.
+
+bindings/micropython/modrosette.c header posix:sys/time.h
+ports/chip/rp2/rp2_newlib_time.c header posix:sys/time.h

@@ -1,14 +1,13 @@
-set(ROSETTE_BOARD_FAMILY "pico" PARENT_SCOPE)
-set(ROSETTE_BOARD_ENABLE_PICO_SDK ON PARENT_SCOPE)
+# Ports (ports/<axis>/<name>/): the chip, the OS layer, and the IP stack. No
+# RTOS: the W5100S runs the TCP/IP stack in hardware, and the firmware is a
+# cooperative superloop.
+set(ROSETTE_CHIP      "rp2"       PARENT_SCOPE)
+set(ROSETTE_OS        "baremetal" PARENT_SCOPE)
+set(ROSETTE_NET_STACK "wiznet"    PARENT_SCOPE)
 
-# No RTOS: the W5100S runs the TCP/IP stack in hardware, and rosette::App is a
-# cooperative superloop. FreeRTOS+TCP is available as a build option but is not
-# the default for this board.
-set(ROSETTE_BOARD_ENABLE_FREERTOS OFF PARENT_SCOPE)
-set(ROSETTE_BOARD_ENABLE_WIZNET ON PARENT_SCOPE)
-set(ROSETTE_BOARD_NET_STACK "wiznet_iolib" PARENT_SCOPE)
-
-set(ROSETTE_BOARD_BUILD_BSP ON PARENT_SCOPE)
+# The composition the WIZnet EVB-Pico boards share (boards/common/rp2_wiznet/):
+# the bus, the driver types, and the board network.
+set(ROSETTE_BOARD_COMMON "rp2_wiznet" PARENT_SCOPE)
 
 set(PICO_BOARD "wiznet_w5100s_evb_pico2" CACHE STRING "" FORCE)
 set(ROSETTE_PROCESSOR  "RP2350"   PARENT_SCOPE)
@@ -21,3 +20,8 @@ set(ROSETTE_SPI_CS     17         PARENT_SCOPE)
 set(ROSETTE_WIZNET_RST 20         PARENT_SCOPE)
 set(ROSETTE_WIZNET_INT 21         PARENT_SCOPE)
 set(ROSETTE_LED_PIN    25         PARENT_SCOPE)
+
+# Reboot into BOOTSEL when a host opens the USB console at 1200 baud
+# (tools/pico_uf2_flash.py). The SDK turns this off by default for firmware
+# that links TinyUSB itself, so it is forced on as a compile definition.
+add_compile_definitions(PICO_STDIO_USB_ENABLE_RESET_VIA_BAUD_RATE=1)

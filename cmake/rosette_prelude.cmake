@@ -12,7 +12,7 @@
 #   project(my_firmware C CXX ASM)
 #   add_subdirectory(${ROSETTE_DIR} rosette)
 #   add_executable(my_firmware main.cpp)
-#   target_link_libraries(my_firmware PRIVATE rosette_ros)
+#   target_link_libraries(my_firmware PRIVATE rosette_agent)   # or rmw_rosette_firmware
 
 include_guard(GLOBAL)
 
@@ -24,9 +24,9 @@ set(ROSETTE_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE INTERNAL
 #   posix              Host / POSIX (default on macOS)
 #   w5100s-evb-pico   WIZnet W5100S-EVB-Pico   (RP2040)
 #   w5100s-evb-pico2  WIZnet W5100S-EVB-Pico2  (RP2350, default elsewhere)
+#   w6100-evb-pico    WIZnet W6100-EVB-Pico    (RP2040)
 #   w6100-evb-pico2   WIZnet W6100-EVB-Pico2   (RP2350)
 #   w6300-evb-pico2   WIZnet W6300-EVB-Pico2   (RP2350, QSPI single-lane — provisional)
-#   bc-gen2           RP2040 + W5100S, custom pin map
 # ------------------------------------------------------------
 set(_rosette_default_board "w5100s-evb-pico2")
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
@@ -34,23 +34,17 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
 endif()
 
 set(ROSETTE_BOARD "${_rosette_default_board}" CACHE STRING
-    "Target board: posix | w5100s-evb-pico | w5100s-evb-pico2 | w6100-evb-pico2 | w6300-evb-pico2 | bc-gen2")
+    "Target board: posix | w5100s-evb-pico | w5100s-evb-pico2 | w6100-evb-pico | w6100-evb-pico2 | w6300-evb-pico2")
 set_property(CACHE ROSETTE_BOARD PROPERTY STRINGS
-    posix w5100s-evb-pico w5100s-evb-pico2 w6100-evb-pico2 w6300-evb-pico2 bc-gen2)
+    posix w5100s-evb-pico w5100s-evb-pico2 w6100-evb-pico w6100-evb-pico2 w6300-evb-pico2)
 
 include("${CMAKE_CURRENT_LIST_DIR}/boards.cmake")
 rosette_select_board(${ROSETTE_BOARD})
 
-if(ROSETTE_BOARD_ENABLE_PICO_SDK AND NOT DEFINED ENV{PICO_SDK_PATH} AND NOT DEFINED PICO_SDK_PATH)
-    message(STATUS "")
-    message(STATUS "Rosette: first configure for '${ROSETTE_BOARD}' fetches the Pico SDK,")
-    message(STATUS "  FreeRTOS, and the WIZnet driver (a few minutes; progress shown below).")
-    message(STATUS "  Set PICO_SDK_PATH / FREERTOS_KERNEL_PATH / FREERTOS_TCP_PATH /")
-    message(STATUS "  WIZNET_IOLIB_PATH to use existing checkouts. The micro-ROS library")
-    message(STATUS "  is cross-built later, during 'cmake --build' (~20-30 min, one time).")
-    message(STATUS "")
-endif()
-
-if(ROSETTE_BOARD_ENABLE_PICO_SDK)
-    include("${CMAKE_CURRENT_LIST_DIR}/pico_sdk.cmake")
+# The board's chip port may set up a cross toolchain, which must happen before
+# project(): ports/chip/<chip>/prelude.cmake, when it exists.
+include("${CMAKE_CURRENT_LIST_DIR}/rosette_ports.cmake")
+rosette_require_port(_rosette_prelude_chip chip "${ROSETTE_CHIP}" ROSETTE_CHIP)
+if(EXISTS "${_rosette_prelude_chip}/prelude.cmake")
+    include("${_rosette_prelude_chip}/prelude.cmake")
 endif()

@@ -1,0 +1,103 @@
+{
+  "spec": {
+    "name": "OMG DDSI-RTPS",
+    "version": "2.5",
+    "document": "formal/2022-04-01"
+  },
+  "target": "lib/Rosette/include/rosette/rtps/stateful_reader.hpp",
+  "scope": [
+    "8.3.7.4",
+    "8.3.7.5",
+    "8.4.7.3",
+    "8.4.7.4",
+    "8.4.8",
+    "8.4.9",
+    "8.4.12"
+  ],
+  "statements": [
+    {
+      "id": "REQ-SRR-8.4.7.4-MATCH-WRITER-LIFECYCLE",
+      "section": "8.4.7.4",
+      "page": 141,
+      "normativity": "shall",
+      "statement": "matched_writer_add creates and tracks WriterProxy state for newly matched writers, and matched_writer_remove removes it.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.7.4-001"]
+    },
+    {
+      "id": "REQ-SRR-8.4.8-DATA-RECEPTION-DUPLICATE-FILTER",
+      "section": "8.4.8",
+      "page": 142,
+      "normativity": "shall",
+      "statement": "on_data accepts new DATA samples and suppresses duplicates: every change is delivered at most once.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.8-001"]
+    },
+    {
+      "id": "REQ-SRR-9.6.3.3-DELIVER-DISPOSALS",
+      "section": "9.6.3.3",
+      "normativity": "shall",
+      "statement": "A DATA whose StatusInfo disposes or unregisters the instance is delivered with the corresponding NOT_ALIVE ChangeKind and its key hash, even when it carries no serialized payload.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.8-003"]
+    },
+    {
+      "id": "REQ-SRR-8.4.12.2-UNSTORABLE-SAMPLE-LOST",
+      "section": "8.4.12.2",
+      "normativity": "should",
+      "statement": "A sample larger than the largest pool block is resolved as LOST on its first fragment, so it is not requested forever and later changes keep flowing.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.8-004"]
+    },
+    {
+      "id": "REQ-SRR-8.3.7.5-8.4.9-HEARTBEAT-ACKNACK",
+      "section": "8.3.7.5",
+      "page": 91,
+      "normativity": "shall",
+      "statement": "HEARTBEAT processing requests ACKNACK when changes are missing, and immediate ACKNACK is sent when heartbeatResponseDelay is zero.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.9-001"]
+    },
+    {
+      "id": "REQ-SRR-8.3.7.4-8.4.12-NACK-FRAG",
+      "section": "8.4.12",
+      "page": 153,
+      "normativity": "shall",
+      "statement": "on_heartbeat_frag identifies missing fragments for a sample and sends NACK_FRAG with the missing fragment bitmap.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.9-002"]
+    },
+    {
+      "id": "REQ-SRR-8.4.10.4-MISSING-NEVER-FORGOTTEN",
+      "section": "8.4.10.4",
+      "normativity": "shall",
+      "statement": "A reliable reader keeps every MISSING change requested until DATA or GAP resolves it, however many later changes arrive, and delivers every change exactly once.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.10-001", "TC-SRR-8.4.10-002"]
+    },
+    {
+      "id": "REQ-SRR-8.3.7.2-DATA-WITHOUT-PAYLOAD",
+      "section": "8.3.7.2",
+      "normativity": "shall",
+      "statement": "A DATA carrying neither serialized payload nor key still accounts for its sequence number.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.10-003"]
+    },
+    {
+      "id": "REQ-SRR-8.4.12.1-BEST-EFFORT-ORDER",
+      "section": "8.4.12.1",
+      "normativity": "shall",
+      "statement": "A best-effort reader delivers a change only when it is newer than every change already seen from that writer.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.12-001"]
+    },
+    {
+      "id": "REQ-SRR-8.4.12-NACKFRAG-ON-HEARTBEAT",
+      "section": "8.4.12",
+      "normativity": "may",
+      "statement": "A reliable StatefulReader answering a HEARTBEAT requests each MISSING change of which some fragments have arrived with a NACK_FRAG naming exactly its missing fragments, in the ACKNACK's message, and leaves the change out of the ACKNACK's readerSNState (bitmapBase unchanged); a change with no fragment received stays in readerSNState.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.12-002", "TC-SRR-8.4.12-003"]
+    }
+  ]
+}

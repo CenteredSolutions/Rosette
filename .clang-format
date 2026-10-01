@@ -1,0 +1,41 @@
+# Rosette C/C++ formatting: Google style with the project rules in AGENTS.md
+# ("Coding Style") layered on top. Formatting is pinned to clang-format 18.1.8
+# (`pip install clang-format==18.1.8`); other releases wrap some constructs
+# differently, and CI uses the pinned version.
+#
+# Two AGENTS.md rules are outside clang-format's reach and are checked by
+# tools/style/ instead: a blank line after a closing `}` on its own line, and
+# the 100-line function ceiling.
+---
+Language: Cpp
+BasedOnStyle: Google
+Standard: c++17
+
+IndentWidth: 4
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+ColumnLimit: 100
+
+# Wrapped expressions start each continuation line with the operator.
+BreakBeforeBinaryOperators: NonAssignment
+BreakBeforeTernaryOperators: true
+
+# Every control-statement body sits on its own line, inside braces.
+InsertBraces: true
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortLambdasOnASingleLine: Inline
+AllowShortFunctionsOnASingleLine: Inline
+
+# Air between blocks is kept; runs of blank lines collapse to one.
+MaxEmptyLinesToKeep: 1
+KeepEmptyLinesAtTheStartOfBlocks: false
+SeparateDefinitionBlocks: Always
+
+# Include blocks stay as written: FreeRTOS and pico-sdk headers depend on
+# their order, so a header that must come first sits in its own block.
+# Headers within one block are sorted.
+IncludeBlocks: Preserve
+...

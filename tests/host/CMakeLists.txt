@@ -12,14 +12,35 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 enable_testing()
 
-# add_host_test(<name>) — one .cpp, header-only against include/, no link deps.
+# Host tests run on the POSIX platform port (include/rosette/platform/platform.hpp):
+# its OS layer is ports/os/posix/rosette_os_port.hpp.
+add_compile_definitions(ROSETTE_OS_POSIX ROSETTE_CHIP_HOST)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../ports/os/posix)
+
+# The out-of-line pieces of the address layer (candidates, lists, manager, config, WIZnet DHCP).
+add_library(rosette_host_address STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/address_candidate.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/address_list.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/address_manager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/network_config.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/wiznet/dhcp_client.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/wiznet/dhcp_provider.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/wiznet/dhcp_wire.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/support/fnv1a.cpp)
+# The repository root makes port headers reachable as "ports/net/wiznet/...".
+target_include_directories(rosette_host_address PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+target_compile_options(rosette_host_address PRIVATE -Wall -Wextra)
+
+# add_host_test(<name>) — one .cpp against include/ and the port headers, linking only rosette_host_address.
 function(add_host_test name)
     add_executable(${name} ${name}.cpp)
+    target_link_libraries(${name} PRIVATE rosette_host_address)
     target_include_directories(${name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../../include
         ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/net)
-    target_compile_definitions(${name} PRIVATE ROSETTE_NO_FREERTOS)
     target_compile_options(${name} PRIVATE -Wall -Wextra)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
@@ -33,9 +54,75 @@ add_test(NAME mdns_wire_test COMMAND mdns_wire_test)
 # WIZnet chip-trait SPI frame encoding + the conflict / socket-less ARP traits.
 add_host_test(wiznet_header_test)
 
+# WIZnet UDP receive/send, IPv4 and IPv6, against a register-file chip model.
+add_host_test(wiznet_udp_socket_test)
+
+# Receive-buffer layout and the size-aware socket claim (Socket::set_receive_buffer_size()).
+add_host_test(wiznet_socket_layout_test)
+add_host_test(wiznet_slaac_provider_test)
+
+# WIZnet MACRAW mode behind the rosette::net::MacDevice contract.
+add_host_test(wiznet_macraw_device_test)
+
+# RFC 4861 Router Advertisement decoding, chip-neutral.
+add_host_test(ipv6_router_advert_test)
+
 # Address bring-up layer.
 add_host_test(address_snapshot_test)
+add_host_test(address_candidate_test)
 add_host_test(ipv4ll_provider_test)
 add_host_test(address_manager_test)
 add_host_test(network_address_test)
 add_host_test(wiznet_address_provider_test)
+add_host_test(dhcp_client_test)
+add_host_test(address_upgrade_test)
+add_host_test(network_config_test)
+
+# The host board network over BSD sockets and the operating system's address.
+add_host_test(posix_board_network_test)
+target_sources(posix_board_network_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_board_network.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_socket.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host/chip_host.cpp)
+
+# The ROS session supervisor, against a fake network, application, and agent gate.
+add_host_test(session_supervisor_test)
+target_sources(session_supervisor_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/ros/session_supervisor.cpp)
+
+# The micro-ROS agent's session gate, against a fake agent link, locator, and transport.
+add_host_test(agent_session_gate_test)
+target_sources(agent_session_gate_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/ros/agent_session_gate.cpp)
+
+# RTPS buffer pool size-class selection, on a pool of two blocks per class.
+add_executable(buf_pool_class_test
+    buf_pool_class_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/rtps/buf_pool.cpp)
+target_include_directories(buf_pool_class_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/rtps)
+target_compile_definitions(buf_pool_class_test PRIVATE
+    RTPS_LOG_LEVEL=0
+    RTPS_POOL_CLASS0_COUNT=2u RTPS_POOL_CLASS1_COUNT=2u RTPS_POOL_CLASS2_COUNT=2u
+    RTPS_POOL_CLASS3_COUNT=2u RTPS_POOL_CLASS4_COUNT=2u)
+target_compile_options(buf_pool_class_test PRIVATE -Wall -Wextra)
+add_test(NAME buf_pool_class_test COMMAND buf_pool_class_test)
+
+# SNTP: the NTPv4 wire format, and the client against a simulated server, path, and tick.
+add_host_test(sntp_wire_test)
+target_sources(sntp_wire_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/sntp_wire.cpp)
+add_host_test(sntp_client_test)
+target_sources(sntp_client_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/sntp_wire.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/sntp_client.cpp)
+
+# SntpConfig defaults on each ROS backend (the agent backend's build defines ROSETTE_ROS_BACKEND_AGENT).
+add_host_test(sntp_config_default_test)
+add_executable(sntp_config_default_agent_test sntp_config_default_test.cpp)
+target_include_directories(sntp_config_default_agent_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
+target_compile_definitions(sntp_config_default_agent_test PRIVATE ROSETTE_ROS_BACKEND_AGENT)
+target_compile_options(sntp_config_default_agent_test PRIVATE -Wall -Wextra)
+add_test(NAME sntp_config_default_agent_test COMMAND sntp_config_default_agent_test)

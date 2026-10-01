@@ -8,26 +8,24 @@
  *
  * One `AddressManager` runs the IPv4 provider list; an optional second runs the
  * IPv6 list. `NetworkAddress` folds their leases into one `AddressSnapshot`,
- * publishes the addresses to the platform runtime, fires a single `on_change`
- * callback, and — given a `NetInterface` — watches carrier: a link drop releases
- * the address, its return kicks a fresh acquisition (DHCP DISCOVER, not renew).
+ * fires a single `on_change` callback, and — given a `NetInterface` — watches carrier: a link drop
+ * releases the address, its return kicks a fresh acquisition (DHCP DISCOVER, not renew).
  *
  *     static rosette::net::AddressManager v4{providers};
  *     static rosette::net::NetworkAddress net{v4, nullptr, &iface};
  *     net.on_change([](const rosette::net::AddressSnapshot& s){ ... });
  *     net.begin();
  *     for (;;) {
- *         const uint32_t now = rosette_platform_get_ms();
+ *         const uint32_t now = rosette::platform::monotonic_ms();
  *         net.poll(now);
  *         if (net.has_address()) { app.spin_once(now); }
- *         rosette_platform_wait_for_event(...);
+ *         rosette::platform::sleep_ms(...);
  *     }
  */
 
 #include <array>
 #include <cstdint>
 
-#include "rosette/platform/host_runtime.hpp"
 #include "rosette/support/inplace_function.hpp"
 
 #include "address_manager.hpp"
@@ -105,28 +103,12 @@ public:
         const AddressSnapshot before = snapshot_;
         rebuild();
         if (snapshot_ != before) {
-            publish(before);
             if (on_change_) {
                 on_change_(snapshot_);
             }
         }
 
         return snapshot_ != before;
-    }
-
-    /// Optional: pump `poll()` until an address is assigned or the budget lapses.
-    bool wait(uint32_t timeout_ms) noexcept {
-        const uint32_t deadline = rosette_platform_get_ms() + timeout_ms;
-        for (;;) {
-            poll(rosette_platform_get_ms());
-            if (has_address()) {
-                return true;
-            }
-            if (static_cast<int32_t>(rosette_platform_get_ms() - deadline) >= 0) {
-                return false;
-            }
-            rosette_platform_delay_ms(50u);
-        }
     }
 
     const AddressSnapshot& snapshot() const noexcept { return snapshot_; }
@@ -146,30 +128,9 @@ private:
         if (v6_ != nullptr) {
             v6_->lease().fill_family(s);
         }
-        s.assigned = s.v4.has_address || s.v6.has_address;
+
+        s.assigned = s.v4.has_address() || s.v6.has_address();
         snapshot_ = s;
-    }
-
-    static uint32_t v4_host_order(const std::array<uint8_t, 16>& a) noexcept {
-        return (static_cast<uint32_t>(a[0]) << 24) |
-               (static_cast<uint32_t>(a[1]) << 16) |
-               (static_cast<uint32_t>(a[2]) << 8) | static_cast<uint32_t>(a[3]);
-    }
-
-    void publish(const AddressSnapshot& before) noexcept {
-        if (snapshot_.v4.has_address != before.v4.has_address ||
-            snapshot_.v4.address != before.v4.address) {
-            rosette_platform_set_ipv4_addr(
-                    snapshot_.v4.has_address ? v4_host_order(snapshot_.v4.address)
-                                             : 0u);
-        }
-        if (snapshot_.v6.has_address != before.v6.has_address ||
-            snapshot_.v6.address != before.v6.address) {
-            std::array<uint8_t, 16> zero{};
-            rosette_platform_set_ipv6_addr(snapshot_.v6.has_address
-                                                   ? snapshot_.v6.address.data()
-                                                   : zero.data());
-        }
     }
 
     AddressManager& v4_;

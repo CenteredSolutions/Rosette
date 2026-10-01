@@ -1,0 +1,170 @@
+{
+  "spec": {
+    "name": "OMG DDSI-RTPS",
+    "version": "2.5",
+    "document": "formal/2022-04-01"
+  },
+  "target": "lib/Rosette/include/rosette/rtps/stateful_writer.hpp",
+  "scope": [
+    "8.2.2",
+    "8.3.1",
+    "8.3.3",
+    "8.4.1.4",
+    "8.4.2.2",
+    "8.4.3",
+    "8.4.4",
+    "8.4.6",
+    "8.4.15",
+    "8.7.2.2"
+  ],
+  "statements": [
+    {
+      "id": "REQ-SWR-8.2.2-8.3.1-HISTORY-REMOVE-INTERACTION",
+      "section": "8.2.2",
+      "page": 26,
+      "normativity": "shall",
+      "statement": "WriterHistoryCache and ReaderProxy change tracking remain coherent when a CacheChange is removed from history.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.2.2-001"]
+    },
+    {
+      "id": "REQ-SWR-8.2.2-8.4.2.2-HISTORY-HEARTBEAT-RANGE",
+      "section": "8.2.2",
+      "page": 26,
+      "normativity": "shall",
+      "statement": "StatefulWriter HEARTBEAT firstSN/lastSN is derived from the current WriterHistoryCache sequence-number bounds.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.2.2-002"]
+    },
+    {
+      "id": "REQ-SWR-8.2.2-8.4.3-HISTORY-RETRANSMIT",
+      "section": "8.2.2",
+      "page": 26,
+      "normativity": "shall",
+      "statement": "ACKNACK-requested changes are retransmitted from WriterHistoryCache after nackResponseDelay processing.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.2.2-003"]
+    },
+    {
+      "id": "REQ-SWR-8.4.1.4-ADD-CHANGE-SN",
+      "section": "8.4.1.4",
+      "page": 107,
+      "normativity": "shall",
+      "statement": "add_change assigns monotonically increasing sequence numbers and inserts changes into the writer HistoryCache.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.4-001"]
+    },
+    {
+      "id": "REQ-SWR-8.3.3-KEEP-LAST-EVICTION",
+      "section": "8.3.3",
+      "page": 68,
+      "normativity": "shall",
+      "statement": "KEEP_LAST cache depth evicts oldest changes when full.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.4-001"]
+    },
+    {
+      "id": "REQ-SWR-8.4.1.4-MATCHED-READER-SEND",
+      "section": "8.4.1.4",
+      "page": 108,
+      "normativity": "shall",
+      "statement": "matched_reader_add enables subsequent data sends to a matched reader locator.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.4-002"]
+    },
+    {
+      "id": "REQ-SWR-8.7.2.2-TRANSIENT-LOCAL-REPLAY",
+      "section": "8.7.2.2",
+      "page": 196,
+      "normativity": "shall",
+      "statement": "TRANSIENT_LOCAL matched readers receive replay-marked cached changes.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.4-003"]
+    },
+    {
+      "id": "REQ-SWR-8.4.2.2-PERIODIC-HEARTBEAT",
+      "section": "8.4.2.2",
+      "page": 113,
+      "normativity": "shall",
+      "statement": "tick() emits periodic HEARTBEAT messages according to heartbeatPeriod.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.2.2-001"]
+    },
+    {
+      "id": "REQ-SWR-8.4.3-ACKNACK-PROCESSING",
+      "section": "8.4.3",
+      "page": 118,
+      "normativity": "shall",
+      "statement": "on_acknack processes cumulative acknowledgment state and ignores duplicate count values.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.3-001"]
+    },
+    {
+      "id": "REQ-SWR-8.4.3-ANNOUNCING-READER-HEARTBEAT",
+      "section": "8.4.3",
+      "normativity": "should",
+      "statement": "An ACKNACK requesting nothing from a reader that has acknowledged nothing yet, while the writer has written more, is answered with a HEARTBEAT directed at that reader; a plain ACK from a reader that has acknowledged before is not answered, so HEARTBEATs never pair with ACKNACKs into a per-round-trip exchange while the writer streams.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.3-002", "TC-SWR-8.4.3-003"]
+    },
+    {
+      "id": "REQ-SWR-8.4.4-NACK-FRAG-DEFERRED-RESPONSE",
+      "section": "8.4.4",
+      "page": 122,
+      "normativity": "shall",
+      "statement": "on_nack_frag arms deferred retransmit and tick() sends requested data after nackResponseDelay.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.4-001"]
+    },
+    {
+      "id": "REQ-SWR-8.4.6-REQUESTED-CHANGES",
+      "section": "8.4.6",
+      "page": 128,
+      "normativity": "shall",
+      "statement": "requested_changes_set marks NACKed changes REQUESTED, next_requested_change returns the lowest REQUESTED change, and acked_changes_set clears acknowledged requests.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.6-001"]
+    },
+    {
+      "id": "REQ-SWR-8.4.6-UNSENT-CHANGES",
+      "section": "8.4.6",
+      "page": 128,
+      "normativity": "shall",
+      "statement": "next_unsent_change returns the lowest UNSENT change relevant to the reader, and unacked_changes is non-empty until the newest relevant change is acknowledged.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.6-002"]
+    },
+    {
+      "id": "REQ-SWR-8.4.15-PIGGYBACK-HEARTBEAT",
+      "section": "8.4.15.4",
+      "normativity": "may",
+      "statement": "A reliable StatefulWriter piggybacks a non-final HEARTBEAT on the DATA of every depth/2-th write, in the same RTPS message when the DATA can end on a 4-octet boundary within the datagram limit (a copied DATA is padded and the padding recorded in the encapsulation options), and in a datagram of its own otherwise; a periodic HEARTBEAT restarts the count.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.15-001", "TC-SWR-8.4.15-002", "TC-SWR-8.4.15-003", "TC-SWR-8.4.15-004"]
+    },
+    {
+      "id": "REQ-SWR-8.4.7-RELEASE-FINISHED",
+      "section": "8.4.7.1",
+      "normativity": "may",
+      "statement": "A VOLATILE StatefulWriter removes a change from its history once every matched reader has acknowledged it (RELIABLE) or been sent it (BEST_EFFORT), or at once when no reader is matched, returning its payload to the pool; a TRANSIENT_LOCAL writer keeps acknowledged changes for late-joining readers; a NACK for a removed change is answered with GAP.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.7-003", "TC-SWR-8.4.7-004", "TC-SWR-8.4.7-005", "TC-SWR-8.4.7-006"]
+    },
+    {
+      "id": "REQ-SWR-8.4.7-RELEASE-REPLIES",
+      "section": "8.4.7.1",
+      "normativity": "may",
+      "statement": "A service reply writer (TRANSIENT_LOCAL) removes a reply once every matched reader sharing the GUID prefix of the request writer named in its related sample identity has acknowledged it, independent of other readers; a reply whose requester has no matched reader stays and is delivered when that reader matches.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.7-007", "TC-SWR-8.4.7-008"]
+    },
+    {
+      "id": "REQ-SWR-8.3.7.5-NACKFRAG-REPAIR",
+      "section": "8.3.7.5",
+      "normativity": "shall",
+      "statement": "A reliable StatefulWriter answers a NACK_FRAG, once nackResponseDelay has passed, by resending exactly the named fragments of the change followed by a HEARTBEAT; a NACK_FRAG whose count is not above the last processed from that reader is ignored; one for a change no longer held is answered with GAP.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.4-002", "TC-SWR-8.4.4-003"]
+    }
+  ]
+}

@@ -1,0 +1,507 @@
+#include "spec_test_common.hpp"
+
+#include <cstdio>
+
+#include "rosette/rtps/fragment_assembler.hpp"
+#include "rosette/rtps/stateful_writer.hpp"
+
+namespace spec_test {
+
+extern uint32_t g_stateful_writer_test_now_ms;
+
+#define CHECK(COND, MSG) do { if (!(COND)) { err = (MSG); return false; } } while (0)
+
+namespace {
+
+struct CaptureTransport : ITransport {
+    std::vector<std::vector<Octet>> unicast_msgs{};
+
+    bool send_unicast(const BufRef& buf, const Locator&) noexcept override {
+        unicast_msgs.emplace_back(buf.data, buf.data + buf.size);
+        return true;
+    }
+
+    bool send_multicast(const BufRef&, const Locator&) noexcept override {
+        return true;
+    }
+};
+
+struct PacketCap {
+    int data_calls = 0;
+    int hb_calls = 0;
+    ParsedHeartbeat hb{};
+};
+
+Guid make_guid(Octet p0, Octet p1, Octet p2, const EntityId& eid) {
+    Guid g{};
+    g.prefix.value[0] = p0;
+    g.prefix.value[1] = p1;
+    g.prefix.value[2] = p2;
+    g.entityId = eid;
+    return g;
+}
+
+SequenceNumberSet make_empty_sn_set_from(const SequenceNumber& base) {
+    SequenceNumberSet s{};
+    s.clear();
+    s.bitmapBase = base;
+    s.numBits = 0u;
+    return s;
+}
+
+} // namespace
+
+static bool tc_swr_8_4_3_001(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer_guid = make_guid(0xC1u, 0xC2u, 0xC3u, make_entity(1u, 1u, 1u, 0xC2u));
+    const Guid reader_guid = make_guid(0xD1u, 0xD2u, 0xD3u, make_entity(2u, 2u, 2u, 0xC7u));
+    const Locator loc = make_udpv4_locator(0xC0A80144u, 7411u);
+
+    StatefulWriterStorage<1, 1> w(writer_guid,
+                           ReliabilityKind::RELIABLE,
+                           DurabilityKind::VOLATILE,
+                           tx);
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false),
+          "matched_reader_add should succeed");
+
+    const Octet payload[1] = {0x42u};
+    CHECK(w.write_async(ChangeKind::ALIVE, payload, 1u),
+          "write_async should succeed");
+
+    auto* proxy = w.matched_reader_lookup(reader_guid);
+    CHECK(proxy != nullptr, "proxy lookup should succeed");
+
+    ParsedAckNack ack{};
+    ack.readerId = reader_guid.entityId;
+    ack.writerId = writer_guid.entityId;
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(2));
+    ack.count = 1;
+    ack.finalFlag = true;
+
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = reader_guid.prefix;
+    g_stateful_writer_test_now_ms = 100u;
+    w.on_acknack(ctx, ack);
+    CHECK(proxy->highestAckedSN.to_int64() == 1, "cumulative ACK should advance highestAckedSN to SN=1");
+
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(3));
+    ack.count = 1;  // duplicate count should be ignored.
+    w.on_acknack(ctx, ack);
+    CHECK(proxy->highestAckedSN.to_int64() == 1, "duplicate ACKNACK count should not update ACK state");
+    return true;
+}
+
+static bool tc_swr_8_4_4_001(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer_guid = make_guid(0xE1u, 0xE2u, 0xE3u, make_entity(1u, 3u, 5u, 0xC2u));
+    const Guid reader_guid = make_guid(0xF1u, 0xF2u, 0xF3u, make_entity(2u, 4u, 6u, 0xC7u));
+    const Locator loc = make_udpv4_locator(0xC0A80155u, 7411u);
+
+    StatefulWriterStorage<1, 1> w(writer_guid,
+                           ReliabilityKind::RELIABLE,
+                           DurabilityKind::VOLATILE,
+                           tx,
+                           5u,
+                           1000u);
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false),
+          "matched_reader_add should succeed");
+
+    const Octet payload[2] = {0xABu, 0xCDu};
+    CHECK(w.write_async(ChangeKind::ALIVE, payload, 2u),
+          "initial reliable write should succeed");
+    tx.unicast_msgs.clear();
+
+    ParsedNackFrag nf{};
+    nf.readerId = reader_guid.entityId;
+    nf.writerId = writer_guid.entityId;
+    nf.writerSN = SequenceNumber::from_int64(1);
+    nf.count = 1;
+
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = reader_guid.prefix;
+    g_stateful_writer_test_now_ms = 200u;
+    w.on_nack_frag(ctx, nf);
+
+    w.tick(203u);
+    CHECK(tx.unicast_msgs.empty(), "tick before nackResponseDelay should not retransmit");
+
+    w.tick(206u);
+    CHECK(tx.unicast_msgs.size() == 2u,
+          "nackResponseDelay expiry should send retransmitted DATA and directed HEARTBEAT");
+
+    int data_packets = 0;
+    int hb_packets = 0;
+    ParsedHeartbeat last_hb{};
+    for (const auto& pkt : tx.unicast_msgs) {
+        PacketCap cap{};
+        ParseOps ops{};
+        ops.on_data = [](const ParseContext& ctx, const ParsedData&) noexcept {
+            auto* c = static_cast<PacketCap*>(ctx.user_data);
+            c->data_calls++;
+        };
+        ops.on_heartbeat = [](const ParseContext& ctx, const ParsedHeartbeat& hb) noexcept {
+            auto* c = static_cast<PacketCap*>(ctx.user_data);
+            c->hb_calls++;
+            c->hb = hb;
+        };
+        CHECK(parse_message(pkt.data(),
+                            static_cast<uint32_t>(pkt.size()),
+                            GuidPrefix{},
+                            ops,
+                            &cap) == ParseResult::OK,
+              "retransmit packet should parse");
+        data_packets += cap.data_calls;
+        hb_packets += cap.hb_calls;
+        if (cap.hb_calls > 0) last_hb = cap.hb;
+    }
+    CHECK(data_packets == 1, "expected one retransmitted DATA packet");
+    CHECK(hb_packets == 1, "expected one directed HEARTBEAT packet");
+    CHECK(last_hb.finalFlag, "post-retransmit directed HEARTBEAT should set finalFlag=true");
+    CHECK(last_hb.readerId == reader_guid.entityId,
+          "post-retransmit directed HEARTBEAT should target requesting readerId");
+    return true;
+}
+
+// Counts HEARTBEATs in captured messages and records the last one.
+static int count_heartbeats(const CaptureTransport& tx, ParsedHeartbeat* last) {
+    int total = 0;
+    for (const auto& msg : tx.unicast_msgs) {
+        PacketCap cap{};
+        ParseOps ops{};
+        ops.on_heartbeat = [](const ParseContext& ctx, const ParsedHeartbeat& hb) noexcept {
+            auto* c = static_cast<PacketCap*>(ctx.user_data);
+            c->hb = hb;
+            c->hb_calls++;
+        };
+        (void)parse_message(msg.data(), static_cast<uint32_t>(msg.size()), GuidPrefix{}, ops, &cap);
+        total += cap.hb_calls;
+        if (cap.hb_calls > 0 && last) *last = cap.hb;
+    }
+    return total;
+}
+
+// §8.4.15.4 (reader-initiated exchange): a preemptive ACKNACK that
+// requests nothing but acknowledges less than the writer has written is
+// answered with a HEARTBEAT directed at that reader.
+static bool tc_swr_8_4_3_002(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer_guid = make_guid(0xE1u, 0xE2u, 0xE3u, make_entity(1u, 1u, 1u, 0x03u));
+    const Guid reader_guid = make_guid(0xF1u, 0xF2u, 0xF3u, make_entity(2u, 2u, 2u, 0x04u));
+    const Locator loc = make_udpv4_locator(0xC0A80145u, 7411u);
+    StatefulWriterStorage<2, 1> w(writer_guid, ReliabilityKind::RELIABLE,
+                           DurabilityKind::VOLATILE, tx);
+    const Octet payload[1] = {0x42u};
+    CHECK(w.write_async(ChangeKind::ALIVE, payload, 1u), "write_async should succeed");
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+    tx.unicast_msgs.clear();
+
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = reader_guid.prefix;
+    ParsedAckNack ack{};
+    ack.readerId = reader_guid.entityId;
+    ack.writerId = writer_guid.entityId;
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(0));
+    ack.count = 1;
+    w.on_acknack(ctx, ack);
+
+    ParsedHeartbeat hb{};
+    CHECK(count_heartbeats(tx, &hb) == 1, "preemptive ACKNACK must elicit one HEARTBEAT");
+    CHECK(hb.readerId == reader_guid.entityId, "the HEARTBEAT must be directed at the reader");
+    CHECK(hb.lastSN == SequenceNumber::from_int64(1), "HEARTBEAT must advertise the written SN");
+
+    // An ACKNACK that acknowledges everything written needs no answer.
+    tx.unicast_msgs.clear();
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(2));
+    ack.count = 2;
+    w.on_acknack(ctx, ack);
+    CHECK(count_heartbeats(tx, nullptr) == 0, "an up-to-date reader must not get a HEARTBEAT");
+    return true;
+}
+
+// §8.4.2.2, §8.4.3: an ACKNACK that requests nothing from a reader that has
+// acknowledged changes before is not an announcement, even while the writer
+// has written past it; answering it would pair every HEARTBEAT with another
+// for as long as the writer streams.
+static bool tc_swr_8_4_3_003(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer_guid = make_guid(0xE4u, 0xE5u, 0xE6u, make_entity(1u, 1u, 1u, 0x03u));
+    const Guid reader_guid = make_guid(0xF4u, 0xF5u, 0xF6u, make_entity(2u, 2u, 2u, 0x04u));
+    const Locator loc = make_udpv4_locator(0xC0A80147u, 7411u);
+    StatefulWriterStorage<8, 1> w(writer_guid, ReliabilityKind::RELIABLE,
+                                  DurabilityKind::VOLATILE, tx);
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+    const Octet payload[4] = {1u, 2u, 3u, 4u};
+    for (int i = 0; i < 3; ++i) {
+        CHECK(w.write_async(ChangeKind::ALIVE, payload, 4u), "write_async should succeed");
+    }
+
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = reader_guid.prefix;
+    ParsedAckNack ack{};
+    ack.readerId = reader_guid.entityId;
+    ack.writerId = writer_guid.entityId;
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(2));
+    ack.count = 1;
+    tx.unicast_msgs.clear();
+    w.on_acknack(ctx, ack);
+    CHECK(count_heartbeats(tx, nullptr) == 1,
+          "a reader acknowledging for the first time is still answered");
+
+    // SN 3 is in flight; the reader acknowledges 1-2 again, then 1-3 with SN 4 written.
+    CHECK(w.write_async(ChangeKind::ALIVE, payload, 4u), "write_async should succeed");
+    tx.unicast_msgs.clear();
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(4));
+    ack.count = 2;
+    w.on_acknack(ctx, ack);
+    CHECK(count_heartbeats(tx, nullptr) == 0,
+          "a reader that has acknowledged before gets no HEARTBEAT for a plain ACK");
+    return true;
+}
+
+// §8.4.7.1: acknowledgment state for DDS wait_for_acknowledgments.
+static bool tc_swr_8_4_7_001(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer_guid = make_guid(0xA1u, 0xA2u, 0xA3u, make_entity(1u, 1u, 1u, 0x03u));
+    const Guid reader_guid = make_guid(0xB1u, 0xB2u, 0xB3u, make_entity(2u, 2u, 2u, 0x04u));
+    const Locator loc = make_udpv4_locator(0xC0A80146u, 7411u);
+    StatefulWriterStorage<2, 1> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx);
+    CHECK(w.acknowledged_by_all(), "an empty history is trivially acknowledged");
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+    const Octet payload[1] = {0x42u};
+    CHECK(w.write_async(ChangeKind::ALIVE, payload, 1u), "write_async should succeed");
+    CHECK(!w.acknowledged_by_all(), "a sample not yet acknowledged keeps the wait going");
+
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = reader_guid.prefix;
+    ParsedAckNack ack{};
+    ack.readerId = reader_guid.entityId;
+    ack.writerId = writer_guid.entityId;
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(2));
+    ack.count = 1;
+    w.on_acknack(ctx, ack);
+    CHECK(w.acknowledged_by_all(), "a cumulative ACK of every SN completes the wait");
+
+    StatefulWriterStorage<2, 1> be(writer_guid, ReliabilityKind::BEST_EFFORT, DurabilityKind::VOLATILE, tx);
+    CHECK(be.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+    CHECK(be.write_async(ChangeKind::ALIVE, payload, 1u), "write_async should succeed");
+    CHECK(be.acknowledged_by_all(), "a BEST_EFFORT writer never waits for acknowledgments");
+    return true;
+}
+
+// §8.4.7.1: the writer's next timed action bounds how long the participant sleeps.
+static bool tc_swr_8_4_7_002(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer_guid = make_guid(0xC1u, 0xC2u, 0xC3u, make_entity(1u, 1u, 1u, 0x03u));
+    const Guid reader_guid = make_guid(0xD1u, 0xD2u, 0xD3u, make_entity(2u, 2u, 2u, 0x04u));
+    const Locator loc = make_udpv4_locator(0xC0A80147u, 7411u);
+    StatefulWriterStorage<2, 1> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx,
+                           /*nack_delay_ms=*/200u, /*hb_period_ms=*/2000u);
+    CHECK(w.ms_until_next_timer(500u) == UINT32_MAX,
+          "without matched readers there is nothing to heartbeat or repair");
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+    CHECK(w.ms_until_next_timer(500u) == UINT32_MAX,
+          "a matched reader with nothing unacknowledged is idle: no HEARTBEAT timer");
+
+    const Octet payload[1] = {0x42u};
+    CHECK(w.write_async(ChangeKind::ALIVE, payload, 1u), "write_async should succeed");
+    CHECK(w.ms_until_next_timer(500u) <= 2000u,
+          "an unacknowledged change makes the reader announcing: the HEARTBEAT timer runs");
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = reader_guid.prefix;
+    ParsedAckNack nack{};
+    nack.readerId = reader_guid.entityId;
+    nack.writerId = writer_guid.entityId;
+    nack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(1));
+    nack.readerSNState.numBits = 1u;
+    nack.readerSNState.set(0u);
+    nack.count = 1;
+    g_stateful_writer_test_now_ms = 600u;
+    w.on_acknack(ctx, nack);
+    CHECK(w.ms_until_next_timer(600u) == 200u, "a NACK arms nackResponseDelay, the sooner timer");
+    CHECK(w.ms_until_next_timer(900u) == 0u, "an overdue repair reports zero");
+    return true;
+}
+
+// A transport with a small datagram limit that records what is sent.
+struct SmallMtuTransport : ITransport {
+    uint32_t limit = 600u;
+    std::vector<std::vector<Octet>> sent{};
+    bool send_unicast(const BufRef& buf, const Locator&) noexcept override {
+        sent.emplace_back(buf.data, buf.data + buf.size);
+        return true;
+    }
+    bool send_multicast(const BufRef&, const Locator&) noexcept override { return true; }
+    uint32_t max_datagram_size() const noexcept override { return limit; }
+};
+
+// §8.4.14.1 / §9.4.5.4: a sample larger than the datagram limit is sent as
+// DATA_FRAG submessages, every datagram within the limit, and reassembles to
+// the complete serializedPayload (CDR_LE header + data) with its inline QoS.
+static bool tc_swr_8_4_14_001(std::string& err) {
+    SmallMtuTransport tx{};
+    const Guid writer_guid = make_guid(0xE1u, 0xE2u, 0xE3u, make_entity(1u, 1u, 1u, 0x03u));
+    const Guid reader_guid = make_guid(0xF1u, 0xF2u, 0xF3u, make_entity(2u, 2u, 2u, 0x04u));
+    const Locator loc = make_udpv4_locator(0xC0A80148u, 7411u);
+    StatefulWriterStorage<1, 1> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx);
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+
+    std::vector<Octet> payload(1800u);
+    for (size_t i = 0; i < payload.size(); ++i) payload[i] = static_cast<Octet>(i * 7u + 3u);
+    InlineQos qos{};
+    qos.hasRelatedSampleIdentity = true;
+    qos.relatedSampleIdentity.writerGuid = reader_guid;
+    qos.relatedSampleIdentity.sequenceNumber = SequenceNumber::from_int64(9);
+    CHECK(w.write_async(ChangeKind::ALIVE, payload.data(), static_cast<uint32_t>(payload.size()), qos),
+          "write_async should succeed");
+
+    CHECK(tx.sent.size() > 1u, "a sample over the limit must be split into several datagrams");
+    struct Collect {
+        FragmentAssembler<1> assembler{};
+        CacheChange complete{};
+        int fragments = 0;
+        bool done = false;
+        bool qos_everywhere = true;
+    } c{};
+    ParseOps ops{};
+    ops.on_data_frag = [](const ParseContext& ctx, const ParsedDataFrag& f) noexcept {
+        auto* col = static_cast<Collect*>(ctx.user_data);
+        ++col->fragments;
+        col->qos_everywhere = col->qos_everywhere && f.inlineQosPresent &&
+                              f.inlineQos.hasRelatedSampleIdentity;
+        const Guid wg{ctx.senderGuidPrefix, f.writerId};
+        if (col->assembler.on_data_frag(wg, f.writerSN, f.fragmentStartingNum,
+                                        f.fragmentsInSubmessage, f.fragmentSize, f.dataSize,
+                                        f.fragmentPayload, f.fragmentPayloadSize, TIME_ZERO,
+                                        col->complete, f.inlineQosPresent ? &f.inlineQos : nullptr)) {
+            col->done = true;
+        }
+    };
+    for (const auto& msg : tx.sent) {
+        CHECK(msg.size() <= tx.limit, "no datagram may exceed the transport's datagram limit");
+        CHECK(parse_message(msg.data(), static_cast<uint32_t>(msg.size()), GuidPrefix{}, ops, &c) ==
+                  ParseResult::OK,
+              "every fragment datagram must parse");
+    }
+    CHECK(c.fragments == static_cast<int>(tx.sent.size()), "one DATA_FRAG per datagram");
+    CHECK(c.qos_everywhere, "inline QoS must ride in every fragment");
+    CHECK(c.done, "the fragments must reassemble into a complete sample");
+    CHECK(c.complete.payload.size == payload.size() + 4u,
+          "the serializedPayload is the CDR header plus the data");
+    if (!(c.complete.payload.data[0] == 0x00u && c.complete.payload.data[1] == 0x01u)) {
+        char b[96];
+        std::snprintf(b, sizeof(b), "fragment 1 must carry the CDR_LE header; got %02x %02x %02x %02x %02x %02x",
+                      c.complete.payload.data[0], c.complete.payload.data[1], c.complete.payload.data[2],
+                      c.complete.payload.data[3], c.complete.payload.data[4], c.complete.payload.data[5]);
+        err = b;
+        return false;
+    }
+    bool same = true;
+    for (size_t i = 0; i < payload.size(); ++i) same = same && c.complete.payload.data[4 + i] == payload[i];
+    CHECK(same, "reassembled data must equal the written sample");
+    CHECK(c.complete.inlineQos.hasRelatedSampleIdentity &&
+              c.complete.inlineQos.relatedSampleIdentity == qos.relatedSampleIdentity,
+          "the completed change keeps the sample's related sample identity");
+
+    // A sample that fits is still sent as one DATA.
+    tx.sent.clear();
+    const Octet small[16] = {};
+    CHECK(w.write_async(ChangeKind::ALIVE, small, sizeof(small)), "small write should succeed");
+    CHECK(tx.sent.size() == 1u, "a sample within the limit stays a single DATA datagram");
+    return true;
+}
+
+namespace {
+
+// Refuses every send until `up` is set, as a link that is down or a pool
+// that is exhausted would.
+struct FlakyTransport : ITransport {
+    bool up = false;
+    int attempts = 0;
+    std::vector<std::vector<Octet>> delivered{};
+
+    bool send_unicast(const BufRef& buf, const Locator&) noexcept override {
+        ++attempts;
+        if (!up) return false;
+        delivered.emplace_back(buf.data, buf.data + buf.size);
+        return true;
+    }
+    bool send_multicast(const BufRef&, const Locator&) noexcept override { return false; }
+};
+
+}  // namespace
+
+// §8.4.9.2: a change the transport refused is a lost datagram. It leaves
+// UNSENT at once, so the writer never retries it in a loop, and a reliable
+// reader still gets it through NACK repair. A reader with no locator is the
+// same case: nothing can be sent to it, and writing must still return.
+static bool tc_swr_8_4_9_005(std::string& err) {
+    FlakyTransport tx{};
+    const Guid writer_guid = make_guid(0xE5u, 0xE6u, 0xE7u, make_entity(1u, 5u, 5u, 0x03u));
+    const Guid reader_guid = make_guid(0xF5u, 0xF6u, 0xF7u, make_entity(2u, 6u, 6u, 0x04u));
+    const Guid mute_guid = make_guid(0xF8u, 0xF9u, 0xFAu, make_entity(2u, 7u, 7u, 0x04u));
+    const Locator loc = make_udpv4_locator(0xC0A80156u, 7411u);
+
+    StatefulWriterStorage<2, 2> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE,
+                           tx, 5u, 1000u);
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+    CHECK(w.matched_reader_add(mute_guid, nullptr, 0u, false),
+          "a reader without locators can still be matched");
+
+    const Octet payload[2] = {0x12u, 0x34u};
+    CHECK(w.write_async(ChangeKind::ALIVE, payload, 2u), "write_async returns despite the failed send");
+    CHECK(tx.attempts == 1, "the failed send is attempted once, not retried in a loop");
+
+    tx.up = true;
+    ParsedAckNack ack{};
+    ack.readerId = reader_guid.entityId;
+    ack.writerId = writer_guid.entityId;
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(1));
+    ack.readerSNState.add(SequenceNumber::from_int64(1));
+    ack.count = 1;
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = reader_guid.prefix;
+    g_stateful_writer_test_now_ms = 300u;
+    w.on_acknack(ctx, ack);
+    w.tick(310u);
+    int data_packets = 0;
+    for (const auto& pkt : tx.delivered) {
+        PacketCap cap{};
+        ParseOps ops{};
+        ops.on_data = [](const ParseContext& c, const ParsedData&) noexcept {
+            static_cast<PacketCap*>(c.user_data)->data_calls++;
+        };
+        (void)parse_message(pkt.data(), static_cast<uint32_t>(pkt.size()), GuidPrefix{}, ops, &cap);
+        data_packets += cap.data_calls;
+    }
+    CHECK(data_packets == 1, "the NACKed change is repaired once the transport works");
+    return true;
+}
+
+void append_stateful_writer_tests_8_4_3_8_4_4(std::vector<TestCase>& tests) {
+    tests.push_back({"TC-SWR-8.4.3-001",
+                     "§8.4.3: ACKNACK cumulative ACK updates ReaderProxy acknowledgment state; duplicate ACKNACK counts are ignored.",
+                     tc_swr_8_4_3_001});
+    tests.push_back({"TC-SWR-8.4.3-002",
+                     "§8.4.15.4: a preemptive ACKNACK (no NACK bits, base below the next SN) is answered with a directed HEARTBEAT; an up-to-date ACK is not.",
+                     tc_swr_8_4_3_002});
+    tests.push_back({"TC-SWR-8.4.3-003",
+                     "§8.4.2.2/§8.4.3: a plain ACK from a reader that has acknowledged before is not answered with a HEARTBEAT, even while the writer has written past it.",
+                     tc_swr_8_4_3_003});
+    tests.push_back({"TC-SWR-8.4.7-001",
+                     "§8.4.7.1: acknowledged_by_all() is true for an empty history, false until every matched reader ACKs the newest SN, and always true for BEST_EFFORT.",
+                     tc_swr_8_4_7_001});
+    tests.push_back({"TC-SWR-8.4.7-002",
+                     "§8.4.7.1/§8.4.9.2: ms_until_next_timer() is unbounded while no reader has unacknowledged changes, the heartbeat remainder while one does, and the nackResponseDelay remainder after a NACK.",
+                     tc_swr_8_4_7_002});
+    tests.push_back({"TC-SWR-8.4.14-001",
+                     "§8.4.14.1/§9.4.5.4: samples over the datagram limit go out as DATA_FRAG, every datagram within the limit, reassembling to the CDR header plus data with inline QoS in every fragment and in the result.",
+                     tc_swr_8_4_14_001});
+    tests.push_back({"TC-SWR-8.4.4-001",
+                     "§8.4.4/§8.4.1.1: NACK_FRAG requests arm nackResponseDelay and trigger deferred retransmit plus directed final HEARTBEAT.",
+                     tc_swr_8_4_4_001});
+    tests.push_back({"TC-SWR-8.4.9-005",
+                     "§8.4.9.2: a change the transport refuses, or that has no locator to go to, leaves UNSENT at once: write_async returns, the send is not retried in a loop, and NACK repair delivers it later.",
+                     tc_swr_8_4_9_005});
+}
+
+} // namespace spec_test

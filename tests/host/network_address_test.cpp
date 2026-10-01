@@ -1,11 +1,11 @@
 /**
  * @file network_address_test.cpp
  * @brief `NetworkAddress`: combines the per-family managers into one snapshot,
- *        publishes to the platform, fires one on_change, supervises the link.
+ *        fires one on_change, supervises the link.
  */
 
+#include "fake_clock.hpp"
 #include "fake_interface.hpp"
-#include "fake_runtime.hpp"
 #include "mock_provider.hpp"
 #include "test_util.hpp"
 
@@ -14,7 +14,7 @@
 using namespace rosette::net;
 
 int main() {
-    // ── v4 + v6 combine into one snapshot; platform publish; on_change ────
+    // ── v4 + v6 combine into one snapshot; on_change ──────────────────────
     {
         fake::reset();
         MockProvider dhcp{AddressFamily::ipv4};
@@ -39,11 +39,11 @@ int main() {
 
         check(changes == 1 && last_assigned, "on_change fires once when the interface comes up");
         const AddressSnapshot& s = net.snapshot();
-        check(s.v4.has_address && s.v6.has_address, "both families present");
+        check(s.v4.has_address() && s.v6.has_address(), "both families present");
         check(s.v4.routable(), "v4 routable");
         check(s.v6.link_local(), "v6 link-local (fe80::)");
-        check(fake::ipv4() == 0xC0A80132u, "IPv4 published to the platform");
-        check(fake::ipv6()[0] == 0xFEu, "IPv6 published to the platform");
+        check(s.v4.address()[0] == 192u && s.v4.address()[3] == 50u, "v4 address in the snapshot");
+        check(s.v6.address()[0] == 0xFEu, "v6 address in the snapshot");
         check(net.stable() && net.has_address(), "stable + has_address");
 
         dhcp.set_phase(AddressPhase::failed);
@@ -51,10 +51,10 @@ int main() {
         net.poll(fake::now());  // exhausts v4 -> backoff; v6 gone
         net.poll(fake::now());
         check(!net.has_address() && !last_assigned, "on_change fires again on loss");
-        check(fake::ipv4() == 0u, "IPv4 cleared on the platform");
+        check(!net.snapshot().v4.has_address(), "v4 address cleared from the snapshot");
     }
 
-    // ── v4-only: wait_stable + has_address ─────────────────────────
+    // ── v4-only: has_address ──────────────────────────────────────
     {
         fake::reset();
         MockProvider dhcp;
@@ -62,12 +62,12 @@ int main() {
         AddressManager v4{v4l};
         NetworkAddress net{v4};
         net.begin();
-        check(!net.wait(1000u), "times out while acquiring");
-        check(!net.has_address(), "no address yet");
+        net.poll(fake::now());
+        check(!net.has_address(), "no address while acquiring");
 
         dhcp.bind();
-        check(net.wait(1000u), "returns once v4 binds");
-        check(net.has_address(), "has_address() agrees");
+        net.poll(fake::now());
+        check(net.has_address(), "has_address() once v4 binds");
     }
 
     // ── conflict surfaces through on_change (snapshot.v4.duplicate()) ─────

@@ -16,9 +16,9 @@ struct FakeInterface : rosette::net::NetInterface {
 
     void apply(const rosette::net::AddressLease& lease) noexcept override {
         ++applies;
-        has_address = lease.has_address;
-        last_address = lease.address;
-        if (!lease.has_address) {
+        has_address = lease.has_address();
+        last_address = lease.address();
+        if (!lease.has_address()) {
             ++clears;
         }
     }

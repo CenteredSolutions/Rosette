@@ -8,14 +8,16 @@
  * instantiate and drive without crashing.
  */
 
-#include "fake_runtime.hpp"
+#include "fake_clock.hpp"
+#include "fake_wiznet_chip.hpp"
 #include "test_util.hpp"
 
-#include "rosette/net/ipv4ll_provider.hpp"
+#include "ports/net/wiznet/dhcp_provider.hpp"
+#include "ports/net/wiznet/interface.hpp"
+#include "ports/net/wiznet/socket_provider.hpp"
+#include "ports/net/wiznet/w5100s.hpp"
 #include "rosette/net/address.hpp"
-#include "rosette/net/wiznet/dhcp_provider.hpp"
-#include "rosette/net/wiznet/interface.hpp"
-#include "rosette/net/wiznet/w5100s.hpp"
+#include "rosette/net/ipv4ll_provider.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -72,20 +74,42 @@ int main() {
         check(!iface.conflict(), "no conflict pending initially");
         AddressLease l{};
         l.family = AddressFamily::ipv4;
-        l.has_address = true;
-        l.address = {192u, 168u, 1u, 5u};
-        l.prefix_len = 24u;
+        l.add({192u, 168u, 1u, 5u}, 24u);
         iface.apply(l);
         check(!bus.writes.empty(), "apply() wrote chip registers");
-        l.has_address = false;
+        l.addresses.clear();
         iface.apply(l);    // clear path
+    }
+
+    // ── TC-NET-WIZ-IF-001: link-local gets mask 0.0.0.0 (RFC 3927 §2.6.2) ──
+    {
+        fake::FakeWiznetChip<Chip> chip;
+        wiz::WiznetDevice<Chip, fake::FakeWiznetChip<Chip>> dev{chip};
+        wiz::WiznetInterface<Chip, fake::FakeWiznetChip<Chip>> chip_iface{dev};
+        AddressLease l{};
+        l.family = AddressFamily::ipv4;
+        l.add({169u, 254u, 17u, 78u}, 16u);
+        l.gateway_v4 = {169u, 254u, 0u, 1u};
+        chip_iface.apply(l);
+        const auto ll = dev.ipv4_config();
+        check(ll.ip == std::array<uint8_t, 4>{169u, 254u, 17u, 78u}, "IF-001: SIPR = link-local");
+        check(ll.subnet == std::array<uint8_t, 4>{} && ll.gateway == std::array<uint8_t, 4>{},
+              "IF-001: link-local is written with mask 0.0.0.0 and no gateway");
+
+        l.addresses.clear();
+        l.add({192u, 168u, 32u, 79u}, 24u);
+        l.gateway_v4 = {192u, 168u, 32u, 1u};
+        chip_iface.apply(l);
+        const auto routable = dev.ipv4_config();
+        check(routable.subnet == std::array<uint8_t, 4>{255u, 255u, 255u, 0u}
+                  && routable.gateway == std::array<uint8_t, 4>{192u, 168u, 32u, 1u},
+              "IF-001: a routable lease keeps its mask and gateway");
     }
 
     // ── providers declared straight into a manager + NetworkAddress ───────
     {
         wiz::WiznetInterface<Chip, RecordingBus> iface{device};
-        wiz::DhcpAddressProvider<Chip, RecordingBus> dhcp{
-                device, sockets, iface, wiz::dhcp_config("host-test")};
+        wiz::DhcpAddressProvider dhcp{sockets, kMac, iface, wiz::dhcp_config("host-test")};
         Ipv4LinkLocalProvider zeroconf{kMac, iface};
 
         AddressProvider* v4l[] = {&dhcp, &zeroconf};

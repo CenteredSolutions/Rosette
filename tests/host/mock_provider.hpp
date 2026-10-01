@@ -45,22 +45,18 @@ struct MockProvider : rosette::net::AddressProvider {
     // ── scripting helpers ───────────────────────────────────────────────────
     void bind(std::array<uint8_t, 4> ip = {10u, 0u, 0u, 7u}) noexcept {
         lease_.state = rosette::net::AddressPhase::bound;
-        lease_.has_address = true;
-        lease_.address = {};
-        for (std::size_t i = 0u; i < 4u; ++i) {
-            lease_.address[i] = ip[i];
-        }
+        lease_.addresses.clear();
+        lease_.add({ip[0], ip[1], ip[2], ip[3]}, 24u);
     }
     void bind_v6() noexcept {
         lease_.state = rosette::net::AddressPhase::bound;
-        lease_.has_address = true;
-        lease_.address = {0xFEu, 0x80u, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1u};
+        lease_.addresses.clear();
+        lease_.add({0xFEu, 0x80u, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1u}, 64u);
     }
     void set_phase(rosette::net::AddressPhase p) noexcept {
         lease_.state = p;
         if (p != rosette::net::AddressPhase::bound) {
-            lease_.has_address = false;
-            lease_.address = {};
+            lease_.addresses.clear();
         }
     }
     void signal_conflict() noexcept {

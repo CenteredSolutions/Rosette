@@ -3,7 +3,7 @@
  * @brief Hardware pin mapping for the WIZnet W6300-EVB-Pico2 (RP2350).
  *
  * PROVISIONAL. The W6300's host interface is QSPI. This board config drives it
- * single-lane (1-bit) through a GPIO bit-bang bus (`PicoQspiBus`), which is
+ * single-lane (1-bit) through a GPIO bit-bang bus (`Rp2QspiBus`), which is
  * correct but slow. Full-rate 4-bit QSPI needs a PIO program — phase 2 — after
  * which only `ROSETTE_WIZNET_BUS_QSPI`'s implementation changes, not this file.
  *
@@ -22,11 +22,11 @@
 // ── WIZnet part ──────────────────────────────────────────────────────────────
 #define ROSETTE_WIZNET_CHIP        W6300
 
-// Select the QSPI bus (single-lane bit-bang for now); see board.hpp.
+// Select the QSPI bus (single-lane bit-bang for now); see wiznet_board_types.hpp.
 #define ROSETTE_WIZNET_BUS_QSPI    1
 
 // ── W6300 QSPI pins ─────────────────────────────────────────────────────────
-// Reused SPI-pin macro names so board.hpp's make_board_bus() can stay generic.
+// Reused SPI-pin macro names so wiznet_board_types.hpp's make_board_bus() can stay generic.
 #define ROSETTE_PIN_SPI_SCK        17
 #define ROSETTE_PIN_SPI_TX         18   ///< IO0 / MOSI (single-lane)
 #define ROSETTE_PIN_SPI_RX         19   ///< IO1 / MISO (single-lane)

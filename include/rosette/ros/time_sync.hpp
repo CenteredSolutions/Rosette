@@ -1,90 +1,85 @@
-/**
- * @file ros/time_sync.hpp
- * @brief Wall-clock time synchronized with the micro-ROS Agent.
- *
- * The Agent's host has real (typically NTP-disciplined) wall time; the MCU has
- * only a monotonic tick. `rmw_uros_sync_session()` runs a short round-trip with
- * the Agent to estimate the offset, after which `epoch_nanos()` /
- * `epoch_millis()` return Agent-aligned Unix time — the right value for
- * `std_msgs/Header` stamps and cross-device correlation.
- *
- * `rosette::App` performs the sync automatically on every (re)connect
- * (`AppOptions::sync_time_on_connect`) and can re-sync on an interval
- * (`AppOptions::time_resync_period_ms`); these helpers are what module
- * `publish()` code calls to stamp messages.
- */
-
 #pragma once
 
-#include <rcl/error_handling.h>
-#include <rmw_microros/time_sync.h>
-
-#include <stdint.h>
-
-namespace rosette {
-
 /**
- * @brief Whether the epoch clock has been synchronized with the Agent.
- */
-inline bool time_synced() noexcept
-{
-    return rmw_uros_epoch_synchronized();
-}
-
-/**
- * @brief Milliseconds since the Unix epoch, Agent-aligned.
+ * @file ros/time_sync.hpp
+ * @brief Wall-clock (Unix epoch) time on a board that has only a monotonic tick.
  *
- * @return Synchronized wall time in ms, or a value derived from the local
- * monotonic clock when `time_synced()` is false.
- */
-inline int64_t epoch_millis() noexcept
-{
-    return rmw_uros_epoch_millis();
-}
-
-/**
- * @brief Nanoseconds since the Unix epoch, Agent-aligned.
- */
-inline int64_t epoch_nanos() noexcept
-{
-    return rmw_uros_epoch_nanos();
-}
-
-/**
- * @brief A ROS time stamp (`sec` / `nanosec`) for the current instant.
+ * A board boots with no idea of the date, yet `std_msgs/Header` stamps and
+ * cross-device correlation need Unix time. Rosette keeps one wall clock,
+ * `platform::WallClock` (the monotonic tick plus a synchronized offset), and
+ * these functions read it. Each ROS backend has its time source:
  *
- * Fill a header directly:
- *   auto [sec, nsec] = rosette::time_stamp();
- *   msg.header.stamp.sec = sec;
- *   msg.header.stamp.nanosec = nsec;
+ * - The micro-ROS agent: `AgentSessionGate` runs `rmw_uros_sync_session()`
+ *   against the agent's host clock when a session comes up and every
+ *   `AgentGatePolicy::time_resync_period_ms` after. On the agent backend
+ *   this is the only time source by default.
+ * - SNTP (net/sntp_client.hpp): on rmw_rosette, the board network
+ *   synchronizes with an NTP server it has learned of, a configured one
+ *   (`NetworkConfig::time.server`, for instance from a stored
+ *   `DeviceConfig`) or one DHCP offered, as soon as the board holds an IPv4
+ *   address, and keeps the clock on UTC. With no server known, the board
+ *   has no wall clock.
+ *
+ * The same WallClock feeds rcl's system clock (`rcutils_system_time_now()`,
+ * through the stack's `rosette_micro_ros_epoch_time_us()` hook) and RTPS
+ * source timestamps, so every stamp the firmware produces agrees.
+ *
+ * Until the first successful synchronization, `time_synced()` is false and
+ * the epoch functions return 0, the ROS convention for "time not set", so
+ * an unsynchronized stamp is recognizable rather than plausible. (A host
+ * knows the time from boot: there WallClock starts synchronized.)
+ *
+ *     const rosette::ros::Stamp now = rosette::ros::time_stamp();
+ *     msg.header.stamp.sec = now.sec;
+ *     msg.header.stamp.nanosec = now.nanosec;
  */
+
+#include <cstdint>
+
+namespace rosette::ros {
+
+/// A ROS `builtin_interfaces/Time` value: whole seconds and nanoseconds since the Unix epoch.
 struct Stamp {
     int32_t sec;
     uint32_t nanosec;
 };
 
-inline Stamp time_stamp() noexcept
-{
-    const int64_t ns = rmw_uros_epoch_nanos();
-    return Stamp{static_cast<int32_t>(ns / 1000000000ll),
-                 static_cast<uint32_t>(ns % 1000000000ll)};
-}
+/**
+ * @brief Whether the wall clock has been synchronized with a reference at least once.
+ *
+ * @return True after the first successful SNTP or agent synchronization; it
+ *   stays true while sessions are torn down and rebuilt, since WallClock
+ *   keeps the last offset and the local tick carries it forward.
+ */
+bool time_synced() noexcept;
 
 /**
- * @brief Runs one synchronization round-trip with the Agent.
+ * @brief Nanoseconds since the Unix epoch.
  *
- * @param[in] timeout_ms Time to wait for the Agent's reply.
- * @return `true` when the exchange completed and the offset was updated.
+ * @return The synchronized wall time, or 0 while `time_synced()` is false.
+ *
+ * Verification:
+ * - Correct means: after a sync, the value tracks the reference's clock to
+ *   within the exchange's round-trip time and advances with the local tick.
+ * - Covered by: tests/agent/run_agent_live.sh (TC-ROS-AGT-LIVE-001, the
+ *   agent's host clock); tests/net/sntp_live_probe.cpp (a public NTP server);
+ *   tests/host/sntp_client_test.cpp (the SNTP discipline).
+ *
+ * References:
+ * - micro-ROS rmw_microxrcedds `rmw_microros/time_sync.h` (Humble)
+ * - RFC 4330 §5, RFC 5905 §8 (the round-trip offset estimate both sources use)
  */
-inline bool sync_time(int timeout_ms = 1000) noexcept
-{
-    if (rmw_uros_sync_session(timeout_ms) == RMW_RET_OK) {
-        return true;
-    }
-    // A failed sync (Agent slow/unreachable) still leaves rcl error state set;
-    // clear it so the next connect's rcl calls start clean.
-    rcl_reset_error();
-    return false;
+int64_t epoch_nanos() noexcept;
+
+/// @brief Milliseconds since the Unix epoch, or 0 while `time_synced()` is false.
+inline int64_t epoch_millis() noexcept {
+    return epoch_nanos() / 1000000;
 }
 
-}  // namespace rosette
+/// @brief The current instant as a ROS time stamp; zero while `time_synced()` is false.
+inline Stamp time_stamp() noexcept {
+    const int64_t ns = epoch_nanos();
+    return Stamp{static_cast<int32_t>(ns / 1000000000), static_cast<uint32_t>(ns % 1000000000)};
+}
+
+}  // namespace rosette::ros

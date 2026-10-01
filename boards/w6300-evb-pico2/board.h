@@ -15,7 +15,7 @@ extern "C" {
 /**
  * @brief Initializes GPIO and the W6300 hardware-reset sequence.
  *
- * The W6300 bus is `rosette::platform::PicoQspiBus` (single-lane bit-bang for
+ * The W6300 bus is `rosette::platform::Rp2QspiBus` (single-lane bit-bang for
  * now); it owns the SCK / IO0 / IO1 / CS pins itself, so `board_init()` only
  * handles the reset line, the interrupt line and the LED.
  */

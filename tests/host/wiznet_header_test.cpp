@@ -11,16 +11,16 @@
  *
  * Build and run standalone:
  * @code
- *   c++ -std=c++17 -Wall -Wextra -DROSETTE_NO_FREERTOS -I include \
+ *   c++ -std=c++17 -Wall -Wextra -DROSETTE_OS_POSIX -DROSETTE_CHIP_HOST -I include \
  *       tests/host/wiznet_header_test.cpp -o /tmp/wiznet_header_test && /tmp/wiznet_header_test
  * @endcode
  * or through CMake: `cmake -S tests/host -B build/tests-host && ctest --test-dir build/tests-host`.
  */
 
-#include "fake_runtime.hpp"
+#include "fake_clock.hpp"
 
-#include "rosette/net/wiznet/w5100s.hpp"
-#include "rosette/net/wiznet/w6x00.hpp"
+#include "ports/net/wiznet/w5100s.hpp"
+#include "ports/net/wiznet/w6x00.hpp"
 
 #include <algorithm>
 #include <array>
@@ -142,11 +142,11 @@ int main()
         sock_bus.next_reads = {0x51};  // chip-version read; command polls then read 0
         Device sock{sock_bus};
         sock.init_socket_mode({1, 2, 3, 4, 5, 6});
-        // 8 KiB / 4 sockets => 2 KiB spans from 0x4000 (TX) / 0x6000 (RX).
+        // TX: 2 KiB spans from 0x4000; RX: the default 4/2/1/1 KiB from 0x6000.
         check(sock.tx_buffer_address(0) == 0x4000u && sock.tx_buffer_address(2) == 0x5000u,
               "W5100S socket-mode TX spans: socket 0 @ 0x4000, socket 2 @ 0x5000");
-        check(sock.rx_buffer_address(3) == 0x7800u,
-              "W5100S socket-mode RX span: socket 3 @ 0x7800");
+        check(sock.rx_buffer_address(1) == 0x7000u && sock.rx_buffer_address(3) == 0x7C00u,
+              "W5100S socket-mode RX spans follow 4/2/1/1: socket 1 @ 0x7000, socket 3 @ 0x7C00");
         check(sock.socket_tx_capacity(1) == 2048u && sock.socket_rx_capacity(1) == 2048u,
               "W5100S socket-mode capacity cached at 2 KiB (no per-packet SPI read)");
 
@@ -169,8 +169,10 @@ int main()
         static_assert(wiz::W5100S::common_ip_conflict_mask() == 0x80u, "W5100S IR_CONFLICT");
         static_assert(wiz::W6100::common_ip_conflict_mask() == 0x04u, "W6100 IR_IPCONF");
         static_assert(wiz::W6300::common_ip_conflict_mask() == 0x04u, "W6300 IR_IPCONF");
-        check(!wiz::W5100S::has_hw_ipv6() && !wiz::W6100::has_hw_ipv6(),
-              "no chip claims hardware IPv6 yet");
+        static_assert(!wiz::W5100S::has_hw_ipv6(), "W5100S has no IPv6");
+        static_assert(wiz::W6100::has_hw_ipv6() && wiz::W6300::has_hw_ipv6(), "W61xx/W63xx dual stack");
+        static_assert(wiz::W6100::socket_dest_ip6(1) == 0x013005u, "W6100 Sn_DIP6R(1) packed addr");
+        static_assert(wiz::W6100::common_ip6_link_local() == 0x414000u, "W6100 LLAR packed addr");
         check(true, "IPv4 conflict-bit traits pinned");
     }
 

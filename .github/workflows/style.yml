@@ -1,0 +1,33 @@
+# Enforce the AGENTS.md coding style: clang-format and the blank-line rule on
+# changed lines, and the 100-line function cap across the tree.
+name: style
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  style:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pinned tools
+        run: python3 -m pip install -r tools/style/requirements.txt
+
+      - name: Check style
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="origin/${{ github.base_ref }}"
+          else
+            base="${{ github.event.before }}"
+            git cat-file -e "$base^{commit}" 2>/dev/null || base="HEAD~1"
+          fi
+          tools/style/run_style_checks.sh "$base"

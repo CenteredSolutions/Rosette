@@ -2,7 +2,7 @@
  * @file boards/w6300-evb-pico2/board_init.c
  * @brief Board bring-up for the WIZnet W6300-EVB-Pico2 (RP2350), no-RTOS build.
  *
- * The W6300 bus is `rosette::platform::PicoQspiBus`, which configures its own
+ * The W6300 bus is `rosette::platform::Rp2QspiBus`, which configures its own
  * SCK / IO0 / IO1 / CS pins. `board_init()` therefore only handles the reset
  * line, the (optional) interrupt line and the user LED, then pulses the W6300
  * hardware reset. Register unlock / buffer sizing / PHY / DHCP are
@@ -16,12 +16,6 @@
 #include "pico/stdlib.h"
 #include "pico/unique_id.h"
 
-static void wiznet_int_callback(uint gpio, uint32_t events)
-{
-    (void)gpio;
-    (void)events;
-}
-
 void board_init(void)
 {
     stdio_init_all();
@@ -30,12 +24,11 @@ void board_init(void)
     gpio_set_dir(ROSETTE_PIN_WIZNET_RST, GPIO_OUT);
     gpio_put(ROSETTE_PIN_WIZNET_RST, 1);
 
+    // Active-low INT; the network bring-up attaches its interrupt
+    // (WiznetSocketProvider::attach_interrupt()) once the chip answers.
     gpio_init(ROSETTE_PIN_WIZNET_INT);
     gpio_set_dir(ROSETTE_PIN_WIZNET_INT, GPIO_IN);
     gpio_pull_up(ROSETTE_PIN_WIZNET_INT);
-    gpio_set_irq_enabled_with_callback(ROSETTE_PIN_WIZNET_INT,
-                                       GPIO_IRQ_EDGE_FALL, true,
-                                       &wiznet_int_callback);
 
     gpio_init(ROSETTE_PIN_LED);
     gpio_set_dir(ROSETTE_PIN_LED, GPIO_OUT);

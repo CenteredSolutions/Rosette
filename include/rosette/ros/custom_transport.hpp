@@ -2,20 +2,14 @@
 
 /**
  * @file ros/custom_transport.hpp
- * @brief Lightweight transport contract for Rosette micro-ROS integration.
+ * @brief The transport contract the micro-ROS XRCE client speaks through.
  *
- * Design goal
- * -----------
- * Keep transport bring-up, endpoint selection, and socket ownership reusable
- * even when higher-level projects do not compile the full micro-ROS toolchain.
- *
- * Why this exists
- * ---------------
- * `Context` uses this interface to hand C callback hooks to
- * `rmw_uros_options_set_custom_transport()`, but the transport contract itself
- * is independent of `rcl`, `rclc`, and executor setup. Breaking it out lets
- * board- and firmware-level code reuse Rosette's transport runtime objects as
- * ordinary C++ infrastructure.
+ * micro-ROS custom transports are four C callbacks (open, close, write,
+ * read) plus an opaque argument. `rmw_agent_link()` (src/ros/agent_rmw_link.cpp)
+ * turns any `CustomTransport` into that table and registers it with
+ * `rmw_uros_set_custom_transport()`. The contract itself needs no micro-ROS
+ * headers, so transports and the agent gate compile and test without the
+ * micro-ROS toolchain.
  */
 
 #include "rosette/net/socket.hpp"
@@ -28,11 +22,9 @@ namespace rosette {
 /**
  * @brief Transport hook that lets Rosette reuse board/network abstractions.
  *
- * micro-ROS custom transports are C callback based. This interface provides a
- * small C++ shim so board code can keep transport state and driver ownership
- * in one place while `Context` exposes the function pointers required by
- * `rmw_uros_options_set_custom_transport()`. A transport may also accept a
- * discovered Agent endpoint before the first XRCE session is attempted.
+ * A transport keeps its socket and driver state in one object, and accepts
+ * the agent endpoint that `AgentSessionGate` located before the XRCE client
+ * opens it.
  */
 class CustomTransport {
  public:

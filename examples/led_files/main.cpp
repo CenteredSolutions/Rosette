@@ -1,337 +1,453 @@
 /**
  * @file examples/led_files/main.cpp
- * @brief A minimal Rosette firmware: an LED service and an on-device file store.
+ * @brief Stock rclc services on a WIZnet board: an LED and a file store, on either ROS 2 backend.
  *
- * Shows the whole shape of a Rosette application:
- *   - `rosette::App` owns the micro-ROS session and the reconnect loop.
- *   - each `rosette::Module` groups one feature's entities and callbacks.
- *   - services are plain `(request, response)` callbacks.
- *   - entities live in `std::optional<...>` members so `App` can rebuild them
- *     across an Agent reconnect.
+ * The firmware is an ordinary rclc application: the node, its five services
+ * and the executor are built with the stock rclc API, and the same source
+ * builds against both backends Rosette supports (the build picks one, see
+ * CMakeLists.txt):
  *
- * Runs on the host (stock UDP transport) and on the W5100S-EVB-Pico2 (WIZnet
- * hardware sockets, no RTOS, superloop).
+ *   - rmw_rosette: the board is a DDS participant and answers every client
+ *     directly, with no extra process;
+ *   - micro-ROS agent: rmw_microxrcedds carries the services over XRCE-DDS
+ *     to a `micro_ros_agent` on the LAN, which joins the ROS 2 graph on the
+ *     board's behalf.
  *
- * Host:
- *   cmake -S . -B build -DROSETTE_BOARD=posix ; cmake --build build
- *   micro_ros_agent udp4 --port 8888
- *   ROSETTE_AGENT_IP=127.0.0.1 ./build/led_files
+ * Only session setup differs, and it is confined to session_gate(): the
+ * agent backend hands the supervisor a `rosette::ros::AgentSessionGate`,
+ * which locates the agent (a fixed address, mDNS/DNS-SD, or the XRCE
+ * multicast probe), pings it before a session is created and while it runs,
+ * and syncs the epoch clock; rmw_rosette has no far end to check and hands
+ * it nothing. Rosette supplies everything else below and around rclc:
  *
- * W5100S-EVB-Pico2:
- *   cmake -S . -B build -DROSETTE_BOARD=w5100s-evb-pico2 \
- *         -DROSETTE_MICRO_ROS_AGENT_IP=192.168.1.10
- *   cmake --build build          # flash build/led_files.uf2
+ *   - the board network (DHCP, link-local fallback, SLAAC), brought up from
+ *     `net::board_default_network()`;
+ *   - `rosette::ros::SessionSupervisor`, which builds the session when the
+ *     network is ready (and the agent answers), and rebuilds it when the
+ *     address moves (or the agent goes away);
+ *   - the on-device file store (`rosette::storage::FileStore`).
  *
- * Try it:
- *   ros2 service call /led_files/led/set   rosette_msgs/srv/SetLed   "{led: 0, state: true}"
- *   ros2 service call /led_files/files/put  rosette_msgs/srv/PutFile  "{key: k1, body: hello}"
- *   ros2 service call /led_files/files/get  rosette_msgs/srv/GetFile  "{key: k1}"
+ * Services, under /led_files (rosette_msgs, this example's own package):
+ *   ros2 service call /led_files/led/set    rosette_msgs/srv/SetLed    "{led: 0, state: true}"
+ *   ros2 service call /led_files/files/put  rosette_msgs/srv/PutFile   "{key: k1, body: hello}"
+ *   ros2 service call /led_files/files/get  rosette_msgs/srv/GetFile   "{key: k1}"
  *   ros2 service call /led_files/files/list rosette_msgs/srv/ListFiles "{}"
+ *   ros2 service call /led_files/files/erase rosette_msgs/srv/EraseFile "{key: k1}"
+ *
+ * Agent on the host (agent backend only):
+ *   docker run --rm --net=host microros/micro-ros-agent:humble udp4 --port 8888
+ *
+ * tests/perf/led_files_service_bench.py measures the call latency of these
+ * services from a stock rclpy client, on either backend.
+ *
+ * Verification: every service answers a stock client (Fast DDS directly on
+ * rmw_rosette, through a stock agent on the agent backend), including a
+ * kBodyMax-octet file through put and get; on the agent backend, stopping
+ * the agent ends the session within three ping periods, starting it again
+ * brings a new session up, and the report line shows the epoch time
+ * matching the host's `date +%s`; the heap in use returns to the same value
+ * after every rebuild.
+ *
+ * References: rclc (ros2/rclc, Humble) service and executor API; ROS 2
+ * service name mangling (rq/, rr/ prefixes); micro-ROS "Handle reconnections
+ * and liveliness" and "Custom transports" tutorials.
  */
 
-#include "rosette_msgs_traits.hpp"
+#include <malloc.h>
+#include <cstdio>
+#include <cstring>
 
-#include "rosette/ros/ros.hpp"
-#include "rosette/ros/socket_transport.hpp"
+#include <rcl/error_handling.h>
+#include <rcl/rcl.h>
+#include <rclc/executor.h>
+#include <rclc/rclc.h>
+#include <rosette_msgs/srv/erase_file.h>
+#include <rosette_msgs/srv/get_file.h>
+#include <rosette_msgs/srv/list_files.h>
+#include <rosette_msgs/srv/put_file.h>
+#include <rosette_msgs/srv/set_led.h>
+
+#include "board.h"
+#include "rosette/net/board_network.hpp"
+#include "rosette/platform/platform.hpp"
+#include "rosette/ros/session_supervisor.hpp"
+#include "rosette/ros/time_sync.hpp"
 #include "rosette/storage/file_store.hpp"
 #include "rosette/storage/volume.hpp"
 
-#include <rosidl_runtime_c/string_functions.h>
+#include "pico/stdlib.h"
 
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <optional>
-
-#if defined(ROSETTE_BOARD_PICO)
-#include "board.h"
-#include "rosette/net/ipv4ll_provider.hpp"
-#include "rosette/net/address.hpp"
-#include "rosette/net/wiznet/board.hpp"
-#include "rosette/net/wiznet/dhcp_provider.hpp"
-#include "rosette/net/wiznet/interface.hpp"
-#include "rosette/net/wiznet/link.hpp"
+#if ROSETTE_LED_FILES_AGENT_BACKEND
+#include "rosette/ros/agent_locator_mdns.hpp"
+#include "rosette/ros/agent_locator_xrce.hpp"
+#include "rosette/ros/agent_session_gate.hpp"
+#include "rosette/ros/socket_transport.hpp"
 #endif
+
+#define LED_FILES_STR2(x) #x
+#define LED_FILES_STR(x) LED_FILES_STR2(x)
 
 namespace {
 
-// --------------------------------------------------------------------------
-// LED module — rosette_msgs/srv/SetLed on ~/led/set
-// --------------------------------------------------------------------------
-class LedModule final : public rosette::Module {
-public:
-    const char* name() const noexcept override { return "led"; }
-    uint8_t executor_handles() const noexcept override { return 2u; }
+namespace pf = rosette::platform;
+namespace net = rosette::net;
+namespace ros = rosette::ros;
+namespace storage = rosette::storage;
 
-    void register_(rosette::Node& node) noexcept override
-    {
-        node.create_service<rosette::SetLedSrv>(
-            service_, "led/set",
-            [this](const Request& req, Response& resp) noexcept {
-                set_led(req.led, req.state);
-                resp.success = true;
-            });
+constexpr uint32_t kReportPeriodMs = 5000u;
+constexpr int64_t kSpinTimeoutNs = RCL_MS_TO_NS(50);
+constexpr size_t kKeyCapacity = storage::kFileStoreKeyMax + 1u;
+// The largest file body. A GetFile response carries the body plus a CDR
+// header, a flag, two string lengths and a status message, and a PutFile
+// request carries it plus a key; 4000 octets keeps both inside the 4096-octet
+// serialized sample both backends are configured for (RMW_ROSETTE_MAX_SAMPLE_SIZE).
+constexpr size_t kBodyMax = 4000u;
+constexpr size_t kBodyCapacity = kBodyMax + 1u;
+constexpr uint8_t kMaxListedKeys = 16u;
+constexpr size_t kExecutorHandles = 5u;
 
-        node.create_timer(timer_, 500, []() noexcept {
-            static bool on = false;
-            on = !on;
-            gpio_put(22, on ? 1 : 0);
-        });
+storage::FileStore* g_store = nullptr;
 
-        gpio_init(22);
-        gpio_set_dir(22, GPIO_OUT);
-        gpio_init(23);
-        gpio_set_dir(23, GPIO_OUT);
+rcl_allocator_t g_allocator;
+rclc_support_t g_support;
+rcl_node_t g_node;
+rclc_executor_t g_executor;
+rcl_service_t g_set_led_service;
+rcl_service_t g_put_service;
+rcl_service_t g_get_service;
+rcl_service_t g_list_service;
+rcl_service_t g_erase_service;
+
+// Requests and responses live in static storage whose strings point at
+// fixed buffers: the XRCE deserializer writes into caller-owned memory and
+// allocates nothing, so every incoming string needs its capacity in advance.
+rosette_msgs__srv__SetLed_Request g_set_led_request;
+rosette_msgs__srv__SetLed_Response g_set_led_response;
+rosette_msgs__srv__PutFile_Request g_put_request;
+rosette_msgs__srv__PutFile_Response g_put_response;
+rosette_msgs__srv__GetFile_Request g_get_request;
+rosette_msgs__srv__GetFile_Response g_get_response;
+rosette_msgs__srv__ListFiles_Request g_list_request;
+rosette_msgs__srv__ListFiles_Response g_list_response;
+rosette_msgs__srv__EraseFile_Request g_erase_request;
+rosette_msgs__srv__EraseFile_Response g_erase_response;
+
+char g_put_key[kKeyCapacity];
+char g_put_body[kBodyCapacity];
+char g_get_key[kKeyCapacity];
+char g_get_body[kBodyCapacity];
+char g_erase_key[kKeyCapacity];
+char g_listed_key_text[kMaxListedKeys][kKeyCapacity];
+rosidl_runtime_c__String g_listed_keys[kMaxListedKeys];
+
+/// @brief Points a message string at a fixed buffer, empty.
+void bind_string(rosidl_runtime_c__String& s, char* buffer, size_t capacity) noexcept {
+    buffer[0] = '\0';
+    s.data = buffer;
+    s.size = 0u;
+    s.capacity = capacity;
+}
+
+/// @brief Points a response string at constant text; serialization only reads it.
+void set_text(rosidl_runtime_c__String& s, const char* text) noexcept {
+    s.data = const_cast<char*>(text);
+    s.size = std::strlen(text);
+    s.capacity = s.size + 1u;
+}
+
+/// @brief Binds every request and response string to its buffer, once at boot.
+void bind_messages() noexcept {
+    bind_string(g_put_request.key, g_put_key, sizeof(g_put_key));
+    bind_string(g_put_request.body, g_put_body, sizeof(g_put_body));
+    bind_string(g_get_request.key, g_get_key, sizeof(g_get_key));
+    bind_string(g_get_response.body, g_get_body, sizeof(g_get_body));
+    bind_string(g_erase_request.key, g_erase_key, sizeof(g_erase_key));
+    set_text(g_put_response.message, "");
+    set_text(g_get_response.message, "");
+    for (uint8_t i = 0; i < kMaxListedKeys; ++i) {
+        bind_string(g_listed_keys[i], g_listed_key_text[i], kKeyCapacity);
     }
 
-    void on_disconnect() noexcept override
-    {
-        service_.reset();
-        timer_.reset();
+    g_list_response.keys.data = g_listed_keys;
+    g_list_response.keys.size = 0u;
+    g_list_response.keys.capacity = kMaxListedKeys;
+}
+
+/// @brief ~/led/set: drives the board LED (index 0 only).
+void on_set_led(const void* request, void* response) {
+    const auto* rq = static_cast<const rosette_msgs__srv__SetLed_Request*>(request);
+    auto* rs = static_cast<rosette_msgs__srv__SetLed_Response*>(response);
+    rs->success = rq->led == 0u;
+    if (rs->success) {
+        board_set_led(rq->state);
+    }
+}
+
+/// @brief ~/files/put: stores the body under the key.
+void on_put(const void* request, void* response) {
+    const auto* rq = static_cast<const rosette_msgs__srv__PutFile_Request*>(request);
+    auto* rs = static_cast<rosette_msgs__srv__PutFile_Response*>(response);
+    const storage::FileStoreStatus st = g_store->put(rq->key.data, rq->body.data, rq->body.size);
+    rs->success = st == storage::FileStoreStatus::ok;
+    set_text(rs->message, storage::file_store_status_string(st));
+}
+
+/// @brief ~/files/get: returns the body stored under the key.
+void on_get(const void* request, void* response) {
+    const auto* rq = static_cast<const rosette_msgs__srv__GetFile_Request*>(request);
+    auto* rs = static_cast<rosette_msgs__srv__GetFile_Response*>(response);
+    size_t length = 0u;
+    const storage::FileStoreStatus st =
+        g_store->get(rq->key.data, rs->body.data, rs->body.capacity - 1u, length);
+    rs->success = st == storage::FileStoreStatus::ok;
+    rs->body.size = rs->success ? length : 0u;
+    rs->body.data[rs->body.size] = '\0';
+    set_text(rs->message, storage::file_store_status_string(st));
+}
+
+/// @brief ~/files/list: returns up to kMaxListedKeys stored keys.
+void on_list(const void* /*request*/, void* response) {
+    auto* rs = static_cast<rosette_msgs__srv__ListFiles_Response*>(response);
+    const uint8_t count = g_store->list(g_listed_key_text, kMaxListedKeys);
+    for (uint8_t i = 0; i < count; ++i) {
+        g_listed_keys[i].size = std::strlen(g_listed_key_text[i]);
     }
 
-private:
-    using Request = rosette::service_traits<rosette::SetLedSrv>::Request;
-    using Response = rosette::service_traits<rosette::SetLedSrv>::Response;
+    rs->keys.size = count;
+}
 
-    void set_led(uint8_t index, bool on) noexcept
-    {
-        if (index != 0u) {
-            return;
-        }
-#if defined(ROSETTE_BOARD_PICO)
-        board_set_led(on);
+/// @brief ~/files/erase: removes the key; succeeds when it is gone afterwards.
+void on_erase(const void* request, void* response) {
+    const auto* rq = static_cast<const rosette_msgs__srv__EraseFile_Request*>(request);
+    auto* rs = static_cast<rosette_msgs__srv__EraseFile_Response*>(response);
+    rs->success = g_store->erase(rq->key.data) == storage::FileStoreStatus::ok;
+}
+
+/**
+ * @brief Reports a failed rcl call.
+ *
+ * @param[in] ret  The rcl return code.
+ * @param[in] what The call that returned it.
+ * @return True when `ret` is RCL_RET_OK.
+ */
+bool ok(rcl_ret_t ret, const char* what) noexcept {
+    if (ret == RCL_RET_OK) {
+        return true;
+    }
+
+    std::printf("[led_files] %s failed: %d (%s)\n", what, static_cast<int>(ret),
+                rcl_get_error_string().str);
+    rcl_reset_error();
+    return false;
+}
+
+/**
+ * @brief Builds the rclc session: support, node, five services, executor.
+ *
+ * The supervisor calls this once the network is ready (and, on the agent
+ * backend, the agent answers a ping), and again after every
+ * destroy_session(). Support is initialized with stock default options on
+ * both backends: rmw_rosette needs none, and the agent gate installed the
+ * XRCE transport as the default. Every object is zero-initialized first, so
+ * a failure part way leaves destroy_session() finalizing only what was
+ * built. On rmw_rosette the five services need RMW_ROSETTE_MAX_SERVICES of
+ * at least five; with fewer, the fifth service init fails and is printed.
+ *
+ * @return True when every object was created; false at the first failure (printed).
+ *
+ * Verification:
+ * - Correct means: after a true return, each service answers a stock
+ *   client; after a false one destroy_session() returns the heap to its
+ *   level before the call.
+ * - Covered by: tests/perf/led_files_service_bench.py (every service, both
+ *   backends) and the file's hardware check (agent stopped and restarted).
+ *
+ * References:
+ * - rclc (ros2/rclc, Humble) rclc_support_init, rclc_service_init_default,
+ *   rclc_executor_add_service
+ */
+bool create_session() {
+    g_support = rclc_support_t{};
+    g_node = rcl_get_zero_initialized_node();
+    g_set_led_service = rcl_get_zero_initialized_service();
+    g_put_service = rcl_get_zero_initialized_service();
+    g_get_service = rcl_get_zero_initialized_service();
+    g_list_service = rcl_get_zero_initialized_service();
+    g_erase_service = rcl_get_zero_initialized_service();
+    g_executor = rclc_executor_get_zero_initialized_executor();
+    g_allocator = rcl_get_default_allocator();
+
+    return ok(rclc_support_init(&g_support, 0, nullptr, &g_allocator), "rclc_support_init")
+           && ok(rclc_node_init_default(&g_node, "board", "led_files", &g_support),
+                 "rclc_node_init_default")
+           && ok(rclc_service_init_default(&g_set_led_service, &g_node,
+                                           ROSIDL_GET_SRV_TYPE_SUPPORT(rosette_msgs, srv, SetLed),
+                                           "led/set"),
+                 "service led/set")
+           && ok(rclc_service_init_default(&g_put_service, &g_node,
+                                           ROSIDL_GET_SRV_TYPE_SUPPORT(rosette_msgs, srv, PutFile),
+                                           "files/put"),
+                 "service files/put")
+           && ok(rclc_service_init_default(&g_get_service, &g_node,
+                                           ROSIDL_GET_SRV_TYPE_SUPPORT(rosette_msgs, srv, GetFile),
+                                           "files/get"),
+                 "service files/get")
+           && ok(rclc_service_init_default(
+                     &g_list_service, &g_node,
+                     ROSIDL_GET_SRV_TYPE_SUPPORT(rosette_msgs, srv, ListFiles), "files/list"),
+                 "service files/list")
+           && ok(rclc_service_init_default(
+                     &g_erase_service, &g_node,
+                     ROSIDL_GET_SRV_TYPE_SUPPORT(rosette_msgs, srv, EraseFile), "files/erase"),
+                 "service files/erase")
+           && ok(
+               rclc_executor_init(&g_executor, &g_support.context, kExecutorHandles, &g_allocator),
+               "rclc_executor_init")
+           && ok(rclc_executor_add_service(&g_executor, &g_set_led_service, &g_set_led_request,
+                                           &g_set_led_response, on_set_led),
+                 "add led/set")
+           && ok(rclc_executor_add_service(&g_executor, &g_put_service, &g_put_request,
+                                           &g_put_response, on_put),
+                 "add files/put")
+           && ok(rclc_executor_add_service(&g_executor, &g_get_service, &g_get_request,
+                                           &g_get_response, on_get),
+                 "add files/get")
+           && ok(rclc_executor_add_service(&g_executor, &g_list_service, &g_list_request,
+                                           &g_list_response, on_list),
+                 "add files/list")
+           && ok(rclc_executor_add_service(&g_executor, &g_erase_service, &g_erase_request,
+                                           &g_erase_response, on_erase),
+                 "add files/erase");
+}
+
+/**
+ * @brief Finalizes whatever create_session() built, in reverse order.
+ *
+ * rcl's fini calls return an error and change nothing for an object that
+ * was never initialized, so this is safe after a partial create. Their
+ * errors are discarded: the objects are abandoned either way.
+ */
+void destroy_session() {
+    // rcl marks these warn_unused_result, which a (void) cast does not satisfy in GCC.
+    rcl_ret_t discarded = rclc_executor_fini(&g_executor);
+    discarded = rcl_service_fini(&g_erase_service, &g_node);
+    discarded = rcl_service_fini(&g_list_service, &g_node);
+    discarded = rcl_service_fini(&g_get_service, &g_node);
+    discarded = rcl_service_fini(&g_put_service, &g_node);
+    discarded = rcl_service_fini(&g_set_led_service, &g_node);
+    discarded = rcl_node_fini(&g_node);
+    discarded = rclc_support_fini(&g_support);
+    (void)discarded;
+    rcl_reset_error();
+}
+
+#if ROSETTE_LED_FILES_AGENT_BACKEND
+/**
+ * @brief The agent locator this build was configured with.
+ *
+ * ROSETTE_MICRO_ROS_AGENT_IP names a fixed agent; otherwise
+ * ROSETTE_MICRO_ROS_DISCOVERY picks mDNS/DNS-SD (the default) or the XRCE
+ * multicast GET_INFO probe (see cmake/micro_ros.cmake).
+ *
+ * @param[in] sockets The board's socket provider; outlives the locator.
+ * @return A locator with static storage duration.
+ */
+rosette::AgentLocator& configured_locator(rosette::net::SocketProvider& sockets) {
+    if (ROSETTE_MICRO_ROS_AGENT_IP[0] != '\0') {
+        static rosette::StaticAgentLocator fixed(ROSETTE_MICRO_ROS_AGENT_IP,
+                                                 LED_FILES_STR(ROSETTE_MICRO_ROS_AGENT_PORT));
+        return fixed;
+    }
+
+#if ROSETTE_MICRO_ROS_DISCOVERY_MDNS
+    static rosette::MdnsAgentLocator mdns(
+        sockets, rosette::MdnsAgentLocatorConfig{
+                     ROSETTE_MICRO_ROS_MDNS_SERVICE, ROSETTE_MICRO_ROS_MDNS_HOSTNAME,
+                     static_cast<uint16_t>(ROSETTE_MICRO_ROS_AGENT_PORT),
+                     ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS, ROSETTE_MICRO_ROS_MDNS_ATTEMPTS});
+    return mdns;
 #else
-        std::printf("[led] LED %u -> %s\n", index, on ? "on" : "off");
+    static rosette::MulticastAgentLocator xrce(sockets);
+    return xrce;
 #endif
-    }
+}
+#endif
 
-    std::optional<rosette::Service<rosette::SetLedSrv>> service_;
-    std::optional<rosette::Timer> timer_;
-};
+/**
+ * @brief The backend's far-end check for the session supervisor, or null when it has none.
+ *
+ * This is the one place the two backends differ. The agent backend returns
+ * an AgentSessionGate over the XRCE transport on the chip's UDP sockets, so
+ * the supervisor creates a session only while the agent answers pings;
+ * rmw_rosette talks to its peers directly and returns null, so the
+ * supervisor creates the session as soon as the network is ready.
+ *
+ * @return A gate with static storage duration (agent backend), or null (rmw_rosette).
+ *
+ * References:
+ * - include/rosette/ros/session_supervisor.hpp (SessionGate)
+ * - micro-ROS "Handle reconnections and liveliness" tutorial
+ */
+ros::SessionGate* session_gate() {
+#if ROSETTE_LED_FILES_AGENT_BACKEND
+    rosette::net::SocketProvider& sockets = net::board_socket_provider();
+    static rosette::UdpSocketTransport transport(
+        sockets, rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u),
+        rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u), 50u);
+    static ros::AgentSessionGate gate(transport, configured_locator(sockets),
+                                      ros::rmw_agent_link());
+    return &gate;
+#else
+    return nullptr;
+#endif
+}
 
-// --------------------------------------------------------------------------
-// Files module — the rosette_msgs file-store services over a FileStore
-// --------------------------------------------------------------------------
-class FilesModule final : public rosette::Module {
-public:
-    explicit FilesModule(rosette::storage::Volume& volume) noexcept
-        : store_(volume, "/files", "", 4096u)
-    {}
-
-    const char* name() const noexcept override { return "files"; }
-    uint8_t executor_handles() const noexcept override { return 4u; }
-
-    void register_(rosette::Node& node) noexcept override
-    {
-        node.create_service<rosette::PutFileSrv>(
-            put_, "files/put",
-            [this](const PutReq& rq, PutResp& rs) noexcept { on_put(rq, rs); });
-        node.create_service<rosette::GetFileSrv>(
-            get_, "files/get",
-            [this](const GetReq& rq, GetResp& rs) noexcept { on_get(rq, rs); });
-        node.create_service<rosette::ListFilesSrv>(
-            list_, "files/list",
-            [this](const ListReq&, ListResp& rs) noexcept { on_list(rs); });
-        node.create_service<rosette::EraseFileSrv>(
-            erase_, "files/erase",
-            [this](const EraseReq& rq, EraseResp& rs) noexcept {
-                rs.success = store_.erase(rq.key.data) == rosette::storage::FileStoreStatus::ok;
-            });
-    }
-
-    void on_disconnect() noexcept override
-    {
-        put_.reset();
-        get_.reset();
-        list_.reset();
-        erase_.reset();
-    }
-
-private:
-    using PutReq = rosette::service_traits<rosette::PutFileSrv>::Request;
-    using PutResp = rosette::service_traits<rosette::PutFileSrv>::Response;
-    using GetReq = rosette::service_traits<rosette::GetFileSrv>::Request;
-    using GetResp = rosette::service_traits<rosette::GetFileSrv>::Response;
-    using ListReq = rosette::service_traits<rosette::ListFilesSrv>::Request;
-    using ListResp = rosette::service_traits<rosette::ListFilesSrv>::Response;
-    using EraseReq = rosette::service_traits<rosette::EraseFileSrv>::Request;
-    using EraseResp = rosette::service_traits<rosette::EraseFileSrv>::Response;
-
-    void on_put(const PutReq& rq, PutResp& rs) noexcept
-    {
-        const auto st = store_.put(rq.key.data, rq.body.data, rq.body.size);
-        rs.success = st == rosette::storage::FileStoreStatus::ok;
-        rosidl_runtime_c__String__assign(&rs.message,
-                                         rosette::storage::file_store_status_string(st));
-    }
-
-    void on_get(const GetReq& rq, GetResp& rs) noexcept
-    {
-        static char buf[4096];
-        size_t len = 0u;
-        const auto st = store_.get(rq.key.data, buf, sizeof(buf), len);
-        rs.success = st == rosette::storage::FileStoreStatus::ok;
-        if (rs.success) {
-            rosidl_runtime_c__String__assignn(&rs.body, buf, len);
-        }
-        rosidl_runtime_c__String__assign(&rs.message,
-                                         rosette::storage::file_store_status_string(st));
-    }
-
-    void on_list(ListResp& rs) noexcept
-    {
-        static char keys[16][rosette::storage::kFileStoreKeyMax + 1];
-        const uint8_t n = store_.list(keys, 16u);
-        if (!rosidl_runtime_c__String__Sequence__init(&rs.keys, n)) {
-            return;
-        }
-        for (uint8_t i = 0; i < n; ++i) {
-            rosidl_runtime_c__String__assign(&rs.keys.data[i], keys[i]);
-        }
-    }
-
-    rosette::storage::FileStore store_;
-    std::optional<rosette::Service<rosette::PutFileSrv>> put_;
-    std::optional<rosette::Service<rosette::GetFileSrv>> get_;
-    std::optional<rosette::Service<rosette::ListFilesSrv>> list_;
-    std::optional<rosette::Service<rosette::EraseFileSrv>> erase_;
-};
-
-void configure_app(rosette::AppOptions& options)
-{
-    options.context.udp_agent_port = 8888u;
-    options.context.auto_discover_agent = false;
-    options.node_namespace = "led_files";   // entities land under /led_files/...
-    options.node_name = "board";
+/// @brief Prints the session count, the agent's state, the epoch time, and the heap in use.
+void report(const ros::SessionSupervisor& session) {
+    const struct mallinfo heap = mallinfo();
+    std::printf("[led_files] session=%lu%s epoch=%lld%s heap_in_use=%d\n",
+                static_cast<unsigned long>(session.sessions_created()),
+                session.state() == ros::SessionState::running ? "" : " (down)",
+                static_cast<long long>(ros::epoch_millis() / 1000),
+                ros::time_synced() ? "" : " (unsynced)", heap.uordblks);
 }
 
 }  // namespace
 
-#if defined(ROSETTE_BOARD_PICO)
-
-int main()
-{
+int main() {
     board_init();
-
-    std::array<uint8_t, 6> mac{};
-    board_get_mac_address(mac.data());
-
-    namespace wiz = rosette::net::wiznet;
-    namespace net = rosette::net;
-    auto bus = wiz::make_board_bus();
-    wiz::BoardDevice device{bus};
-    wiz::BoardSocketProvider sockets{device};
-
-    // Chip bring-up: verify + socket mode. Carrier is supervised by
-    // NetworkAddress from here on, so this is not retried in a loop.
-    wiz::BoardLink link{device, sockets, mac};
-    (void)link.bring_link_up();
-
-    // ── IPv4 addressing, declared right here ────────────────────────────────
-    // One NetInterface for the chip; a list of providers tried in order (first
-    // to bind wins); an AddressManager runs the list; a NetworkAddress folds it
-    // into a snapshot, publishes the address, watches carrier, and fires one
-    // on_change callback. Nothing here blocks the superloop.
-    static wiz::WiznetInterface<wiz::BoardChip, wiz::BoardBus> iface{device};
-    static wiz::DhcpAddressProvider<wiz::BoardChip, wiz::BoardBus> dhcp{
-        device, sockets, iface, wiz::dhcp_config("rosette-led-files")};
-    static net::Ipv4LinkLocalProvider zeroconf{mac, iface};   // 169.254/16 fallback
-
-    static net::AddressProvider* v4_providers[] = {&dhcp, &zeroconf};
-    static net::AddressManager v4{v4_providers};
-    static net::NetworkAddress net_addr{v4, &iface};
-
-    net_addr.on_change([](const net::AddressSnapshot& s) {
-        if (s.assigned) {
-            std::printf("[led_files] address %u.%u.%u.%u (%s)\n",
-                        s.v4.address[0], s.v4.address[1], s.v4.address[2], s.v4.address[3],
-                        s.v4.routable() ? "routable" : "link-local");
-        } else {
-            std::printf("[led_files] address lost\n");
-        }
-    });
-    net_addr.begin();
-
-    rosette::storage::Volume volume;
-
-    // WIZnet hardware-socket transport to the Agent.
-    const char* agent_ip = ROSETTE_MICRO_ROS_AGENT_IP;
-    if (agent_ip[0] == '\0') {
-        std::printf("[led_files] no ROSETTE_MICRO_ROS_AGENT_IP configured\n");
-        for (;;) { rosette_platform_delay_ms(1000u); }
+    // Hold the boot log until a terminal attaches (up to 10 s).
+    for (int i = 0; i < 100 && !stdio_usb_connected(); ++i) {
+        sleep_ms(100);
     }
 
-    rosette::net::SocketAddress agent{};
-    (void)rosette::make_ipv4_socket_address(agent_ip, 8888u, agent);
-    const auto local = rosette::net::make_socket_address_v4({0u, 0u, 0u, 0u}, 0u);
-    rosette::UdpSocketTransport transport(sockets, agent, local, /*receive_timeout_ms=*/50u);
+    std::printf("[led_files] rclc services over %s\n",
+                ROSETTE_LED_FILES_AGENT_BACKEND ? "a micro-ROS agent" : "rmw_rosette");
 
-    rosette::AppOptions options{};
-    rosette::MulticastAgentLocator agent_locator{sockets};
-    configure_app(options);
-    options.context.use_custom_transport = true;
-    options.context.custom_transport = &transport;
-    options.context.custom_transport_framing = false;   // UDP is packet-oriented
-    // Hand the compiled-in Agent IP to the context: the custom-transport path
-    // has no auto-discovery, so without a static endpoint Context::discover_agent
-    // fails with kCustomTransportRequiresEndpoint.
-    options.context.auto_discover_agent = true;
-    options.context.agent_locator = &agent_locator;
-    //options.context.udp_agent_address = agent_ip;
+    static storage::Volume volume;
+    static storage::FileStore store(volume, "/files", "", kBodyMax);
+    g_store = &store;
+    bind_messages();
 
-    rosette::App app(options);
-    static LedModule led;
-    static FilesModule files(volume);
-    app.add(led);
-    app.add(files);
+    // The supervisor does the waiting, so bring-up returns at once.
+    rosette::net::NetworkConfig network = net::board_default_network();
+    network.ready_timeout_ms = 0u;
+    (void)net::bring_up_board_network("rosette-led-files", network);
+    ros::SessionSupervisor session(net::board_network_watch(), {create_session, destroy_session},
+                                   session_gate());
 
-    std::printf("[led_files] agent %s:8888\n", agent_ip);
-    bool was_connected = false;
+    uint32_t next_report = pf::monotonic_ms() + kReportPeriodMs;
     for (;;) {
-        const uint32_t now = rosette_platform_get_ms();
-        net_addr.poll(now);
-
-        if (net_addr.has_address()) {
-            (void)app.spin_once(now);
-            if (app.connected() != was_connected) {
-                was_connected = app.connected();
-                std::printf("[led_files] agent %s\n",
-                            was_connected ? "connected" : "lost, retrying");
-            }
-        } else if (was_connected) {
-            was_connected = false;
-            std::printf("[led_files] agent lost (address gone)\n");
+        const uint32_t now = pf::monotonic_ms();
+        if (session.step(now) == ros::SessionState::running) {
+            (void)rclc_executor_spin_some(&g_executor, kSpinTimeoutNs);
+        } else {
+            pf::sleep_ms(10u);
         }
 
-        rosette_platform_wait_for_event(app.connected() ? 5u : 100u);
+        if (static_cast<int32_t>(now - next_report) >= 0) {
+            next_report += kReportPeriodMs;
+            report(session);
+        }
     }
 }
-
-#else  // host
-
-int main()
-{
-    rosette::storage::Volume volume;
-    if (!volume.ok()) {
-        std::printf("[led_files] storage volume not available\n");
-    }
-
-    rosette::AppOptions options{};
-    configure_app(options);
-    const char* agent_ip = std::getenv("ROSETTE_AGENT_IP");
-    options.context.udp_agent_address =
-        (agent_ip != nullptr && agent_ip[0] != '\0') ? agent_ip : "127.0.0.1";
-
-    rosette::App app(options);
-    static LedModule led;
-    static FilesModule files(volume);
-    app.add(led);
-    app.add(files);
-
-    std::printf("[led_files] agent %s:8888\n", options.context.udp_agent_address);
-    app.spin();
-    return 0;
-}
-
-#endif

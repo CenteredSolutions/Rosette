@@ -1,6 +1,6 @@
 /**
  * @file storage/device_config.hpp
- * @brief Persistent device configuration read at boot by `rosette::App`.
+ * @brief Persistent device configuration the firmware reads at boot.
  *
  * A single fixed-layout record stored at `/device.cfg` on the board storage
  * volume. It holds the values the micro-ROS client needs before it can reach
@@ -12,7 +12,16 @@
  * followed by the payload. `load()` returns compiled defaults when the file is
  * missing, the header does not match, or the CRC fails, so the board always
  * boots with a usable configuration. `store()` writes the record atomically
- * through `Volume`.
+ * through `Volume`. Version 2 appends `ntp_server`; `load()` still accepts a
+ * version-1 record and leaves `ntp_server` unset.
+ *
+ * The firmware hands `ntp_server` to the network, where SNTP uses it:
+ *
+ *     if (cfg.ntp_server[0] != 0u) {
+ *         network.time.server = rosette::net::make_socket_address_v4(
+ *             {cfg.ntp_server[0], cfg.ntp_server[1], cfg.ntp_server[2], cfg.ntp_server[3]},
+ *             rosette::net::kNtpServerPort);
+ *     }
  *
  * This record is Rosette's own client configuration. Application-specific
  * configuration (per-unit parameters, calibration, and so on) belongs in a
@@ -57,6 +66,9 @@ struct DeviceConfig {
     uint32_t client_key = 0xA1B2C3D4u;  ///< XRCE client key; set this per-board in production.
     uint16_t domain_id = 0u;
     char node_namespace[32] = {};
+
+    /// NTP server IPv4 address for `NetworkConfig::time.server`; all zero for none (record v2).
+    uint8_t ntp_server[4] = {0, 0, 0, 0};
 };
 
 /**

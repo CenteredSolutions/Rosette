@@ -6,7 +6,7 @@
  * Everything past the SPI peripheral — register unlock, buffer sizing, PHY,
  * DHCP — is `rosette::net::wiznet::WiznetLink`, called from the application
  * after `board_init()`. The register-level driver drives the bus through
- * `rosette::platform::PicoSpiBus`, so there are no ioLibrary callbacks here.
+ * `rosette::platform::Rp2SpiBus`.
  */
 
 #include "board.h"
@@ -16,16 +16,6 @@
 #include "hardware/spi.h"
 #include "pico/stdlib.h"
 #include "pico/unique_id.h"
-
-// ── W6100 INT line ──────────────────────────────────────────────────────────
-// Active-low while a socket has an unserviced interrupt. The handler is empty:
-// the ISR merely running pulls the superloop out of the WFE in
-// rosette_platform_wait_for_event(), which then re-polls the chip.
-static void wiznet_int_callback(uint gpio, uint32_t events)
-{
-    (void)gpio;
-    (void)events;
-}
 
 void board_init(void)
 {
@@ -46,12 +36,11 @@ void board_init(void)
     gpio_set_dir(ROSETTE_PIN_WIZNET_RST, GPIO_OUT);
     gpio_put(ROSETTE_PIN_WIZNET_RST, 1);
 
+    // Active-low INT; the network bring-up attaches its interrupt
+    // (WiznetSocketProvider::attach_interrupt()) once the chip answers.
     gpio_init(ROSETTE_PIN_WIZNET_INT);
     gpio_set_dir(ROSETTE_PIN_WIZNET_INT, GPIO_IN);
     gpio_pull_up(ROSETTE_PIN_WIZNET_INT);
-    gpio_set_irq_enabled_with_callback(ROSETTE_PIN_WIZNET_INT,
-                                       GPIO_IRQ_EDGE_FALL, true,
-                                       &wiznet_int_callback);
 
     gpio_init(ROSETTE_PIN_LED);
     gpio_set_dir(ROSETTE_PIN_LED, GPIO_OUT);

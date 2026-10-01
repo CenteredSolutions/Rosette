@@ -1,391 +1,413 @@
 # Getting Started With Rosette
 
-This guide gets you from a clean checkout to three useful outcomes:
+This guide goes from a clean checkout to a board on your ROS 2 network, then
+to a firmware project of your own:
 
-1. Compile an example for a selected board.
-2. Start a project that brings up networking, creates a node, and publishes a
-   metric.
-3. Run the host test suites.
+1. [Install ROS 2 and the toolchain](#1-install-ros-2-and-the-toolchain)
+2. [Run the host tests](#2-run-the-host-tests) (no hardware, no ROS 2)
+3. [Run `rmw_rosette` on a host](#3-run-rmw_rosette-on-a-host) against stock Fast DDS
+4. [Build the ROS 2 C client stack](#4-build-the-ros-2-c-client-stack-once-per-cpu) for your MCU, once per CPU
+5. [Build, flash, and talk to a board](#5-build-flash-and-talk-to-a-board): the W5100S-EVB-Pico2 and the W6100-EVB-Pico
+6. [Start your own firmware](#6-start-your-own-firmware)
+7. [Use your own message types](#7-use-your-own-message-types)
+8. [Use the RTPS core directly](#8-use-the-rtps-core-directly)
+9. [Debugging](#9-debugging)
 
-## 1. Choose A Board
+Read [docs/architecture.md](docs/architecture.md) for how the pieces fit,
+[docs/network_configuration.md](docs/network_configuration.md) before putting
+a board on a shared LAN, and [docs/mcu_memory_model.md](docs/mcu_memory_model.md)
+before sizing a real firmware. [examples/README.md](examples/README.md) lists
+every example and which boards it runs on.
 
-Rosette uses one CMake option for board selection:
+## Prerequisites
 
-```bash
--DRTPS_BOARD=<board>
-```
+| For | You need |
+| --- | --- |
+| Host tests | CMake ≥ 3.20, a C++17 compiler |
+| `rmw_rosette` on a host, interop tests | ROS 2 Humble (`/opt/ros/humble`), `colcon` |
+| Firmware | `arm-none-eabi-gcc`, Python 3; the Pico SDK and LittleFS are fetched at configure time |
+| The C client stack (step 4) | ROS 2 Humble, network access for micro_ros_setup, 20–30 minutes per CPU |
+| A board | a WIZnet EVB-Pico board (this guide uses the W5100S-EVB-Pico2 and the W6100-EVB-Pico) wired to the same IPv4 subnet as your ROS 2 host, with a DHCP server or link-local addressing |
 
-Valid board names are:
+Step 1 installs all of it on Ubuntu 22.04.
 
-- `posix`: host/POSIX build, useful for tests and host experiments.
-- `w5100s-evb-pico`: WIZnet W5100S-EVB-Pico, RP2040.
-- `w5100s-evb-pico2`: WIZnet W5100S-EVB-Pico2, RP2350.
-- `bc-gen2`: custom RP2040 + W5100S board.
+To build offline or against pinned checkouts, point CMake at them:
+`PICO_SDK_PATH`, `LITTLEFS_PATH`, and for FreeRTOS boards
+`FREERTOS_KERNEL_PATH` and `FREERTOS_TCP_PATH`.
 
-The board file controls the processor, Pico SDK board name, WIZnet wiring, BSP
-sources, and whether the firmware example is built.
+## 1. Install ROS 2 and the toolchain
 
-## 2. Compile The Minimal Firmware Example
+Rosette targets ROS 2 Humble on Ubuntu 22.04 (Jammy); the commands below are
+the ROS 2 project's Debian install plus the Arm cross compiler.
 
-For the Pico2 EVB:
-
-```bash
-cmake -S . -B build/w5100s-evb-pico2 -DRTPS_BOARD=w5100s-evb-pico2
-cmake --build build/w5100s-evb-pico2 -j --target rtps_example
-```
-
-For the RP2040 EVB:
-
-```bash
-cmake -S . -B build/w5100s-evb-pico -DRTPS_BOARD=w5100s-evb-pico
-cmake --build build/w5100s-evb-pico -j --target rtps_example
-```
-
-For the custom `bc-gen2` board:
-
-```bash
-cmake -S . -B build/bc-gen2 -DRTPS_BOARD=bc-gen2
-cmake --build build/bc-gen2 -j --target rtps_example
-```
-
-The `rtps_example` target is embedded-only. A `posix` top-level configure builds
-the reusable stack library path, but does not create `rtps_example`.
-
-### Dependency Inputs
-
-CMake can fetch dependencies through `FetchContent`. For locked-down networks,
-CI, or reproducible local development, point CMake at local checkouts:
+ROS 2 Humble, with `colcon`, `rosdep`, and `vcstool` (`ros-dev-tools`):
 
 ```bash
-PICO_SDK_PATH=/path/to/pico-sdk \
-FREERTOS_KERNEL_PATH=/path/to/FreeRTOS-Kernel \
-FREERTOS_TCP_PATH=/path/to/FreeRTOS-Plus-TCP \
-WIZNET_IOLIB_PATH=/path/to/ioLibrary_Driver \
-LITTLEFS_PATH=/path/to/littlefs \
-cmake -S . -B build/w5100s-evb-pico2 -DRTPS_BOARD=w5100s-evb-pico2
+sudo apt update && sudo apt install -y software-properties-common curl
+sudo add-apt-repository -y universe
+sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+     -o /usr/share/keyrings/ros-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+  | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+sudo apt update
+sudo apt install -y ros-humble-ros-base ros-dev-tools
+sudo rosdep init && rosdep update
 ```
 
-## 3. Start A New Embedded Project
+`ros-humble-ros-base` brings `rclcpp`, `rclpy`, the `ros2` command line,
+`rmw_fastrtps_cpp` (Humble's default middleware), and the common message
+packages. Add `ros-humble-rmw-cyclonedds-cpp` to also test against Cyclone
+DDS (`ROSETTE_PEER_RMW=rmw_cyclonedds_cpp` in `tests/ros2`). See the
+[ROS 2 Humble installation guide](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html)
+for other platforms.
 
-The fastest starting point is `examples/main_rp2350.cpp`. Despite the filename,
-the board selection determines whether the build targets RP2040 or RP2350.
-
-### Project Skeleton
-
-A minimal native Rosette firmware follows this control flow:
-
-1. Initialize board hardware with `board_init()`.
-2. Start FreeRTOS+TCP and wait for an IPv4 or IPv6 address.
-3. Create `rosette::net::freertos::FreeRtosSocketProvider`.
-4. Create `rtps::SocketUdpTransport` with the RTPS metatraffic and user ports.
-5. Create `rtps::SocketTransportRuntime`.
-6. Create a `milkros::Context`, start the runtime, then start the participant.
-7. Create a node and publisher.
-8. Call `context.tick(now_ms)` regularly.
-9. Publish your metric on a timer.
-
-The example does exactly that in `service_task()`.
-
-### Bring Up Networking
-
-For WIZnet boards, copy the network setup pattern from
-`examples/main_rp2350.cpp`:
-
-```cpp
-uint8_t mac[6]{};
-board_get_mac_address(mac);
-wiznet_macraw_set_mac_address(mac);
-
-FreeRTOS_FillEndPoint(
-    &g_network_interface,
-    &g_ipv4_endpoint,
-    ip_address.data(),
-    netmask.data(),
-    gateway.data(),
-    dns.data(),
-    mac);
-
-g_ipv4_endpoint.bits.bWantDHCP = pdTRUE_UNSIGNED;
-
-if (FreeRTOS_IPInit_Multi() != pdPASS) {
-    // Stop startup and report a fatal network error.
-}
-```
-
-Then wait until `rtps::rtps_platform_get_ipv4_addr()` returns nonzero, or until
-`rtps::rtps_platform_get_ipv6_addr()` reports an address.
-
-Use source-level compile definitions when you want static or zeroconf-style
-addressing. Today these are consumed by the example source, so define them in
-your project target, board profile, or local application CMake:
-
-```cmake
-target_compile_definitions(your_firmware_target PRIVATE
-    RTPS_NET_MODE=0
-    RTPS_NET_STATIC_IP={192u,168u,1u,200u}
-    RTPS_NET_STATIC_MASK={255u,255u,255u,0u}
-    RTPS_NET_STATIC_GW={192u,168u,1u,1u}
-    RTPS_NET_STATIC_DNS={8u,8u,8u,8u}
-)
-```
-
-The network mode constants used by the example are:
-
-- `0`: static IPv4.
-- `1`: DHCP.
-- `2`: IPv6 SLAAC.
-- `3`: zeroconf-style IPv4 fallback.
-
-### Start The RTPS Node
-
-After the network is ready, create the transport and context:
-
-```cpp
-static rosette::net::freertos::FreeRtosSocketProvider socket_provider;
-
-const uint16_t meta_port =
-    static_cast<uint16_t>(rtps::spdp_multicast_port(kDomainId));
-const uint16_t user_port =
-    static_cast<uint16_t>(rtps::spdp_unicast_port(kDomainId, kParticipantId));
-
-static rtps::SocketUdpTransport transport(
-    socket_provider,
-    meta_port,
-    user_port,
-    rtps::spdp_multicast_locator(kDomainId));
-
-static rtps::SocketTransportRuntime runtime(transport);
-static DemoContext context(transport, runtime);
-
-if (!context.start_runtime()) {
-    // Transport could not bind or join discovery multicast.
-}
-
-update_participant_addresses(context.participant());
-
-if (!context.start()) {
-    // Participant startup failed.
-}
-```
-
-`DemoContext` in the example subclasses `milkros::Context` so every tick spins
-the transport runtime, RTPS participant, and timers together.
-
-### Publish A Metric
-
-Define or generate a message type, provide `milkros::message_traits`, then
-publish from your service loop.
-
-For a compact string metric:
-
-```cpp
-struct DeviceMetricMsg {
-    char data[96];
-};
-
-auto node = context.create_node("rosette_device", "");
-auto metric_pub = node.create_publisher<DeviceMetricMsg>("device_metric");
-
-uint32_t sequence = 0;
-uint32_t last_publish_ms = 0;
-
-for (;;) {
-    const uint32_t now_ms = rtps_platform_get_ms();
-    context.tick(now_ms);
-
-    if ((now_ms - last_publish_ms) >= 1000u) {
-        DeviceMetricMsg msg{};
-        std::snprintf(msg.data,
-                      sizeof(msg.data),
-                      "uptime_ms=%lu seq=%lu",
-                      static_cast<unsigned long>(now_ms),
-                      static_cast<unsigned long>(sequence++));
-        (void)metric_pub.publish(msg);
-        last_publish_ms = now_ms;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(10u));
-}
-```
-
-Use `examples/main_rp2350.cpp` as the reference for the required
-`message_traits<DeviceMetricMsg>` specialization. That specialization gives the
-DDS type name and CDR encode/decode procedures for your message.
-
-## 4. Start A micro-ROS Project
-
-Use the micro-ROS path when you want to connect through a micro-ROS Agent rather
-than the native RTPS participant flow.
-
-Build the board smoke firmware:
+The firmware toolchain (Ubuntu's `gcc-arm-none-eabi` 10.3 is sufficient):
 
 ```bash
-cmake -S . -B build/micro-ros-pico2 \
-  -DRTPS_BOARD=w5100s-evb-pico2 \
-  -DROSETTE_ENABLE_MICRO_ROS=ON
-cmake --build build/micro-ros-pico2 -j --target rtps_micro_ros_board_smoke
+sudo apt install -y build-essential cmake ninja-build git python3 python3-pip \
+     gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
 ```
 
-Run the host Agent in one terminal:
+To flash over USB without root, your user must be in the group that owns
+`/dev/ttyACM*` (`sudo usermod -aG dialout $USER`, then log in again).
+
+## 2. Run the host tests
+
+Each suite is its own CMake project:
 
 ```bash
+for suite in spec loopback host platform; do
+  cmake -S tests/$suite -B build/tests-$suite
+  cmake --build build/tests-$suite -j
+  ctest --test-dir build/tests-$suite --output-on-failure
+done
+```
+
+| Suite | Proves |
+| --- | --- |
+| `tests/spec` | DDSI-RTPS 2.5 statements, one test ID per statement (`TC-SEDP-8.5.5.1-008`, ...) |
+| `tests/loopback` | two participants in one process discover each other and deliver reliably, no sockets |
+| `tests/host` | address providers (DHCP, link-local, manager, snapshot), WIZnet frame encoding, mDNS wire format, buffer-pool classes |
+| `tests/platform` | the platform contract on the host port (the same test runs on each board) |
+
+Spec-coverage reports: `cmake --build build/tests-spec --target sedp_spec_report`
+(and `spdp_`, `stateful_writer_`, `stateful_reader_`, `participant_`, ...);
+see [tests/spec/README.md](tests/spec/README.md).
+
+## 3. Run `rmw_rosette` on a host
+
+`rmw_rosette` is a colcon package. Build it in a workspace:
+
+```bash
+mkdir -p ~/rosette_ws/src && ln -s "$PWD/rmw_rosette" ~/rosette_ws/src/
+cd ~/rosette_ws
 source /opt/ros/humble/setup.bash
-ros2 run micro_ros_agent micro_ros_agent udp4 --port 8888
+colcon build --packages-select rmw_rosette
+source install/setup.bash
 ```
 
-By default the board finds the Agent over mDNS / DNS-SD. Advertise the Agent on
-the same host (or its Docker host) in a second terminal and leave it running:
+Any stock ROS 2 program now runs on it. Publish from `rmw_rosette` and echo
+from stock Fast DDS:
 
 ```bash
-tools/micro_ros/advertise_agent_mdns.sh 8888
+export ROS_DOMAIN_ID=42
+RMW_IMPLEMENTATION=rmw_rosette ros2 topic pub /hello std_msgs/msg/String "{data: hello from rosette}" &
+RMW_IMPLEMENTATION=rmw_fastrtps_cpp ros2 topic echo /hello std_msgs/msg/String
 ```
 
-This registers the `_microrosagent._udp.local` service with Avahi. The board
-browses that service and connects to the **source address of the mDNS reply**,
-so the Agent is reachable even when it runs behind a Docker bridge and would
-otherwise advertise an unreachable address.
-
-To find the Agent by host name instead of by service, build with
-`-DROSETTE_MICRO_ROS_MDNS_HOSTNAME=myhost` (the board resolves `myhost.local`)
-and skip the script — any mDNS responder for that host, including a plain Linux
-box running Avahi, is enough.
-
-The legacy XRCE `GET_INFO` locator is still available with
-`-DROSETTE_MICRO_ROS_DISCOVERY=xrce`, paired with its responder:
+The examples use domain 42 to stay clear of whatever else runs on domain 0 of
+your LAN. The interop harness proves topics, services, parameter services, and
+the graph in both directions:
 
 ```bash
-python3 tools/micro_ros/agent_multicast_responder.py --agent-port 8888
+tests/ros2/run_rmw_interop_loopback.sh          # run under bash, with the workspace sourced
+tests/ros2/run_rmw_frag_loopback.sh             # 16 B – 60 KB messages over a 1472-octet link
 ```
 
-After flashing the board, observe the smoke topic from a ROS 2 terminal:
+`colcon test --packages-select rmw_rosette` runs the package's unit tests.
+
+## 4. Build the ROS 2 C client stack once per CPU
+
+A firmware links stock `rcl`, `rclc`, `rcutils`, and the message type supports
+as static libraries. micro_ros_setup's `generate_lib` flow cross-compiles them;
+Rosette uses its per-package libraries and never links the micro-ROS
+middleware, so `rcl` calls `rmw_rosette` directly. The bootstrap fetches
+micro_ros_setup and sources `/opt/ros/humble/setup.bash` itself.
+
+The stack is compiled for one CPU. Build one per CPU you target, each into a
+workspace you keep, configured with any board that has that CPU:
+
+| CPU | Boards | Build it with |
+| --- | --- | --- |
+| RP2350 (Cortex-M33) | `w5100s-evb-pico2`, `w6100-evb-pico2`, `w6300-evb-pico2` | the commands below |
+| RP2040 (Cortex-M0+) | `w5100s-evb-pico`, `w6100-evb-pico` | the same, with `-DROSETTE_BOARD=w6100-evb-pico` and `build-micro-ros-pico` |
 
 ```bash
-source /opt/ros/humble/setup.bash
-ros2 topic echo /mcu_temperature_c std_msgs/msg/Float32
+# RP2350
+cmake -S . -B build/c-stack-pico2 -DROSETTE_BOARD=w5100s-evb-pico2 \
+      -DROSETTE_ENABLE_MICRO_ROS=ON \
+      -DROSETTE_MICRO_ROS_WORKSPACE_DIR=$PWD/build-micro-ros-pico2
+cmake --build build/c-stack-pico2 --target rosette_micro_ros_bootstrap
+
+# RP2040
+cmake -S . -B build/c-stack-pico -DROSETTE_BOARD=w6100-evb-pico \
+      -DROSETTE_ENABLE_MICRO_ROS=ON \
+      -DROSETTE_MICRO_ROS_WORKSPACE_DIR=$PWD/build-micro-ros-pico
+cmake --build build/c-stack-pico --target rosette_micro_ros_bootstrap
 ```
 
-With a known agent IP:
+Each result is `<workspace>/firmware/mcu_ws/install`, which every later
+firmware build for that CPU names as `ROSETTE_ROS2_C_STACK_DIR`. Rebuild a
+stack only when you add message packages (step 7) or change ROS distro.
+
+Keep the pairs straight: the firmware link does not check the stack's CPU, so
+an RP2040 image linked against the RP2350 stack builds and then faults. To
+check a stack, `arm-none-eabi-readelf -A <install>/lib/librcl.a | grep -m1
+Tag_CPU_arch` prints `v8-M.mainline` for RP2350 and `v6S-M` for RP2040.
+
+## 5. Build, flash, and talk to a board
+
+`examples/rclc_chatter` is a stock `rclc` node: it publishes
+`hello from rclc #N` on `/rosette/chatter` every second and prints every string
+received on `/rosette/command`. `examples/wiznet_udp_echo` checks the network
+underneath it with plain UDP. Configure one build directory per board:
+
+| | W5100S-EVB-Pico2 | W6100-EVB-Pico |
+| --- | --- | --- |
+| MCU | RP2350 | RP2040 |
+| Ethernet chip | W5100S: IPv4 | W6100: IPv4 and IPv6 |
+| `ROSETTE_BOARD` | `w5100s-evb-pico2` | `w6100-evb-pico` |
+| C client stack | `build-micro-ros-pico2` | `build-micro-ros-pico` |
+
+W5100S-EVB-Pico2:
 
 ```bash
-cmake -S . -B build/micro-ros-pico2 \
-  -DRTPS_BOARD=w5100s-evb-pico2 \
-  -DROSETTE_ENABLE_MICRO_ROS=ON \
-  -DROSETTE_MICRO_ROS_AGENT_IP=192.168.1.50 \
-  -DROSETTE_MICRO_ROS_AGENT_PORT=8888
+cmake -S . -B build-hw/pico2 -DROSETTE_BOARD=w5100s-evb-pico2 \
+      -DROSETTE_ROS2_C_STACK_DIR=$PWD/build-micro-ros-pico2/firmware/mcu_ws/install
+cmake --build build-hw/pico2 --target wiznet_udp_echo rclc_chatter
 ```
 
-Without an agent IP, the smoke target autodiscovers the Agent. The mechanism is
-chosen by `ROSETTE_MICRO_ROS_DISCOVERY` (default `mdns`, or `xrce`).
-
-mDNS locator settings (`ROSETTE_MICRO_ROS_DISCOVERY=mdns`):
-
-- `ROSETTE_MICRO_ROS_MDNS_SERVICE`, default `_microrosagent._udp.local`.
-- `ROSETTE_MICRO_ROS_MDNS_HOSTNAME`, default empty; when set, the board
-  resolves this host's A record instead of browsing the service.
-- `ROSETTE_MICRO_ROS_MDNS_TIMEOUT_MS`, default `1000`.
-- `ROSETTE_MICRO_ROS_MDNS_ATTEMPTS`, default `3`.
-
-XRCE locator settings (`ROSETTE_MICRO_ROS_DISCOVERY=xrce`):
-
-- `ROSETTE_MICRO_ROS_DISCOVERY_GROUP`, default `239.255.0.2`.
-- `ROSETTE_MICRO_ROS_DISCOVERY_PORT`, default `7400`.
-- `ROSETTE_MICRO_ROS_DISCOVERY_TIMEOUT_MS`, default `750`.
-- `ROSETTE_MICRO_ROS_DISCOVERY_ATTEMPTS`, default `3`.
-
-The smoke app creates a node named `rosette_micro_ros_smoke` and publishes
-`std_msgs/msg/Float32` on `mcu_temperature_c`.
-
-`Context::start_result()` returns `ContextStartResult`, a
-`Result<void, ContextStartError>` that lets production firmware distinguish
-network setup, Agent discovery, and RCL initialization failures. The smoke app
-retries context startup so boot can succeed even when the Agent appears after
-the MCU network comes up.
-
-## 5. Run Tests
-
-### DDSI-RTPS Spec Tests
+W6100-EVB-Pico:
 
 ```bash
-cmake -S tests/spec -B build/tests-spec
-cmake --build build/tests-spec -j
-ctest --test-dir build/tests-spec --output-on-failure
+cmake -S . -B build-hw/w6100-pico -DROSETTE_BOARD=w6100-evb-pico \
+      -DROSETTE_ROS2_C_STACK_DIR=$PWD/build-micro-ros-pico/firmware/mcu_ws/install
+cmake --build build-hw/w6100-pico --target wiznet_udp_echo rclc_chatter
 ```
 
-Generate conformance reports:
+Both boards are bare metal, powered and flashed over the Pico's USB port, and
+take their Ethernet from the on-board chip.
+
+### Check the network first
+
+Flash the echo example and read the addresses it prints:
 
 ```bash
-cmake --build build/tests-spec --target message_parser_spec_report
-cmake --build build/tests-spec --target message_builder_spec_report
-cmake --build build/tests-spec --target fragment_assembler_spec_report
-cmake --build build/tests-spec --target spdp_spec_report
-cmake --build build/tests-spec --target sedp_spec_report
-cmake --build build/tests-spec --target history_cache_spec_report
-cmake --build build/tests-spec --target stateful_writer_spec_report
-cmake --build build/tests-spec --target stateful_reader_spec_report
-cmake --build build/tests-spec --target participant_spec_report
+tools/pico_uf2_flash.py build-hw/w6100-pico/examples/wiznet_udp_echo/wiznet_udp_echo.uf2 --monitor 30
 ```
-
-### ROS 2 POSIX Smoke
-
-Build the POSIX chatter smoke:
-
-```bash
-cmake -S tests/ros2 -B build/tests-ros2
-cmake --build build/tests-ros2 -j
-```
-
-Run the publisher directly:
-
-```bash
-build/tests-ros2/ros2_posix_chatter_smoke \
-  --domain 0 \
-  --participant 1 \
-  --duration-ms 15000 \
-  --publish-ms 500 \
-  --topic chatter
-```
-
-Run the Docker-backed ROS 2 smoke script when Docker is available:
-
-```bash
-tests/ros2/run_ros2_docker_smoke.sh build/tests-ros2/ros2_posix_chatter_smoke
-```
-
-Set `ROSETTE_LOCAL_IP` if the host smoke chooses loopback and you need a
-routable interface:
-
-```bash
-ROSETTE_LOCAL_IP=192.168.1.25 \
-tests/ros2/run_ros2_docker_smoke.sh build/tests-ros2/ros2_posix_chatter_smoke
-```
-
-## 6. Common Build Patterns
-
-Configure a host build explicitly:
-
-```bash
-cmake -S . -B build/posix -DRTPS_BOARD=posix
-cmake --build build/posix -j
-```
-
-Build only the default embedded firmware example:
-
-```bash
-cmake --build build/w5100s-evb-pico2 -j --target rtps_example
-```
-
-Build only the micro-ROS static library bootstrap:
-
-```bash
-cmake --build build/micro-ros-pico2 -j --target rtps_micro_ros_bootstrap
-```
-
-When in doubt, inspect the configured board summary that CMake prints:
 
 ```text
-RTPS Stack build configuration
-  Board       : ...
-  Family      : ...
-  Board dir   : ...
-  Processor   : ...
+[net] PHY link up
+[net] address 192.168.1.57
+[net] IPv6 address fe80:0:0:0:208:dcff:fe12:3456
+[echo] udp/7 ipv4 open, ipv6 open; status on udp/8
+```
+
+Then, from the ROS 2 host, `tools/wiznet_udp_echo_probe.py 192.168.1.57`
+pings and echoes every address the board holds. The W5100S has no IPv6, so it
+prints an IPv4 address only. If this step fails, fix the network before going
+further; [docs/network_configuration.md](docs/network_configuration.md) lists
+what the board needs.
+
+### Flash and talk to `rclc_chatter`
+
+Flash it over USB. `tools/pico_uf2_flash.py` opens the board's console at 1200
+baud, which reboots a running Pico SDK image into BOOTSEL, copies the UF2 to
+the drive that appears, and streams the new image's console:
+
+```bash
+tools/pico_uf2_flash.py build-hw/pico2/examples/rclc_chatter/rclc_chatter.uf2 --monitor 60
+```
+
+The first flash of a blank board needs BOOTSEL held at power-up. If your
+desktop does not mount the drive automatically, mount it
+(`udisksctl mount -b /dev/sdX1`) and the tool continues. When the USB console
+is unreliable (a VM's USB passthrough), a board running `wiznet_udp_echo`
+can be sent to BOOTSEL over the network instead:
+`tools/pico_uf2_flash.py <uf2> --bootsel-udp 192.168.1.57`.
+
+The console shows the network coming up, then a report every five seconds:
+
+```text
+[net] PHY link up
+[net] address 192.168.1.57
+[rclc] node /rosette/rclc_chatter up: /rosette/chatter, /rosette/command
+[rclc] published=5 commands=0 heap_in_use=4040 arp_timeouts=0
+```
+
+From any ROS 2 host on the subnet, on domain 0 with stock middleware and no
+configuration ([docs/network_configuration.md](docs/network_configuration.md#ros-domain)
+shows how to put a firmware on another domain):
+
+```bash
+ros2 topic echo /rosette/chatter std_msgs/msg/String
+ros2 topic pub /rosette/command std_msgs/msg/String "{data: hi}"
+ros2 node info /rosette/rclc_chatter
+```
+
+## 6. Start your own firmware
+
+A firmware project includes Rosette's prelude before `project()` (it selects
+the board and sets up the cross toolchain), adds the Rosette tree, and links
+`rmw_rosette_firmware`:
+
+```cmake
+# CMakeLists.txt
+cmake_minimum_required(VERSION 3.20)
+
+set(ROSETTE_DIR "${CMAKE_CURRENT_LIST_DIR}/rosette" CACHE PATH "Rosette checkout")
+include(${ROSETTE_DIR}/cmake/rosette_prelude.cmake)   # board + toolchain; before project()
+
+project(my_firmware C CXX ASM)
+set(CMAKE_CXX_STANDARD 17)
+
+add_subdirectory(${ROSETTE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/rosette)
+
+add_executable(my_firmware main.cpp)
+target_link_libraries(my_firmware PRIVATE rmw_rosette_firmware rosette_bsp)
+rosette_add_image_outputs(my_firmware)   # the chip port's images: .uf2 and USB stdio on rp2
+```
+
+Rosette usually lives in the project as a git submodule at `rosette/`. Declare
+the firmware's capacity when you configure: exactly the entities it creates.
+Everything else is derived.
+
+```bash
+cmake -S . -B build -DROSETTE_BOARD=w5100s-evb-pico2 \
+      -DROSETTE_ROS2_C_STACK_DIR=<path>/build-micro-ros-pico2/firmware/mcu_ws/install \
+      -DRMW_ROSETTE_MAX_PUBLISHERS=1 -DRMW_ROSETTE_MAX_SUBSCRIPTIONS=1 \
+      -DRMW_ROSETTE_MAX_SERVICES=0 -DRMW_ROSETTE_MAX_CLIENTS=0
+cmake --build build        # build/my_firmware.uf2
+```
+
+For `rclc_chatter`'s shape, those four limits cut static RAM from 123.7 KB to
+59.2 KB; [docs/mcu_memory_model.md](docs/mcu_memory_model.md) explains every
+knob.
+
+`main.cpp` follows one order: board, network, then `rcl`, and every entity
+created before the executor first spins.
+
+```cpp
+#include <rcl/rcl.h>
+#include <rclc/executor.h>
+#include <rclc/rclc.h>
+#include <std_msgs/msg/string.h>
+
+#include "board.h"
+#include "rosette/net/board_network.hpp"
+#include "rosette/platform/platform.hpp"
+#include "pico/stdlib.h"
+
+namespace net = rosette::net;
+
+int main() {
+    board_init();
+    net::bring_up_board_network("my-board");   // blocks until an IPv4 address is held
+
+    rcl_allocator_t allocator = rcl_get_default_allocator();
+    rclc_support_t support;
+    rclc_support_init(&support, 0, nullptr, &allocator);   // rmw_init() opens the RTPS transport
+
+    rcl_node_t node = rcl_get_zero_initialized_node();
+    rclc_node_init_default(&node, "my_node", "my_ns", &support);
+
+    // Create every publisher, subscription, service, and timer here, then
+    // add the callbacks to one executor. Entities that exist before the
+    // first spin are announced together and matched from the first
+    // discovery datagram.
+
+    rclc_executor_t executor = rclc_executor_get_zero_initialized_executor();
+    rclc_executor_init(&executor, &support.context, /*handles=*/1, &allocator);
+    // rclc_executor_add_subscription(...), rclc_executor_add_timer(...)
+
+    for (;;) {
+        rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));   // sleeps until data or a deadline
+        net::poll_board_network(rosette::platform::monotonic_ms());   // DHCP renewal and retry, SLAAC, conflicts
+    }
+}
+```
+
+Check every `rcl_ret_t` in real code; `examples/rclc_chatter/main.cpp` shows a
+compact pattern, plus fixed message buffers so nothing is allocated per
+message.
+
+## 7. Use your own message types
+
+Message types come from the C client stack. Add your interface packages to it
+and rebuild the stack for each CPU you target (step 4):
+
+```bash
+cmake -S . -B build/c-stack-pico2 ... \
+      -DROSETTE_MICRO_ROS_EXTRA_INTERFACE_PACKAGES="$PWD/../my_msgs;$PWD/../other_msgs"
+cmake --build build/c-stack-pico2 --target rosette_micro_ros_bootstrap
+```
+
+(Interface packages under `examples/*/` are included automatically.) Then use
+the generated C types as usual:
+
+```cpp
+#include <my_msgs/msg/motor_state.h>
+const rosidl_message_type_support_t* ts = ROSIDL_GET_MSG_TYPE_SUPPORT(my_msgs, msg, MotorState);
+```
+
+`rmw_rosette` serializes any type through its generated CDR callbacks, byte
+for byte as Fast DDS does, so the same `.msg` package built normally on the
+host is all the other side needs.
+
+Strings and sequences in generated C messages are pointer, size, and capacity.
+Point them at buffers you own (static arrays, as `rclc_chatter` does, or
+`micro_ros_utilities` to allocate once at startup) so receiving never
+allocates.
+
+## 8. Use the RTPS core directly
+
+`examples/rtps_chatter` talks to the same topics as `rclc_chatter` without
+`rcl`: it creates an `RTPSParticipant`, a writer and a reader with ROS 2 names
+(`rt/rosette/chatter`, type `std_msgs::msg::dds_::String_`), and encodes the
+CDR itself. It needs no C client stack and is the smallest image (157 KB
+flash, 74 KB RAM):
+
+```bash
+cmake -S . -B build-hw/pico2 -DROSETTE_BOARD=w5100s-evb-pico2
+cmake --build build-hw/pico2 --target rtps_chatter
+tools/pico_uf2_flash.py build-hw/pico2/examples/rtps_chatter/rtps_chatter.uf2 --monitor 60
+```
+
+The core's sizes are board inputs in `cmake/rosette_rtps.cmake`
+(`ROSETTE_RTPS_MAX_SAMPLE_SIZE`, `ROSETTE_RTPS_MAX_PEERS`, ...). Every call
+into the participant or its endpoints holds `driver.mutex()`.
+
+## 9. Debugging
+
+| Symptom | Look at |
+| --- | --- |
+| No address, or no echo | the board's console `[net]` lines; `tools/wiznet_udp_echo_probe.py`; [docs/network_configuration.md](docs/network_configuration.md#checking-the-network-below-ros) |
+| Nothing discovered | Same `ROS_DOMAIN_ID` on both sides (firmware uses 0)? Same IPv4 subnet, multicast delivered, UDP 7400+ open on the host's firewall ([ports](docs/network_configuration.md#what-ros-2-traffic-needs))? A stale `ros2` daemon (`ros2 daemon stop`) |
+| RP2040 firmware faults at boot | it was linked against the RP2350 C client stack (step 4) |
+| Discovery works, data does not | RTPS log level 4 shows every HEARTBEAT, ACKNACK, and DATA (`-DROSETTE_RMW_LOG_LEVEL=4` for firmware `rmw_rosette`, `-DROSETTE_RTPS_LOG_LEVEL=4` for `rosette_rtps`, `-DRMW_ROSETTE_RTPS_LOG_LEVEL=4` for the colcon package) |
+| Large messages lost to a board | the peer's datagrams exceed 1472 octets; cap them (Fast DDS `maxMessageSize`) — see `rmw_rosette/README.md` |
+| Reproduce a board's link on a host | `RMW_ROSETTE_STRICT_LINK=1 RMW_ROSETTE_MAX_DATAGRAM_SIZE=1472` |
+| Datagram sizes, truncation | `RMW_ROSETTE_TRANSPORT_STATS=1` (host, printed at shutdown); `rtps_chatter` prints them every five seconds |
+| Entity creation fails | a capacity limit is too small; the rcl error string names the pool |
+| RAM | [docs/mcu_memory_model.md](docs/mcu_memory_model.md#measuring) |
+
+When CMake configures, it prints the selected board, CPU, and pins, and the
+`rmw_rosette` capacity it derived:
+
+```text
+Rosette build configuration
+  Board       : w5100s-evb-pico2
+  Processor   : RP2350
+rmw_rosette capacity: 4 publishers, 4 subscriptions, 4 services, 2 clients -> 11 RTPS writers, 10 RTPS readers
 ```

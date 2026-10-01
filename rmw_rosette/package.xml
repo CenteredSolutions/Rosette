@@ -1,0 +1,39 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>rmw_rosette</name>
+  <version>0.0.1</version>
+  <description>
+    rmw implementation backed by Rosette's embedded DDSI-RTPS stack.
+
+    Lets a microcontroller running stock rcl/rclc join the ROS 2 graph as a
+    real RTPS participant, without a micro-ROS Agent process in the loop.
+    Serialization walks rosidl_typesupport_introspection_c metadata, and uses
+    rosidl_typesupport_microxrcedds_c callbacks instead when a micro-ROS
+    workspace provides them.
+  </description>
+  <maintainer email="gravydish@gmail.com">Jared Hancock</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rcutils</depend>
+  <depend>rmw</depend>
+  <depend>rosidl_runtime_c</depend>
+  <depend>rosidl_typesupport_introspection_c</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>std_msgs</test_depend>
+  <test_depend>sensor_msgs</test_depend>
+  <test_depend>geometry_msgs</test_depend>
+  <test_depend>rmw_dds_common</test_depend>
+
+  <member_of_group>rmw_implementation_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <rmw_implementation />
+  </export>
+</package>

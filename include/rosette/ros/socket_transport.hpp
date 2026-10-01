@@ -2,21 +2,18 @@
 
 /**
  * @file ros/socket_transport.hpp
- * @brief Socket-backed custom transport helpers for the micro-ROS backend.
+ * @brief The micro-ROS agent backend's XRCE transport over a Rosette UDP socket, and a fixed agent.
  *
- * Design goal
- * -----------
- * Reuse Rosette's `SocketProvider` abstraction as the XRCE transport layer so
- * MCU and POSIX smoke tests can exercise the same network path that the rest
- * of the project already uses.
+ * The XRCE-DDS client reaches its agent through `UdpSocketTransport`, a
+ * `CustomTransport` over Rosette's `SocketProvider`, on every platform: the
+ * WIZnet chip's hardware sockets on a board, BSD sockets on a host. So the
+ * agent path uses the same sockets, addresses, and network supervision as
+ * the rest of Rosette, and no platform socket layer is needed inside
+ * micro-ROS. `AgentSessionGate` hands the transport the agent's endpoint and
+ * installs it in rmw_microxrcedds (see ros/agent_session_gate.hpp).
  *
- * Why this is separate from `Context`
- * ----------------------------------
- * `Context` owns the ROS/micro-ROS session lifecycle. Transport wiring is a
- * platform concern: some builds use built-in UDP discovery, while others speak
- * XRCE over a Rosette-managed UDP socket pair and therefore need an explicit
- * Agent address. Keeping the adapter here makes that split visible and avoids
- * hiding board policy inside the backend core.
+ * `StaticAgentLocator` is the `AgentLocator` for an agent at a fixed,
+ * configured address.
  */
 
 #include "agent_locator.hpp"
@@ -31,6 +28,15 @@
 #include <algorithm>
 #include <cstdlib>
 #include <memory>
+
+// Receive buffering the XRCE socket asks for: a whole reliable-stream window
+// from the agent, RMW_UXRCE_STREAM_HISTORY datagrams of the transport MTU sent
+// back to back. The build passes it from ROSETTE_MICRO_ROS_STREAM_HISTORY and
+// ROSETTE_MICRO_ROS_MAX_TRANSPORT_MTU (cmake/micro_ros.cmake); the fallback is
+// their defaults, 8 x 1400.
+#ifndef ROSETTE_XRCE_SOCKET_RECEIVE_BUFFER
+#  define ROSETTE_XRCE_SOCKET_RECEIVE_BUFFER (8u * 1400u)
+#endif
 
 namespace rosette {
 
@@ -134,6 +140,9 @@ public:
             return false;
         }
 
+        // Before bind(), so a WIZnet backend places the socket on its largest
+        // buffer; a backend that does not size per socket declines, harmlessly.
+        (void)socket_->set_receive_buffer_size(ROSETTE_XRCE_SOCKET_RECEIVE_BUFFER);
         if (socket_->bind(local_) != 0) {
             socket_.reset();
             return false;

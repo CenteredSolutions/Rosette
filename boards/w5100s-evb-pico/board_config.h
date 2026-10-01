@@ -12,7 +12,7 @@
 #define BOARD_IS_RP2040         1
 
 // Names the chip-trait struct (rosette::net::wiznet::<token>) the register-level
-// driver builds against; see include/rosette/net/wiznet/chip_select.hpp.
+// driver builds against; see boards/common/rp2_wiznet/wiznet_board_types.hpp.
 #define ROSETTE_WIZNET_CHIP        W5100S
 
 // GPIO 16/17/18/19 are SPI0 RX/CSn/SCK/TX (matches the pico-sdk
@@ -24,7 +24,7 @@
 #define ROSETTE_PIN_SPI_CS         17
 
 #define ROSETTE_PIN_W5100S_RST     20
-#define ROSETTE_PIN_W5100S_INT     21
+#define ROSETTE_PIN_WIZNET_INT     21
 
 // RP2040 sys_clk is 125 MHz; SPI0 can achieve up to 62.5 MHz.
 // W5100S max is 33.3 MHz — use 31.25 MHz (125/4).
