@@ -43,6 +43,16 @@ Required structure:
 - `Verification:` what "correct" means (the invariant, spec rule, or observable behavior the implementation must satisfy) and the test cases that check it, by test-case ID where one exists (for example `TC-BLD-10.2-001` in `tests/spec`).
 - `References:` the RFC, OMG specification, ROS 2 API documentation, datasheet, or other authoritative source the behavior derives from, with section numbers.
 
+Add for public API entry points (the class or function a caller reaches for first: a class comment, a factory or
+constructor, the main operation of a class, a port hook a board implements):
+- `Example:` a short `@code{.cpp}` ... `@endcode` block, about ten lines at most, showing the call in the context of
+  a larger program: what is constructed first, how the result is checked, and what is torn down. A test proves the
+  function works but is hard to read as a usage guide; the example is the quick reference, and could seed a
+  tutorial. Use real names and signatures so it would compile in that context, and name a compiled program or test
+  that does the same thing (`Full program: examples/led_files/main.cpp`), which is the source of truth when the
+  example and the code disagree. Accessors, and methods a class-level example already shows, need no example of
+  their own.
+
 Template:
 
 ```cpp
@@ -63,6 +73,12 @@ Template:
  *
  * References:
  * - OMG DDSI-RTPS 2.5 §8.4.7.2
+ *
+ * Example (public API entry points only):
+ * @code{.cpp}
+ * <a few lines: set up, call, check the result, tear down>
+ * @endcode
+ * Full program: <examples/... or the test that does the same>
  */
 ```
 
