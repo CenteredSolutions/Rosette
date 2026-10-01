@@ -8,13 +8,6 @@
 #include <type_traits>
 #include <variant>
 
-#if defined(ROSETTE_OS_FREERTOS)
-extern "C" {
-#include "FreeRTOS.h"
-#include "task.h"
-}
-#endif
-
 namespace rosette::net::wiznet {
 
 struct ChipBase {
@@ -267,128 +260,6 @@ public:
         return mode_;
     }
 
-#if defined(ROSETTE_OS_FREERTOS)
-    void register_socket_rx_task(socket_type socket,
-                                 TaskHandle_t task = xTaskGetCurrentTaskHandle()) noexcept
-    {
-        if (socket >= Chip::socket_count()) {
-            return;
-        }
-
-        taskENTER_CRITICAL();
-        socket_rx_tasks_[socket] = task;
-        taskEXIT_CRITICAL();
-    }
-
-    void unregister_socket_rx_task(socket_type socket,
-                                   TaskHandle_t task = nullptr) noexcept
-    {
-        if (socket >= Chip::socket_count()) {
-            return;
-        }
-
-        if (task == nullptr) {
-            task = xTaskGetCurrentTaskHandle();
-        }
-
-        taskENTER_CRITICAL();
-        if ((task == nullptr) || (socket_rx_tasks_[socket] == task)) {
-            socket_rx_tasks_[socket] = nullptr;
-        }
-        taskEXIT_CRITICAL();
-    }
-
-    void register_interrupt_dispatch_task(
-        TaskHandle_t task = xTaskGetCurrentTaskHandle()) noexcept
-    {
-        taskENTER_CRITICAL();
-        interrupt_dispatch_task_ = task;
-        taskEXIT_CRITICAL();
-    }
-
-    void unregister_interrupt_dispatch_task(TaskHandle_t task = nullptr) noexcept
-    {
-        if (task == nullptr) {
-            task = xTaskGetCurrentTaskHandle();
-        }
-
-        taskENTER_CRITICAL();
-        if ((task == nullptr) || (interrupt_dispatch_task_ == task)) {
-            interrupt_dispatch_task_ = nullptr;
-        }
-        taskEXIT_CRITICAL();
-    }
-
-    void handle_interrupt_from_isr() noexcept
-    {
-        BaseType_t should_yield = pdFALSE;
-
-        if ((mode_ == DeviceMode::socket) && (interrupt_dispatch_task_ != nullptr)) {
-            vTaskNotifyGiveFromISR(interrupt_dispatch_task_, &should_yield);
-        }
-
-        if ((mode_ == DeviceMode::macraw) &&
-            (Chip::macraw_socket() < Chip::socket_count()) &&
-            (socket_rx_tasks_[Chip::macraw_socket()] != nullptr)
-        ) {
-            TaskHandle_t macraw_task = socket_rx_tasks_[Chip::macraw_socket()];
-            vTaskNotifyGiveFromISR(macraw_task, &should_yield);
-        }
-
-        portYIELD_FROM_ISR(should_yield);
-    }
-
-    void service_socket_interrupts() noexcept
-    {
-        if (mode_ != DeviceMode::socket) {
-            return;
-        }
-
-        std::array<TaskHandle_t, Chip::socket_count()> tasks{};
-        uint8_t interrupt_mask = 0u;
-        uint8_t common_ack = 0u;
-
-        {
-            const auto lock = bus_.acquire();
-            interrupt_mask = read_u8(Chip::common_interrupt());
-
-            if ((interrupt_mask & Chip::common_ip_conflict_mask()) != 0u) {
-                ip_conflict_pending_ = true;
-                common_ack = static_cast<uint8_t>(
-                    common_ack | Chip::common_ip_conflict_mask());
-            }
-
-            for (socket_type socket = 0; socket < Chip::socket_count(); ++socket) {
-                const uint8_t socket_bit = static_cast<uint8_t>(1u << socket);
-                if ((interrupt_mask & socket_bit) == 0u) {
-                    continue;
-                }
-
-                const uint8_t socket_interrupt = read_u8(Chip::socket_interrupt(socket));
-                const uint8_t receive_interrupt =
-                    static_cast<uint8_t>(socket_interrupt & Chip::socket_interrupt_receive());
-
-                if (receive_interrupt != 0u) {
-                    clear_socket_interrupt(socket, receive_interrupt);
-                    tasks[socket] = socket_rx_tasks_[socket];
-                }
-
-                common_ack = static_cast<uint8_t>(common_ack | socket_bit);
-            }
-
-            if (common_ack != 0u) {
-                clear_common_interrupt(common_ack);
-            }
-        }
-
-        for (socket_type socket = 0; socket < Chip::socket_count(); ++socket) {
-            if (tasks[socket] != nullptr) {
-                xTaskNotifyGive(tasks[socket]);
-            }
-        }
-    }
-#endif
-
     bool is_link_up() noexcept
     {
         const auto lock = bus_.acquire();
@@ -401,9 +272,6 @@ public:
      *
      * Costs one register read; call it from a context that already runs at a
      * low cadence (the superloop `WiznetLink::poll()` or a DHCP-renewal tick).
-     * On the FreeRTOS build the interrupt-dispatch task
-     * (`service_socket_interrupts`) latches the same bit, so either path feeds
-     * `take_ip_conflict()`.
      *
      * @return `true` when a conflict was newly latched by this call.
      */
@@ -608,6 +476,9 @@ public:
     {
         const auto lock = bus_.acquire();
         const socket_type socket = Chip::macraw_socket();
+        // Cleared before the size is read, so a frame landing after the read
+        // raises a fresh INT edge for the caller's next wait.
+        clear_socket_interrupt(socket, Chip::socket_interrupt_receive());
         const uint16_t available = socket_rx_received_size(socket);
         if ((frame == nullptr) || (capacity == 0u) ||
             (available < Chip::macraw_rx_header_bytes())) {
@@ -917,15 +788,29 @@ public:
     uint32_t send_timeouts() const noexcept { return send_timeouts_; }
 
     /**
-     * @brief Clears a socket's RECV interrupt so the next datagram re-asserts INT.
+     * @brief Clears the RECV interrupt of every socket the chip has flagged, so INT deasserts.
      *
-     * Called before checking for data when sleeping on the INT-driven event,
-     * which closes the window in which a datagram could arrive unannounced.
+     * INT stays low while any socket's interrupt is pending, and a falling
+     * edge is what wakes a sleeping thread; a datagram left unread on one
+     * socket would otherwise keep every other socket's datagram from raising
+     * one. Clearing loses nothing: whether a socket holds data is its
+     * received-size register, which each owner reads after clearing.
+     *
+     * @return Bit `n` set when socket `n` was flagged.
+     *
+     * References: W5100S datasheet §IR, §Sn_IR, §INT pin; W6100 datasheet §SIR, §Sn_IRCLR.
      */
-    void rearm_socket_rx_interrupt(socket_type socket) noexcept
-    {
+    uint8_t clear_rx_interrupts() noexcept {
         const auto lock = bus_.acquire();
-        clear_socket_interrupt(socket, Chip::socket_interrupt_receive());
+        const uint8_t flagged =
+            static_cast<uint8_t>(read_u8(Chip::common_socket_interrupt()) & kAllSocketsMask);
+        for (socket_type socket = 0; socket < Chip::socket_count(); ++socket) {
+            if ((flagged & (1u << socket)) != 0u) {
+                clear_socket_interrupt(socket, Chip::socket_interrupt_receive());
+            }
+        }
+
+        return flagged;
     }
 
     uint16_t socket_rx_available(socket_type socket) noexcept
@@ -1118,22 +1003,14 @@ private:
                                                             Chip::socket_interrupt_timeout()));
     }
 
-
     /**
-     * @brief Clears the socket's RX interrupt so the chip INT line deasserts.
+     * @brief Clears the socket's RX interrupt once its datagram is read.
      *
-     * On the no-RTOS build this lets the next datagram raise a fresh edge for
-     * the polling executor's `WFE` wake. Under FreeRTOS the interrupt-dispatch
-     * task owns `Sn_IR` servicing and its per-socket notification, so this is a
-     * no-op there.
+     * A socket that no thread waits on would otherwise hold INT low, and no
+     * other socket's datagram could raise an edge.
      */
-    void ack_socket_rx_interrupt(socket_type socket) noexcept
-    {
-#if !defined(ROSETTE_OS_FREERTOS)
+    void ack_socket_rx_interrupt(socket_type socket) noexcept {
         clear_socket_interrupt(socket, Chip::socket_interrupt_receive());
-#else
-        (void)socket;
-#endif
     }
 
     // Sn_IR / IR are write-1-to-clear on the W5100S, but a separate write-only
@@ -1263,11 +1140,10 @@ private:
         return ring_skip(pointer, length);
     }
 
+    static constexpr uint8_t kAllSocketsMask =
+        static_cast<uint8_t>((1u << Chip::socket_count()) - 1u);
+
     Bus& bus_;
-#if defined(ROSETTE_OS_FREERTOS)
-    TaskHandle_t interrupt_dispatch_task_ = nullptr;
-    std::array<TaskHandle_t, Chip::socket_count()> socket_rx_tasks_{};
-#endif
     mode_type mode_ = DeviceMode::uninitialized;
 
     // Per-socket buffer layout, configured once by the last init_*() and never
@@ -1292,8 +1168,8 @@ private:
     uint32_t send_timeouts_ = 0u;
 
     // The chip has flagged an IPv4 address conflict (its own SIPR seen in an
-    // ARP from another MAC). Latched under the bus lock by poll_common_interrupt()
-    // or service_socket_interrupts(); consumed by take_ip_conflict().
+    // ARP from another MAC). Latched under the bus lock by poll_common_interrupt();
+    // consumed by take_ip_conflict().
     bool ip_conflict_pending_ = false;
 };
 

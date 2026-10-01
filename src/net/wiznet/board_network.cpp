@@ -35,7 +35,6 @@
 #include "rosette/net/wiznet/dhcp_provider.hpp"
 #include "rosette/net/wiznet/interface.hpp"
 #include "rosette/net/wiznet/link.hpp"
-#include "rosette/net/wiznet/rx_interrupt_pico.hpp"
 #include "rosette/net/wiznet/slaac_provider.hpp"
 #include "rosette/platform/platform.hpp"
 
@@ -179,7 +178,10 @@ struct BoardNetwork {
 
             chip_ready = true;
             std::printf("[net] chip ready\n");
-            attach_rx_interrupt(ROSETTE_PIN_WIZNET_INT, sockets);
+            if (!sockets.attach_interrupt(ROSETTE_PIN_WIZNET_INT)) {
+                std::printf("[net] INT not attached; polling the chip\n");
+            }
+
             address.begin();
         }
 

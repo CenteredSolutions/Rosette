@@ -14,10 +14,6 @@
  *     wiz::BoardSocketProvider sockets{device};
  *     auto s = sockets.open(rosette::net::SocketDomain::ipv4);
  *
- * The executor is chosen automatically — `PollingExecutor` on a no-RTOS build,
- * `FreeRtosExecutor` otherwise. To pin it, name the third template argument on
- * `WiznetSocketProvider<BoardChip, BoardBus, PollingExecutor>` directly.
- *
  * SPI peripheral setup (baud rate, pin alt-functions, reset sequencing) stays
  * in board bring-up; `make_board_bus()` only binds the configured pins.
  *
@@ -32,7 +28,6 @@
 
 #include "chip_select.hpp"
 #include "device.hpp"
-#include "executor.hpp"
 #include "socket_provider.hpp"
 
 #if defined(ROSETTE_WIZNET_BUS_QSPI)

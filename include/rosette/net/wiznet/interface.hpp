@@ -12,9 +12,8 @@
  * so it reaches peers on the link that hold routable addresses. With the /16
  * mask the chip would send those packets to the absent gateway, and each
  * failed ARP stalls the socket's next send for the chip's retry time
- * (about 1.6 s, measured on the W6100). `conflict()` drains the chip's IP-conflict latch, which
- * `WiznetDevice` sets under the bus lock from either the FreeRTOS ISR-dispatch
- * task (`service_socket_interrupts()`) or a superloop register read.
+ * (about 1.6 s, measured on the W6100). `conflict()` reads the chip's
+ * IP-conflict flag (WiznetDevice::poll_common_interrupt()) and drains it.
  *
  * On parts with hardware IPv6 (`Chip::has_hw_ipv6()`), an IPv6 lease is the
  * whole IPv6 configuration: its routable entry goes to `GUAR` with its prefix
@@ -70,7 +69,7 @@ public:
     }
 
     bool conflict() noexcept override {
-        (void)device_.poll_common_interrupt();    // superloop refresh; ~free on RTOS
+        (void)device_.poll_common_interrupt();  // one register read
         return device_.take_ip_conflict();
     }
 

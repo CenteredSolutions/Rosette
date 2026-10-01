@@ -41,8 +41,9 @@ namespace rosette::net::wiznet {
  * rosette::net::freertos::NetworkInterface consumes. Socket 0 of the
  * controller is held open in MACRAW mode, so every send_frame()/receive_frame()
  * call maps to a single SPI burst against that socket's TX/RX ring. The chip's
- * hardware interrupt is routed through handle_interrupt_from_isr(), which wakes
- * the interface's RX task registered via register_rx_task().
+ * hardware interrupt is routed through handle_interrupt_from_isr(), which
+ * notifies the interface's RX task registered via register_rx_task(); the
+ * task clears the socket's RECV interrupt as it reads (WiznetDevice::read_frame()).
  *
  * The device is templated on the concrete @p Chip register map and @p Bus
  * transport so the board's link translation unit can pin a single hardware
@@ -121,23 +122,24 @@ public:
         return status;
     }
 
+    /// Notifies the RX task; runs in interrupt context and touches no bus.
     void handle_interrupt_from_isr() noexcept override
     {
-#if defined(ROSETTE_OS_FREERTOS)
-        device_.handle_interrupt_from_isr();
-#endif
+        BaseType_t should_yield = pdFALSE;
+        TaskHandle_t const task = rx_task_;
+        if (task != nullptr) {
+            vTaskNotifyGiveFromISR(task, &should_yield);
+        }
+
+        portYIELD_FROM_ISR(should_yield);
     }
 
-#if defined(ROSETTE_OS_FREERTOS)
-    void register_rx_task(TaskHandle_t task) noexcept override
-    {
-        device_.register_socket_rx_task(Chip::macraw_socket(), task);
-    }
-#endif
+    void register_rx_task(TaskHandle_t task) noexcept override { rx_task_ = task; }
 
 private:
     Bus bus_;
     raw_device_type device_;
+    TaskHandle_t volatile rx_task_ = nullptr;
     bool started_ = false;
 };
 

@@ -7,7 +7,7 @@ document states the rules, lists every file that moves or changes, and gives the
 written once the seams below exist, will explain how to add a port.
 
 `tools/style/check_port_boundaries.py` enforces the rules. It runs in `tools/style/run_style_checks.sh`, against
-`tools/style/port_boundary_baseline.txt` (96 entries today). New code must pass, and each step below deletes
+`tools/style/port_boundary_baseline.txt` (89 entries today). New code must pass, and each step below deletes
 baseline entries. When the baseline is empty, this plan is done and this file is replaced by PORTING.md.
 
 ## Layout
@@ -68,7 +68,7 @@ Three decisions follow from this layout:
 |---|---|---|
 | chip | `platform.hpp`: `monotonic_us`, `device_unique_id`, `realtime_hint_us` | add the hooks bare metal needs: `chip_critical_enter/exit`, `chip_wait_for_interrupt_until(deadline_us)` |
 | chip | `flash.hpp`: `rosette_platform_flash_*` | unchanged |
-| chip | *new* `gpio_interrupt.hpp`: `attach_falling_edge(pin, void (*)(void*), void*)` | replaces the Pico calls in `rx_interrupt_pico.hpp` |
+| chip | `gpio_interrupt.hpp`: `attach_falling_edge(pin, void (*)(void*), void*)` | added in step 7; replaced the Pico calls in `rx_interrupt_pico.hpp`; the host and stub chips return false |
 | chip | bus concept used by `WiznetDevice<Chip, Bus>` | written down in `ports/chip/stub/stub_bus.hpp`; `Rp2SpiBus` / `Rp2QspiBus` implement it |
 | chip | `__atomic_*` helpers (`fetch_add`, `exchange`, `compare_exchange`, ...) on a core without atomic instructions | new to the contract: the RTPS buffer pool's `std::atomic` counts call them on Cortex-M0+; the Pico SDK's `pico_atomic` supplies them on the RP2040, `ports/chip/stub/stub_atomic.c` shows the set |
 | os | `rosette_os_port.hpp`: `Mutex`, `Event` (with `signal_from_isr`), `sleep_ms` | unchanged API; moves out of `include/` |
@@ -92,11 +92,10 @@ is promoted, `rclc_chatter` and `rtps_chatter` are portable as written.
 removed it:
 
 - the clock functions became `platform::monotonic_ms()` and `sleep_ms()`;
-- `wait_for_event` (WFE, woken by the INT pin's otherwise empty GPIO callback) became a `platform::Event` in the
-  WIZnet `PollingExecutor`, lent to the provider as its receive event for the length of a blocking
-  `recv_from()`, so `attach_rx_interrupt()` wakes it. The socket's RECV flag is cleared before the last check
-  for data, so each datagram produces an edge. The FreeRTOS `wait_for_event` was `vTaskDelay(max_wait_ms)` and
-  never woke early; it is gone with the rest;
+- `wait_for_event` (WFE, woken by the INT pin's otherwise empty GPIO callback) became a `platform::Event`
+  that a blocking `recv_from()` sleeps on, signaled by the INT interrupt. (Step 6 put it in the WIZnet
+  `PollingExecutor`; step 7 removed the executors and gave each socket its own event.) The FreeRTOS
+  `wait_for_event` was `vTaskDelay(max_wait_ms)` and never woke early; it is gone with the rest;
 - the address setters had no reader on the WIZnet path (`NetworkAddress` published into them, nothing read
   back), so they went. The two getters with a real source moved next to their one caller: the FreeRTOS+TCP
   endpoint readout into `FreeRtosObserver` (which also fixes its byte order: the stack keeps `ulIPAddress` in
@@ -137,17 +136,17 @@ Actions: **move** (`git mv`, then fix includes), **split** (the contents go to s
 | `include/rosette/net/posix/socket.hpp`, `src/net/posix/socket.cpp` | move | `ports/net/posix/posix_socket.{hpp,cpp}` (its `__linux__` branch is fine inside a port) |
 | `include/rosette/net/freertos/{address_provider,igmp,interface,socket}.hpp` | move | `ports/net/freertos_tcp/freertos_tcp_*.hpp` |
 | `src/net/freertos/{igmp,interface,socket}.cpp` | move | `ports/net/freertos_tcp/freertos_tcp_*.cpp` (see "Open decisions": `igmp.cpp` includes a header that doesn't exist) |
-| `include/rosette/net/wiznet/macraw.{h,hpp}`, `src/net/wiznet/macraw.cpp` | move | `ports/net/freertos_tcp/wiznet_macraw_interface.*`: a FreeRTOS+TCP NetworkInterface over the portable WIZnet driver |
-| `include/rosette/net/wiznet/rx_interrupt_pico.hpp` | split | handler logic to `include/rosette/net/wiznet/rx_interrupt.hpp` over `gpio_interrupt.hpp`; GPIO calls to `ports/chip/rp2/rp2_gpio_interrupt.cpp` |
-| `include/rosette/net/wiznet/device.hpp` | refactor | per-socket FreeRTOS `TaskHandle_t` wake-ups become `platform::Event*` (the `SocketProvider::set_receive_event` path already exists) |
-| `include/rosette/net/wiznet/executor.hpp` | refactor | one executor over `platform::Event` / `sleep_ms` replaces `PollingExecutor` + `FreeRtosExecutor` |
+| `include/rosette/net/wiznet/macraw.{h,hpp}`, `src/net/wiznet/macraw.cpp` | move | `ports/net/freertos_tcp/wiznet_macraw_interface.*`: a FreeRTOS+TCP NetworkInterface over the portable WIZnet driver (since step 7 it notifies its own RX task from the interrupt; the driver has no FreeRTOS code) |
+| `include/rosette/net/wiznet/rx_interrupt_pico.hpp` | done | deleted: `WiznetSocketProvider::attach_interrupt()` attaches through `gpio_interrupt.hpp`; the Pico GPIO calls are in `src/platform/chip/rp2/chip_rp2.cpp`, which moves to `ports/chip/rp2/` |
+| `include/rosette/net/wiznet/device.hpp` | done | the FreeRTOS task wake-ups and interrupt-dispatch task are gone; `clear_rx_interrupts()` clears every flagged socket's RECV so INT can raise a fresh edge |
+| `include/rosette/net/wiznet/executor.hpp` | done | deleted rather than merged: `WiznetSocketProvider<Chip, Bus>` waits on `platform::Event` itself (a per-socket event for `recv_from()`, the caller's for `wait_readable()`), signals them all from the INT interrupt, and guards its socket table with `platform::Mutex` |
 | `include/rosette/net/wiznet/board.hpp` | move | `boards/common/rp2_wiznet/wiznet_board_types.hpp` (chooses `Rp2SpiBus`/`Rp2QspiBus` from `board_config.h`) |
 | `include/rosette/net/wiznet/chip_select.hpp` | refactor | chip model comes from a compile definition set by `board.cmake`, not `board_config.h`; drop the missing `w5500.hpp` branch or add the part |
 | `include/rosette/net/wiznet/board_network.hpp` | done | `include/rosette/net/board_network.hpp`, namespace `rosette::net`: the public contract (see "What an application includes") |
 | `src/net/wiznet/board_network.cpp` | move | `boards/common/rp2_wiznet/wiznet_board_network.cpp`, the WIZnet implementation of that contract |
 | *new* | add | the same contract over host sockets (done: `src/net/posix/board_network.cpp`, moves to `ports/net/posix/` with the POSIX port) and FreeRTOS+TCP (`ports/net/freertos_tcp/freertos_tcp_board_network.cpp`) |
 | `examples/*/main.cpp` | done | include `rosette/net/board_network.hpp`, call `rosette::net::bring_up_board_network()` |
-| `include/rosette/net/wiznet/dhcp_{client,provider,wire}.hpp`, `src/net/wiznet/dhcp_*.cpp` | move | `include/rosette/net/dhcp_*.hpp`, `src/net/dhcp_*.cpp`, namespace `rosette::net`: they depend only on the socket and provider interfaces |
+| `include/rosette/net/wiznet/dhcp_{client,provider,wire}.hpp`, `src/net/wiznet/dhcp_*.cpp` | stays | portable code (only the socket and provider interfaces), but only a socket-offload chip needs it: a MAC-level stack (FreeRTOS+TCP, lwIP) and the host OS run their own DHCP |
 | `include/rosette/net/wiznet/{device,socket_provider,link,interface,slaac_provider,w5100s,w6x00}.hpp` | stays | portable WIZnet driver |
 | everything else in `include/rosette/net/`, `src/net/` | stays | portable |
 | `rmw_rosette/src/network_port_wiznet.cpp`, `network_port_posix.cpp` | done | `rmw_rosette/src/network_port.cpp`, forwarding to `rosette/net/board_network.hpp`; rmw no longer knows which network it runs on |
@@ -190,7 +189,9 @@ neither fetched nor linked. The comments in `device.hpp` and `w6x00.hpp` that ci
 6. Remove `host_runtime.hpp` (the largest seam; touches the WIZnet driver, address code and boards). (done: see
    "What an application includes". The boards' empty INT callbacks went with it; `attach_rx_interrupt()` owns
    the interrupt. `NetworkAddress::wait()` had no caller and went too.)
-7. Refactor the WIZnet driver onto `platform::Event` and the GPIO-interrupt contract; move DHCP to `src/net/`.
+7. Refactor the WIZnet driver onto `platform::Event` and the GPIO-interrupt contract. (done: see the
+   `device.hpp`, `executor.hpp` and `rx_interrupt_pico.hpp` rows. DHCP stays with the WIZnet driver, since
+   every other network stack brings its own.)
 8. Add the fixed-name OS header and move the OS ports; move the chip ports; split the pico runtime files.
 9. Move the network ports and `boards/common/rp2_wiznet/`; convert `cmake/` to per-port `port.cmake`.
 10. Write PORTING.md: the contracts table, the zone rules, "pass `rosette_platform_contract` and the socket-provider

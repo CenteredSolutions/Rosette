@@ -35,6 +35,9 @@ struct W5100S final : ChipBase {
     // cleared the same write-1 way.
     static constexpr uint8_t common_ip_conflict_mask() { return 0x80u; }
 
+    // IR bits 0..3 (S0_INT..S3_INT): bit n set while socket n has an interrupt pending.
+    static constexpr address_type common_socket_interrupt() { return common_interrupt(); }
+
     // The W5100S has no IPv6; `Chip::has_hw_ipv6()` gates every IPv6 path.
     static constexpr bool has_hw_ipv6() { return false; }
 

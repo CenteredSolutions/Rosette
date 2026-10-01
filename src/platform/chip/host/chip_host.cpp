@@ -5,9 +5,10 @@
  * The monotonic clock is CLOCK_MONOTONIC. A host runs many Rosette processes
  * at once, so the unique ID mixes the machine's identity with the process ID
  * and start time; wall-clock time comes from the OS, which keeps it
- * synchronized.
+ * synchronized. A host has no GPIO interrupts.
  */
 
+#include "rosette/platform/gpio_interrupt.hpp"
 #include "rosette/platform/platform.hpp"
 
 #include <cstring>
@@ -61,6 +62,13 @@ bool realtime_hint_us(int64_t& unix_us) noexcept {
     if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return false;
     unix_us = static_cast<int64_t>(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
     return true;
+}
+
+bool attach_falling_edge(uint32_t pin, GpioInterruptHandler handler, void* context) noexcept {
+    (void)pin;
+    (void)handler;
+    (void)context;
+    return false;
 }
 
 }  // namespace rosette::platform

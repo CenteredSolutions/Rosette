@@ -76,17 +76,16 @@ namespace rosette::net::wiznet {
 /**
  * @brief Drives SLAAC for a W6100 / W6300.
  *
- * @tparam Chip      A chip trait with `has_hw_ipv6()`.
- * @tparam Bus       The chip's bus.
- * @tparam ExecutorT The socket provider's executor policy.
+ * @tparam Chip A chip trait with `has_hw_ipv6()`.
+ * @tparam Bus  The chip's bus.
  */
-template<typename Chip, typename Bus, template<typename> class ExecutorT = DefaultExecutor>
+template <typename Chip, typename Bus>
 class WiznetSlaacProvider final : public rosette::net::AddressProvider {
     static_assert(Chip::has_hw_ipv6(), "SLAAC needs a WIZnet part with hardware IPv6");
 
 public:
     using device_type = WiznetDevice<Chip, Bus>;
-    using sockets_type = WiznetSocketProvider<Chip, Bus, ExecutorT>;
+    using sockets_type = WiznetSocketProvider<Chip, Bus>;
     using socket_type = typename device_type::socket_type;
 
     /// RetransTimer for duplicate address detection (RFC 4861 §10).

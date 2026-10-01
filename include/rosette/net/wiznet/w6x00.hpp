@@ -70,10 +70,10 @@ struct W6x00 : ChipBase {
 
     // IR (0x2100) bit 2, IR_IPCONF: set when an ARP reply carries our own SIPR.
     // Same register `common_interrupt()` names; acked through IRCLR (0x2108).
-    // (Socket interrupts live in the separate SIR at 0x2101 on the W61xx/W63xx —
-    // `service_socket_interrupts()` reading `common_interrupt()` for those bits
-    // is a pre-existing, hardware-unverified issue tracked in the design note.)
     static constexpr uint8_t common_ip_conflict_mask() { return 0x04u; }  // IR_IPCONF
+
+    // SIR (0x2101): bit n set while socket n has an interrupt pending.
+    static constexpr address_type common_socket_interrupt() { return reg(0x2101u, common_block()); }
 
     // ── IPv6 (hardware dual stack) ──────────────────────────────────────────
     // The chip answers neighbor solicitations and echo requests for the

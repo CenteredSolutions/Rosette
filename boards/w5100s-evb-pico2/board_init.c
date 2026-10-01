@@ -37,7 +37,7 @@ void board_init(void)
     gpio_put(ROSETTE_PIN_W5100S_RST, 1);
 
     // Active-low INT; the network bring-up attaches its interrupt
-    // (attach_rx_interrupt()) once the chip answers.
+    // (WiznetSocketProvider::attach_interrupt()) once the chip answers.
     gpio_init(ROSETTE_PIN_WIZNET_INT);
     gpio_set_dir(ROSETTE_PIN_WIZNET_INT, GPIO_IN);
     gpio_pull_up(ROSETTE_PIN_WIZNET_INT);

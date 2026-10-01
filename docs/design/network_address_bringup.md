@@ -195,13 +195,10 @@ on the W6100).
 Detection is off the driver's existing cadence — no new bus-lock-contending
 poller:
 
-* **FreeRTOS:** `WiznetDevice::service_socket_interrupts()` latches the
-  IP-conflict bit (`Chip::common_ip_conflict_mask()` — `IR_CONFLICT` 0x80 on the
-  W5100S, `IR_IPCONF` 0x04 on the W6x00) in the same locked block it already
-  uses to read the common interrupt register.
-* **No-RTOS:** `WiznetInterface::conflict()` calls
-  `WiznetDevice::poll_common_interrupt()` — one register read — then consumes
-  the latch.
+`WiznetInterface::conflict()` calls `WiznetDevice::poll_common_interrupt()`
+(one register read) and consumes the latch. The IP-conflict bit is
+`Chip::common_ip_conflict_mask()`: `IR_CONFLICT` 0x80 on the W5100S, `IR_IPCONF`
+0x04 on the W6x00. The same code runs on every OS.
 
 `WiznetInterface` is shared by every WIZnet v4 provider, and the chip has one
 conflict latch, so exactly one provider reads it: the one holding the

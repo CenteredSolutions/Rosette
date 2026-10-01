@@ -93,9 +93,9 @@ NetworkConfig board_default_network() noexcept;
  * On a WIZnet board, starting the backend constructs the chip driver and the
  * providers the config lists, ordered as listed, and bring-up prints a
  * progress line every two seconds (waiting for the chip, for the PHY link, or
- * for an address). The chip's INT pin is routed to the socket provider's
- * receive event (attach_rx_interrupt()) as soon as the chip answers, so a
- * participant driver sleeping in wait_readable() wakes when a datagram
+ * for an address). The chip's INT pin is attached to the socket provider
+ * (WiznetSocketProvider::attach_interrupt()) as soon as the chip answers, so
+ * a participant driver sleeping in wait_readable() wakes when a datagram
  * arrives. On a host, bring-up waits for the operating system to hold an
  * IPv4 address.
  *

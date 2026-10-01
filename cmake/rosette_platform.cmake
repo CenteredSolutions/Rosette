@@ -90,7 +90,8 @@ endif()
 
 if(ROSETTE_CHIP STREQUAL "rp2")
   target_link_libraries(rosette_platform PUBLIC
-    pico_stdlib pico_sync pico_time pico_unique_id hardware_sync hardware_timer)
+    pico_stdlib pico_sync pico_time pico_unique_id hardware_gpio hardware_irq hardware_sync
+    hardware_timer)
 endif()
 
 if(CMAKE_POSITION_INDEPENDENT_CODE OR ROSETTE_CHIP STREQUAL "host")

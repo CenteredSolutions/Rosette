@@ -2,7 +2,7 @@
  * @file net/wiznet/socket_provider.hpp
  * @brief Template `SocketProvider` over the WIZnet hardware UDP sockets.
  *
- * `WiznetSocketProvider<Chip, Bus, Executor>` hands out the chip's hardware
+ * `WiznetSocketProvider<Chip, Bus>` hands out the chip's hardware
  * sockets as `rosette::net::Socket` objects. All of the register-level work
  * lives in `WiznetDevice<Chip, Bus>`; this layer maps the `Socket` vtable onto
  * it and tracks which hardware sockets are in use.
@@ -19,53 +19,49 @@
  * programmed (see `slaac_provider.hpp`). A host that wants both families opens
  * one socket of each, as it would with BSD sockets and `IPV6_V6ONLY`.
  *
- * The @p Executor policy (see `executor.hpp`) decides how `recv_from()` waits:
- * a cooperative poll in a bare superloop, or a task notification under
- * FreeRTOS. It defaults to whichever fits the build's platform (`ROSETTE_OS_FREERTOS`);
- * pass `PollingExecutor` explicitly to force poll mode even under an RTOS.
+ * Waiting is the same on every OS. A thread blocked in `recv_from()` sleeps on
+ * its socket's `platform::Event`, and wait_readable() sleeps on the caller's
+ * event. The chip's INT pin (attach_interrupt()) signals every such event on
+ * each falling edge, and each woken thread reads its own sockets' registers:
+ * the interrupt touches no bus. INT stays low while any socket's interrupt is
+ * pending, so whoever is about to sleep or has just read first clears every
+ * flagged socket's RECV interrupt (rearm_rx_interrupts()) and wakes the threads
+ * that may have missed an edge; the next datagram then raises a fresh one.
  */
 
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <new>
 
+#include "rosette/platform/gpio_interrupt.hpp"
 #include "rosette/platform/platform.hpp"
 
-#include "device.hpp"
-#include "executor.hpp"
 #include "../socket.hpp"
+#include "device.hpp"
 
 namespace rosette::net::wiznet {
 
-template<typename Chip, typename Bus,
-         template<typename> class ExecutorT = DefaultExecutor>
+template <typename Chip, typename Bus>
 class WiznetSocketProvider;
 
 /**
  * @brief One hardware UDP socket, optionally bound to a multicast group.
  */
-template<typename Chip, typename Bus, template<typename> class ExecutorT>
+template <typename Chip, typename Bus>
 class WiznetUdpSocket final : public Socket {
 public:
     using device_type = WiznetDevice<Chip, Bus>;
-    using provider_type = WiznetSocketProvider<Chip, Bus, ExecutorT>;
-    using executor_type = ExecutorT<device_type>;
+    using provider_type = WiznetSocketProvider<Chip, Bus>;
     using socket_type = typename device_type::socket_type;
 
-    WiznetUdpSocket(device_type& device,
-                    provider_type* provider,
-                    executor_type& executor,
-                    socket_type socket,
+    WiznetUdpSocket(device_type& device, provider_type& provider, socket_type socket,
                     SocketDomain domain) noexcept
-        : device_(device)
-        , provider_(provider)
-        , executor_(executor)
-        , socket_(socket)
-        , domain_(domain) {}
+        : device_(device), provider_(provider), socket_(socket), domain_(domain) {}
 
     ~WiznetUdpSocket() override
     {
@@ -200,10 +196,7 @@ public:
             return static_cast<int>(last_error_);
         }
 
-        if (provider_ != nullptr) {
-            socket_ = provider_->reclaim(socket_, bytes);
-        }
-
+        socket_ = provider_.reclaim(socket_, bytes);
         last_error_ = SocketError::none;
         return 0;
     }
@@ -242,26 +235,17 @@ public:
         return rc;
     }
 
+    /// @brief True when the chip holds a received datagram for this socket.
+    bool rx_pending() noexcept { return open_ && device_.socket_rx_available(socket_) > 0u; }
+
     /**
      * @brief Reads one datagram, waiting up to the configured receive timeout.
      *
-     * The wait itself is delegated to the @c Executor: a cooperative sleep in
-     * poll mode, a task notification under FreeRTOS. Either way this loop owns
-     * the deadline and re-checks the chip after each wake.
+     * Between checks the calling thread sleeps on this socket's event, which
+     * the provider signals from the chip's interrupt
+     * (WiznetSocketProvider::wait_rx()). The loop owns the deadline and
+     * re-checks the chip after each wake.
      */
-    /**
-     * @brief True when the chip holds a received datagram for this socket.
-     *
-     * @param[in] rearm Clear the socket's RECV interrupt first, so a datagram
-     *   arriving after this check asserts INT again.
-     */
-    bool rx_pending(bool rearm) noexcept
-    {
-        if (!open_) return false;
-        if (rearm) device_.rearm_socket_rx_interrupt(socket_);
-        return device_.socket_rx_available(socket_) > 0u;
-    }
-
     std::ptrdiff_t recv_from(void* data,
                              std::size_t capacity,
                              SocketAddress* remote) noexcept override
@@ -276,14 +260,15 @@ public:
             return -1;
         }
 
-        const uint32_t start = executor_type::now_ms();
-        typename executor_type::RxScope rx_scope(executor_, *provider_, device_, socket_);
+        const uint32_t start = rosette::platform::monotonic_ms();
+        typename provider_type::RxWaiter waiter(provider_, socket_, rx_event_);
         for (;;) {
             UdpEndpoint source{};
             const std::ptrdiff_t rc = device_.udp_receive_from(
                 socket_, static_cast<uint8_t*>(data), capacity, &source);
 
             if (rc != 0) {
+                provider_.rearm_rx_interrupts(&rx_event_);
                 if ((rc >= 0) && (remote != nullptr)) {
                     *remote = source.ipv6 ? make_socket_address_v6(source.address, source.port)
                                           : make_socket_address_v4(source.ipv4(), source.port);
@@ -297,13 +282,13 @@ public:
                 return -1;
             }
 
-            const uint32_t elapsed = executor_type::now_ms() - start;
+            const uint32_t elapsed = rosette::platform::monotonic_ms() - start;
             if (elapsed >= receive_timeout_ms_) {
                 last_error_ = SocketError::timed_out;
                 return -1;
             }
 
-            (void)rx_scope.wait(receive_timeout_ms_ - elapsed);
+            provider_.wait_rx(socket_, rx_event_, receive_timeout_ms_ - elapsed);
         }
     }
 
@@ -317,10 +302,7 @@ public:
             device_.close_socket(socket_);
         }
 
-        if (provider_ != nullptr) {
-            provider_->release(socket_);
-        }
-
+        provider_.release(socket_);
         open_ = false;
         claimed_ = false;
         multicast_joined_ = false;
@@ -354,8 +336,9 @@ private:
     }
 
     device_type& device_;
-    provider_type* provider_ = nullptr;
-    executor_type& executor_;
+    provider_type& provider_;
+    /// Signaled from the chip's interrupt while a recv_from() waits on this socket.
+    rosette::platform::Event rx_event_;
     socket_type socket_ = 0u;
     SocketDomain domain_ = SocketDomain::ipv4;
     uint32_t receive_timeout_ms_ = 0u;
@@ -369,21 +352,16 @@ private:
 /**
  * @brief Hands out the chip's hardware sockets as `Socket` objects.
  */
-template<typename Chip, typename Bus, template<typename> class ExecutorT>
+template <typename Chip, typename Bus>
 class WiznetSocketProvider final : public SocketProvider {
 public:
     using device_type = WiznetDevice<Chip, Bus>;
-    using executor_type = ExecutorT<device_type>;
     using socket_type = typename device_type::socket_type;
 
-    explicit WiznetSocketProvider(device_type& device) noexcept
-        : device_(device)
-        , executor_(device) {}
+    explicit WiznetSocketProvider(device_type& device) noexcept : device_(device) {}
 
-    ~WiznetSocketProvider() override
-    {
-        executor_.stop();
-    }
+    WiznetSocketProvider(const WiznetSocketProvider&) = delete;
+    WiznetSocketProvider& operator=(const WiznetSocketProvider&) = delete;
 
     std::unique_ptr<Socket> open(
         SocketDomain domain = SocketDomain::ipv4,
@@ -409,8 +387,7 @@ public:
         }
 
         auto instance = std::unique_ptr<Socket>(
-            new (std::nothrow) WiznetUdpSocket<Chip, Bus, ExecutorT>(
-                device_, this, executor_, socket, domain));
+            new (std::nothrow) WiznetUdpSocket<Chip, Bus>(device_, *this, socket, domain));
         if (!instance) {
             release(socket);
         }
@@ -418,17 +395,44 @@ public:
     }
 
     /**
+     * @brief Routes the chip's INT pin to every thread waiting on this provider's sockets.
+     *
+     * Each falling edge signals the event registered with
+     * set_receive_event() and the event of each socket blocked in
+     * recv_from(). Attach once the chip answers; until then, and on a chip
+     * port without GPIO interrupts, waits poll the chip's registers instead.
+     *
+     * @param[in] pin GPIO wired to the chip's active-low INT output.
+     * @return Whether the interrupt is attached.
+     *
+     * Verification:
+     * - Correct means: a datagram sent to the board ends a kWaitForever
+     *   wait_readable(), or a blocking recv_from(), within interrupt latency.
+     * - Covered by: examples/wiznet_udp_echo (wait_readable()) and its SNTP
+     *   exchange (recv_from()), examples/rtps_chatter and examples/rclc_chatter.
+     */
+    bool attach_interrupt(uint32_t pin) noexcept {
+        interrupt_attached_ = rosette::platform::attach_falling_edge(
+            pin,
+            [](void* provider) {
+                static_cast<WiznetSocketProvider*>(provider)->interrupt_from_isr();
+            },
+            this);
+        return interrupt_attached_;
+    }
+
+    /**
      * @brief Sleeps until a listed socket holds a datagram, `wake` is
      * signaled, or `timeout_ms` passes.
      *
      * The participant driver sleeps here between protocol passes. With the
-     * chip's INT pin routed to `wake` (attach_rx_interrupt(), and the event
-     * registered through set_receive_event()), each socket's RECV interrupt
-     * is cleared and its received-size register read once, and the core then
-     * sleeps on `wake` for the whole timeout: the next datagram asserts INT,
-     * whose interrupt signals `wake`. Clearing before reading means a datagram
-     * landing after the read still produces an edge, so none is missed.
-     * A board without an INT line is served by reading the registers again
+     * chip's INT pin attached (attach_interrupt()) and `wake` registered
+     * through set_receive_event(), every flagged RECV interrupt is cleared
+     * (rearm_rx_interrupts()), each socket's received-size register read
+     * once, and the core then sleeps on `wake` for the whole timeout: the next
+     * datagram asserts INT, whose interrupt signals `wake`. Clearing before
+     * reading means a datagram landing after the read still produces an edge,
+     * so none is missed. Without the interrupt the registers are read again
      * every kRxPollSliceMs while sleeping on `wake` in between.
      *
      * @param[in] sockets    Sockets opened by this provider (entries may be
@@ -439,7 +443,7 @@ public:
      *   data or `wake`.
      *
      * Verification:
-     * - Correct means: returns within interrupt latency (INT wired) or
+     * - Correct means: returns within interrupt latency (INT attached) or
      *   kRxPollSliceMs (no INT) of a datagram reaching any listed socket, and
      *   immediately when `wake` is signaled.
      * - Covered by: examples/rtps_chatter on the W5100S-EVB-Pico2 (command
@@ -451,30 +455,120 @@ public:
                        rosette::platform::Event& wake,
                        uint32_t timeout_ms) noexcept override
     {
-        using udp_socket = WiznetUdpSocket<Chip, Bus, ExecutorT>;
-        const bool interrupt_driven = (receive_event_ == &wake);
-        const uint32_t start = executor_type::now_ms();
+        using udp_socket = WiznetUdpSocket<Chip, Bus>;
+        const bool interrupt_driven = interrupt_attached_ && (receive_event_ == &wake);
+        const uint32_t start = rosette::platform::monotonic_ms();
         for (;;) {
+            if (interrupt_driven) {
+                rearm_rx_interrupts(&wake);
+            }
+
             for (std::size_t i = 0; i < count; ++i) {
-                if (sockets[i] != nullptr &&
-                    static_cast<udp_socket*>(sockets[i])->rx_pending(interrupt_driven)) {
+                if (sockets[i] != nullptr && static_cast<udp_socket*>(sockets[i])->rx_pending()) {
                     return;
                 }
             }
+
             if (interrupt_driven) {
                 (void)wake.wait_for(timeout_ms);
                 return;
             }
-            const uint32_t elapsed = executor_type::now_ms() - start;
+
+            const uint32_t elapsed = rosette::platform::monotonic_ms() - start;
             if (timeout_ms != rosette::platform::kWaitForever && elapsed >= timeout_ms) {
                 return;
             }
+
             uint32_t slice = kRxPollSliceMs;
             if (timeout_ms != rosette::platform::kWaitForever && timeout_ms - elapsed < slice) {
                 slice = timeout_ms - elapsed;
             }
+
             if (wake.wait_for(slice)) {
                 return;
+            }
+        }
+    }
+
+    /**
+     * @brief Registers a socket's event for the chip's interrupt while a recv_from() waits.
+     *
+     * The interrupt reads the registration on every edge, so the event is
+     * signaled only while the waiter is in scope.
+     */
+    class RxWaiter {
+    public:
+        RxWaiter(WiznetSocketProvider& provider, socket_type socket,
+                 rosette::platform::Event& event) noexcept
+            : slot_(provider.rx_waiters_[socket]) {
+            slot_.store(&event, std::memory_order_release);
+        }
+
+        ~RxWaiter() { slot_.store(nullptr, std::memory_order_release); }
+
+        RxWaiter(const RxWaiter&) = delete;
+        RxWaiter& operator=(const RxWaiter&) = delete;
+
+    private:
+        std::atomic<rosette::platform::Event*>& slot_;
+    };
+
+    /**
+     * @brief Sleeps until `socket` may hold a datagram, or at most `timeout_ms`.
+     *
+     * Rearms the chip's interrupts before the last check for data, so a
+     * datagram landing after the check signals `event`. The sleep is capped
+     * at kRxBackstopMs with the interrupt attached, for the edge a datagram
+     * cannot raise while another thread's unread socket holds INT low, and at
+     * kRxPollSliceMs without it. The caller registers `event` (RxWaiter) and
+     * re-checks the chip after the return.
+     *
+     * @param[in] socket     The socket the caller reads.
+     * @param[in] event      The caller's event, registered for `socket`.
+     * @param[in] timeout_ms Rest of the caller's receive timeout.
+     */
+    void wait_rx(socket_type socket, rosette::platform::Event& event,
+                 uint32_t timeout_ms) noexcept {
+        if (interrupt_attached_) {
+            rearm_rx_interrupts(&event);
+        }
+
+        if (device_.socket_rx_available(socket) > 0u) {
+            return;
+        }
+
+        const uint32_t cap = interrupt_attached_ ? kRxBackstopMs : kRxPollSliceMs;
+        (void)event.wait_for(timeout_ms < cap ? timeout_ms : cap);
+    }
+
+    /**
+     * @brief Clears every flagged RECV interrupt and wakes each waiter that may have missed its
+     * edge.
+     *
+     * While any socket's interrupt is pending, INT stays low and no other
+     * socket's datagram can raise a falling edge, so a thread about to sleep
+     * clears them all (WiznetDevice::clear_rx_interrupts()). A flag it clears
+     * may belong to a datagram that arrived while INT was already low, whose
+     * waiter was never signaled, so every registered event but `self` is
+     * signaled whenever a flag was found. Each woken thread re-reads its own
+     * socket; a spurious wake costs one register read.
+     *
+     * @param[in] self The caller's own event, not signaled; may be null.
+     */
+    void rearm_rx_interrupts(const rosette::platform::Event* self) noexcept {
+        if (!interrupt_attached_ || device_.clear_rx_interrupts() == 0u) {
+            return;
+        }
+
+        rosette::platform::Event* const registered = receive_event_;
+        if (registered != nullptr && registered != self) {
+            registered->signal();
+        }
+
+        for (auto& slot : rx_waiters_) {
+            rosette::platform::Event* const event = slot.load(std::memory_order_acquire);
+            if (event != nullptr && event != self) {
+                event->signal();
             }
         }
     }
@@ -498,7 +592,7 @@ public:
     void release(socket_type socket) noexcept
     {
         if (socket < Chip::socket_count()) {
-            typename executor_type::CriticalSection guard;
+            rosette::platform::LockGuard guard(claim_lock_);
             claimed_[socket] = false;
         }
     }
@@ -515,7 +609,7 @@ public:
      */
     socket_type reclaim(socket_type held, std::size_t bytes) noexcept
     {
-        typename executor_type::CriticalSection guard;
+        rosette::platform::LockGuard guard(claim_lock_);
         claimed_[held] = false;
         const socket_type best = best_free_socket(bytes);
         const socket_type taken = best < Chip::socket_count() ? best : held;
@@ -525,12 +619,11 @@ public:
 
 private:
     /**
-     * @brief One-time chip init (socket mode) and dispatch-lifecycle start.
+     * @brief One-time chip init (socket mode).
      *
      * Called on the first `open()`. If the device is already in socket mode —
      * because `WiznetLink` (or the caller) ran bring-up — the chip init is
-     * skipped so its addressing is not reset. Provider setup is expected to run
-     * from a single context, so the started flag is not itself lock-guarded.
+     * skipped so its addressing is not reset.
      */
     bool ensure_started() noexcept
     {
@@ -542,13 +635,22 @@ private:
             }
         }
 
-        if (!executor_started_) {
-            if (!executor_.start()) {
-                return false;
-            }
-            executor_started_ = true;
-        }
         return true;
+    }
+
+    /// @brief Signals every registered event; runs in interrupt context and touches no bus.
+    void interrupt_from_isr() noexcept {
+        rosette::platform::Event* const registered = receive_event_;
+        if (registered != nullptr) {
+            registered->signal_from_isr();
+        }
+
+        for (auto& slot : rx_waiters_) {
+            rosette::platform::Event* const event = slot.load(std::memory_order_acquire);
+            if (event != nullptr) {
+                event->signal_from_isr();
+            }
+        }
     }
 
     /**
@@ -562,7 +664,7 @@ private:
      */
     socket_type claim_socket() noexcept
     {
-        typename executor_type::CriticalSection guard;
+        rosette::platform::LockGuard guard(claim_lock_);
         const socket_type socket = best_free_socket(0u);
         if (socket < Chip::socket_count()) {
             claimed_[socket] = true;
@@ -605,11 +707,17 @@ private:
 
     /// Register re-read period for boards with no INT line (see wait_readable()).
     static constexpr uint32_t kRxPollSliceMs = 2u;
+    /// Longest interrupt-driven sleep in recv_from() before re-reading the chip (see wait_rx()).
+    static constexpr uint32_t kRxBackstopMs = 20u;
 
     device_type& device_;
-    executor_type executor_;
+    /// Guards `claimed_` against concurrent open() / close().
+    rosette::platform::Mutex claim_lock_;
     std::array<bool, Chip::socket_count()> claimed_{};
-    bool executor_started_ = false;
+    /// Per socket, the event of the thread blocked in its recv_from(), or null.
+    std::array<std::atomic<rosette::platform::Event*>, Chip::socket_count()> rx_waiters_{};
+    /// Set once attach_interrupt() succeeds; written before the chip's first edge.
+    bool interrupt_attached_ = false;
 };
 
 }  // namespace rosette::net::wiznet

@@ -27,8 +27,9 @@
  * spawns a task. When an exchange is due it sends one request and waits for
  * the reply through the socket's receive timeout (at most
  * `reply_timeout_ms`), which is how the socket backend waits under any
- * scheduler: the WIZnet `PollingExecutor` parks the CPU until the chip's
- * INT line fires, the `FreeRtosExecutor` blocks the calling task. Waiting
+ * scheduler: a WIZnet socket sleeps on its `platform::Event` until the chip's
+ * INT line fires, which parks the CPU on bare metal and blocks the calling
+ * task under an RTOS. Waiting
  * inside the call is deliberate: the reply's arrival time (T4) is read the
  * moment the socket returns it, where a later main-loop pass would add its
  * own latency to the measured delay and bias the offset.

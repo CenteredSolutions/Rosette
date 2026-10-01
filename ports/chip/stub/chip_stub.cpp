@@ -11,6 +11,8 @@
  *
  *  - rosette/platform/platform.hpp: monotonic_us(), device_unique_id(),
  *    realtime_hint_us();
+ *  - rosette/platform/gpio_interrupt.hpp: attach_falling_edge(), which a
+ *    chip without GPIO interrupts answers with false;
  *  - rosette/platform/flash.hpp: the storage flash region and its
  *    erase/program/read primitives;
  *  - rosette/platform/littlefs_platform.hpp: mounting the LittleFS volume
@@ -27,6 +29,7 @@
  */
 
 #include "rosette/platform/flash.hpp"
+#include "rosette/platform/gpio_interrupt.hpp"
 #include "rosette/platform/platform.hpp"
 
 namespace rosette::platform {
@@ -44,6 +47,13 @@ void device_unique_id(uint8_t out[8]) noexcept {
 
 bool realtime_hint_us(int64_t& unix_us) noexcept {
     (void)unix_us;
+    return false;
+}
+
+bool attach_falling_edge(uint32_t pin, GpioInterruptHandler handler, void* context) noexcept {
+    (void)pin;
+    (void)handler;
+    (void)context;
     return false;
 }
 
