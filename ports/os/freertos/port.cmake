@@ -61,5 +61,27 @@ endif()
 target_include_directories(rosette_platform PUBLIC ${ROSETTE_PORT_DIR})
 target_link_libraries(rosette_platform PUBLIC freertos_kernel)
 
+# The kernel's Pico SDK port (a board sets FREERTOS_PORT=GCC_RP2040). Its
+# headers and port.c include SDK headers the kernel's generic CMake does not
+# provide (the port's own library.cmake would), and the SDK sources compiled
+# into each image take the port's adapter header, so an SDK mutex (stdio,
+# malloc) or sleep_ms() taken in a task blocks that task in the kernel
+# instead of spinning. The board's FreeRTOSConfig.h must then set
+# configSUPPORT_PICO_SYNC_INTEROP and configSUPPORT_PICO_TIME_INTEROP to 1:
+# the kernel library is not compiled with LIB_PICO_SYNC / LIB_PICO_TIME,
+# from which rp2040_config.h would otherwise infer them.
+if(FREERTOS_PORT STREQUAL "GCC_RP2040")
+  get_target_property(_rf_kernel_dir freertos_kernel SOURCE_DIR)
+  target_link_libraries(freertos_kernel_port_headers INTERFACE
+    hardware_sync_headers hardware_irq_headers hardware_clocks_headers
+    hardware_exception_headers pico_sync_headers pico_time_headers)
+  # As the port's library.cmake does: port.c's SDK interop (the cross-core
+  # FIFO, sio_hw) is compiled only with LIB_PICO_MULTICORE.
+  target_link_libraries(freertos_kernel_port PRIVATE pico_multicore)
+  target_compile_definitions(rosette_platform PUBLIC
+    LIB_FREERTOS_KERNEL=1
+    PICO_CONFIG_RTOS_ADAPTER_HEADER=${_rf_kernel_dir}/portable/ThirdParty/GCC/RP2040/include/freertos_sdk_config.h)
+endif()
+
 # Examples that use FreeRTOS directly check this.
 set(ROSETTE_BOARD_ENABLE_FREERTOS ON)
