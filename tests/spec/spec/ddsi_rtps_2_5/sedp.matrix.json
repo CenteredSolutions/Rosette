@@ -147,6 +147,15 @@
       "statement": "Discovered endpoint data requires PID_ENDPOINT_GUID for valid endpoint identity.",
       "status": "implemented",
       "test_ids": ["TC-SEDP-9.6.3.2-002"]
+    },
+    {
+      "id": "REQ-SEDP-8.5.4.2-ENDPOINT-RELOCATION",
+      "section": "8.5.4.2",
+      "page": 166,
+      "normativity": "shall",
+      "statement": "A matched remote endpoint that re-announces a different unicastLocatorList is matched again at the new locators, and no match refers to the locators it left.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.5.1-012"]
     }
   ]
 }

@@ -591,20 +591,56 @@ void RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
     }
 }
 
+namespace {
+
+// True when an endpoint's announced locators are owned by its participant's
+// default list: it announced none, or announced exactly that list.
+bool follows_defaults(const Locator* announced, uint8_t announced_count, const Locator* defaults,
+                      uint8_t default_count) noexcept {
+    if (announced_count == 0u) {
+        return true;
+    }
+
+    if (announced_count != default_count) {
+        return false;
+    }
+
+    for (uint8_t i = 0; i < announced_count; ++i) {
+        if (announced[i] != defaults[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+}  // namespace
+
 void RTPSParticipant::resolve_endpoint_locators(const GuidPrefix& remote_prefix,
-                                                const Locator*&   locators,
-                                                uint8_t&          count) const noexcept
-{
-    if (count > 0u) return;
+                                                const Locator*& locators,
+                                                uint8_t& count) const noexcept {
     if (remote_prefix == participant_guid_.prefix) {
-        locators = local_participant_data_.defaultUnicastLocatorList;
-        count    = local_participant_data_.defaultUnicastLocatorCount;
+        const Locator* own = local_participant_data_.defaultUnicastLocatorList;
+        const uint8_t own_count = local_participant_data_.defaultUnicastLocatorCount;
+        if (follows_defaults(locators, count, own, own_count)) {
+            locators = own;
+            count = own_count;
+        }
+
         return;
     }
+
     spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
-        if (peer.data.guidPrefix != remote_prefix) return;
-        locators = peer.data.defaultUnicastLocatorList;
-        count    = peer.data.defaultUnicastLocatorCount;
+        if (peer.data.guidPrefix != remote_prefix) {
+            return;
+        }
+
+        const Locator* defaults = peer.data.defaultUnicastLocatorList;
+        const uint8_t default_count = peer.data.defaultUnicastLocatorCount;
+        if (follows_defaults(locators, count, defaults, default_count)) {
+            locators = defaults;
+            count = default_count;
+        }
     });
 }
 

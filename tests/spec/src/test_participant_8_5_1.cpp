@@ -916,6 +916,117 @@ static bool tc_part_8_5_1_007(std::string& err) {
     return true;
 }
 
+// Delivers the SPDP announcement a remote participant sends from `meta` and
+// `user` at time `now_ms`; true when the participant accepts it.
+static bool announce_spdp(RTPSParticipant& p, const GuidPrefix& prefix, const Locator& meta,
+                          const Locator& user, uint32_t now_ms) {
+    std::vector<Octet> payload{};
+    if (!build_spdp_payload(prefix, 30u, meta, payload, user)) {
+        return false;
+    }
+
+    g_participant_test_now_ms = now_ms;
+    return p.spdp_reader().on_data(prefix, payload.data(), static_cast<uint32_t>(payload.size()),
+                                   now_ms);
+}
+
+// §8.5.3.2: a peer that keeps its GUID and moves to a new address
+// re-announces SPDP with new locators. Proxies refer to the peer record
+// rather than copying it, so user DATA, ACKNACKs and SEDP traffic all follow
+// it at once, without a rematch. The reader announces its participant's
+// defaults (as Fast DDS endpoints do) and the writer announces none (as
+// Cyclone DDS endpoints do); both are resolved to the peer record.
+static bool tc_part_8_5_3_001(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+
+    const GuidPrefix remote_prefix = make_prefix(0xC1u, 0xC2u, 0xC3u);
+    const Locator old_meta = make_udpv4_locator(0xC0A80181u, 7410u);
+    const Locator old_user = make_udpv4_locator(0xC0A80181u, 7411u);
+    const Locator new_meta = make_udpv4_locator(0xC0A80182u, 7410u);
+    const Locator new_user = make_udpv4_locator(0xC0A80182u, 7411u);
+    CHECK(announce_spdp(p, remote_prefix, old_meta, old_user, 100u),
+          "peer discovery should succeed");
+
+    WriterConfig wcfg{};
+    wcfg.topicName.assign("rt/moving");
+    wcfg.typeName.assign("pkg::msg::dds_::T_");
+    auto* w = p.create_writer<1>(wcfg);
+    CHECK(w != nullptr, "create_writer should succeed");
+    ReaderConfig rcfg{};
+    rcfg.topicName.assign("rt/moving_back");
+    rcfg.typeName.assign("pkg::msg::dds_::T_");
+    StatefulReader* r = p.create_reader(rcfg, on_reader_change, nullptr);
+    CHECK(r != nullptr, "create_reader should succeed");
+
+    DiscoveredReaderData rd{};
+    rd.readerGuid.prefix = remote_prefix;
+    rd.readerGuid.entityId = make_entity(0x61u, 0x62u, 0x63u, 0x04u);
+    rd.topicName.assign("rt/moving");
+    rd.typeName.assign("pkg::msg::dds_::T_");
+    rd.reliabilityKind = ReliabilityKind::RELIABLE;
+    rd.durabilityKind = DurabilityKind::VOLATILE;
+    rd.unicastLocatorList[0] = old_user;  // Its participant's defaults.
+    rd.unicastLocatorCount = 1u;
+    p.match_table().add_reader(rd);
+
+    DiscoveredWriterData wd{};
+    wd.writerGuid.prefix = remote_prefix;
+    wd.writerGuid.entityId = make_entity(0x71u, 0x72u, 0x73u, 0x03u);
+    wd.topicName.assign("rt/moving_back");
+    wd.typeName.assign("pkg::msg::dds_::T_");
+    wd.reliabilityKind = ReliabilityKind::RELIABLE;
+    wd.durabilityKind = DurabilityKind::VOLATILE;
+    p.match_table().add_writer(wd);  // No unicast locators of its own.
+    const ReaderProxy* proxy = w->matched_reader_lookup(rd.readerGuid);
+    CHECK(proxy != nullptr, "the writer matches the remote reader");
+
+    CHECK(announce_spdp(p, remote_prefix, new_meta, new_user, 200u),
+          "the refresh from the new address should be accepted");
+    CHECK(w->matched_reader_lookup(rd.readerGuid) == proxy,
+          "the same proxy stays matched; the move needs no rematch");
+
+    tx.packets.clear();
+    const Octet user_payload[1] = {0x5Au};
+    CHECK(w->write_async(ChangeKind::ALIVE, user_payload, 1u), "write_async should succeed");
+    bool data_to_new = false;
+    for (const auto& packet : tx.packets) {
+        CHECK(packet.dest != old_user, "nothing goes to the old address");
+        if (packet_writer_id(packet) == w->guid().entityId && packet.dest == new_user) {
+            data_to_new = true;
+        }
+    }
+
+    CHECK(data_to_new, "DATA must go to the peer's new default unicast locator");
+
+    tx.packets.clear();
+    ParsedHeartbeat hb{};
+    hb.writerId = wd.writerGuid.entityId;
+    hb.readerId = r->guid().entityId;
+    hb.firstSN = SequenceNumber::from_int64(1);
+    hb.lastSN = SequenceNumber::from_int64(1);
+    hb.count = 1;
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = remote_prefix;
+    r->on_heartbeat(ctx, hb);
+    CHECK(!tx.packets.empty() && tx.packets.back().dest == new_user,
+          "the ACKNACK must go to the peer's new default unicast locator");
+
+    tx.packets.clear();
+    CHECK(p.delete_writer(w), "delete_writer should succeed");
+    bool disposal_to_new = false;
+    for (const auto& packet : tx.packets) {
+        CHECK(packet.dest != old_meta, "no SEDP traffic goes to the old address");
+        if (packet.dest == new_meta) {
+            disposal_to_new = true;
+        }
+    }
+
+    CHECK(disposal_to_new, "the SEDP disposal must go to the peer's new metatraffic locator");
+    return true;
+}
+
 // A local endpoint whose name does not fit RTPS_MAX_TOPIC_NAME_LEN is
 // refused rather than announced under a truncated name.
 static bool tc_part_8_5_1_008(std::string& err) {
@@ -1095,6 +1206,10 @@ void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-007",
                      "§8.5.3.2: an endpoint announced without unicast locators is reached at its participant's default unicast locators, for DATA and ACKNACK alike.",
                      tc_part_8_5_1_007});
+    tests.push_back({"TC-PART-8.5.3-001",
+                     "§8.5.3.2: a peer that keeps its GUID and re-announces SPDP from a new "
+                     "address is reached there at once (DATA, ACKNACK, SEDP) without a rematch.",
+                     tc_part_8_5_3_001});
     tests.push_back({"TC-PART-8.5.1-008",
                      "A local endpoint whose topic or type name exceeds RTPS_MAX_TOPIC_NAME_LEN - 1 is refused, not announced truncated.",
                      tc_part_8_5_1_008});

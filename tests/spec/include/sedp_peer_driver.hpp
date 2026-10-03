@@ -25,6 +25,11 @@ struct SedpPeer {
     GuidPrefix prefix{};
     Locator    meta = LOCATOR_INVALID;   ///< Metatraffic unicast locator.
 
+    /// Stands in for the peer's SPDP peer-table slot. Matched proxies refer
+    /// to its locators rather than copying them, so, like the slot, it lives
+    /// as long as the peer does.
+    mutable DiscoveredParticipant record{};
+
     /// @brief What SPDP keeps of the peer, listing both SEDP announcers and detectors.
     DiscoveredParticipant spdp() const {
         DiscoveredParticipant d{};
@@ -40,7 +45,10 @@ struct SedpPeer {
     }
 
     /// @brief SPDP discovered this peer: its announcers become matched writers.
-    void discover(SedpReader& reader) const { reader.on_peer_discovered(spdp()); }
+    void discover(SedpReader& reader) const {
+        record = spdp();
+        reader.on_peer_discovered(record);
+    }
 
     /// @brief DATA carrying a PL_CDR endpoint announcement.
     void announce(SedpReader& reader, const EntityId& writer, int64_t sn,

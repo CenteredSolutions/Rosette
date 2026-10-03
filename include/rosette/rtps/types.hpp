@@ -529,6 +529,71 @@ inline Locator make_udpv6_locator(const uint8_t (&ipv6)[16], uint16_t port) noex
     return l;
 }
 
+/**
+ * @brief The entry of a locator list a proxy refers to for sending.
+ *
+ * ReaderProxy and WriterProxy keep a pointer to one entry of the list they
+ * were matched with rather than a copy of the list (see "Locator reference"
+ * in rtps/reader_proxy.hpp). This chooses that entry: the first UDP locator,
+ * because some peers advertise other transports (for example shared memory)
+ * ahead of UDP, else the first entry so a list of other kinds is still
+ * addressed as announced.
+ *
+ * @param[in] list  The locator list; may be null when `count` is 0. The
+ *   returned pointer aliases it, so it carries the list's lifetime.
+ * @param[in] count Entries in `list`.
+ * @return A pointer into `list`; null when `count` is 0 or `list` is null.
+ *
+ * Verification:
+ * - Correct means: the result is the first UDPv4/UDPv6 entry when one exists,
+ *   else `list`, else null; it always points into `list`.
+ * - Covered by: TC-SWR-8.4.1.1-001, TC-SRR-8.4.10-004.
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §8.4.1.1 (ReaderProxy.unicastLocatorList),
+ *   §8.4.10.4 (WriterProxy.unicastLocatorList), §8.2.5 (Locator_t kinds)
+ */
+inline const Locator* preferred_unicast_locator(const Locator* list, uint8_t count) noexcept {
+    if ((list == nullptr) || (count == 0u)) {
+        return nullptr;
+    }
+
+    for (uint8_t i = 0; i < count; ++i) {
+        if (list[i].is_udpv4() || list[i].is_udpv6()) {
+            return &list[i];
+        }
+    }
+
+    return &list[0];
+}
+
+/**
+ * @brief The current value of a proxy's referenced locator, or LOCATOR_INVALID.
+ *
+ * The record that owns the referenced entry updates it in place, and empties
+ * it (a value-initialized Locator, kind RESERVED) when the list shrinks; a
+ * proxy must not send to such an entry.
+ *
+ * @param[in] ref The proxy's reference (preferred_unicast_locator()); may be null.
+ * @return `*ref`, or LOCATOR_INVALID when `ref` is null or its kind is
+ *   INVALID or RESERVED.
+ *
+ * Verification:
+ * - Correct means: a send never targets a RESERVED or INVALID locator.
+ * - Covered by: TC-SWR-8.4.1.1-001.
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §8.2.5, Table 8.8 (LOCATOR_KIND_INVALID, LOCATOR_KIND_RESERVED)
+ */
+inline const Locator& referenced_locator(const Locator* ref) noexcept {
+    if ((ref == nullptr) || (ref->kind == locator_kind::INVALID)
+        || (ref->kind == locator_kind::RESERVED)) {
+        return LOCATOR_INVALID;
+    }
+
+    return *ref;
+}
+
 // ============================================================
 // §8.2.6  Duration_t
 //

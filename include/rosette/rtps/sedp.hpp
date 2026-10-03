@@ -277,15 +277,20 @@ public:
     //
     // @param peer_prefix    Remote participant GUID prefix.
     // @param dest           Remote metatraffic locator for builtin readers.
+    //                       The proxies refer to it, so it must stay valid
+    //                       until on_peer_removed() for this peer.
     // ----------------------------------------------------------
     void announce_to_peer(const GuidPrefix& peer_prefix,
                           const Locator&    dest) noexcept;
 
-    // Match the peer's builtin SEDP readers from its SPDP data (using all
-    // of its metatraffic unicast locators), which replays the history. A
-    // peer with no metatraffic unicast locator is not matched (§8.5.4.1).
+    // Match the peer's builtin SEDP readers from its SPDP data (at its first,
+    // most reachable, metatraffic unicast locator), which replays the
+    // history. A peer with no metatraffic unicast locator is not matched
+    // (§8.5.4.1). `peer` is the SPDP peer table's record: the proxies refer
+    // to its locators and follow them when an SPDP refresh changes them,
+    // until on_peer_removed().
     //
-    // Verification: TC-SEDP-8.5.4-018.
+    // Verification: TC-SEDP-8.5.4-018, TC-PART-8.5.3-001.
     void on_peer_discovered(const DiscoveredParticipant& peer) noexcept;
 
     // Remove remote builtin SEDP readers when a peer expires.
@@ -404,12 +409,16 @@ public:
      * announcer changes nothing, so its reliability state survives SPDP
      * refreshes.
      *
-     * @param[in] peer What the SPDP peer table keeps of the participant.
+     * @param[in] peer What the SPDP peer table keeps of the participant: the
+     *   table's own record, not a copy. The proxies refer to its locators and
+     *   follow them when an SPDP refresh changes them in place, so it must
+     *   stay valid until on_peer_removed() for this peer.
      *
      * Verification:
      * - Correct means: after the call, DATA and HEARTBEAT from each listed
      *   announcer are processed and ACKNACKs go to the peer's locator.
-     * - Covered by: TC-SEDP-8.5.4-006, TC-SEDP-8.5.4-011, TC-SEDP-8.5.4-018.
+     * - Covered by: TC-SEDP-8.5.4-006, TC-SEDP-8.5.4-011, TC-SEDP-8.5.4-018,
+     *   TC-PART-8.5.3-001.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.4.1, §8.5.3.2 (availableBuiltinEndpoints)

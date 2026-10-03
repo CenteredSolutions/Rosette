@@ -107,24 +107,25 @@ flash.
 
 **Every writer slot is the same size**: `RTPS_PARTICIPANT_MAX_WRITER_BYTES`,
 which defaults to `sizeof(StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>)`
-(2,016 B at 8 matched readers). A table of uniform slots means any slot can
+(1,680 B at 8 matched readers). A table of uniform slots means any slot can
 hold a writer of any depth, so writers can be created and destroyed in any
 order without fragmenting the table. The cost is that a depth-1 writer
-(1,320 B) still occupies a 2,016 B slot.
+(984 B) still occupies a 1,680 B slot.
 
 ### Per-object costs
 
-Measured `sizeof` on the RP2350 at the firmware defaults
+Measured `sizeof` on Cortex-M (the RP2040 and RP2350 lay structures out
+identically) at the firmware defaults
 (`RTPS_MAX_MATCHED_READERS = RTPS_MAX_MATCHED_WRITERS = 8`):
 
 | Object | Size | Scales with |
 | --- | ---: | --- |
 | `CacheChange` (one history entry) | 100 B | writer depth |
-| `ReaderProxy` (one matched remote reader) | 128 B | `RTPS_MAX_MATCHED_READERS` per writer |
-| `WriterProxy` (one matched remote writer) | 112 B | `RTPS_MAX_MATCHED_WRITERS` per reader |
-| `StatefulWriterStorage<1, 8>` / `<4, 8>` / `<8, 8>` | 1,320 / 1,616 / 2,016 B | depth × 100 + readers × 128 + ~200 |
-| Writer slot | 2,016 B | `RTPS_PARTICIPANT_MAX_WRITER_BYTES` |
-| Reader slot (`BoundedStatefulReader<8>`) | 1,984 B | 8 × `WriterProxy` + an 8-slot `FragmentAssembler` (1,024 B) |
+| `ReaderProxy` (one matched remote reader) | 80 B | `RTPS_MAX_MATCHED_READERS` per writer |
+| `WriterProxy` (one matched remote writer) | 64 B | `RTPS_MAX_MATCHED_WRITERS` per reader |
+| `StatefulWriterStorage<1, 8>` / `<4, 8>` / `<8, 8>` | 984 / 1,280 / 1,680 B | depth × 100 + readers × 80 + ~240 |
+| Writer slot | 1,680 B | `RTPS_PARTICIPANT_MAX_WRITER_BYTES` |
+| Reader slot (`BoundedStatefulReader<8>`) | 1,600 B | 8 × `WriterProxy` + an 8-slot `FragmentAssembler` (1,024 B) |
 | `PeerEntry` (one remote participant) | 128 B | `RTPS_MAX_PEERS` |
 | Remote origin (GUID prefix + locators) | 64 B | `RTPS_MAX_REMOTE_ORIGINS` (= peers) |
 | Remote endpoint record | 16 B | `RTPS_MAX_DISCOVERED_WRITERS` / `_READERS` |
@@ -137,6 +138,13 @@ A writer's `ReaderProxy` records each reader's progress as sequence-number
 bounds plus a 64-bit window of requested changes, not a row per history slot,
 so its size does not grow with depth (DDSI-RTPS 2.5 §8.4.7 describes the
 reader-proxy state; Rosette keeps it in this bounded form).
+
+Neither proxy stores locators. Each keeps a pointer to the one locator it
+sends to, inside the record that already holds it: the SPDP peer record for a
+participant's locators, or the remote origin for locators an endpoint
+announced itself. The proxy therefore costs the same however many locators
+its peer announced, and a peer that keeps its GUID and moves to a new address
+is reached there as soon as its SPDP refresh updates the record.
 
 ### Remote endpoints are kept small, and displaced when full
 
@@ -231,16 +239,16 @@ relationships, so an inconsistent set fails to compile.
 
 | Knob | Firmware default | What it sizes | Approximate cost per unit |
 | --- | ---: | --- | --- |
-| `RMW_ROSETTE_MAX_PUBLISHERS` | 4 | writer slot, local endpoint and match records, SEDP history, publisher handle | ≈ 3 KB, plus 1.25 KB of small pool blocks when writers outnumber readers |
-| `RMW_ROSETTE_MAX_SUBSCRIPTIONS` | 4 | reader slot, records, SEDP history, subscription handle with its `ChangeRing` | ≈ 3.7 KB, plus 1.25 KB of pool blocks when readers outnumber writers |
-| `RMW_ROSETTE_MAX_SERVICES` | 4 | one writer **and** one reader, with their records and handle | ≈ 7 KB |
-| `RMW_ROSETTE_MAX_CLIENTS` | 2 | one writer and one reader, with their records and handle | ≈ 7 KB |
+| `RMW_ROSETTE_MAX_PUBLISHERS` | 4 | writer slot, local endpoint and match records, SEDP history, publisher handle | ≈ 2.6 KB, plus 1.25 KB of small pool blocks when writers outnumber readers |
+| `RMW_ROSETTE_MAX_SUBSCRIPTIONS` | 4 | reader slot, records, SEDP history, subscription handle with its `ChangeRing` | ≈ 3.3 KB, plus 1.25 KB of pool blocks when readers outnumber writers |
+| `RMW_ROSETTE_MAX_SERVICES` | 4 | one writer **and** one reader, with their records and handle | ≈ 6.2 KB |
+| `RMW_ROSETTE_MAX_CLIENTS` | 2 | one writer and one reader, with their records and handle | ≈ 6.2 KB |
 | `RMW_ROSETTE_MAX_NODES` | 1 | node pool; multiplies the per-node entities below | |
-| `RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE` | 0 | 6 for `rclc_parameter_server`, 0 without | 6 services per node (≈ 42 KB) |
+| `RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE` | 0 | 6 for `rclc_parameter_server`, 0 without | 6 services per node (≈ 37 KB) |
 | `RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE` | 0 | `/rosout`, `/parameter_events` | 0 when rcl logging is off, as in the firmware C stack |
-| `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` | 8 | peer table, remote origins, SEDP proxies per peer | ≈ 0.7 KB (`PeerEntry`, one origin, SEDP reader and writer proxies) |
+| `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` | 8 | peer table, remote origins, SEDP proxies per peer | ≈ 0.5 KB (`PeerEntry`, one origin, SEDP reader and writer proxies) |
 | `RMW_ROSETTE_MAX_REMOTE_ENDPOINTS` | 64 | remote writer and reader records | 32 B (16 B in each table) |
-| `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS` | 8 | readers per writer, writers per reader, match records, reassembly slots | 128 B per writer slot + 240 B per reader slot + 32 B per local endpoint |
+| `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS` | 8 | readers per writer, writers per reader, match records, reassembly slots | 80 B per writer slot + 192 B per reader slot + 32 B per local endpoint |
 | `RMW_ROSETTE_MAX_PENDING_CHANGES` | 10 | `ChangeRing` depth ceiling per subscription, service, and client | 72 B per entry per entity, plus the blocks unread entries pin |
 | `RMW_ROSETTE_MAX_DATAGRAM_SIZE` | 1472 | receive buffer, datagram pool class, DATA_FRAG threshold | the datagram class × 4 blocks |
 | `RMW_ROSETTE_MAX_SAMPLE_SIZE` | 4096 | largest pool class: the biggest message sent or received | × `RMW_ROSETTE_LARGE_BUFFERS` |

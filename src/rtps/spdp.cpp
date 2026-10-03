@@ -450,6 +450,11 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
         // Refresh existing participant data and lease.
         // If SEDP was previously deferred due to missing locator, trigger it
         // once locator information arrives.
+        //
+        // The record is overwritten in place, never moved to another slot:
+        // matched proxies refer to its locator lists (see "Locator reference"
+        // in rtps/reader_proxy.hpp), so a peer that re-announces from a new
+        // address is reached there from the next send on.
         existing->data = DiscoveredParticipant::from(parsed, *subnets_);
         existing->leaseExpiryMs = now_ms + lease_ms;
 
@@ -515,6 +520,8 @@ bool SpdpReader::remove_peer(const GuidPrefix& prefix) noexcept {
         RTPS_LOG_I("spdp", "participant disposed: %02x%02x%02x%02x%02x%02x",
                    prefix.value[0], prefix.value[1], prefix.value[2],
                    prefix.value[3], prefix.value[4], prefix.value[5]);
+        // Unmatch before freeing the slot: proxies refer to this record's
+        // locators until on_peer_removed_ has removed them.
         if (on_peer_removed_) on_peer_removed_(peers_[i], user_data_);
         peers_[i].alive = false;
         return true;
@@ -542,6 +549,7 @@ void SpdpReader::tick(uint32_t now_ms) noexcept {
                        peers_[i].data.guidPrefix.value[3],
                        peers_[i].data.guidPrefix.value[4],
                        peers_[i].data.guidPrefix.value[5]);
+            // As in remove_peer(): unmatch before the slot is freed.
             if (on_peer_removed_) on_peer_removed_(peers_[i], user_data_);
             peers_[i].alive = false;
         }
