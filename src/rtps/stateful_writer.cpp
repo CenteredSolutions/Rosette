@@ -211,12 +211,8 @@ bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* 
         return false;
     }
 
-    // TRANSIENT_LOCAL: every cached change is relevant to the new reader
-    // (§8.7.2.2). VOLATILE: only changes written from now on (§8.7.2.2.1).
-    const SequenceNumber first_relevant = durability_ == DurabilityKind::TRANSIENT_LOCAL
-                                              ? SequenceNumber::from_int64(1)
-                                              : nextSN_;
-    slot->init(reader_guid, unicast_locators, locator_count, expects_inline_qos, first_relevant);
+    slot->init(reader_guid, unicast_locators, locator_count, expects_inline_qos,
+               first_relevant_for_new_reader());
 
     RTPS_LOG_I("writer", "reader matched %02x%02x%02x%02x entity=%02x%02x%02x%02x",
                reader_guid.prefix.value[0], reader_guid.prefix.value[1],
@@ -294,8 +290,24 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
         return;
     }
 
-    // Discard duplicate / reordered ACKNACKs.
-    if (msg.count <= proxy->lastAcknackCount) return;
+    // A cumulative ACK below the last one means the reader started over
+    // after its participant lost this one's lease and matched this writer
+    // again. Its count may have restarted too, so an ACK of nothing passes
+    // the duplicate check; a delayed ACKNACK that acknowledged something
+    // does not, and is discarded with the other duplicates. Base 0 and base
+    // 1 both acknowledge nothing (Fast DDS announces a reader with base 0).
+    const SequenceNumber base_minus_one = msg.readerSNState.bitmapBase - 1;
+    const SequenceNumber committed =
+        SEQUENCENUMBER_ZERO < base_minus_one ? base_minus_one : SEQUENCENUMBER_ZERO;
+    const bool newer = msg.count > proxy->lastAcknackCount;
+    const bool started_over =
+        committed < proxy->highestAckedSN && (newer || committed == SEQUENCENUMBER_ZERO);
+    if (started_over) {
+        rematch_reader(*proxy);
+    } else if (!newer) {
+        return;
+    }
+
     proxy->lastAcknackCount = msg.count;
 
     // Cumulative ACK: all SNs below bitmapBase are acknowledged.
@@ -309,6 +321,12 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
                (unsigned long)msg.count, ctx.senderGuidPrefix.value[0],
                ctx.senderGuidPrefix.value[1], ctx.senderGuidPrefix.value[2],
                ctx.senderGuidPrefix.value[3]);
+
+    // A TRANSIENT_LOCAL writer replays its history to a reader that started
+    // over, as matched_reader_add() does for a new one (§8.7.2.2).
+    if (started_over && durability_ == DurabilityKind::TRANSIENT_LOCAL) {
+        send_unsent_changes();
+    }
 
     // NACKed SNs: repair what the reader can have after nackResponseDelay,
     // GAP the rest now.
@@ -329,6 +347,12 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
     }
 
     release_finished_changes();
+
+    // Last, so the listener may write to this writer once the ACKNACK is
+    // fully applied.
+    if (started_over && rematchListener_.fn != nullptr) {
+        rematchListener_.fn(rematchListener_.context);
+    }
 }
 
 void StatefulWriter::on_nack_frag(const ParseContext& ctx, const ParsedNackFrag& msg) noexcept {
@@ -503,6 +527,22 @@ void StatefulWriter::answer_nack(ReaderProxy& proxy, const SequenceNumberSet& re
     });
     proxy.requested_changes_set(repairable, now_ms);
     send_gap(proxy, irrelevant);
+}
+
+SequenceNumber StatefulWriter::first_relevant_for_new_reader() const noexcept {
+    return durability_ == DurabilityKind::TRANSIENT_LOCAL ? SequenceNumber::from_int64(1) : nextSN_;
+}
+
+void StatefulWriter::rematch_reader(ReaderProxy& proxy) noexcept {
+    const Guid& g = proxy.remoteReaderGuid;
+    RTPS_LOG_I("writer", "reader %02x%02x%02x%02x entity=%02x%02x%02x%02x started over, rematched",
+               g.prefix.value[0], g.prefix.value[1], g.prefix.value[2], g.prefix.value[3],
+               g.entityId.entityKey[0], g.entityId.entityKey[1], g.entityId.entityKey[2],
+               g.entityId.entityKind);
+    proxy.restart(first_relevant_for_new_reader());
+    if (fragRepair_.proxy == &proxy) {
+        fragRepair_ = FragmentRepair{};
+    }
 }
 
 ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {

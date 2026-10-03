@@ -28,6 +28,18 @@ void ReaderProxy::init(const Guid& reader_guid, const Locator* unicast_locs,
     highestSentSN_      = first_relevant_sn - 1;
 }
 
+void ReaderProxy::restart(const SequenceNumber& first_relevant_sn) noexcept {
+    highestAckedSN = SEQUENCENUMBER_ZERO;
+    lastAcknackCount = 0;
+    lastNackFragCount = 0;
+    nackPending = false;
+    nackPendingSinceMs = 0;
+    requestedBase_ = SEQUENCENUMBER_ZERO;
+    requestedBits_ = 0u;
+    firstRelevantSN_ = first_relevant_sn;
+    highestSentSN_ = first_relevant_sn - 1;
+}
+
 void ReaderProxy::clear() noexcept {
     remoteReaderGuid    = GUID_UNKNOWN;
     expectsInlineQos    = false;
