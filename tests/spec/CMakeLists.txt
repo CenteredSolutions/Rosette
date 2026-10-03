@@ -244,6 +244,7 @@ add_executable(stateful_writer_spec_tests
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
     src/test_stateful_writer_8_4_1_4.cpp
+    src/test_stateful_writer_8_4_1_4_rematch.cpp
     src/test_stateful_writer_8_4_2_2.cpp
     src/test_stateful_writer_8_4_3_8_4_4.cpp
     src/test_stateful_writer_8_4_6_requested_window.cpp

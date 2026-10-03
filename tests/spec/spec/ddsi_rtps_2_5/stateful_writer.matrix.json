@@ -82,6 +82,15 @@
       "test_ids": ["TC-SWR-8.4.1.4-003"]
     },
     {
+      "id": "REQ-SWR-8.4.1.4-REMATCHED-READER",
+      "section": "8.4.1.4",
+      "page": 108,
+      "normativity": "shall",
+      "statement": "A matched reader whose cumulative acknowledgement goes backwards has matched the writer again after a lease expiry (§8.5.3.2) and receives what matched_reader_add gives a new reader: TRANSIENT_LOCAL replay, or GAP for earlier changes when VOLATILE.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.4-004", "TC-SWR-8.4.1.4-005", "TC-SWR-8.4.1.4-006", "TC-SWR-8.4.1.4-007"]
+    },
+    {
       "id": "REQ-SWR-8.4.2.2-PERIODIC-HEARTBEAT",
       "section": "8.4.2.2",
       "page": 113,

@@ -385,13 +385,24 @@ public:
      * below readerSNState.bitmapBase acknowledged, marks the NACKed numbers
      * that are relevant to the reader and still in the history REQUESTED
      * (repaired by tick() after nackResponseDelay), GAPs the other NACKed
-     * numbers the writer has assigned, and answers a
-     * preemptive ACKNACK (no NACK bits, base below the next number, from a
-     * reader that has acknowledged nothing yet) with a directed HEARTBEAT.
-     * A plain ACK from a reader that has acknowledged before gets no answer,
-     * even while the writer has written past it: the piggybacked HEARTBEATs
-     * keep such a reader current, and answering would pair every HEARTBEAT
-     * with another for as long as the writer streams.
+     * numbers the writer has assigned, and answers a preemptive ACKNACK (no
+     * NACK bits, base below the next number, from a reader that has
+     * acknowledged nothing yet) with a directed HEARTBEAT. A plain ACK from
+     * a reader that has acknowledged before gets no answer, even while the
+     * writer has written past it: the piggybacked HEARTBEATs keep such a
+     * reader current, and answering would pair every HEARTBEAT with another
+     * for as long as the writer streams.
+     *
+     * A reader that acknowledges less than it did before has started over:
+     * its participant lost this participant's SPDP lease, forgot this
+     * writer, and matched it again (§8.5.3.2), while this side kept the
+     * proxy. The proxy restarts as a new match (rematch_reader()) before the
+     * ACKNACK is applied, so the reader receives what a newly matched reader
+     * would, and the rematch listener (set_rematch_listener()) runs once the
+     * ACKNACK is applied. An ACKNACK that acknowledges nothing (base 0 or 1)
+     * restarts a reader that had acknowledged changes even when its count is
+     * not above the last one, since a re-matched reader may restart its
+     * count; a delayed ACKNACK that acknowledges something stays a duplicate.
      *
      * @param[in] ctx Parse context; supplies the sender's GUID prefix.
      * @param[in] msg The decoded ACKNACK.
@@ -399,14 +410,59 @@ public:
      * Verification:
      * - Correct means: no ACKNACK from a reader that has acknowledged before
      *   elicits a HEARTBEAT unless it NACKs, so a streaming writer sends about
-     *   one datagram per sample to such a reader.
+     *   one datagram per sample to such a reader; and a reader that matched
+     *   this writer again receives what a newly matched reader would.
      * - Covered by: TC-SWR-8.4.3-001, TC-SWR-8.4.3-002, TC-SWR-8.4.3-003,
-     *   TC-SWR-8.4.9-001, TC-SWR-8.2.2-003.
+     *   TC-SWR-8.4.9-001, TC-SWR-8.2.2-003, TC-SWR-8.4.1.4-004,
+     *   TC-SWR-8.4.1.4-005, TC-SWR-8.4.1.4-006.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.4.3, §8.4.9.2.8, §8.4.9.2.12, §8.4.15.4
+     * - OMG DDSI-RTPS 2.5 §8.4.3, §8.4.9.2.8, §8.4.9.2.12, §8.4.15.4,
+     *   §8.4.1.4, §8.5.3.2
+     * - Fast DDS 2.6 (Humble) src/cpp/rtps/writer/ReaderProxy.cpp,
+     *   `acked_changes_set`: non-volatile writers rewind a reader that
+     *   acknowledges 0 after losing its lease.
      */
     void on_acknack(const ParseContext& ctx, const ParsedAckNack& msg) noexcept;
+
+    /**
+     * @brief Callback for a matched reader that started over (set_rematch_listener()).
+     *
+     * @param[in] context The pointer given to set_rematch_listener().
+     */
+    using RematchListener = void (*)(void* context) noexcept;
+
+    /**
+     * @brief Installs the callback on_acknack() makes when a matched reader started over.
+     *
+     * A reader starts over when its participant lost this participant's SPDP
+     * lease and matched this writer again (on_acknack()). The writer then
+     * replays its history to it, but a stock reader that saw those changes
+     * before the lease loss treats them as duplicates: Fast DDS keeps the
+     * last sequence number it delivered from a writer it dropped by lease
+     * expiry and discards anything at or below it. An owner whose newest
+     * change that reader must take again writes a new change from the
+     * callback. The callback runs once the ACKNACK is fully applied, under
+     * the caller's participant lock, and may write to this writer.
+     *
+     * @param[in] listener Callback, or null to remove it.
+     * @param[in] context  Passed back to `listener`; must outlive the writer.
+     *
+     * Verification:
+     * - Correct means: the callback runs once per ACKNACK that restarts a
+     *   reader and never for any other ACKNACK, including a newly matched
+     *   reader's first one.
+     * - Covered by: TC-SWR-8.4.1.4-004, TC-SWR-8.4.1.4-007.
+     *
+     * References:
+     * - Fast DDS 2.6 (Humble) src/cpp/rtps/reader/RTPSReader.cpp,
+     *   `may_remove_history_record`; src/cpp/rtps/builtin/discovery/endpoint/EDP.cpp,
+     *   `unpairWriterProxy` (removed_by_lease)
+     */
+    void set_rematch_listener(RematchListener listener, void* context) noexcept {
+        rematchListener_.fn = listener;
+        rematchListener_.context = context;
+    }
 
     /**
      * @brief Processes a NACK_FRAG: the named fragments are resent after nackResponseDelay.
@@ -608,6 +664,37 @@ private:
      */
     void answer_nack(ReaderProxy& proxy, const SequenceNumberSet& requested,
                      uint32_t now_ms) noexcept;
+
+    /**
+     * @brief Lowest sequence number a reader matched now is to receive.
+     *
+     * @return 1 for a TRANSIENT_LOCAL writer, which replays its history to
+     *   the reader (§8.7.2.2); the next sequence number for a VOLATILE one,
+     *   whose earlier changes are irrelevant to it (§8.7.2.2.1).
+     */
+    SequenceNumber first_relevant_for_new_reader() const noexcept;
+
+    /**
+     * @brief Restarts a matched reader's proxy as a new match.
+     *
+     * on_acknack() calls this for a reader that has started over after its
+     * participant lost this participant's SPDP lease and matched this writer
+     * again. The proxy then starts where matched_reader_add() would start
+     * it, and any fragment repair pending for it is dropped; on_acknack()
+     * then replays a TRANSIENT_LOCAL writer's history to it.
+     *
+     * @param[in,out] proxy The reader's proxy; it stays matched.
+     *
+     * Verification:
+     * - Correct means: the reader then receives exactly what a newly matched
+     *   reader receives: the history for TRANSIENT_LOCAL, GAPs for earlier
+     *   changes it NACKs for VOLATILE.
+     * - Covered by: TC-SWR-8.4.1.4-004, TC-SWR-8.4.1.4-006.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.7.2.2
+     */
+    void rematch_reader(ReaderProxy& proxy) noexcept;
 
     /// @brief The matched proxy for `g`, or null.
     ReaderProxy* find_proxy(const Guid& g) noexcept;
@@ -890,7 +977,13 @@ private:
     uint32_t       lastHbSentMs_   = 0;
     uint32_t       writesSinceHb_  = 0;  ///< RELIABLE writes since any HEARTBEAT.
     bool           releaseRepliesOnDelivery_ = false;  ///< Service reply writer.
-    FragmentRepair fragRepair_{};  ///< Pending NACK_FRAG repair.
+    FragmentRepair fragRepair_{};                      ///< Pending NACK_FRAG repair.
+
+    /// Called when a matched reader started over (set_rematch_listener()).
+    struct {
+        RematchListener fn = nullptr;
+        void* context = nullptr;
+    } rematchListener_;
     PayloadBuilder payloadBuilder_ = nullptr;  ///< Builds payloads of on-demand changes.
     void* payloadBuilderUser_ = nullptr;
     MessageBuilder builder_;

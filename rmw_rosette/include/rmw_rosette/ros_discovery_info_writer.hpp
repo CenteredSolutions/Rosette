@@ -16,6 +16,14 @@
  * KEEP_LAST(1), so a peer that joins later receives the current message and
  * never a stale one.
  *
+ * A peer that loses this participant's SPDP lease drops its nodes from its
+ * graph and, on the next announcement, matches the writer again. Replaying
+ * the current message is not enough then: Fast DDS remembers the last
+ * sequence number it delivered from a writer dropped by lease expiry and
+ * discards the replay as a duplicate. So when the RTPS writer reports that a
+ * reader started over (StatefulWriter::set_rematch_listener()), the message
+ * is published again under a new sequence number, which every reader takes.
+ *
  * The topic name is used verbatim: stock rmw implementations create it with
  * `avoid_ros_namespace_conventions`, so it carries no `rt/` prefix.
  */
@@ -47,7 +55,8 @@ public:
      *
      * rmw_init() calls this once the participant exists, before any node.
      * The writer is announced through SEDP like any other endpoint and is
-     * deleted with the participant.
+     * deleted with the participant. It republishes the current message
+     * whenever one of its readers starts over (see the file comment).
      *
      * @param[in,out] participant Participant that owns the writer; must outlive this object.
      * @return `true` on success; `false` when the participant's writer table is full.
@@ -123,6 +132,27 @@ private:
      *   pool block could hold the message or create() never succeeded.
      */
     bool publish() noexcept;
+
+    /**
+     * @brief Republishes the current message for a reader that started over.
+     *
+     * The writer's rematch listener: the RTPS writer calls it, under the
+     * context lock, once it has restarted the reader's proxy. The new change
+     * reaches every matched reader, and those that never lost the lease take
+     * it as an update with the same content.
+     *
+     * @param[in] self This RosDiscoveryInfoWriter.
+     *
+     * Verification:
+     * - Correct means: a stock peer that lost this participant's lease lists
+     *   its nodes again once it has re-discovered the participant.
+     * - Covered by: tests/ros2/run_rmw_lease_rematch_loopback.sh.
+     *
+     * References:
+     * - Fast DDS 2.6 (Humble) src/cpp/rtps/reader/RTPSReader.cpp,
+     *   `may_remove_history_record`
+     */
+    static void on_reader_rematched(void* self) noexcept;
 
     rtps::RTPSParticipant* participant_ = nullptr;
     rtps::StatefulWriter*  writer_      = nullptr;

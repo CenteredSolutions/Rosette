@@ -17,8 +17,18 @@ bool RosDiscoveryInfoWriter::create(rtps::RTPSParticipant& participant) noexcept
     cfg.reliability = rtps::ReliabilityKind::RELIABLE;
     cfg.durability = rtps::DurabilityKind::TRANSIENT_LOCAL;
     writer_ = participant.create_writer<1>(cfg);
-    participant_ = writer_ ? &participant : nullptr;
-    return writer_ != nullptr;
+    if (writer_ == nullptr) {
+        participant_ = nullptr;
+        return false;
+    }
+
+    participant_ = &participant;
+    writer_->set_rematch_listener(&RosDiscoveryInfoWriter::on_reader_rematched, this);
+    return true;
+}
+
+void RosDiscoveryInfoWriter::on_reader_rematched(void* self) noexcept {
+    (void)static_cast<RosDiscoveryInfoWriter*>(self)->publish();
 }
 
 bool RosDiscoveryInfoWriter::add_node(const Node& node) noexcept {

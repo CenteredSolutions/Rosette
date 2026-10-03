@@ -169,6 +169,30 @@ public:
     void init(const Guid& reader_guid, const Locator* unicast_locs, uint8_t unicast_count,
               bool expects_inline_qos, const SequenceNumber& first_relevant_sn) noexcept;
 
+    /**
+     * @brief Starts tracking the same reader again as if it had just matched.
+     *
+     * A remote participant that lost this participant's SPDP lease forgets
+     * its endpoints and matches them again on the next announcement, and its
+     * readers start over while this proxy still records their old progress.
+     * The writer calls this when such a reader shows it has started over
+     * (StatefulWriter::on_acknack()). The reader keeps its GUID, locators and
+     * inline-QoS expectation; its acknowledgement, sent and requested
+     * changes, and ACKNACK and NACK_FRAG counts reset as init() resets them.
+     *
+     * @param[in] first_relevant_sn Lowest sequence number the reader is to
+     *   receive, chosen as for init().
+     *
+     * Verification:
+     * - Correct means: after restart the proxy answers every query exactly
+     *   as a proxy init() gave the same reader and `first_relevant_sn`.
+     * - Covered by: TC-SWR-8.4.1.4-004, TC-SWR-8.4.1.4-005, TC-SWR-8.4.1.4-006.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.5.3.2 (lease expiry)
+     */
+    void restart(const SequenceNumber& first_relevant_sn) noexcept;
+
     /// @brief Unmatches the proxy: resets every attribute.
     void clear() noexcept;
 
