@@ -336,6 +336,37 @@ void zero_octet_gateway(const char* name) {
           tag(name, "ARP-011: 192.168.0.1 routes off-subnet traffic").c_str());
 }
 
+// TC-NET-WIZ-ARP-018: a bound socket keeps its resolver through a detach; later sockets do not use
+// it.
+template <typename Chip>
+void detach_after_bind(const char* name) {
+    Rig<Chip> rig;
+    auto bound = rig.open();
+    rig.send(*bound, kHost);
+    rig.poll();
+    rig.sockets.attach_arp_resolver(nullptr);
+    rig.send(*bound, kHost);
+    check(rig.chip.sent.size() == 1u && rig.chip.sent[0].dest_mac == v(kHostMac),
+          tag(name, "ARP-018: a socket bound before the detach still routes through the cache")
+              .c_str());
+
+    auto later = rig.open();
+    const auto commands = rig.chip.socketless.size();
+    rig.send(*later, {192, 168, 1, 66});
+    check(rig.chip.sent.size() == 2u && rig.chip.socketless.size() == commands
+              && rig.chip.sent[1].command == Chip::command_send(),
+          tag(name, "ARP-018: a socket bound after the detach leaves ARP to the chip").c_str());
+
+    if constexpr (Chip::dest_mac_per_socket()) {
+        int manual = 0;
+        for (uint8_t s = 0; s < Chip::socket_count(); ++s) {
+            manual += rig.chip.u8(Chip::socket_mode2(s)) == Chip::mode2_dest_mac_manual() ? 1 : 0;
+        }
+
+        check(manual == 1, tag(name, "ARP-018: only the earlier socket keeps DHAM_MANUAL").c_str());
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -353,5 +384,7 @@ int main() {
     heard_through_gateway<wiz::W6100>("W6100");
     zero_octet_gateway<wiz::W5100S>("W5100S");
     zero_octet_gateway<wiz::W6100>("W6100");
+    detach_after_bind<wiz::W5100S>("W5100S");
+    detach_after_bind<wiz::W6100>("W6100");
     return test_summary();
 }

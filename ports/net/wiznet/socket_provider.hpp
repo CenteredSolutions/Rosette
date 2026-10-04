@@ -66,6 +66,7 @@ public:
     using device_type = WiznetDevice<Chip, Bus>;
     using provider_type = WiznetSocketProvider<Chip, Bus>;
     using socket_type = typename device_type::socket_type;
+    using arp_resolver_type = WiznetArpResolver<Chip, Bus>;
 
     WiznetUdpSocket(device_type& device, provider_type& provider, socket_type socket,
                     SocketDomain domain) noexcept
@@ -145,9 +146,11 @@ public:
         const uint16_t port = local.port != 0u ? local.port : ephemeral_port();
 
         // Sends take their MAC from the ARP cache unless the socket is a
-        // multicast member on a part whose Sn_DHAR then holds the group.
-        const bool resolves_mac = provider_.arp_resolver() != nullptr
-                                  && domain_ == SocketDomain::ipv4
+        // multicast member on a part whose Sn_DHAR then holds the group. The
+        // socket keeps the resolver it opened with until close(), so its chip
+        // mode and its sends agree even if the provider's resolver changes.
+        arp_resolver_type* const arp = provider_.arp_resolver();
+        const bool resolves_mac = arp != nullptr && domain_ == SocketDomain::ipv4
                                   && !(multicast_joined_ && Chip::dest_mac_per_socket());
 
         if (multicast_joined_) {
@@ -169,7 +172,7 @@ public:
             return -1;
         }
 
-        resolves_mac_ = resolves_mac;
+        arp_ = resolves_mac ? arp : nullptr;
         open_ = true;
         last_error_ = SocketError::none;
         return 0;
@@ -247,9 +250,9 @@ public:
         peer.port = remote.port;
         std::array<uint8_t, 6> mac{};
         const std::array<uint8_t, 6>* dest_mac = nullptr;
-        if (resolves_mac_) {
-            using Route = typename WiznetArpResolver<Chip, Bus>::Route;
-            const Route route = provider_.arp_resolver()->route(peer, mac);
+        if (arp_ != nullptr) {
+            using Route = typename arp_resolver_type::Route;
+            const Route route = arp_->route(peer, mac);
             if (route == Route::drop) {
                 last_error_ = SocketError::none;
                 return static_cast<std::ptrdiff_t>(length);
@@ -337,7 +340,7 @@ public:
 
         provider_.release(socket_);
         open_ = false;
-        resolves_mac_ = false;
+        arp_ = nullptr;
         claimed_ = false;
         multicast_joined_ = false;
         multicast_membership_ = {};
@@ -379,8 +382,8 @@ private:
     SocketMulticastMembership multicast_membership_{};
     SocketError last_error_ = SocketError::none;
     bool open_ = false;
-    /// Bound with sends routed through the provider's ARP resolver.
-    bool resolves_mac_ = false;
+    /// The resolver this socket's sends route through, fixed at bind(); null when the chip ARPs.
+    arp_resolver_type* arp_ = nullptr;
     bool claimed_ = true;
     bool multicast_joined_ = false;
 };
@@ -435,14 +438,18 @@ public:
      *
      * Attach before the first socket binds: a socket's mode (SEND_MAC per
      * datagram on the W5100S, Sn_MR2.DHAM_MANUAL on the W6x00) is fixed when
-     * it opens on the chip.
+     * it opens on the chip, and so is the resolver it routes through. A
+     * socket already bound keeps the resolver it bound with until it closes,
+     * so attaching another or detaching affects only sockets bound later.
      *
-     * @param[in] resolver The board's resolver, outliving the provider; null detaches.
+     * @param[in] resolver The board's resolver, outliving the provider and
+     *   every socket it hands out; null detaches.
      *
      * Verification:
-     * - Correct means: after the call, a bound IPv4 socket's unicast sends
-     *   carry the cached MAC, and its misses send nothing.
-     * - Covered by: TC-NET-WIZ-ARP-010, TC-NET-WIZ-ARP-014.
+     * - Correct means: a socket bound after the call routes its unicast sends
+     *   through `resolver`, carrying the cached MAC and sending nothing on a
+     *   miss; a socket bound before it is unaffected.
+     * - Covered by: TC-NET-WIZ-ARP-010, TC-NET-WIZ-ARP-014, TC-NET-WIZ-ARP-018.
      */
     void attach_arp_resolver(WiznetArpResolver<Chip, Bus>* resolver) noexcept { arp_ = resolver; }
 
