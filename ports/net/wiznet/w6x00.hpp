@@ -106,6 +106,41 @@ struct W6x00 : ChipBase {
     static constexpr uint8_t socketless_status_timeout() { return 0x80u; }            // SLIR_TOUT
     static constexpr uint8_t socketless_status_neighbor_solicit() { return 0x04u; }   // SLIR_NS: a neighbor answered
 
+    // ── IPv4 ARP without a socket, and sends without ARP ────────────────────
+    // WiznetDevice::start_arp_probe() resolves a next hop's MAC for the ARP
+    // cache (arp_cache.hpp), and a socket opened with Sn_MR2.DHAM_MANUAL then
+    // sends every datagram to the Sn_DHAR the cache supplies, without ARP
+    // (WiznetDevice::open_udp_socket()). The W6x00 has no SEND_MAC.
+
+    /// SLDIP4R: the IPv4 address an SLCR ARP4 request asks for.
+    static constexpr address_type common_socketless_peer_ip4() {
+        return reg(0x418Cu, common_block());
+    }
+
+    /// SLDHAR: the MAC of the host that answered.
+    static constexpr address_type common_socketless_peer_hardware() {
+        return reg(0x4190u, common_block());
+    }
+
+    /// SLCR_ARP4 and SLIR_ARP4 (the host answered).
+    static constexpr uint8_t socketless_command_arp4() { return 0x40u; }
+
+    static constexpr uint8_t socketless_status_arp4() { return 0x40u; }
+
+    /// SLIR bits that end a socket-less command: all but SLIR_RA, which
+    /// reports a received router advertisement rather than a completion.
+    static constexpr uint8_t socketless_status_done_mask() { return 0xFEu; }
+
+    /// Sn_MR2, written before OPEN; DHAM_MANUAL makes SEND use Sn_DHAR.
+    static constexpr address_type socket_mode2(socket_type s) {
+        return reg(0x0144u, socket_reg_block(s));
+    }
+
+    static constexpr uint8_t mode2_dest_mac_manual() { return 0x02u; }
+
+    /// The destination MAC is chosen per socket (Sn_MR2.DHAM), not per SEND.
+    static constexpr bool dest_mac_per_socket() { return true; }
+
     // ── socket registers ────────────────────────────────────────────────────
     static constexpr address_type socket_mode(socket_type s) { return reg(0x0000u, socket_reg_block(s)); }
     static constexpr address_type socket_command(socket_type s) { return reg(0x0010u, socket_reg_block(s)); }
@@ -158,9 +193,8 @@ struct W6x00 : ChipBase {
     static constexpr uint8_t command_open() { return 0x01u; }
     static constexpr uint8_t command_send() { return 0x20u; }
     static constexpr uint8_t command_send6() { return 0xA0u; }  // Sn_CR_SEND6: destination in Sn_DIP6R
-    /// No SEND_MAC is used on the W6x00 (0 = send with SEND); multicast from
-    /// a unicast socket relies on the chip resolving the group MAC itself,
-    /// which is to be confirmed on a W6100 before relying on it.
+
+    /// No SEND_MAC (0 = send with SEND); see dest_mac_per_socket().
     static constexpr uint8_t command_send_mac() { return 0x00u; }
     static constexpr uint8_t command_close() { return 0x10u; }
     static constexpr uint8_t command_receive_done() { return 0x40u; }  // Sn_CR_RECV

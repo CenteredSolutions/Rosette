@@ -23,6 +23,7 @@ add_library(rosette_host_address STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/address_list.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/address_manager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/network_config.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/wiznet/arp_cache.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/wiznet/dhcp_client.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/wiznet/dhcp_provider.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/wiznet/dhcp_wire.cpp
@@ -53,6 +54,10 @@ add_test(NAME mdns_wire_test COMMAND mdns_wire_test)
 
 # WIZnet chip-trait SPI frame encoding + the conflict / socket-less ARP traits.
 add_host_test(wiznet_header_test)
+
+# The ARP cache state machine, and the resolver that sends each datagram to its cached MAC.
+add_host_test(wiznet_arp_cache_test)
+add_host_test(wiznet_arp_resolver_test)
 
 # WIZnet UDP receive/send, IPv4 and IPv6, against a register-file chip model.
 add_host_test(wiznet_udp_socket_test)

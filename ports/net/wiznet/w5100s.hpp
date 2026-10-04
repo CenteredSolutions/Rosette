@@ -41,6 +41,41 @@ struct W5100S final : ChipBase {
     // The W5100S has no IPv6; `Chip::has_hw_ipv6()` gates every IPv6 path.
     static constexpr bool has_hw_ipv6() { return false; }
 
+    // ── socket-less commands (SLCR): ARP and PING without a socket ──────────
+    // WiznetDevice::start_arp_probe() resolves a next hop's MAC here for the
+    // ARP cache (arp_cache.hpp). SLIR is write-1-to-clear in place, like IR;
+    // SLRTR counts 100 us units.
+
+    /// SLCR, SLRTR, SLRCR.
+    static constexpr address_type common_socketless_command() { return 0x004Cu; }
+
+    static constexpr address_type common_socketless_retry_time() { return 0x004Du; }
+
+    static constexpr address_type common_socketless_retry_count() { return 0x004Fu; }
+
+    /// SLPIPR (the address asked for) and SLPHAR (the MAC that answered).
+    static constexpr address_type common_socketless_peer_ip4() { return 0x0050u; }
+
+    static constexpr address_type common_socketless_peer_hardware() { return 0x0054u; }
+
+    /// SLIR, cleared by writing 1s to it.
+    static constexpr address_type common_socketless_status() { return 0x005Fu; }
+
+    static constexpr address_type common_socketless_status_clear() { return 0x005Fu; }
+
+    /// SLCMD_ARP, and SLIR_ARP (the host answered) / SLIR_TIMEOUT.
+    static constexpr uint8_t socketless_command_arp4() { return 0x02u; }
+
+    static constexpr uint8_t socketless_status_arp4() { return 0x02u; }
+
+    static constexpr uint8_t socketless_status_timeout() { return 0x04u; }
+
+    /// SLIR bits that end a socket-less command: TIMEOUT, ARP, PING.
+    static constexpr uint8_t socketless_status_done_mask() { return 0x07u; }
+
+    /// The destination MAC is chosen per SEND (SEND_MAC), not per socket (Sn_MR2).
+    static constexpr bool dest_mac_per_socket() { return false; }
+
     static constexpr address_type socket_register_base(socket_type socket)
     {
         return static_cast<address_type>(0x0400u + (static_cast<address_type>(socket) * 0x0100u));

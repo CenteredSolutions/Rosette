@@ -8,6 +8,8 @@
 #include <type_traits>
 #include <variant>
 
+#include "rosette/platform/platform.hpp"
+
 namespace rosette::net::wiznet {
 
 struct ChipBase {
@@ -304,6 +306,16 @@ public:
         return was;
     }
 
+    /**
+     * @brief Programs the IPv4 address, subnet mask, and gateway (SIPR/SUBR/GAR).
+     *
+     * The values are also kept for ipv4_route(), and each call counts as a
+     * new configuration, so the ARP cache built on the old one is discarded.
+     *
+     * @param[in] ip      Own address; all zero withdraws it.
+     * @param[in] subnet  Subnet mask; all zero puts every destination on-link.
+     * @param[in] gateway Default router; all zero when none.
+     */
     void configure_ipv4(const std::array<uint8_t, 4>& ip,
                         const std::array<uint8_t, 4>& subnet,
                         const std::array<uint8_t, 4>& gateway) noexcept
@@ -312,6 +324,21 @@ public:
         write(Chip::common_gateway(), gateway.data(), gateway.size());
         write(Chip::common_subnet(), subnet.data(), subnet.size());
         write(Chip::common_ip_address(), ip.data(), ip.size());
+        ipv4_ = Ipv4Config{ip, subnet, gateway};
+        ++ipv4_generation_;
+    }
+
+    /**
+     * @brief The IPv4 configuration last programmed by configure_ipv4(), without a bus transfer.
+     *
+     * @param[out] config Address, subnet mask, and gateway.
+     * @return A count of configure_ipv4() calls; a different value than last
+     *   time means the configuration changed.
+     */
+    uint32_t ipv4_route(Ipv4Config& config) noexcept {
+        const auto lock = bus_.acquire();
+        config = ipv4_;
+        return ipv4_generation_;
     }
 
     Ipv4Config ipv4_config() noexcept
@@ -382,29 +409,64 @@ public:
      * stale completion bits, and issues the command; poll_socketless_status()
      * collects the outcome.
      *
+     * The chip runs one socket-less command at a time, and ARP probes for the
+     * ARP cache (start_arp_probe()) share it. A probe that has finished is
+     * collected for poll_arp_probe() and the command is issued. A probe still
+     * in flight is never waited for under the bus lock: the call returns
+     * `false` and reserves the engine, so no new probe starts before the
+     * caller's retry on a later poll. The reservation lapses after
+     * kHostReserveMs, so a caller that gives up does not block ARP for good.
+     *
      * @param[in] command    One `Chip::socketless_command_*()` value.
      * @param[in] target     Address the command concerns (the tentative address
      *   for NS); ignored by RS.
      * @param[in] timeout_ms Wait for an answer before SLIR.TOUT, 1..6553 ms.
+     * @return `true` when the command was issued and the caller owns the
+     *   engine until it completes; `false` when an ARP probe still holds the
+     *   engine, in which case nothing was written and the caller retries.
+     *
+     * Verification:
+     * - Correct means: the command is issued with a clear SLIR; an ARP probe
+     *   in flight is neither overwritten nor waited for; no probe starts
+     *   between a refused call and its retry; a finished probe still reports
+     *   its own outcome.
+     * - Covered by: tests/host/wiznet_slaac_provider_test.cpp;
+     *   TC-NET-WIZ-ARP-015 (sharing with ARP probes).
      *
      * References:
      * - W6100 datasheet §SLCR, §SLIR, §SLRTR
      * - WIZnet io6Library wizchip_conf.c wizchip_dad(), wizchip_slaac()
      */
-    void start_socketless_command(uint8_t command,
-                                  const std::array<uint8_t, 16>& target,
-                                  uint16_t timeout_ms) noexcept
-    {
+    bool start_socketless_command(uint8_t command, const std::array<uint8_t, 16>& target,
+                                  uint16_t timeout_ms) noexcept {
         const auto lock = bus_.acquire();
+        if (socketless_owner_ == SocketlessOwner::arp_probe) {
+            collect_arp_probe_locked();
+        }
+
+        if (socketless_owner_ == SocketlessOwner::arp_probe) {
+            host_reserved_until_ms_ = rosette::platform::monotonic_ms() + kHostReserveMs;
+            host_reserved_ = true;
+            return false;
+        }
+
+        host_reserved_ = false;
+        host_status_latched_ = 0u;
         clear_socketless_status_locked(0xFFu);
         write_u16(Chip::common_socketless_retry_time(), static_cast<uint16_t>(timeout_ms * 10u));
         write_u8(Chip::common_socketless_retry_count(), 0u);
         write(Chip::common_socketless_peer_ip6(), target.data(), target.size());
         write_u8(Chip::common_socketless_command(), command);
+        socketless_owner_ = SocketlessOwner::host;
+        return true;
     }
 
     /**
-     * @brief Reads and clears the socket-less status bits (SLIR).
+     * @brief Reads and clears the socket-less status bits (SLIR) of a start_socketless_command().
+     *
+     * Bits that belong to an ARP probe are never returned: while a probe owns
+     * the engine this returns only what was latched for the caller's own
+     * command, and poll_arp_probe() collects the probe.
      *
      * @return The SLIR bits that were set: `*_neighbor_solicit` when a
      *   neighbor answered, `*_timeout` when none did (the command is over
@@ -413,9 +475,124 @@ public:
     uint8_t poll_socketless_status() noexcept
     {
         const auto lock = bus_.acquire();
-        const uint8_t status = read_u8(Chip::common_socketless_status());
-        if (status != 0u) clear_socketless_status_locked(status);
+        uint8_t status = host_status_latched_;
+        host_status_latched_ = 0u;
+        if (socketless_owner_ == SocketlessOwner::arp_probe) {
+            return status;
+        }
+
+        const uint8_t chip_status = read_u8(Chip::common_socketless_status());
+        if (chip_status != 0u) {
+            clear_socketless_status_locked(chip_status);
+        }
+
+        status = static_cast<uint8_t>(status | chip_status);
+        if ((status & Chip::socketless_status_done_mask()) != 0u) {
+            socketless_owner_ = SocketlessOwner::none;
+        }
+
         return status;
+    }
+
+    /// @brief Outcome of a socket-less ARP probe; see poll_arp_probe().
+    enum class ArpProbe : uint8_t {
+        idle,        ///< No probe was started, or its outcome was already taken.
+        pending,     ///< The chip is still waiting for a reply.
+        answered,    ///< The target replied; the MAC is written.
+        unanswered,  ///< No reply within the timeout and retries.
+    };
+
+    /**
+     * @brief Starts a socket-less ARP request (SLCR ARP) for an IPv4 next hop.
+     *
+     * Backs the ARP cache (WiznetArpResolver): the chip broadcasts an ARP
+     * request for `target` from its own SIPR/SHAR, without a socket, and
+     * latches the reply's sender MAC in SLPHAR (W5100S) or SLDHAR (W6x00).
+     * The probe does not start while another socket-less command owns the
+     * engine (SLAAC's NS or RS on the W6x00) or has reserved it after a
+     * refused start_socketless_command(); a completed one is latched for its
+     * owner's poll_socketless_status() first.
+     *
+     * @param[in] target     Next-hop IPv4 address, network byte order.
+     * @param[in] timeout_ms Wait per request, 1..6553 ms (SLRTR).
+     * @param[in] retries    Requests after the first (SLRCR).
+     * @return `true` when the request was issued; `false` when the engine is
+     *   busy or reserved, or an earlier probe's outcome has not been collected.
+     *
+     * Verification:
+     * - Correct means: SLPIPR/SLDIP4R holds `target` when SLCR is written,
+     *   and no SLAAC command is overwritten.
+     * - Covered by: TC-NET-WIZ-ARP-010, TC-NET-WIZ-ARP-015.
+     *
+     * References:
+     * - W5100S datasheet §SLCR, §SLRTR, §SLRCR, §SLPIPR, §SLPHAR, §SLIR
+     * - W6100 datasheet §SLCR (ARP4), §SLDIP4R, §SLDHAR; io6Library wizchip_arp()
+     */
+    bool start_arp_probe(const std::array<uint8_t, 4>& target, uint16_t timeout_ms,
+                         uint8_t retries) noexcept {
+        const auto lock = bus_.acquire();
+        if (arp_outcome_ != ArpProbe::idle || socketless_owner_ == SocketlessOwner::arp_probe) {
+            return false;
+        }
+
+        const bool reserved =
+            host_reserved_
+            && static_cast<int32_t>(rosette::platform::monotonic_ms() - host_reserved_until_ms_)
+                   < 0;
+        if (reserved) {
+            return false;
+        }
+
+        if (socketless_owner_ == SocketlessOwner::host) {
+            const uint8_t status = read_u8(Chip::common_socketless_status());
+            if ((status & Chip::socketless_status_done_mask()) == 0u) {
+                return false;
+            }
+
+            clear_socketless_status_locked(status);
+            host_status_latched_ = static_cast<uint8_t>(host_status_latched_ | status);
+        }
+
+        clear_socketless_status_locked(Chip::socketless_status_done_mask());
+        write_u16(Chip::common_socketless_retry_time(), static_cast<uint16_t>(timeout_ms * 10u));
+        write_u8(Chip::common_socketless_retry_count(), retries);
+        write(Chip::common_socketless_peer_ip4(), target.data(), target.size());
+        write_u8(Chip::common_socketless_command(), Chip::socketless_command_arp4());
+        socketless_owner_ = SocketlessOwner::arp_probe;
+
+        // A deadline past the chip's own (timeout x attempts) ends a probe the
+        // chip never completes, so the engine cannot stay claimed for ever.
+        const uint32_t chip_ms = static_cast<uint32_t>(timeout_ms) * (retries + 1u);
+        arp_deadline_ms_ = rosette::platform::monotonic_ms() + 2u * chip_ms + kArpDeadlineSlackMs;
+        return true;
+    }
+
+    /**
+     * @brief Collects the outcome of start_arp_probe().
+     *
+     * One SLIR read while the probe is pending; each outcome is returned
+     * exactly once.
+     *
+     * @param[out] mac The replying host's MAC, written on `answered`.
+     * @return See ArpProbe.
+     */
+    ArpProbe poll_arp_probe(std::array<uint8_t, 6>& mac) noexcept {
+        const auto lock = bus_.acquire();
+        if (arp_outcome_ == ArpProbe::idle && socketless_owner_ == SocketlessOwner::arp_probe) {
+            collect_arp_probe_locked();
+        }
+
+        const ArpProbe outcome = arp_outcome_;
+        if (outcome == ArpProbe::idle && socketless_owner_ == SocketlessOwner::arp_probe) {
+            return ArpProbe::pending;
+        }
+
+        if (outcome == ArpProbe::answered) {
+            mac = arp_mac_;
+        }
+
+        arp_outcome_ = ArpProbe::idle;
+        return outcome;
     }
 
     /**
@@ -449,6 +626,7 @@ public:
     {
         const auto lock = bus_.acquire();
         close_socket(socket);
+        set_socket_mode2(socket, 0u);
         write_u8(Chip::socket_mode(socket), Chip::mode_ipraw6());
         write_u8(Chip::socket_next_header(socket), next_header);
         issue_socket_command(socket, Chip::command_open());
@@ -604,24 +782,35 @@ public:
      * see configure_ipv6()). The chip picks the source address for each
      * datagram from the destination's scope.
      *
-     * @param[in] socket     Hardware socket index, below `Chip::socket_count()`.
-     * @param[in] local_port Source port, host byte order, nonzero.
-     * @param[in] ipv6       `true` for an IPv6 socket.
+     * With `manual_dest_mac` on a part where the destination MAC is chosen
+     * per socket (`Chip::dest_mac_per_socket()`, the W6x00), Sn_MR2.DHAM_MANUAL
+     * is set before OPEN, so the chip sends every datagram to Sn_DHAR without
+     * ARP, and every udp_send_to() on the socket must then pass its
+     * destination's MAC. On the W5100S the MAC is chosen per send (SEND_MAC)
+     * and the flag has no effect at open.
+     *
+     * @param[in] socket          Hardware socket index, below `Chip::socket_count()`.
+     * @param[in] local_port      Source port, host byte order, nonzero.
+     * @param[in] ipv6            `true` for an IPv6 socket.
+     * @param[in] manual_dest_mac `true` when an ARP cache supplies each IPv4
+     *   send's MAC; ignored for IPv6.
      * @return `true` when the chip reports the socket open in UDP mode;
      *   `false` on failure or when IPv6 is requested of a part without it.
      *
      * Verification:
      * - Correct means: Sn_SR reads SOCK_UDP after OPEN, and the socket then
-     *   exchanges datagrams of the requested family only.
-     * - Covered by: tests/host/wiznet_udp_rx_test.cpp (register sequence);
-     *   examples/wiznet_udp_echo on the W6100-EVB-Pico (on the wire).
+     *   exchanges datagrams of the requested family only; on the W6x00,
+     *   Sn_MR2 holds DHAM_MANUAL exactly when `manual_dest_mac` asked for it.
+     * - Covered by: tests/host/wiznet_udp_socket_test.cpp (register sequence),
+     *   TC-NET-WIZ-ARP-014 (Sn_MR2); examples/wiznet_udp_echo on the
+     *   W6100-EVB-Pico (on the wire).
      *
      * References:
      * - W5100S datasheet §Sn_MR, §Sn_CR OPEN
-     * - W6100 datasheet §Sn_MR (UDP4 0x02, UDP6 0x0A)
+     * - W6100 datasheet §Sn_MR (UDP4 0x02, UDP6 0x0A), §Sn_MR2 (DHAM), §Sn_DHAR
      */
-    bool open_udp_socket(socket_type socket, uint16_t local_port, bool ipv6 = false) noexcept
-    {
+    bool open_udp_socket(socket_type socket, uint16_t local_port, bool ipv6 = false,
+                         bool manual_dest_mac = false) noexcept {
         if constexpr (!Chip::has_hw_ipv6()) {
             if (ipv6) return false;
         }
@@ -650,6 +839,8 @@ public:
                   kNoDestinationAddress6.size());
             if (ipv6) mode = Chip::mode_udp6();
         }
+
+        set_socket_mode2(socket, manual_dest_mac && !ipv6 ? mode2_dest_mac_manual() : 0u);
         write_u8(Chip::socket_mode(socket), mode);
         write_u16(Chip::socket_source_port(socket), local_port);
         write_u8(Chip::socket_interrupt_mask(socket), Chip::socket_interrupt_receive());
@@ -672,6 +863,7 @@ public:
         write(Chip::socket_dest_hardware(socket), group_mac.data(), group_mac.size());
         write(Chip::socket_dest_ip(socket), group.data(), group.size());
         write_u16(Chip::socket_dest_port(socket), group_port);
+        set_socket_mode2(socket, 0u);
         write_u8(Chip::socket_mode(socket),
                  static_cast<uint8_t>(Chip::mode_udp() |
                                       Chip::mode_multicast() |
@@ -740,28 +932,36 @@ public:
      * an IPv4 multicast group on parts that need it, SEND6 for IPv6. Completion
      * is collected by the next send on the socket.
      *
-     * @param[in] socket Hardware socket opened by open_udp_socket().
-     * @param[in] data   Payload, `length` bytes, copied before return.
-     * @param[in] length Payload size; at most the socket's TX buffer.
-     * @param[in] peer   Destination address, family, and port.
+     * With `dest_mac` (from the ARP cache, WiznetArpResolver), an IPv4
+     * datagram goes to that MAC with no ARP at all: it is written to Sn_DHAR
+     * and sent with SEND_MAC on the W5100S, or with SEND on a W6x00 socket
+     * opened with `manual_dest_mac`. SENDOK then follows in wire time, and the
+     * Sn_IR.TIMEOUT of a failed ARP cannot occur.
+     *
+     * @param[in] socket   Hardware socket opened by open_udp_socket().
+     * @param[in] data     Payload, `length` bytes, copied before return.
+     * @param[in] length   Payload size; at most the socket's TX buffer.
+     * @param[in] peer     Destination address, family, and port.
+     * @param[in] dest_mac Next hop's MAC for an IPv4 `peer`, or null to let
+     *   the chip ARP; required on a socket opened with `manual_dest_mac`.
      * @return `length` when the SEND was issued; -1 on bad arguments or a
      *   destination family the part does not support.
      *
      * Verification:
      * - Correct means: every call is exactly one datagram on the wire, to
-     *   `peer`, from the family's own source address.
-     * - Covered by: examples/rtps_chatter (IPv4), examples/wiznet_udp_echo
-     *   (IPv4 and IPv6) on hardware.
+     *   `peer`, from the family's own source address, and to `dest_mac` when
+     *   one is given.
+     * - Covered by: TC-NET-WIZ-ARP-010, TC-NET-WIZ-ARP-014;
+     *   examples/rtps_chatter (IPv4), examples/wiznet_udp_echo (IPv4 and IPv6)
+     *   on hardware.
      *
      * References:
-     * - W5100S datasheet §Sn_CR SEND / SEND_MAC
-     * - W6100 datasheet §Sn_CR SEND6 (0xA0), §Sn_DIP6R
+     * - W5100S datasheet §Sn_CR SEND / SEND_MAC, §Sn_DHAR
+     * - W6100 datasheet §Sn_CR SEND6 (0xA0), §Sn_DIP6R, §Sn_MR2 (DHAM), §Sn_DHAR
      */
-    std::ptrdiff_t udp_send_to(socket_type socket,
-                               const uint8_t* data,
-                               std::size_t length,
-                               const UdpEndpoint& peer) noexcept
-    {
+    std::ptrdiff_t udp_send_to(socket_type socket, const uint8_t* data, std::size_t length,
+                               const UdpEndpoint& peer,
+                               const std::array<uint8_t, 6>* dest_mac = nullptr) noexcept {
         const auto lock = bus_.acquire();
         if ((data == nullptr) || (length == 0u) ||
             (length > static_cast<std::size_t>(socket_tx_capacity(socket)))) {
@@ -779,6 +979,11 @@ public:
             return -1;
         }
 
+        const bool to_given_mac = dest_mac != nullptr && !peer.ipv6;
+        if (to_given_mac) {
+            write(Chip::socket_dest_hardware(socket), dest_mac->data(), dest_mac->size());
+        }
+
         const uint16_t required = static_cast<uint16_t>(length);
         while (socket_tx_free_size(socket) < required) {
         }
@@ -790,8 +995,11 @@ public:
         // MAC configure_udp_peer() wrote to Sn_DHAR instead.
         uint8_t command = Chip::command_send();
         if (peer.ipv6) {
-            if constexpr (Chip::has_hw_ipv6()) command = Chip::command_send6();
-        } else if (is_multicast_ipv4(peer.ipv4()) && Chip::command_send_mac() != 0u) {
+            if constexpr (Chip::has_hw_ipv6()) {
+                command = Chip::command_send6();
+            }
+        } else if ((to_given_mac || is_multicast_ipv4(peer.ipv4()))
+                   && Chip::command_send_mac() != 0u) {
             command = Chip::command_send_mac();
         }
         issue_socket_command(socket, command);
@@ -883,12 +1091,13 @@ public:
     address_type rx_buffer_address(socket_type socket) const noexcept { return rx_buffer_addr(socket, 0u); }
     address_type tx_buffer_address(socket_type socket) const noexcept { return tx_buffer_addr(socket, 0u); }
 
-private:
+    /// @brief True for an IPv4 multicast group (224.0.0.0/4).
     static bool is_multicast_ipv4(const std::array<uint8_t, 4>& address) noexcept
     {
         return (address[0] >= 224u) && (address[0] <= 239u);
     }
 
+    /// @brief The Ethernet group address of an IPv4 multicast group (RFC 1112 §6.4).
     static std::array<uint8_t, 6>
     multicast_mac_from_ipv4(const std::array<uint8_t, 4>& address) noexcept
     {
@@ -902,6 +1111,7 @@ private:
         };
     }
 
+private:
     void write(address_type address, const uint8_t* data, std::size_t length) noexcept
     {
         const auto prefix = Chip::template make_header<false>(address);
@@ -980,10 +1190,39 @@ private:
         return payload_len;
     }
 
-    // SLIRCLR is write-1-to-clear; the caller holds the bus lock.
+    // SLIRCLR (SLIR itself on the W5100S) is write-1-to-clear; the caller holds the bus lock.
     void clear_socketless_status_locked(uint8_t bits) noexcept
     {
         write_u8(Chip::common_socketless_status_clear(), bits);
+    }
+
+    /**
+     * @brief Moves a finished ARP probe's result from SLIR into `arp_outcome_`.
+     *
+     * Reads SLIR once and never waits, since the caller holds the bus lock
+     * that every socket needs. ARP's reply bit means answered; the timeout
+     * bit, or the driver's own deadline passing, means unanswered, and the
+     * engine is then free. With neither, the probe is still in flight and
+     * nothing changes.
+     */
+    void collect_arp_probe_locked() noexcept {
+        const uint8_t status = read_u8(Chip::common_socketless_status());
+        const bool answered = (status & Chip::socketless_status_arp4()) != 0u;
+        const bool timed_out = (status & Chip::socketless_status_timeout()) != 0u;
+        const bool abandoned =
+            static_cast<int32_t>(rosette::platform::monotonic_ms() - arp_deadline_ms_) >= 0;
+        if (answered) {
+            read(Chip::common_socketless_peer_hardware(), arp_mac_.data(), arp_mac_.size());
+            arp_outcome_ = ArpProbe::answered;
+        } else if (timed_out || abandoned) {
+            arp_outcome_ = ArpProbe::unanswered;
+        } else {
+            return;
+        }
+
+        clear_socketless_status_locked(
+            static_cast<uint8_t>(status & Chip::socketless_status_done_mask()));
+        socketless_owner_ = SocketlessOwner::none;
     }
 
     uint16_t read_u16_stable(address_type address) noexcept
@@ -1074,6 +1313,22 @@ private:
     void clear_socket_interrupt(socket_type socket, uint8_t bits) noexcept
     {
         write_u8(Chip::socket_interrupt_clear(socket), bits);
+    }
+
+    // Sn_MR2 exists only where the destination MAC is chosen per socket
+    // (W6x00). Every open writes it, since it keeps its value across CLOSE.
+    void set_socket_mode2(socket_type socket, uint8_t bits) noexcept {
+        if constexpr (Chip::dest_mac_per_socket()) {
+            write_u8(Chip::socket_mode2(socket), bits);
+        }
+    }
+
+    static constexpr uint8_t mode2_dest_mac_manual() noexcept {
+        if constexpr (Chip::dest_mac_per_socket()) {
+            return Chip::mode2_dest_mac_manual();
+        } else {
+            return 0u;
+        }
     }
 
     void clear_common_interrupt(uint8_t bits) noexcept
@@ -1226,6 +1481,30 @@ private:
     // ARP from another MAC). Latched under the bus lock by poll_common_interrupt();
     // consumed by take_ip_conflict().
     bool ip_conflict_pending_ = false;
+
+    // The last configure_ipv4() values and a count of the calls, so the ARP
+    // resolver computes next hops without reading SIPR/SUBR/GAR over SPI.
+    Ipv4Config ipv4_{};
+    uint32_t ipv4_generation_ = 0u;
+
+    // Who the single socket-less engine (SLCR/SLIR) is running a command for.
+    // `host` is start_socketless_command() (SLAAC); `arp_probe` is
+    // start_arp_probe(). A completion read by the other user is latched in
+    // `host_status_latched_` or `arp_outcome_` for its owner.
+    enum class SocketlessOwner : uint8_t { none, host, arp_probe };
+    SocketlessOwner socketless_owner_ = SocketlessOwner::none;
+    uint8_t host_status_latched_ = 0u;
+    ArpProbe arp_outcome_ = ArpProbe::idle;
+    std::array<uint8_t, 6> arp_mac_{};
+    uint32_t arp_deadline_ms_ = 0u;
+    static constexpr uint32_t kArpDeadlineSlackMs = 50u;
+
+    // A start_socketless_command() refused because a probe was in flight
+    // reserves the engine until this deadline, so its retry is not beaten to
+    // the engine by the next probe. Long enough to cover a few board polls.
+    bool host_reserved_ = false;
+    uint32_t host_reserved_until_ms_ = 0u;
+    static constexpr uint32_t kHostReserveMs = 1000u;
 };
 
 }  // namespace rosette::wiznet
