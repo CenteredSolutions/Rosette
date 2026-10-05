@@ -110,3 +110,27 @@ Open the pcap in Wireshark; its RTPS dissector decodes SPDP/SEDP, DATA,
 HEARTBEAT, and ACKNACK. For domain `N` the capture spans UDP ports
 `7400 + 250*N` through `7400 + 250*N + 99`: discovery multicast, user
 multicast, and unicast ports for participant ids 0 through 44.
+
+## Discovery at scale
+
+`discovery_scale/` puts one device under test in a simulated network of
+dozens of stock participants on one host. A topology file describes the
+network by role (see `discovery_scale/example_topology.yaml`), and
+`discovery_scale_sim.py` runs every participant except the device in one
+process, each in its own rclpy context, so 90 participants cost about 1.3 GB
+of RAM instead of 90 processes. The device runs in a second process on the
+RMW under test.
+
+```bash
+cd tests/ros2/discovery_scale
+python3 discovery_topology.py example_topology.yaml --focus board:0   # who matches whom
+bash run_discovery_scale.sh
+```
+
+The run passes when every simulated participant that matches the device
+reached it, every participant's graph lists the device's node (which stock
+peers learn from `ros_discovery_info`), and the device's probed services
+answered. Probes of simulated peers report the same round trips without the
+device, as a baseline. `ROSETTE_DEVICE_START=last` starts the device after the
+network has settled, as a board that reboots on a running machine does. The
+script's header lists the other settings.
