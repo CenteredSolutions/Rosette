@@ -196,19 +196,35 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
  * The reply goes to every matched client reader; each client keeps only
  * replies whose related sample identity names its own request writer.
  *
+ * A client that has left is not replied to. The reply writer keeps a reply
+ * whose client has no matched reader yet, so it reaches a reply reader that
+ * matches late (StatefulWriter::release_replies_on_delivery()); a reply to a
+ * client that is gone would instead stay in the history until KEEP_LAST
+ * evicts it and be replayed to every later client. The request writer named
+ * in `request_header` tells the two apart: it stays matched to this
+ * service's request reader for as long as the client exists, and a new
+ * client has a writer of its own, so the test is exact per client. The
+ * response is then dropped before it is encoded, and the call succeeds, as
+ * rmw_fastrtps_cpp does for a client it reports gone.
+ *
  * @param[in] service        Service replying.
  * @param[in] request_header The `request_id` rmw_take_request() reported.
  * @param[in] ros_response   Response message to encode.
- * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` for null arguments;
+ * @return `RMW_RET_OK` when the reply is written, or dropped because its
+ *   client has left; `RMW_RET_INVALID_ARGUMENT` for null arguments;
  *   `RMW_RET_ERROR` when encoding or the write fails.
  *
  * Verification:
  * - Correct means: the reply's PID_RELATED_SAMPLE_IDENTITY equals
- *   `request_header`, so the stock client that sent the request accepts it.
+ *   `request_header`, so the stock client that sent the request accepts it;
+ *   a reply whose request writer is no longer matched leaves nothing in the
+ *   reply writer's history.
+ * - Covered by: rmw_rosette/test/test_service_departed_client.cpp.
  *
  * References:
  * - rmw/rmw.h (Humble), `rmw_send_response`
  * - OMG DDS-RPC 1.0 §7.8.2 (related sample identity)
+ * - OMG DDSI-RTPS 2.5 §8.4.7.4 (matched_writer_lookup)
  */
 rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* request_header,
                             void* ros_response) {
@@ -217,6 +233,11 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
     }
     auto* impl = static_cast<rmw_rosette::Service*>(service->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
+    const rtps::Guid request_writer =
+        rmw_rosette::guid_from_request_writer(request_header->writer_guid);
+    if (impl->request_reader->matched_writer_lookup(request_writer) == nullptr) {
+        return RMW_RET_OK;
+    }
 
     rtps::BufRef payload = rmw_rosette::serialize_to_pool(impl->response_codec, ros_response);
     if (!payload.valid()) {
@@ -226,8 +247,7 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
 
     rtps::InlineQos qos{};
     qos.hasRelatedSampleIdentity = true;
-    qos.relatedSampleIdentity.writerGuid =
-        rmw_rosette::guid_from_request_writer(request_header->writer_guid);
+    qos.relatedSampleIdentity.writerGuid = request_writer;
     qos.relatedSampleIdentity.sequenceNumber =
         rtps::SequenceNumber::from_int64(request_header->sequence_number);
     if (!impl->reply_writer->write_async_owned(rtps::ChangeKind::ALIVE,
