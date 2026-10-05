@@ -1021,6 +1021,52 @@ static bool tc_part_8_5_1_009(std::string& err) {
     return true;
 }
 
+// §8.5.3.2 with RFC 6724 §6: a peer that announces an unreachable interface
+// first (a workstation's Docker bridge) is answered at the address it shares
+// with this participant's prefix. Removing the address removes its prefix, so
+// a later peer is answered in its own announced order.
+static bool tc_part_8_5_1_010(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au, 24u), "192.168.1.10/24 setup should succeed");
+
+    const Locator docker = make_udpv4_locator(0xAC110001u, 7410u);
+    const Locator lan = make_udpv4_locator(0xC0A80164u, 7410u);
+    auto announce = [&](const GuidPrefix& gp) {
+        Octet buf[512] = {};
+        uint32_t off = 4u;
+        const uint16_t rep[2] = {0x0003u, 0x0000u};
+        memcpy(buf, rep, 4u);
+        Octet guid[16] = {};
+        memcpy(guid, gp.value, 12u);
+        guid[15] = 0xC1u;
+        const uint32_t lease[2] = {30u, 0u};
+        const bool built =
+            plcdr_write_param(buf, sizeof(buf), off, pid::PARTICIPANT_GUID, guid, 16u)
+            && plcdr_write_param(buf, sizeof(buf), off, pid::PARTICIPANT_LEASE_DURATION, lease, 8u)
+            && plcdr_write_param(buf, sizeof(buf), off, pid::METATRAFFIC_UNICAST_LOCATOR, &docker,
+                                 24u)
+            && plcdr_write_param(buf, sizeof(buf), off, pid::METATRAFFIC_UNICAST_LOCATOR, &lan, 24u)
+            && plcdr_write_sentinel(buf, sizeof(buf), off);
+        return built && p.spdp_reader().on_data(gp, buf, off, g_participant_test_now_ms);
+    };
+
+    g_participant_test_now_ms = 100u;
+    CHECK(announce(make_prefix(0xC1u, 0xC2u, 0xC3u)), "first peer accepted");
+    CHECK(!tx.packets.empty(), "a new peer is answered");
+    for (const auto& packet : tx.packets) {
+        CHECK(packet.dest == lan, "every reply goes to the peer's on-link address");
+    }
+
+    CHECK(p.remove_ipv4_address(0xC0A8010Au), "removing the address succeeds");
+    CHECK(p.add_ipv4_address(0x0A000002u, 8u), "10.0.0.2/8 setup should succeed");
+    tx.packets.clear();
+    CHECK(announce(make_prefix(0xD1u, 0xD2u, 0xD3u)), "second peer accepted");
+    CHECK(!tx.packets.empty() && tx.packets[0].dest == docker,
+          "with neither address on link, the peer's own order decides");
+    return true;
+}
+
 void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-001",
                      "§8.5.1/§8.5.3.3: participant announce path is gated on configured local locators and sends SPDP DATA to the well-known multicast locator.",
@@ -1055,6 +1101,11 @@ void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-006",
                      "§8.5.3.2/§8.5.3.3: ms_until_next_timer() is unbounded without addresses, zero before the first SPDP announcement, and bounded by the SPDP period and peer lease expiry.",
                      tc_part_8_5_1_006});
+    tests.push_back({"TC-PART-8.5.1-010",
+                     "§8.5.3.2 / RFC 6724 §6: an address added with its prefix length makes the "
+                     "participant answer a peer at the peer address inside that prefix; removing "
+                     "it removes the preference.",
+                     tc_part_8_5_1_010});
     tests.push_back({"TC-PART-8.5.1-009",
                      "§8.5.3/§8.5.4: the graph observer fires when a peer is discovered or expires and when an endpoint is recorded or forgotten, not for a repeated identical announcement.",
                      tc_part_8_5_1_009});

@@ -11,7 +11,8 @@
  * board, which lets firmware-shaped applications run on the host unchanged.
  *
  * The host address is the `ROSETTE_LOCAL_IP` override, else the address the
- * routing table picks for outbound traffic, else loopback.
+ * routing table picks for outbound traffic, else loopback. Its prefix length
+ * is the netmask of the interface that holds it.
  */
 
 #include "rosette/net/board_network.hpp"
@@ -21,6 +22,7 @@
 #include <cstdlib>
 
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -103,6 +105,63 @@ uint32_t host_ipv4() noexcept {
     return value;
 }
 
+/**
+ * @brief The on-link prefix length of one of the host's IPv4 addresses.
+ *
+ * Reads the netmask of the interface holding `host` from the operating
+ * system's interface list (getifaddrs()).
+ *
+ * @param[in] host An address in host byte order.
+ * @return The number of leading one bits in that interface's netmask (24 for
+ *   255.255.255.0), or 0 when no interface holds `host` or the list cannot
+ *   be read.
+ *
+ * Verification:
+ * - Correct means: 127.0.0.1 gives 8 (the loopback interface's 255.0.0.0),
+ *   and an address no interface holds gives 0.
+ * - Covered by: tests/host/posix_board_network_test.cpp (TC-NET-BRD-002),
+ *   tests/host/posix_board_network_prefix_test.cpp (TC-NET-BRD-004).
+ *
+ * References:
+ * - POSIX getifaddrs(3) (Linux, BSD, macOS); RFC 4632 §3.1
+ */
+uint8_t host_ipv4_prefix_len(uint32_t host) noexcept {
+    ifaddrs* list = nullptr;
+    if (::getifaddrs(&list) != 0) {
+        return 0u;
+    }
+
+    uint8_t prefix_len = 0u;
+    for (const ifaddrs* ifa = list; ifa != nullptr; ifa = ifa->ifa_next) {
+        if ((ifa->ifa_addr == nullptr) || (ifa->ifa_netmask == nullptr)
+            || (ifa->ifa_addr->sa_family != AF_INET)) {
+            continue;
+        }
+
+        const auto* addr = reinterpret_cast<const sockaddr_in*>(ifa->ifa_addr);
+        if (ntohl(addr->sin_addr.s_addr) != host) {
+            continue;
+        }
+
+        const auto* mask = reinterpret_cast<const sockaddr_in*>(ifa->ifa_netmask);
+        prefix_len = static_cast<uint8_t>(__builtin_popcount(mask->sin_addr.s_addr));
+        break;
+    }
+
+    ::freeifaddrs(list);
+    return prefix_len;
+}
+
+/**
+ * @brief The prefix length of host_ipv4(), computed once per process as it is.
+ *
+ * @return host_ipv4_prefix_len(host_ipv4()).
+ */
+uint8_t host_prefix_len() noexcept {
+    static const uint8_t value = host_ipv4_prefix_len(host_ipv4());
+    return value;
+}
+
 /// The config bring-up accepted; `ready_when` is null until then.
 NetworkConfig g_config{};
 bool g_started = false;
@@ -111,7 +170,9 @@ bool g_started = false;
  * @brief The host's address as a snapshot, rebuilt from the operating system's.
  *
  * @return The live snapshot: one `manual` IPv4 entry while the host holds an
- *   address (prefix length 0: the host's prefix is not read), none otherwise.
+ *   address, with the prefix length of the interface holding it (0 when no
+ *   interface does, as for a `ROSETTE_LOCAL_IP` override no interface
+ *   holds), none otherwise.
  */
 AddressSnapshot& host_snapshot() noexcept {
     static AddressSnapshot snapshot{};
@@ -125,7 +186,7 @@ AddressSnapshot& host_snapshot() noexcept {
         const std::array<uint8_t, 16> address{
             static_cast<uint8_t>(host >> 24), static_cast<uint8_t>(host >> 16),
             static_cast<uint8_t>(host >> 8), static_cast<uint8_t>(host)};
-        (void)snapshot.v4.addresses.add(AddressFamily::ipv4, address, 0u);
+        (void)snapshot.v4.addresses.add(AddressFamily::ipv4, address, host_prefix_len());
     }
 
     return snapshot;
@@ -180,8 +241,9 @@ BringUpResult bring_up_board_network(const char* hostname, const NetworkConfig& 
         pf::sleep_ms(100u);
     }
 
-    const auto& a = board_address_snapshot().v4.address();
-    std::printf("[net] address %u.%u.%u.%u\n", a[0], a[1], a[2], a[3]);
+    const auto& v4 = board_address_snapshot().v4;
+    const auto& a = v4.address();
+    std::printf("[net] address %u.%u.%u.%u/%u\n", a[0], a[1], a[2], a[3], v4.primary().prefix_len);
     return BringUpResult::ready;
 }
 

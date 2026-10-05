@@ -65,4 +65,25 @@ rosette::net::SocketProvider& network_socket_provider() noexcept;
  */
 uint32_t network_ipv4_address() noexcept;
 
+/**
+ * @brief The on-link prefix length of network_ipv4_address().
+ *
+ * The participant ranks every peer's announced locators against its own
+ * addresses and prefixes, and sends to a peer's on-link address first (see
+ * rosette/rtps/locator_ranking.hpp), so a peer announcing several interfaces
+ * is reached on the one this network shares with it.
+ *
+ * @return The prefix length in bits (24 for 255.255.255.0), or 0 when no
+ *   address is assigned or its netmask is unknown.
+ *
+ * Verification:
+ * - Correct means: the value equals the netmask of the interface holding
+ *   network_ipv4_address().
+ * - Covered by: tests/host/posix_board_network_test.cpp (TC-NET-BRD-004).
+ *
+ * References:
+ * - RFC 4632 §3.1 (prefix length notation); RFC 6724 §6
+ */
+uint8_t network_ipv4_prefix_len() noexcept;
+
 }  // namespace rmw_rosette

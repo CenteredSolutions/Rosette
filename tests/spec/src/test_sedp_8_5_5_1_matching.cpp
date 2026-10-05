@@ -446,7 +446,56 @@ static bool tc_sedp_8_5_5_1_011(std::string& err) {
     return true;
 }
 
+// §8.5.4.2: an endpoint that announces its own locators is reported at the
+// most reachable of them first, as a participant's lists are (TC-SPDP-8.5.3-010):
+// the one inside this participant's prefix, then the rest in announced order.
+static bool tc_sedp_8_5_5_1_013(std::string& err) {
+    struct Reported {
+        int calls = 0;
+        uint8_t count = 0u;
+        Locator first = LOCATOR_INVALID;
+        Locator second = LOCATOR_INVALID;
+    } obs{};
+
+    EndpointMatchTable t(
+        [](const MatchedEndpoint& w, const MatchedEndpoint&, const TopicName&, void* u) noexcept {
+            auto* o = static_cast<Reported*>(u);
+            o->calls++;
+            o->count = w.locatorCount;
+            o->first = w.locatorCount > 0u ? w.locators[0] : LOCATOR_INVALID;
+            o->second = w.locatorCount > 1u ? w.locators[1] : LOCATOR_INVALID;
+        },
+        nullptr, &obs);
+    LocalSubnets subnets{};
+    CHECK(subnets.add(make_udpv4_locator(0xC0A80105u, 0u), 24u), "add 192.168.1.5/24");
+    t.set_local_subnets(subnets);
+    const Guid local_reader = make_guid(0xA1u, 0xA2u, 0xA3u, make_entity(1u, 1u, 1u, 0x04u));
+    t.set_local_prefix(local_reader.prefix);
+    t.add_reader(make_reader(local_reader, "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+
+    const Locator docker = make_udpv4_locator(0xAC110001u, 7411u);
+    const Locator wifi = make_udpv4_locator(0x0A000005u, 7411u);
+    const Locator lan = make_udpv4_locator(0xC0A80164u, 7411u);
+    DiscoveredWriterData remote = make_writer(
+        make_guid(0xB1u, 0xB2u, 0xB3u, make_entity(2u, 2u, 2u, 0x03u)), "rt/mach/estop",
+        "std_msgs::msg::dds_::Bool_", ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    remote.unicastLocatorList[0] = docker;
+    remote.unicastLocatorList[1] = wifi;
+    remote.unicastLocatorList[2] = lan;
+    remote.unicastLocatorCount = 3u;
+    t.add_writer(remote);
+    CHECK(obs.calls == 1, "the remote writer matches");
+    CHECK(obs.count == 2u && obs.first == lan && obs.second == docker,
+          "the on-link locator is reported first, then the first routed one");
+    return true;
+}
+
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests) {
+    tests.push_back({"TC-SEDP-8.5.5.1-013",
+                     "§8.5.4.2: a remote endpoint's announced locators are kept most reachable "
+                     "first against this participant's addresses, as a participant's are.",
+                     tc_sedp_8_5_5_1_013});
     tests.push_back({"TC-SEDP-8.5.5.1-011",
                      "§8.5.5.1 capacity: when every remote origin is taken, an endpoint that completes a match frees an origin with no endpoint in a match; an origin with a matched endpoint is kept.",
                      tc_sedp_8_5_5_1_011});

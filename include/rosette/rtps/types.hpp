@@ -533,11 +533,12 @@ inline Locator make_udpv6_locator(const uint8_t (&ipv6)[16], uint16_t port) noex
  * @brief Copies the locators this stack can send to, in announced order.
  *
  * Discovery data lists every locator a participant or endpoint can be reached
- * at, of any kind (Fast DDS lists its shared-memory transport too) and on
- * every interface. This stack sends over UDP only, and to the first UDP
- * locator of a list (ReaderProxy::best_locator(), WriterProxy::best_locator()),
- * so discovery keeps the leading UDP locators of each list and drops kinds it
- * can never send to before they take a slot.
+ * at, of any kind (Fast DDS lists its shared-memory transport too). This stack
+ * sends over UDP only, so kinds it can never send to are dropped before they
+ * take a slot. Unicast lists are ranked by reachability instead
+ * (LocalSubnets::select() in rtps/locator_ranking.hpp); this keeps a list
+ * whose order does not decide where traffic goes, such as a participant's
+ * metatraffic multicast locators.
  *
  * @param[out] out Destination; at least `cap` locators long.
  * @param[in]  cap Most locators to keep.
@@ -549,11 +550,11 @@ inline Locator make_udpv6_locator(const uint8_t (&ipv6)[16], uint16_t port) noex
  * Verification:
  * - Correct means: no non-UDP locator is kept, and the kept locators are the
  *   leading UDP locators of `src` in their announced order.
- * - Covered by: TC-SPDP-8.5.3-007, TC-SEDP-8.5.5.1-010.
+ * - Covered by: TC-SPDP-8.5.3-007.
  *
  * References:
- * - OMG DDSI-RTPS 2.5 §8.2.5 (Locator_t kinds), §8.5.3.2 and §8.5.4.2
- *   (participant and endpoint locator lists)
+ * - OMG DDSI-RTPS 2.5 §8.2.5 (Locator_t kinds), §8.5.3.2 (participant
+ *   locator lists)
  */
 inline uint8_t copy_udp_locators(Locator* out, uint8_t cap,
                                  const Locator* src, uint8_t n) noexcept {

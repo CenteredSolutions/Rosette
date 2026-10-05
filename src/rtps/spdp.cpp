@@ -245,28 +245,29 @@ void SpdpWriter::announce_unicast(const Locator& dest) noexcept {
 // DiscoveredParticipant — what the peer table keeps of a peer
 // ============================================================
 
-DiscoveredParticipant DiscoveredParticipant::from(
-        const SPDPdiscoveredParticipantData& announced) noexcept
-{
+DiscoveredParticipant DiscoveredParticipant::from(const SPDPdiscoveredParticipantData& announced,
+                                                  const LocalSubnets& subnets) noexcept {
     DiscoveredParticipant p{};
     p.guidPrefix                = announced.guidPrefix;
     p.vendorId = announced.vendorId;
     p.availableBuiltinEndpoints = announced.availableBuiltinEndpoints;
-    p.metatrafficUnicastLocatorCount = copy_udp_locators(
+    p.metatrafficUnicastLocatorCount = subnets.select(
         p.metatrafficUnicastLocatorList, RTPS_MAX_PEER_LOCATORS,
         announced.metatrafficUnicastLocatorList, announced.metatrafficUnicastLocatorCount);
     p.metatrafficMulticastLocatorCount = copy_udp_locators(
         p.metatrafficMulticastLocatorList, RTPS_MAX_PEER_LOCATORS,
         announced.metatrafficMulticastLocatorList, announced.metatrafficMulticastLocatorCount);
-    p.defaultUnicastLocatorCount = copy_udp_locators(
-        p.defaultUnicastLocatorList, RTPS_MAX_PEER_LOCATORS,
-        announced.defaultUnicastLocatorList, announced.defaultUnicastLocatorCount);
+    p.defaultUnicastLocatorCount =
+        subnets.select(p.defaultUnicastLocatorList, RTPS_MAX_PEER_LOCATORS,
+                       announced.defaultUnicastLocatorList, announced.defaultUnicastLocatorCount);
     return p;
 }
 
 // ============================================================
 // SpdpReader — deserialisation and peer table management
 // ============================================================
+
+const LocalSubnets SpdpReader::kNoSubnets{};
 
 // ----------------------------------------------------------
 // SpdpReader::deserialise()
@@ -283,10 +284,8 @@ DiscoveredParticipant DiscoveredParticipant::from(
 // Returns true if the mandatory PID_PARTICIPANT_GUID was found.
 // ----------------------------------------------------------
 
-bool SpdpReader::deserialise(const Octet*               payload,
-                              uint32_t                   len,
-                              SPDPdiscoveredParticipantData& out) noexcept
-{
+bool SpdpReader::deserialise(const Octet* payload, uint32_t len, const LocalSubnets& subnets,
+                             SPDPdiscoveredParticipantData& out) noexcept {
     if (len < 4u) return false;
 
     // RepresentationHeader — §9.6.2, p. 256.
@@ -336,17 +335,18 @@ bool SpdpReader::deserialise(const Octet*               payload,
                 break;
 
             // PID_METATRAFFIC_UNICAST_LOCATOR — 24 bytes per locator.
-            case pid::METATRAFFIC_UNICAST_LOCATOR:
-                if (param_len >= 24u &&
-                    out.metatrafficUnicastLocatorCount <
-                        RTPS_MAX_LOCATORS_PER_PARTICIPANT) {
-                    if (Locator::read_from(out.metatrafficUnicastLocatorList[
-                                       out.metatrafficUnicastLocatorCount],
-                                       val, 24u, little_endian)) {
-                        out.metatrafficUnicastLocatorCount++;
-                    }
+            // Ranked as read, so a reachable locator announced after the
+            // list's capacity is still kept (LocalSubnets::offer()).
+            case pid::METATRAFFIC_UNICAST_LOCATOR: {
+                Locator locator{};
+                if (param_len >= 24u && Locator::read_from(locator, val, 24u, little_endian)) {
+                    subnets.offer(out.metatrafficUnicastLocatorList,
+                                  out.metatrafficUnicastLocatorCount,
+                                  RTPS_MAX_LOCATORS_PER_PARTICIPANT, locator);
                 }
+
                 break;
+            }
 
             // PID_METATRAFFIC_MULTICAST_LOCATOR.
             case pid::METATRAFFIC_MULTICAST_LOCATOR:
@@ -365,18 +365,15 @@ bool SpdpReader::deserialise(const Octet*               payload,
             // Accept legacy PID_UNICAST_LOCATOR (0x002F) in SPDP payloads
             // for interoperability with older stacks/captures.
             case pid::DEFAULT_UNICAST_LOCATOR:
-            case pid::UNICAST_LOCATOR:
-                if (param_len >= 24u &&
-                    out.defaultUnicastLocatorCount <
-                        RTPS_MAX_LOCATORS_PER_PARTICIPANT
-                ) {
-                    if (Locator::read_from(out.defaultUnicastLocatorList[
-                                       out.defaultUnicastLocatorCount],
-                                       val, 24u, little_endian)) {
-                        out.defaultUnicastLocatorCount++;
-                    }
+            case pid::UNICAST_LOCATOR: {
+                Locator locator{};
+                if (param_len >= 24u && Locator::read_from(locator, val, 24u, little_endian)) {
+                    subnets.offer(out.defaultUnicastLocatorList, out.defaultUnicastLocatorCount,
+                                  RTPS_MAX_LOCATORS_PER_PARTICIPANT, locator);
                 }
+
                 break;
+            }
 
             // PID_DEFAULT_MULTICAST_LOCATOR.
             case pid::DEFAULT_MULTICAST_LOCATOR:
@@ -432,7 +429,7 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
                           uint32_t          now_ms) noexcept
 {
     SPDPdiscoveredParticipantData parsed{};
-    if (!deserialise(payload, payload_len, parsed)) {
+    if (!deserialise(payload, payload_len, *subnets_, parsed)) {
         RTPS_LOG_W("spdp", "failed to deserialise participant data (%lu bytes)",
                    (unsigned long)payload_len);
         return false;
@@ -456,7 +453,7 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
         // Refresh existing participant data and lease.
         // If SEDP was previously deferred due to missing locator, trigger it
         // once locator information arrives.
-        existing->data          = DiscoveredParticipant::from(parsed);
+        existing->data = DiscoveredParticipant::from(parsed, *subnets_);
         existing->leaseExpiryMs = now_ms + lease_ms;
 
         if (!existing->sedp_announced &&
@@ -481,7 +478,7 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
         return false;   // Table full; drop.
     }
 
-    slot->data           = DiscoveredParticipant::from(parsed);
+    slot->data = DiscoveredParticipant::from(parsed, *subnets_);
     slot->alive          = true;
     slot->sedp_announced = false;
     slot->leaseExpiryMs  = now_ms + lease_ms;

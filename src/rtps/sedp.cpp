@@ -580,16 +580,10 @@ void SedpWriter::tick(uint32_t now_ms) noexcept
 // §9.6.3.2, Table 9.15, p. 263.
 // ============================================================
 
-bool SedpReader::read_plcdr_fields(const Octet*  payload,
-                                   uint32_t      len,
-                                   TopicName&    topic_out,
-                                   TopicName&    type_out,
-                                   Guid&         endpoint_guid_out,
-                                   ReliabilityKind& reliability_out,
-                                   DurabilityKind&  durability_out,
-                                   Locator*      unicast_locs,
-                                   uint8_t&      unicast_count) noexcept
-{
+bool SedpReader::read_plcdr_fields(const Octet* payload, uint32_t len, TopicName& topic_out,
+                                   TopicName& type_out, Guid& endpoint_guid_out,
+                                   ReliabilityKind& reliability_out, DurabilityKind& durability_out,
+                                   Locator* unicast_locs, uint8_t& unicast_count) const noexcept {
     if (len < 4u) return false;
 
     bool little_endian = true;
@@ -647,21 +641,17 @@ bool SedpReader::read_plcdr_fields(const Octet*  payload,
                 }
                 break;
 
-            case pid::UNICAST_LOCATOR:
-                if (param_len >= 24u &&
-                    unicast_count < RTPS_MAX_LOCATORS_PER_PARTICIPANT) {
-                    Locator locator{};
-                    if (Locator::read_from(locator,
-                                           val,
-                                           24u,
-                                           little_endian) &&
-                        (locator.kind == locator_kind::UDPv4 ||
-                         locator.kind == locator_kind::UDPv6)) {
-                        unicast_locs[unicast_count] = locator;
-                        ++unicast_count;
-                    }
+            // Ranked as read, so a reachable locator announced after the
+            // list's capacity is still kept (LocalSubnets::offer()).
+            case pid::UNICAST_LOCATOR: {
+                Locator locator{};
+                if (param_len >= 24u && Locator::read_from(locator, val, 24u, little_endian)) {
+                    match_table_.local_subnets().offer(unicast_locs, unicast_count,
+                                                       RTPS_MAX_LOCATORS_PER_PARTICIPANT, locator);
                 }
+
                 break;
+            }
 
             default:
                 break;
@@ -769,8 +759,7 @@ void SedpReader::on_subscription_change(const CacheChange& change) noexcept
     match_table_.add_reader(rd);
 }
 
-bool SedpReader::withdrawn_endpoint(const CacheChange& change, Guid& endpoint) noexcept
-{
+bool SedpReader::withdrawn_endpoint(const CacheChange& change, Guid& endpoint) const noexcept {
     if (change.inlineQos.hasKeyHash) {
         endpoint = change.inlineQos.key_hash_guid();
         return true;
@@ -785,10 +774,8 @@ bool SedpReader::withdrawn_endpoint(const CacheChange& change, Guid& endpoint) n
                              reliability, durability, locs, loc_count);
 }
 
-bool SedpReader::deserialise_writer(const Octet*         payload,
-                                    uint32_t             len,
-                                    DiscoveredWriterData& out) noexcept
-{
+bool SedpReader::deserialise_writer(const Octet* payload, uint32_t len,
+                                    DiscoveredWriterData& out) const noexcept {
     Locator locs[RTPS_MAX_LOCATORS_PER_PARTICIPANT];
     uint8_t loc_count = 0;
     bool ok = read_plcdr_fields(payload, len,
@@ -803,10 +790,8 @@ bool SedpReader::deserialise_writer(const Octet*         payload,
     return true;
 }
 
-bool SedpReader::deserialise_reader(const Octet*         payload,
-                                    uint32_t             len,
-                                    DiscoveredReaderData& out) noexcept
-{
+bool SedpReader::deserialise_reader(const Octet* payload, uint32_t len,
+                                    DiscoveredReaderData& out) const noexcept {
     Locator locs[RTPS_MAX_LOCATORS_PER_PARTICIPANT];
     uint8_t loc_count = 0;
     bool ok = read_plcdr_fields(payload, len,

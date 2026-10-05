@@ -342,9 +342,10 @@ static bool tc_spdp_8_5_3_006(std::string& err) {
 
 // §8.5.3.2: a participant lists every locator it can be reached at, of any
 // kind and on every interface. The peer table keeps the UDP locators this
-// stack can send to, in announced order, and no more than it uses: a kind it
-// cannot send to (here Fast DDS's shared-memory kind, 16) never occupies a
-// slot ahead of a reachable one.
+// stack can send to, and no more than it uses: a kind it cannot send to (here
+// Fast DDS's shared-memory kind, 16) never occupies a slot ahead of a
+// reachable one. With no local address to rank against, announced order is
+// kept (TC-SPDP-8.5.3-010 covers ranking).
 static bool tc_spdp_8_5_3_007(std::string& err) {
     PeerObs obs{};
     SpdpReader r(on_new_peer, on_peer_removed, &obs);
@@ -397,9 +398,12 @@ static bool tc_spdp_8_5_3_007(std::string& err) {
 }
 
 void append_spdp_tests_8_5_3(std::vector<TestCase>& tests) {
-    tests.push_back({"TC-SPDP-8.5.3-007",
-                     "§8.5.3.2 implementation limit: a discovered participant keeps at most RTPS_MAX_PEER_LOCATORS UDP locators per list, in announced order; locator kinds the stack cannot send to are not kept.",
-                     tc_spdp_8_5_3_007});
+    tests.push_back(
+        {"TC-SPDP-8.5.3-007",
+         "§8.5.3.2 implementation limit: a discovered participant keeps at most "
+         "RTPS_MAX_PEER_LOCATORS UDP locators per list, in announced order while no local address "
+         "ranks them; locator kinds the stack cannot send to are not kept.",
+         tc_spdp_8_5_3_007});
     tests.push_back({"TC-SPDP-8.5.3-001",
                      "§8.5.3.3: SPDPbuiltinParticipantWriter sends a DATA Submessage carrying local SPDPdiscoveredParticipantData PL_CDR payload.",
                      tc_spdp_8_5_3_001});

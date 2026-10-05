@@ -131,9 +131,11 @@ add_executable(spdp_spec_tests
     src/spec_test_common.cpp
     src/spec_spdp_test_registry.cpp
     src/test_spdp_8_5_3_behavior.cpp
+    src/test_spdp_8_5_3_locator_ranking.cpp
     src/test_spdp_9_6_1_locators.cpp
     src/test_spdp_9_6_2_9_6_3_1_plcdr.cpp
     ../../src/rtps/spdp.cpp
+    ../../src/rtps/locator_ranking.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
 )
@@ -170,6 +172,7 @@ set(SEDP_SPEC_TEST_SOURCES
     src/test_sedp_9_6_3_2_plcdr.cpp
     ../../src/rtps/sedp.cpp
     ../../src/rtps/endpoint_match_table.cpp
+    ../../src/rtps/locator_ranking.cpp
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/sn_window.cpp
@@ -329,6 +332,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     ../../src/rtps/spdp.cpp
     ../../src/rtps/sedp.cpp
     ../../src/rtps/endpoint_match_table.cpp
+    ../../src/rtps/locator_ranking.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
 )
@@ -487,6 +491,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
     add_executable(spdp_fuzz_replay
         fuzz/replay_spdp_corpus.cpp
         ../../src/rtps/spdp.cpp
+        ../../src/rtps/locator_ranking.cpp
         ../../src/rtps/buf_pool.cpp
     )
     target_include_directories(spdp_fuzz_replay PRIVATE
@@ -500,6 +505,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         fuzz/replay_sedp_corpus.cpp
         ../../src/rtps/sedp.cpp
         ../../src/rtps/endpoint_match_table.cpp
+        ../../src/rtps/locator_ranking.cpp
         ../../src/rtps/sn_window.cpp
         ../../src/rtps/history_cache.cpp
         ../../src/rtps/reader_proxy.cpp
@@ -655,6 +661,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         add_executable(spdp_fuzz
             fuzz/fuzz_spdp.cpp
             ../../src/rtps/spdp.cpp
+            ../../src/rtps/locator_ranking.cpp
             ../../src/rtps/buf_pool.cpp
         )
         target_include_directories(spdp_fuzz PRIVATE
@@ -676,6 +683,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
             fuzz/fuzz_sedp.cpp
             ../../src/rtps/sedp.cpp
             ../../src/rtps/endpoint_match_table.cpp
+            ../../src/rtps/locator_ranking.cpp
             ../../src/rtps/sn_window.cpp
         ../../src/rtps/history_cache.cpp
         ../../src/rtps/reader_proxy.cpp
@@ -703,6 +711,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         add_executable(endpoint_match_fuzz
             fuzz/fuzz_endpoint_match_table.cpp
             ../../src/rtps/endpoint_match_table.cpp
+            ../../src/rtps/locator_ranking.cpp
         )
         target_include_directories(endpoint_match_fuzz PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../..

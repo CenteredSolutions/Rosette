@@ -72,9 +72,9 @@
       "section": "8.5.4.2",
       "page": 166,
       "normativity": "implementation-limit",
-      "statement": "A remote endpoint keeps at most RTPS_MAX_REMOTE_ENDPOINT_LOCATORS of the locators it announced: the leading UDP locators, in announced order; locator kinds the stack cannot send to are not kept.",
+      "statement": "A remote endpoint keeps at most RTPS_MAX_REMOTE_ENDPOINT_LOCATORS of the locators it announced: the most reachable UDP locators against the local addresses and prefixes, in announced order within a reachability class, chosen from every locator the announcement lists however many precede the most reachable one; locator kinds the stack cannot send to are not kept.",
       "status": "implemented",
-      "test_ids": ["TC-SEDP-8.5.5.1-010"]
+      "test_ids": ["TC-SEDP-8.5.5.1-010", "TC-SEDP-8.5.5.1-013", "TC-SEDP-9.6.3.2-003"]
     },
     {
       "id": "REQ-SEDP-8.5.4.1-RELIABLE-BUILTIN-READERS",

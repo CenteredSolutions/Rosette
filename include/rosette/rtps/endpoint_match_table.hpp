@@ -28,8 +28,11 @@
  * Rosette list the participant's defaults, Cyclone DDS lists none), so they
  * share one origin, and a remote endpoint costs 16 octets however many
  * locators its participant announced. An endpoint that announces locators of
- * its own takes an origin of its own. Only UDP locators are kept, and at
- * most RTPS_MAX_REMOTE_ENDPOINT_LOCATORS of them (copy_udp_locators()).
+ * its own takes an origin of its own. At most
+ * RTPS_MAX_REMOTE_ENDPOINT_LOCATORS UDP locators are kept, the most
+ * reachable first: SedpReader ranks an announced list as it decodes it
+ * (LocalSubnets::offer()), and add_writer() and add_reader() narrow it
+ * (LocalSubnets::select()).
  *
  * A remote endpoint is compared by name, exactly, against the local
  * endpoints when it is announced, while its full names are at hand. A local
@@ -92,8 +95,9 @@
 
 #pragma once
 
-#include "types.hpp"
 #include <string.h>
+#include "locator_ranking.hpp"
+#include "types.hpp"
 
 namespace rtps {
 
@@ -333,6 +337,18 @@ public:
         , user_data_(user_data)
     {}
 
+    /**
+     * @brief Sets the addresses remote endpoint locator lists are ranked against.
+     *
+     * @param[in] subnets This participant's addresses; must outlive the
+     *   table. Until it is set, lists are ranked against no addresses, which
+     *   keeps every usable locator in announced order.
+     */
+    void set_local_subnets(const LocalSubnets& subnets) noexcept { subnets_ = &subnets; }
+
+    /// @brief The addresses remote endpoint locator lists are ranked against.
+    const LocalSubnets& local_subnets() const noexcept { return *subnets_; }
+
     /// @brief Sets the GUID prefix that marks an endpoint as local.
     void set_local_prefix(const GuidPrefix& prefix) noexcept {
         local_prefix_ = prefix;
@@ -521,7 +537,7 @@ private:
      * @param[in]     n               Entries in `table`.
      * @param[in]     is_writer       `true` when `table` holds writers.
      * @param[in]     guid            The announced endpoint's GUID.
-     * @param[in]     locators        Its kept UDP locators (copy_udp_locators()).
+     * @param[in]     locators        Its kept UDP locators (LocalSubnets::select()).
      * @param[in]     locator_count   Entries in `locators`.
      * @param[in]     completes_match pairs_with_local() for the endpoint.
      * @param[out]    origin          The origin index to store, when a record is returned.
@@ -630,6 +646,10 @@ private:
     RemoteOrigin   origins_[RTPS_MAX_REMOTE_ORIGINS]            = {};
     MatchRecord    matches_[kMaxMatches]                        = {};
 
+    /// Ranks against no addresses until set_local_subnets() is called.
+    static const LocalSubnets kNoSubnets;
+
+    const LocalSubnets* subnets_ = &kNoSubnets;
     OnMatch    on_match_;
     OnUnmatch  on_unmatch_;
     OnChange   on_change_;

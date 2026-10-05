@@ -337,7 +337,8 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     // RMW_ROSETTE_STRICT_LINK rehearses such a link's losses on a host: every
     // received datagram above the limit is discarded, as the wire would.
     ctx.transport->set_strict_link(std::getenv("RMW_ROSETTE_STRICT_LINK") != nullptr);
-    ctx.participant->add_ipv4_address(rmw_rosette::network_ipv4_address());
+    ctx.participant->add_ipv4_address(rmw_rosette::network_ipv4_address(),
+                                      rmw_rosette::network_ipv4_prefix_len());
     ctx.driver = new (ctx.driver_storage) rtps::ParticipantDriver(
         *ctx.participant, *ctx.transport, *ctx.provider, ctx.rx_buffer, sizeof(ctx.rx_buffer));
     ctx.constructed = true;

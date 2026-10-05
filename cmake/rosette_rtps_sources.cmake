@@ -27,6 +27,7 @@ set(ROSETTE_RTPS_PROTOCOL_SOURCES
   ${ROSETTE_ROOT}/src/rtps/reader_proxy.cpp
   ${ROSETTE_ROOT}/src/rtps/sedp.cpp
   ${ROSETTE_ROOT}/src/rtps/endpoint_match_table.cpp
+  ${ROSETTE_ROOT}/src/rtps/locator_ranking.cpp
   ${ROSETTE_ROOT}/src/rtps/history_cache.cpp
   ${ROSETTE_ROOT}/src/rtps/spdp.cpp
   ${ROSETTE_ROOT}/src/rtps/stateful_writer.cpp

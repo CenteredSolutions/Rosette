@@ -104,6 +104,15 @@
       "statement": "A local endpoint whose topic or type name exceeds RTPS_MAX_TOPIC_NAME_LEN - 1 is refused rather than announced under a truncated name.",
       "status": "implemented",
       "test_ids": ["TC-PART-8.5.1-008"]
+    },
+    {
+      "id": "REQ-PART-8.5.3.2-ANSWER-REACHABLE-LOCATOR",
+      "section": "8.5.3.2",
+      "page": 160,
+      "normativity": "implementation-behavior",
+      "statement": "Local addresses are added with their on-link prefix length; the participant sends to a peer at the announced locator inside that prefix ahead of the peer's other locators, and a removed address no longer ranks them.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-010"]
     }
   ]
 }
