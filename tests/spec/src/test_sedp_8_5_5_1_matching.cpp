@@ -285,9 +285,10 @@ static bool tc_sedp_8_5_5_1_008(std::string& err) {
     const Guid local_reader = make_guid(0x10u, 0x00u, 0x00u, make_entity(1u, 1u, 1u, 0x04u));
     const Guid local_writer = make_guid(0x10u, 0x00u, 0x00u, make_entity(1u, 1u, 2u, 0x03u));
     t.set_local_prefix(local_reader.prefix);
-    t.add_reader(make_reader(local_reader, "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+    t.add_reader(make_reader(local_reader, "rt/machine/estop", "std_msgs::msg::dds_::Bool_",
                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
-    t.add_writer(make_writer(local_writer, "rt/mach/faults", "controller_msgs::msg::dds_::Fault_",
+    t.add_writer(make_writer(local_writer, "rt/machine/faults",
+                             "diagnostic_msgs::msg::dds_::DiagnosticArray_",
                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
 
     for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i) {
@@ -309,7 +310,7 @@ static bool tc_sedp_8_5_5_1_008(std::string& err) {
 
     const int changes_before = obs.change_calls;
     const Guid estop_writer = make_guid(0x30u, 0x00u, 0x00u, make_entity(0u, 0u, 3u, 0x03u));
-    t.add_writer(make_writer(estop_writer, "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+    t.add_writer(make_writer(estop_writer, "rt/machine/estop", "std_msgs::msg::dds_::Bool_",
                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
     CHECK(obs.match_calls == 1 && obs.last_remote == estop_writer,
           "a remote writer that completes a match displaces one that completes none");
@@ -318,7 +319,8 @@ static bool tc_sedp_8_5_5_1_008(std::string& err) {
     CHECK(obs.change_calls > changes_before, "displacement is a graph change");
 
     const Guid faults_reader = make_guid(0x31u, 0x00u, 0x00u, make_entity(0u, 0u, 4u, 0x04u));
-    t.add_reader(make_reader(faults_reader, "rt/mach/faults", "controller_msgs::msg::dds_::Fault_",
+    t.add_reader(make_reader(faults_reader, "rt/machine/faults",
+                             "diagnostic_msgs::msg::dds_::DiagnosticArray_",
                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
     CHECK(obs.match_calls == 2 && obs.last_remote == faults_reader,
           "a remote reader that completes a match displaces one that completes none");
@@ -342,25 +344,25 @@ static bool tc_sedp_8_5_5_1_009(std::string& err) {
     EndpointMatchTable t(on_match, on_unmatch, &obs);
     const Guid local_reader = make_guid(0x40u, 0x00u, 0x00u, make_entity(1u, 1u, 1u, 0x04u));
     t.set_local_prefix(local_reader.prefix);
-    t.add_reader(make_reader(local_reader, "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+    t.add_reader(make_reader(local_reader, "rt/machine/estop", "std_msgs::msg::dds_::Bool_",
                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
 
     for (uint32_t i = 0; i < RTPS_MAX_DISCOVERED_WRITERS; ++i) {
-        t.add_writer(make_writer(make_guid(0x50u, static_cast<Octet>(i), 0x00u,
-                                           make_entity(0u, 0u, 1u, 0x03u)),
-                                 "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
-                                 ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+        t.add_writer(make_writer(
+            make_guid(0x50u, static_cast<Octet>(i), 0x00u, make_entity(0u, 0u, 1u, 0x03u)),
+            "rt/machine/estop", "std_msgs::msg::dds_::Bool_", ReliabilityKind::RELIABLE,
+            DurabilityKind::VOLATILE));
     }
     CHECK(obs.match_calls == static_cast<int>(RTPS_MAX_DISCOVERED_WRITERS),
           "every remote estop writer matches while there is room");
 
     t.add_writer(make_writer(make_guid(0x60u, 0x00u, 0x00u, make_entity(0u, 0u, 1u, 0x03u)),
-                             "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+                             "rt/machine/estop", "std_msgs::msg::dds_::Bool_",
                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
     CHECK(obs.match_calls == static_cast<int>(RTPS_MAX_DISCOVERED_WRITERS),
           "a full table of matched records admits no further writer");
     CHECK(obs.unmatch_calls == 0, "no matched record is displaced");
-    CHECK(t.count("rt/mach/estop", true) == RTPS_MAX_DISCOVERED_WRITERS,
+    CHECK(t.count("rt/machine/estop", true) == RTPS_MAX_DISCOVERED_WRITERS,
           "the stored remote writers are unchanged");
     return true;
 }
@@ -383,16 +385,18 @@ static bool tc_sedp_8_5_5_1_010(std::string& err) {
         nullptr, &obs);
     const Guid local_writer = make_guid(0xA1u, 0xA2u, 0xA3u, make_entity(1u, 1u, 1u, 0x03u));
     t.set_local_prefix(local_writer.prefix);
-    t.add_writer(make_writer(local_writer, "rt/mach/faults", "controller_msgs::msg::dds_::Fault_",
+    t.add_writer(make_writer(local_writer, "rt/machine/faults",
+                             "diagnostic_msgs::msg::dds_::DiagnosticArray_",
                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
 
     Locator shm{};
     shm.kind = 16;
     shm.port = 7411u;
     const Locator udp = make_udpv4_locator(0xC0A80190u, 7411u);
-    DiscoveredReaderData remote = make_reader(make_guid(0xB1u, 0xB2u, 0xB3u, make_entity(2u, 2u, 2u, 0x04u)),
-                                              "rt/mach/faults", "controller_msgs::msg::dds_::Fault_",
-                                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    DiscoveredReaderData remote =
+        make_reader(make_guid(0xB1u, 0xB2u, 0xB3u, make_entity(2u, 2u, 2u, 0x04u)),
+                    "rt/machine/faults", "diagnostic_msgs::msg::dds_::DiagnosticArray_",
+                    ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
     remote.unicastLocatorList[0] = shm;
     remote.unicastLocatorList[1] = udp;
     remote.unicastLocatorCount = 2u;
@@ -412,13 +416,13 @@ static bool tc_sedp_8_5_5_1_011(std::string& err) {
     EndpointMatchTable t(on_match, on_unmatch, &obs);
     const Guid local_reader = make_guid(0xC0u, 0x00u, 0x00u, make_entity(1u, 1u, 1u, 0x04u));
     t.set_local_prefix(local_reader.prefix);
-    t.add_reader(make_reader(local_reader, "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+    t.add_reader(make_reader(local_reader, "rt/machine/estop", "std_msgs::msg::dds_::Bool_",
                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
 
     // Participant 0 has a matched estop writer and an unmatched rosout reader;
     // every other origin holds one unmatched rosout reader.
     t.add_writer(make_writer(make_guid(0xD0u, 0x00u, 0x00u, make_entity(0u, 0u, 1u, 0x03u)),
-                             "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+                             "rt/machine/estop", "std_msgs::msg::dds_::Bool_",
                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
     for (uint32_t i = 0; i < RTPS_MAX_REMOTE_ORIGINS; ++i) {
         t.add_reader(make_reader(make_guid(0xD0u, static_cast<Octet>(i), 0x00u,
@@ -436,12 +440,12 @@ static bool tc_sedp_8_5_5_1_011(std::string& err) {
           "an endpoint that completes no match frees no origin");
 
     t.add_writer(make_writer(make_guid(0xE1u, 0x00u, 0x00u, make_entity(0u, 0u, 1u, 0x03u)),
-                             "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+                             "rt/machine/estop", "std_msgs::msg::dds_::Bool_",
                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
     CHECK(obs.match_calls == 2, "an estop writer from a new participant matches");
     CHECK(t.count("rt/rosout", false) == RTPS_MAX_REMOTE_ORIGINS - 1u,
           "exactly one unmatched origin's endpoints are forgotten");
-    CHECK(t.count("rt/mach/estop", true) == 2u && obs.unmatch_calls == 0,
+    CHECK(t.count("rt/machine/estop", true) == 2u && obs.unmatch_calls == 0,
           "participant 0's matched writer is kept");
     return true;
 }
@@ -530,14 +534,14 @@ static bool tc_sedp_8_5_5_1_013(std::string& err) {
     t.set_local_subnets(subnets);
     const Guid local_reader = make_guid(0xA1u, 0xA2u, 0xA3u, make_entity(1u, 1u, 1u, 0x04u));
     t.set_local_prefix(local_reader.prefix);
-    t.add_reader(make_reader(local_reader, "rt/mach/estop", "std_msgs::msg::dds_::Bool_",
+    t.add_reader(make_reader(local_reader, "rt/machine/estop", "std_msgs::msg::dds_::Bool_",
                              ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
 
     const Locator docker = make_udpv4_locator(0xAC110001u, 7411u);
     const Locator wifi = make_udpv4_locator(0x0A000005u, 7411u);
     const Locator lan = make_udpv4_locator(0xC0A80164u, 7411u);
     DiscoveredWriterData remote = make_writer(
-        make_guid(0xB1u, 0xB2u, 0xB3u, make_entity(2u, 2u, 2u, 0x03u)), "rt/mach/estop",
+        make_guid(0xB1u, 0xB2u, 0xB3u, make_entity(2u, 2u, 2u, 0x03u)), "rt/machine/estop",
         "std_msgs::msg::dds_::Bool_", ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
     remote.unicastLocatorList[0] = docker;
     remote.unicastLocatorList[1] = wifi;
