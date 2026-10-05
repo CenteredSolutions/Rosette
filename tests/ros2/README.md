@@ -14,6 +14,7 @@ session passes, a stock ROS 2 application on `rmw_fastrtps_cpp` or
 | `rmw_reliable_burst_probe.py` / `run_rmw_reliable_burst_loopback.sh` | Reader-history test: a stock publisher sends a reliable burst while the rosette subscription is not taking (the shape of a late-match repair burst); the subscription must then take exactly the newest min(count, depth) samples. The publisher role with `--topic` drives a board's subscription. |
 | `rcl_graph_wait_probe.cpp` / `rmw_graph_peer.py` / `run_rmw_graph_loopback.sh` | Graph test: an rcl program on the RMW under test blocks on its node's graph guard condition (as rclcpp's GraphListener does) until a stock peer's late publisher and subscription appear, checks both counts are 1, then sees them fall to 0 when the peer destroys them. Each wait must end well inside its 10 s timeout, which only a triggered graph guard allows. The script compiles the probe against the sourced rcl. |
 | `rmw_lease_rematch_probe.py` / `run_rmw_lease_rematch_loopback.sh` | Lease re-match test: a board node on the RMW under test, built to announce less often than its lease (`RTPS_SPDP_RESEND_PERIOD_MS=30000u`), so a stock watcher expires it and re-discovers it while the board keeps the watcher. Passes only when the watcher lists the board's node again, with its services, after the expiry. Fast DDS drops a replay of the `ros_discovery_info` message it delivered before the lease loss, so this needs the board to publish a new one for the re-matched reader. |
+| `rmw_peer_lockout_probe.py` / `run_rmw_peer_lockout_loopback.sh` | Participant-table test: a board on the RMW under test, built with room for `ROSETTE_FILLERS` remote participants (`RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS`), then that many stock filler participants that share nothing with it, then a late stock participant that calls the board's `std_srvs/SetBool` service. Passes only when the late participant reaches the service. The board keeps a participant until its lease expires and drops the announcements of any participant past its table, so a board on a network larger than its table must serve the participants it matches whatever order they joined in. `ROSETTE_FILLERS=0` is the control. |
 | `rtps_packet_capture.py` | Optional `tcpdump` capture of one DDS domain's RTPS port block (DDSI-RTPS 2.5 §9.6.1.1). |
 | `run_rmw_interop_loopback.sh` | Runs `alpha` on the RMW under test and `beta` on a stock RMW on one host; `beta` runs with `--expect-peer-graph`. |
 
@@ -88,6 +89,23 @@ topics only:
 ```bash
 ROSETTE_PEER_RMW=rmw_cyclonedds_cpp ROSETTE_EXPECT_CALLS=0 tests/ros2/run_rmw_interop_loopback.sh
 ```
+
+## Participant table
+
+A board keeps far fewer remote participants than a ROS 2 network holds. Build
+an overlay with a small table, then fill it with participants the board shares
+nothing with before a participant it serves joins:
+
+```bash
+colcon build --packages-select rmw_rosette --build-base build-peers2 \
+  --install-base install-peers2 --cmake-args -DRMW_ROSETTE_MAX_REMOTE_PARTICIPANTS=2
+source install-peers2/rmw_rosette/share/rmw_rosette/local_setup.bash
+tests/ros2/run_rmw_peer_lockout_loopback.sh                     # 2 fillers
+ROSETTE_FILLERS=0 tests/ros2/run_rmw_peer_lockout_loopback.sh   # control
+```
+
+The script reports how many participant announcements the board dropped
+because its table was full, so a failure names its cause.
 
 ## Two-host session
 
