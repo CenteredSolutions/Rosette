@@ -332,12 +332,11 @@ public:
      *
      * A TRANSIENT_LOCAL writer then sends the new reader every cached change
      * at once, in sequence order (§8.7.2.2). When the writer is reliable, the
-     * newest change carries a non-final HEARTBEAT: a reliable reader holds
-     * what it receives until a HEARTBEAT names the range it belongs to, so
-     * the reader acknowledges the replay, or requests what the cache no
-     * longer holds, at once instead of at the next periodic HEARTBEAT. This
-     * is how a service reply written before the client's reply reader
-     * matched reaches the client without delay. A VOLATILE writer makes only
+     * newest change carries a non-final HEARTBEAT so the reader immediately
+     * acknowledges a complete replay or requests any missing cached changes,
+     * rather than waiting for the next periodic HEARTBEAT. This is how a
+     * service reply written before the client's reply reader matched reaches
+     * the client without delay. A VOLATILE writer makes only
      * changes written after this relevant to the new reader.
      *
      * @param[in] reader_guid        The remote reader's GUID.
