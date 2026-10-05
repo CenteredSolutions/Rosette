@@ -18,6 +18,7 @@
 # the repository root ("ports/net/wiznet/device.hpp"); names such as
 # interface.hpp would otherwise collide with include/rosette/net/.
 target_sources(rosette_net PRIVATE
+  ${ROSETTE_ROOT}/ports/net/wiznet/arp_cache.cpp
   ${ROSETTE_ROOT}/ports/net/wiznet/dhcp_client.cpp
   ${ROSETTE_ROOT}/ports/net/wiznet/dhcp_provider.cpp
   ${ROSETTE_ROOT}/ports/net/wiznet/dhcp_wire.cpp)

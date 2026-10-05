@@ -129,7 +129,7 @@ public:
         backoff_ms_ = kFirstBackoffMs;
         device_.set_icmp6_block(Chip::icmp6_block_router_advert());
         (void)device_.poll_socketless_status();    // drop latches from before begin()
-        start_dad(Stage::dad_link_local, link_local_, now_ms);
+        start_dad(Stage::dad_link_local, now_ms);
     }
 
     void stop() noexcept override
@@ -221,17 +221,26 @@ private:
         return static_cast<int32_t>(now_ms - at_ms) >= 0;
     }
 
-    void start_dad(Stage stage, const std::array<uint8_t, 16>& target, uint32_t now_ms) noexcept
-    {
+    // Probes the stage's tentative address (link-local or global candidate).
+    // While an ARP probe holds the socket-less engine the NS is not sent yet;
+    // poll_dad() issues it on a later poll, and the deadline runs from then.
+    void start_dad(Stage stage, uint32_t now_ms) noexcept {
         stage_ = stage;
+        const auto& target = stage == Stage::dad_link_local ? link_local_ : candidate_;
+        dad_issued_ = device_.start_socketless_command(Chip::socketless_command_neighbor_solicit(),
+                                                       target, kDadTimeoutMs);
         deadline_ms_ = now_ms + kCommandDeadlineMs;
-        device_.start_socketless_command(Chip::socketless_command_neighbor_solicit(), target, kDadTimeoutMs);
     }
 
     // DAD outcome: a neighbor answering the probe means the address is taken,
     // and the next candidate for the same prefix is probed, up to IDGEN_RETRIES.
     void poll_dad(uint32_t now_ms) noexcept
     {
+        if (!dad_issued_) {
+            start_dad(stage_, now_ms);
+            return;
+        }
+
         const uint8_t status = device_.poll_socketless_status();
         const bool answered = (status & Chip::socketless_status_neighbor_solicit()) != 0u;
         const bool unique =
@@ -248,7 +257,7 @@ private:
             } else if (answered) {
                 link_local_ = rosette::net::ipv6_address_candidate(kLinkLocalPrefix, mac_,
                                                                    link_local_conflicts_);
-                start_dad(Stage::dad_link_local, link_local_, now_ms);
+                start_dad(Stage::dad_link_local, now_ms);
             } else if (unique) {
                 publish();
                 start_solicitation(now_ms);
@@ -262,7 +271,7 @@ private:
             settle(now_ms, refresh_delay_ms());
         } else if (answered) {
             candidate_ = rosette::net::ipv6_address_candidate(prefix_, mac_, global_conflicts_);
-            start_dad(Stage::dad_global, candidate_, now_ms);
+            start_dad(Stage::dad_global, now_ms);
         } else if (unique) {
             global_ = candidate_;
             publish();
@@ -283,12 +292,19 @@ private:
         send_solicitation(now_ms);
     }
 
+    // Sends one RS. While an ARP probe holds the socket-less engine the RS is
+    // neither sent nor counted, and poll_solicitation() tries again next poll.
     void send_solicitation(uint32_t now_ms) noexcept
     {
+        const bool sent = device_.start_socketless_command(
+            Chip::socketless_command_router_solicit(), {}, static_cast<uint16_t>(kDadTimeoutMs));
+        if (!sent) {
+            next_rs_ms_ = now_ms;
+            return;
+        }
+
         ++solicitations_;
         next_rs_ms_ = now_ms + kSolicitIntervalMs;
-        device_.start_socketless_command(Chip::socketless_command_router_solicit(), {},
-                                         static_cast<uint16_t>(kDadTimeoutMs));
     }
 
     // Reads every advertisement waiting on the socket; the first valid one
@@ -353,7 +369,7 @@ private:
         }
 
         candidate_ = rosette::net::ipv6_address_candidate(prefix_, mac_, global_conflicts_);
-        start_dad(Stage::dad_global, candidate_, now_ms);
+        start_dad(Stage::dad_global, now_ms);
     }
 
     // Lifetimes past ~24 days do not fit the millisecond clock; they are
@@ -473,6 +489,7 @@ private:
     uint32_t router_lifetime_ms_ = 0u;
     uint32_t router_until_ms_ = 0u;
     uint32_t deadline_ms_ = 0u;
+    bool dad_issued_ = false;  ///< The NS for the current DAD stage reached the chip.
     uint32_t next_rs_ms_ = 0u;
     uint32_t next_solicit_ms_ = 0u;
     uint32_t backoff_ms_ = kFirstBackoffMs;

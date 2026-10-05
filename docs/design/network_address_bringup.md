@@ -190,6 +190,48 @@ the /16 mask the chip sends those packets to the absent gateway; the ARP fails
 and stalls that socket's next send for the chip's retry time (1.6 s, measured
 on the W6100).
 
+## Next-hop resolution: the ARP cache
+
+A WIZnet socket remembers one destination MAC (`Sn_DHAR`), so a socket that
+alternates between peers makes the chip ARP before nearly every SEND, and an
+unanswered ARP stalls the socket's next send for the whole retry time. The
+board therefore resolves next hops itself (`ports/net/wiznet/arp_cache.hpp`,
+`arp_resolver.hpp`) and hands every IPv4 send its MAC:
+
+- **Route.** Multicast goes to the group MAC, broadcast to ff:ff:ff:ff:ff:ff.
+  Unicast goes to the next hop's cached MAC. The next hop is the destination
+  when it is on the subnet (always, under the link-local mask 0.0.0.0), and
+  the gateway otherwise.
+- **Send without ARP.** The W5100S uses `SEND_MAC` per datagram. The W6100 and
+  W6300 have no `SEND_MAC`, so their IPv4 sockets open with
+  `Sn_MR2.DHAM_MANUAL` and every `SEND` uses `Sn_DHAR`. A multicast-joined
+  W6x00 socket keeps the chip's own ARP, since its `Sn_DHAR` holds the group.
+- **Miss: drop and resolve in the background.** A datagram whose next hop is
+  unknown is dropped, as a lost datagram, and the chip's socket-less ARP
+  command (`SLCR`) resolves the next hop off the send path. RTPS reliability
+  and DHCP retransmission recover the first datagram. The gateway is resolved
+  as soon as an address is configured, so the first send off the subnet (an
+  SNTP request, which would otherwise wait `retry_ms` to retry) finds its MAC
+  already there. Falling back to the chip's inline ARP would bring the stall
+  back.
+- **Negative cache.** A next hop that does not answer is retried with
+  exponential backoff (1 s to 32 s). Sends to it cost nothing in between.
+  Receiving a datagram from it shortens the backoff to 1 s.
+- **Refresh and expiry.** An entry in use is re-resolved in the background
+  60 s after its last answer (RFC 1122 §2.3.2.1) and follows a changed MAC.
+  Sends keep using the MAC until 120 s after that answer; between the two, an
+  unanswered refresh is retried with the same backoff, so a peer that misses
+  several requests (a Wi-Fi host in power save) keeps its MAC as long as it
+  answers one. A datagram received from it brings the next retry forward to
+  1 s. An entry nobody sent to since its last answer leaves the table instead
+  of being refreshed.
+
+The cache holds `ROSETTE_WIZNET_ARP_CACHE_ENTRIES` next hops (CMake, default
+8; 0 leaves ARP to the chip) and is emptied whenever `SIPR`/`SUBR`/`GAR`
+change. On the W6x00 the socket-less engine is shared with SLAAC's NS and RS.
+`WiznetDevice` records which user owns it and latches each completion for its
+owner, so neither user ever reads or clears the other's result.
+
 ## Conflict / DAD reaction
 
 Detection is off the driver's existing cadence — no new bus-lock-contending

@@ -24,6 +24,13 @@ else()
   message(FATAL_ERROR "boards/common/rp2_wiznet: no composition for ROSETTE_NET_STACK=${ROSETTE_NET_STACK}")
 endif()
 
+# Next hops the ARP cache holds (ports/net/wiznet/arp_cache.hpp): IPv4 sends
+# then carry their MAC and the chip never ARPs inline. 0 leaves ARP to the chip.
+set(ROSETTE_WIZNET_ARP_CACHE_ENTRIES "8" CACHE STRING
+  "WIZnet ARP cache entries (0: the chip ARPs on each change of destination)")
+target_compile_definitions(rosette_bsp PUBLIC
+  "ROSETTE_WIZNET_ARP_CACHE_ENTRIES=${ROSETTE_WIZNET_ARP_CACHE_ENTRIES}")
+
 # Receive-buffer KiB per hardware socket, one entry per socket; empty keeps the
 # chip's default (see kBoardRxLayoutKib in wiznet_board_types.hpp, which checks
 # it at compile time).

@@ -8,19 +8,22 @@
  * phase `Chip::make_header()` builds), stores register and buffer bytes, and
  * acts on the writes that have side effects on a real part: socket commands
  * (OPEN in UDP or IPRAW6 mode, CLOSE, SEND, SEND6, SEND_MAC, RECV), the interrupt-clear registers,
- * and the socket-less command register of the W6100/W6300. Received-size
+ * and the socket-less command register (ARP on every part; NS and RS on the
+ * W6100/W6300). Received-size
  * reads are computed from what the test delivered, so `WiznetDevice` runs its
  * real receive and send paths, ring arithmetic included, against it.
  *
  * Tests inject datagrams with `deliver()` (the exact octets the chip would
  * store in the socket's RX ring, packet-info header first), inspect datagrams
  * the driver sent in `sent`, and script socket-less outcomes with
- * `socketless_reply`.
+ * `socketless_reply` (NS, RS) and `arp_hosts` (ARP: the hosts that answer,
+ * after `arp_reply_reads` reads of SLIR).
  *
  * Only the behaviour the driver depends on is modelled; the model's buffer
  * layout matches `WiznetDevice::init_socket_mode()` (2 KiB per socket).
  */
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -40,13 +43,15 @@ struct SentDatagram {
     std::vector<uint8_t> dest_ip;    ///< Sn_DIPR (4) at SEND time.
     std::vector<uint8_t> dest_ip6;   ///< Sn_DIP6R (16) at SEND time; empty on parts without IPv6.
     uint16_t dest_port = 0u;
+    std::vector<uint8_t> dest_mac;  ///< Sn_DHAR (6) at SEND time.
     std::vector<uint8_t> payload;
 };
 
-/// @brief One socket-less command the driver issued (W6100/W6300 SLCR).
+/// @brief One socket-less command the driver issued (SLCR).
 struct SocketlessCommand {
     uint8_t command = 0u;
-    std::vector<uint8_t> target;     ///< SLDIP6R at issue time.
+    std::vector<uint8_t>
+        target;  ///< SLDIP4R / SLPIPR (4) for ARP, else SLDIP6R (16), at issue time.
     uint16_t retry_time = 0u;        ///< SLRTR at issue time, 100 us units.
 };
 
@@ -61,8 +66,12 @@ public:
     std::map<address_type, uint8_t> mem;
     std::vector<SentDatagram> sent;
     std::vector<SocketlessCommand> socketless;
-    /// SLIR bits raised by the next socket-less command.
+    /// SLIR bits raised by the next socket-less command other than ARP.
     uint8_t socketless_reply = 0u;
+    /// Hosts that answer an ARP request, by IPv4 address; others time out.
+    std::map<std::array<uint8_t, 4>, std::array<uint8_t, 6>> arp_hosts;
+    /// SLIR reads an ARP request stays in progress before its outcome is raised.
+    unsigned arp_reply_reads = 0u;
 
     FakeWiznetChip() { mem[Chip::common_version()] = Chip::chip_version(); }
 
@@ -79,6 +88,14 @@ public:
     void read(const uint8_t* prefix, std::size_t, uint8_t* data, std::size_t len)
     {
         const address_type base = decode(prefix);
+        if (len == 1u && base == Chip::common_socketless_status() && arp_pending_) {
+            if (arp_reads_left_ == 0u) {
+                finish_arp();
+            } else {
+                --arp_reads_left_;
+            }
+        }
+
         for (uint8_t s = 0; s < Chip::socket_count(); ++s) {
             if (len == 2u && base == Chip::socket_rx_received_size(s)) {
                 const uint16_t n = static_cast<uint16_t>(rx_written_[s] - get_u16(Chip::socket_rx_read_pointer(s)));
@@ -237,19 +254,57 @@ private:
                 return true;
             }
         }
-        if constexpr (Chip::has_hw_ipv6()) {
-            if (a == Chip::common_socketless_status_clear()) {
-                mem[Chip::common_socketless_status()] &= static_cast<uint8_t>(~v);
-                return true;
-            }
-            if (a == Chip::common_socketless_command()) {
-                socketless.push_back({v, bytes(Chip::common_socketless_peer_ip6(), 16u),
-                                      get_u16(Chip::common_socketless_retry_time())});
-                mem[Chip::common_socketless_status()] |= socketless_reply;
-                return true;
-            }
+
+        if (a == Chip::common_socketless_status_clear()) {
+            mem[Chip::common_socketless_status()] &= static_cast<uint8_t>(~v);
+            return true;
         }
+
+        if (a == Chip::common_socketless_command()) {
+            on_socketless_command(v);
+            return true;
+        }
+
         return false;
+    }
+
+    void on_socketless_command(uint8_t command) {
+        const uint16_t retry_time = get_u16(Chip::common_socketless_retry_time());
+        if (command == Chip::socketless_command_arp4()) {
+            socketless.push_back(
+                {command, bytes(Chip::common_socketless_peer_ip4(), 4u), retry_time});
+            arp_pending_ = true;
+            arp_reads_left_ = arp_reply_reads;
+            if (arp_reads_left_ == 0u) {
+                finish_arp();
+            }
+
+            return;
+        }
+
+        if constexpr (Chip::has_hw_ipv6()) {
+            socketless.push_back(
+                {command, bytes(Chip::common_socketless_peer_ip6(), 16u), retry_time});
+            mem[Chip::common_socketless_status()] |= socketless_reply;
+        }
+    }
+
+    // Raises the outstanding ARP request's outcome: the reply bit and the
+    // host's MAC in the peer hardware register, or the timeout bit.
+    void finish_arp() {
+        arp_pending_ = false;
+        const auto ip = bytes(Chip::common_socketless_peer_ip4(), 4u);
+        const auto it = arp_hosts.find({ip[0], ip[1], ip[2], ip[3]});
+        if (it == arp_hosts.end()) {
+            mem[Chip::common_socketless_status()] |= Chip::socketless_status_timeout();
+            return;
+        }
+
+        for (std::size_t i = 0; i < 6u; ++i) {
+            mem[step(Chip::common_socketless_peer_hardware(), i)] = it->second[i];
+        }
+
+        mem[Chip::common_socketless_status()] |= Chip::socketless_status_arp4();
     }
 
     void on_socket_command(uint8_t s, uint8_t command)
@@ -272,6 +327,7 @@ private:
             d.dest_ip = bytes(Chip::socket_dest_ip(s), 4u);
             if constexpr (Chip::has_hw_ipv6()) d.dest_ip6 = bytes(Chip::socket_dest_ip6(s), 16u);
             d.dest_port = get_u16(Chip::socket_dest_port(s));
+            d.dest_mac = bytes(Chip::socket_dest_hardware(s), 6u);
             const uint16_t end = get_u16(Chip::socket_tx_write_pointer(s));
             for (uint16_t p = tx_read_[s]; p != end; ++p) d.payload.push_back(u8(tx_byte_address(s, p)));
             tx_read_[s] = end;
@@ -290,6 +346,8 @@ private:
         return false;
     }
 
+    bool arp_pending_ = false;
+    unsigned arp_reads_left_ = 0u;
     uint16_t rx_written_[Chip::socket_count()] = {};
     uint16_t tx_read_[Chip::socket_count()] = {};
 };

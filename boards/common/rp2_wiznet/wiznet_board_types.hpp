@@ -32,6 +32,9 @@
 
 #include "board_config.h"
 
+#include <cstddef>
+
+#include "ports/net/wiznet/arp_resolver.hpp"
 #include "ports/net/wiznet/device.hpp"
 #include "ports/net/wiznet/link.hpp"
 #include "ports/net/wiznet/socket_provider.hpp"
@@ -79,6 +82,20 @@ inline BoardBus make_board_bus() noexcept
 using BoardDevice = WiznetDevice<BoardChip, BoardBus>;
 using BoardSocketProvider = WiznetSocketProvider<BoardChip, BoardBus>;
 using BoardLink = WiznetLink<BoardChip, BoardBus>;
+using BoardArpResolver = WiznetArpResolver<BoardChip, BoardBus>;
+
+/**
+ * @brief Next hops the board's ARP cache holds (ports/net/wiznet/arp_cache.hpp).
+ *
+ * `ROSETTE_WIZNET_ARP_CACHE_ENTRIES` (CMake cache variable of the same name);
+ * 8 covers a host, an operator console, a gateway, and a handful of participants. 0
+ * attaches no resolver, and the chip ARPs whenever a socket's destination changes.
+ */
+#if defined(ROSETTE_WIZNET_ARP_CACHE_ENTRIES)
+inline constexpr std::size_t kBoardArpCacheEntries = ROSETTE_WIZNET_ARP_CACHE_ENTRIES;
+#else
+inline constexpr std::size_t kBoardArpCacheEntries = 8u;
+#endif
 
 /**
  * @brief The board's receive-buffer KiB per hardware socket (WiznetDevice::set_rx_layout()).

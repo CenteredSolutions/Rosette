@@ -9,6 +9,10 @@
  * by reference. The config decides which providers the managers run and in
  * what order (bind_methods()); the others are constructed but never started.
  *
+ * IPv4 sends go through the board's ARP cache (`BoardArp`, sized by
+ * kBoardArpCacheEntries), so each carries its next hop's MAC and the chip
+ * never ARPs inline; poll() collects the background ARP answers.
+ *
  * IPv6 addressing exists only on parts with hardware IPv6: `BoardIpv6` is an
  * empty struct on the W5100S and a SLAAC provider with its own AddressManager
  * on the W6100 / W6300, chosen at compile time from `Chip::has_hw_ipv6()`.
@@ -82,6 +86,29 @@ struct BoardIpv6<Chip, true> {
     AddressManager* manager() noexcept { return count > 0u ? &v6 : nullptr; }
 };
 
+/// @brief The board's ARP cache and the resolver that routes IPv4 sends through it.
+template <std::size_t Entries>
+struct BoardArp {
+    ArpCacheStorage<Entries> table;
+    BoardArpResolver resolver;
+
+    explicit BoardArp(BoardDevice& device) noexcept : resolver(device, table) {}
+
+    BoardArpResolver* get() noexcept { return &resolver; }
+
+    void poll(uint32_t now_ms) noexcept { resolver.poll(now_ms); }
+};
+
+/// @brief No ARP cache: the chip ARPs on each change of destination.
+template <>
+struct BoardArp<0u> {
+    explicit BoardArp(BoardDevice&) noexcept {}
+
+    BoardArpResolver* get() noexcept { return nullptr; }
+
+    void poll(uint32_t) noexcept {}
+};
+
 /// @brief The manager policy a config asks for.
 AddressManagerPolicy policy_for(const NetworkConfig& config) noexcept {
     AddressManagerPolicy policy{};
@@ -94,6 +121,7 @@ struct BoardNetwork {
     std::array<uint8_t, 6> mac;
     BoardBus bus;
     BoardDevice device;
+    BoardArp<kBoardArpCacheEntries> arp;
     BoardSocketProvider sockets;
     BoardLink link;
     WiznetInterface<BoardChip, BoardBus> iface;
@@ -126,6 +154,7 @@ struct BoardNetwork {
         : mac(board_mac()),
           bus(make_board_bus()),
           device(bus),
+          arp(device),
           sockets(device),
           link(device, mac),
           iface(device),
@@ -142,6 +171,9 @@ struct BoardNetwork {
         // Before the link's bring-up runs init_socket_mode(); kBoardRxLayoutKib
         // is checked at compile time, so this always takes.
         (void)device.set_rx_layout(kBoardRxLayoutKib);
+
+        // Before any provider opens a socket, which fixes the socket's MAC mode.
+        sockets.attach_arp_resolver(arp.get());
     }
 
     /// @brief Fills `v4_providers` in the order the config lists IPv4 methods.
@@ -160,7 +192,8 @@ struct BoardNetwork {
      * Until the chip answers, retries bring_chip_up() every kChipRetryMs;
      * once it does, routes the INT pin and starts the address managers,
      * which from then on follow carrier (NetworkAddress), then gives the
-     * SNTP client its turn. Blocks only while an SNTP exchange is in flight
+     * ARP cache (one SLIR read while a probe is out) and the SNTP client
+     * their turns. Blocks only while an SNTP exchange is in flight
      * (at most `SntpConfig::reply_timeout_ms`, once per poll interval).
      *
      * @param[in] now_ms Monotonic milliseconds.
@@ -186,6 +219,7 @@ struct BoardNetwork {
         }
 
         address.poll(now_ms);
+        arp.poll(now_ms);
         sntp.poll(now_ms, address.snapshot());
     }
 

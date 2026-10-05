@@ -27,6 +27,13 @@
  * pending, so whoever is about to sleep or has just read first clears every
  * flagged socket's RECV interrupt (rearm_rx_interrupts()) and wakes the threads
  * that may have missed an edge; the next datagram then raises a fresh one.
+ *
+ * With an ARP resolver attached (attach_arp_resolver(), `arp_resolver.hpp`),
+ * each IPv4 send carries its destination MAC from the board's ARP cache and
+ * the chip never ARPs inline; a datagram whose next hop is not resolved yet
+ * is dropped, as a lost datagram, and resolved in the background. A
+ * multicast-joined socket on a part that picks the MAC per socket (W6x00)
+ * keeps the chip's own ARP, since its Sn_DHAR holds the group address.
  */
 
 #pragma once
@@ -41,8 +48,9 @@
 #include "rosette/platform/gpio_interrupt.hpp"
 #include "rosette/platform/platform.hpp"
 
-#include "rosette/net/socket.hpp"
+#include "arp_resolver.hpp"
 #include "device.hpp"
+#include "rosette/net/socket.hpp"
 
 namespace rosette::net::wiznet {
 
@@ -58,6 +66,7 @@ public:
     using device_type = WiznetDevice<Chip, Bus>;
     using provider_type = WiznetSocketProvider<Chip, Bus>;
     using socket_type = typename device_type::socket_type;
+    using arp_resolver_type = WiznetArpResolver<Chip, Bus>;
 
     WiznetUdpSocket(device_type& device, provider_type& provider, socket_type socket,
                     SocketDomain domain) noexcept
@@ -136,6 +145,14 @@ public:
         // (Linux sendto() → EINVAL), so pick one in the RFC 6335 dynamic range.
         const uint16_t port = local.port != 0u ? local.port : ephemeral_port();
 
+        // Sends take their MAC from the ARP cache unless the socket is a
+        // multicast member on a part whose Sn_DHAR then holds the group. The
+        // socket keeps the resolver it opened with until close(), so its chip
+        // mode and its sends agree even if the provider's resolver changes.
+        arp_resolver_type* const arp = provider_.arp_resolver();
+        const bool resolves_mac = arp != nullptr && domain_ == SocketDomain::ipv4
+                                  && !(multicast_joined_ && Chip::dest_mac_per_socket());
+
         if (multicast_joined_) {
             if (!device_.open_udp_multicast_socket(socket_,
                                                    port,
@@ -149,11 +166,13 @@ public:
                 last_error_ = SocketError::io;
                 return -1;
             }
-        } else if (!device_.open_udp_socket(socket_, port, domain_ == SocketDomain::ipv6)) {
+        } else if (!device_.open_udp_socket(socket_, port, domain_ == SocketDomain::ipv6,
+                                            resolves_mac)) {
             last_error_ = SocketError::io;
             return -1;
         }
 
+        arp_ = resolves_mac ? arp : nullptr;
         open_ = true;
         last_error_ = SocketError::none;
         return 0;
@@ -229,8 +248,21 @@ public:
         peer.ipv6 = remote.is_ipv6();
         peer.address = remote.address;
         peer.port = remote.port;
+        std::array<uint8_t, 6> mac{};
+        const std::array<uint8_t, 6>* dest_mac = nullptr;
+        if (arp_ != nullptr) {
+            using Route = typename arp_resolver_type::Route;
+            const Route route = arp_->route(peer, mac);
+            if (route == Route::drop) {
+                last_error_ = SocketError::none;
+                return static_cast<std::ptrdiff_t>(length);
+            }
+
+            dest_mac = route == Route::to_mac ? &mac : nullptr;
+        }
+
         const std::ptrdiff_t rc =
-            device_.udp_send_to(socket_, static_cast<const uint8_t*>(data), length, peer);
+            device_.udp_send_to(socket_, static_cast<const uint8_t*>(data), length, peer, dest_mac);
         last_error_ = rc < 0 ? SocketError::io : SocketError::none;
         return rc;
     }
@@ -269,6 +301,10 @@ public:
 
             if (rc != 0) {
                 provider_.rearm_rx_interrupts(&rx_event_);
+                if (rc > 0 && provider_.arp_resolver() != nullptr) {
+                    provider_.arp_resolver()->heard_from(source);
+                }
+
                 if ((rc >= 0) && (remote != nullptr)) {
                     *remote = source.ipv6 ? make_socket_address_v6(source.address, source.port)
                                           : make_socket_address_v4(source.ipv4(), source.port);
@@ -304,6 +340,7 @@ public:
 
         provider_.release(socket_);
         open_ = false;
+        arp_ = nullptr;
         claimed_ = false;
         multicast_joined_ = false;
         multicast_membership_ = {};
@@ -345,6 +382,8 @@ private:
     SocketMulticastMembership multicast_membership_{};
     SocketError last_error_ = SocketError::none;
     bool open_ = false;
+    /// The resolver this socket's sends route through, fixed at bind(); null when the chip ARPs.
+    arp_resolver_type* arp_ = nullptr;
     bool claimed_ = true;
     bool multicast_joined_ = false;
 };
@@ -393,6 +432,29 @@ public:
         }
         return instance;
     }
+
+    /**
+     * @brief Routes every IPv4 socket bound from now on through `resolver`'s ARP cache.
+     *
+     * Attach before the first socket binds: a socket's mode (SEND_MAC per
+     * datagram on the W5100S, Sn_MR2.DHAM_MANUAL on the W6x00) is fixed when
+     * it opens on the chip, and so is the resolver it routes through. A
+     * socket already bound keeps the resolver it bound with until it closes,
+     * so attaching another or detaching affects only sockets bound later.
+     *
+     * @param[in] resolver The board's resolver, outliving the provider and
+     *   every socket it hands out; null detaches.
+     *
+     * Verification:
+     * - Correct means: a socket bound after the call routes its unicast sends
+     *   through `resolver`, carrying the cached MAC and sending nothing on a
+     *   miss; a socket bound before it is unaffected.
+     * - Covered by: TC-NET-WIZ-ARP-010, TC-NET-WIZ-ARP-014, TC-NET-WIZ-ARP-018.
+     */
+    void attach_arp_resolver(WiznetArpResolver<Chip, Bus>* resolver) noexcept { arp_ = resolver; }
+
+    /// @brief The attached ARP resolver, or null.
+    WiznetArpResolver<Chip, Bus>* arp_resolver() const noexcept { return arp_; }
 
     /**
      * @brief Routes the chip's INT pin to every thread waiting on this provider's sockets.
@@ -711,6 +773,7 @@ private:
     static constexpr uint32_t kRxBackstopMs = 20u;
 
     device_type& device_;
+    WiznetArpResolver<Chip, Bus>* arp_ = nullptr;
     /// Guards `claimed_` against concurrent open() / close().
     rosette::platform::Mutex claim_lock_;
     std::array<bool, Chip::socket_count()> claimed_{};
