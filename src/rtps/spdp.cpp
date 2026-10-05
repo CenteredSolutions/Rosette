@@ -425,6 +425,16 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
                           uint32_t          payload_len,
                           uint32_t          now_ms) noexcept
 {
+    // A parked peer's announcement only renews its lease: nothing it could
+    // change is used until the peer is active again, and skipping the decode
+    // keeps a large network's announcements cheap. Its next announcement
+    // after reactivation is decoded in full.
+    PeerEntry* known = find_peer(sender_prefix);
+    if (known != nullptr && known->parked) {
+        known->leaseExpiryMs = now_ms + known->leaseMs;
+        return true;
+    }
+
     SPDPdiscoveredParticipantData parsed{};
     if (!deserialise(payload, payload_len, *subnets_, parsed)) {
         RTPS_LOG_W("spdp", "failed to deserialise participant data (%lu bytes)",
@@ -456,8 +466,11 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
         // in rtps/reader_proxy.hpp), so a peer that re-announces from a new
         // address is reached there from the next send on.
         existing->data = DiscoveredParticipant::from(parsed, *subnets_);
+        existing->leaseMs = lease_ms;
         existing->leaseExpiryMs = now_ms + lease_ms;
 
+        // A pending peer asks for an active slot again with every
+        // announcement, so it is admitted as soon as one can be made.
         if (!existing->sedp_announced &&
             existing->data.metatrafficUnicastLocatorCount > 0u &&
             on_new_peer_) {
@@ -474,15 +487,16 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
     // New participant — insert into peer table.
     PeerEntry* slot = find_free();
     if (!slot) {
-        RTPS_LOG_W("spdp", "peer table full, dropping %02x%02x%02x%02x",
+        RTPS_LOG_W("spdp", "known-peer table full, dropping %02x%02x%02x%02x",
                    parsed.guidPrefix.value[0], parsed.guidPrefix.value[1],
                    parsed.guidPrefix.value[2], parsed.guidPrefix.value[3]);
         return false;   // Table full; drop.
     }
 
+    *slot = PeerEntry{};
     slot->data = DiscoveredParticipant::from(parsed, *subnets_);
     slot->alive          = true;
-    slot->sedp_announced = false;
+    slot->leaseMs = lease_ms;
     slot->leaseExpiryMs  = now_ms + lease_ms;
 
     RTPS_LOG_I("spdp", "new participant %02x%02x%02x%02x%02x%02x"
@@ -504,7 +518,7 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
 
 uint32_t SpdpReader::ms_until_next_expiry(uint32_t now_ms) const noexcept {
     uint32_t next = UINT32_MAX;
-    for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
+    for (uint16_t i = 0; i < RTPS_MAX_KNOWN_PEERS; ++i) {
         if (!peers_[i].alive) continue;
         // Same wrap-safe "already past" test tick() applies.
         const uint32_t left = peers_[i].leaseExpiryMs - now_ms;
@@ -515,7 +529,7 @@ uint32_t SpdpReader::ms_until_next_expiry(uint32_t now_ms) const noexcept {
 }
 
 bool SpdpReader::remove_peer(const GuidPrefix& prefix) noexcept {
-    for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
+    for (uint16_t i = 0; i < RTPS_MAX_KNOWN_PEERS; ++i) {
         if (!peers_[i].alive || peers_[i].data.guidPrefix != prefix) continue;
         RTPS_LOG_I("spdp", "participant disposed: %02x%02x%02x%02x%02x%02x",
                    prefix.value[0], prefix.value[1], prefix.value[2],
@@ -530,7 +544,7 @@ bool SpdpReader::remove_peer(const GuidPrefix& prefix) noexcept {
 }
 
 void SpdpReader::tick(uint32_t now_ms) noexcept {
-    for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
+    for (uint16_t i = 0; i < RTPS_MAX_KNOWN_PEERS; ++i) {
         if (!peers_[i].alive) continue;
 
         // Wrap-safe: if leaseExpiryMs is in the past, the subtraction

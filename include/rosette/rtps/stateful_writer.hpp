@@ -615,6 +615,32 @@ public:
     bool acknowledged_by_all() const noexcept;
 
     /**
+     * @brief True when every matched reader of one remote participant has acknowledged the newest
+     * change.
+     *
+     * The participant asks this of each of its writers before it parks a
+     * peer (RTPSParticipant::park_peer()): once parked, the peer's readers
+     * are unmatched, and a change they had not acknowledged would reach
+     * them only when the peer is reactivated.
+     *
+     * @param[in] prefix GUID prefix of the remote participant.
+     * @return `true` when no matched reader has that prefix, for a
+     *   BEST_EFFORT writer, for an empty history, and when every matched
+     *   reader with that prefix has acknowledged the newest change.
+     *
+     * Verification:
+     * - Correct means: the answer ignores readers of other participants,
+     *   and is false while any reader of `prefix` has an unacknowledged
+     *   change.
+     * - Covered by: TC-PART-8.5.3-012 (a peer with unacknowledged SEDP is
+     *   not parked).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.7.1 (is_acked_by_all), §8.4.7.5 (ReaderProxy)
+     */
+    bool acknowledged_by_participant(const GuidPrefix& prefix) const noexcept;
+
+    /**
      * @brief Milliseconds tick() can be deferred at `now_ms`.
      *
      * The sooner of the next periodic HEARTBEAT (only while some matched

@@ -447,6 +447,28 @@ public:
     void remove_participant(const GuidPrefix& gone_prefix) noexcept;
 
     /**
+     * @brief True when a remote participant has an endpoint in a match that counts.
+     *
+     * The participant keeps a peer active while this is true and may park it
+     * otherwise (RTPSParticipant::peer_is_settled()). A match with
+     * `except_local` does not count: that is the endpoint every participant
+     * on the network matches, such as `ros_discovery_info` for ROS 2, whose
+     * readers are served by reactivating parked peers instead.
+     *
+     * @param[in] prefix       GUID prefix of the remote participant.
+     * @param[in] except_local A local endpoint whose matches are ignored, or
+     *   GUID_UNKNOWN to count every match.
+     * @return `true` when some active match pairs an endpoint of `prefix`
+     *   with a local endpoint other than `except_local`.
+     *
+     * Verification:
+     * - Correct means: only matches naming `prefix` count, and a peer whose
+     *   only match is with `except_local` reports false.
+     * - Covered by: TC-PART-8.5.3-012.
+     */
+    bool has_match_with(const GuidPrefix& prefix, const Guid& except_local) const noexcept;
+
+    /**
      * @brief Counts the known writers or readers on one topic.
      *
      * Answers the graph queries rmw_count_publishers() and

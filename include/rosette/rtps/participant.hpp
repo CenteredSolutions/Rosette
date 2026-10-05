@@ -366,6 +366,28 @@ public:
         graph_change_user_ = user_data;
     }
 
+    /**
+     * @brief Names the local writer that every participant on the network reads.
+     *
+     * A ROS 2 participant's `ros_discovery_info` writer is matched by every
+     * other ROS 2 participant, so a match with it says nothing about whether
+     * a peer needs to stay active. The participant ignores this writer's
+     * matches when it chooses a peer to park, and requires instead that the
+     * peer's readers have acknowledged everything it wrote; peers parked
+     * while it changes are reactivated to receive the change (see
+     * participant_peer_tiers.cpp).
+     *
+     * @param[in] writer_guid The writer's GUID, or GUID_UNKNOWN for none.
+     *
+     * Verification:
+     * - Correct means: a peer whose only match is with this writer is
+     *   parked once settled; a peer matching any other local endpoint is not.
+     * - Covered by: TC-PART-8.5.3-012.
+     */
+    void set_discovery_writer(const Guid& writer_guid) noexcept {
+        discovery_writer_guid_ = writer_guid;
+    }
+
     // ----------------------------------------------------------
     // Accessors
     // ----------------------------------------------------------
@@ -441,6 +463,91 @@ private:
     /// @brief As describe_local_writer(), for a local reader.
     static bool describe_local_reader(void* user, const Guid& guid,
                                       DiscoveredReaderData& out) noexcept;
+
+    // ── Peer tiers (participant_peer_tiers.cpp) ─────────────
+
+    /**
+     * @brief Makes a pending or parked peer active, parking a settled one when the tier is full.
+     *
+     * SPDP calls this for a new peer and again for every announcement of a
+     * pending one; SEDP traffic from a parked or pending peer calls it too
+     * (on_announcer_traffic()). The active tier holds at most RTPS_MAX_PEERS
+     * peers, the capacity of the builtin SEDP endpoints' proxies.
+     *
+     * @param[in,out] peer   The peer's record in the SPDP table.
+     * @param[in]     now_ms rosette::platform::monotonic_ms().
+     * @return `true` when the peer is active on return.
+     *
+     * Verification:
+     * - Correct means: a peer is admitted while fewer than RTPS_MAX_PEERS
+     *   are active, or when a settled peer can be parked for it, and waits
+     *   otherwise; a peer with a match that counts is never parked for it.
+     * - Covered by: TC-PART-8.5.3-011, TC-PART-8.5.3-012,
+     *   tests/ros2/run_rmw_peer_lockout_loopback.sh.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (SPDP), §8.5.4.1 (SEDP builtin endpoints)
+     */
+    bool admit_peer(PeerEntry& peer, uint32_t now_ms) noexcept;
+
+    /// @brief Matches a peer's builtin SEDP endpoints, which replays this
+    /// participant's announcements to it and requests all of its own.
+    void activate_peer(PeerEntry& peer, uint32_t now_ms) noexcept;
+
+    /**
+     * @brief True when an active peer can be parked without either side missing anything.
+     *
+     * Settled means: no SEDP DATA from the peer for RTPS_PEER_SETTLE_MS;
+     * every announcement it sent has been received; its readers have
+     * acknowledged everything this participant's SEDP and user writers
+     * wrote; and none of its endpoints is in a match other than with the
+     * discovery writer (set_discovery_writer()).
+     *
+     * @param[in] peer   An active peer's record.
+     * @param[in] now_ms rosette::platform::monotonic_ms().
+     * @return `true` when park_peer() may be applied to it.
+     */
+    bool peer_is_settled(const PeerEntry& peer, uint32_t now_ms) noexcept;
+
+    /**
+     * @brief Moves a settled peer from the active tier to the parked one.
+     *
+     * The highest sequence number received from each of its SEDP announcers
+     * is kept in its record, then its builtin SEDP proxies and its remote
+     * endpoints are removed, which also unmatches its readers of the
+     * discovery writer. The peer itself notices nothing: this participant
+     * keeps announcing itself, and the peer already holds all of it.
+     *
+     * @param[in,out] peer A settled peer (peer_is_settled()).
+     */
+    void park_peer(PeerEntry& peer) noexcept;
+
+    /// @brief Parks the active peer that has been settled longest; `false` when none is settled.
+    bool park_settled_peer(uint32_t now_ms) noexcept;
+
+    /**
+     * @brief Notes a DATA or HEARTBEAT from a peer's SEDP announcer before it is routed.
+     *
+     * DATA from an active peer restarts its settle time. A parked peer
+     * whose announcer sends a sequence number above the one kept when it
+     * was parked has a new or withdrawn endpoint, and a pending peer is
+     * still waiting for a slot: both are admitted, when a slot can be made,
+     * before the submessage is routed, so the new proxy processes it.
+     *
+     * @param[in] prefix    GUID prefix of the sending participant.
+     * @param[in] writer_id The SEDP announcer that sent it.
+     * @param[in] sn        DATA writerSN, or HEARTBEAT lastSN.
+     * @param[in] is_data   `true` for DATA.
+     * @param[in] now_ms    rosette::platform::monotonic_ms().
+     */
+    void on_announcer_traffic(const GuidPrefix& prefix, const EntityId& writer_id,
+                              const SequenceNumber& sn, bool is_data, uint32_t now_ms) noexcept;
+
+    /// @brief Marks every parked peer owed this participant's changed announcements.
+    void owe_parked_peers() noexcept;
+
+    /// @brief Reactivates one owed parked peer when a slot is free or can be made.
+    void serve_owed_peer(uint32_t now_ms) noexcept;
 
     /// @brief Tells the graph observer, if any, that the graph changed.
     void notify_graph_change() noexcept {
@@ -597,6 +704,8 @@ private:
     LocalSubnets local_subnets_;
 
     EndpointMatchTable match_table_;
+    /// Local writer every participant reads; its matches keep no peer active.
+    Guid discovery_writer_guid_ = GUID_UNKNOWN;
     SpdpWriter         spdp_writer_;
     SpdpReader         spdp_reader_;
     SedpWriter         sedp_writer_;

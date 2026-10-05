@@ -76,6 +76,7 @@ void append_stateful_reader_tests_8_4_12_nack_frag_on_heartbeat(std::vector<Test
 void register_all_stateful_reader_tests(std::vector<TestCase>& tests);
 
 void append_participant_tests_8_5_1(std::vector<TestCase>& tests);
+void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests);
 
 void register_all_participant_tests(std::vector<TestCase>& tests);
 

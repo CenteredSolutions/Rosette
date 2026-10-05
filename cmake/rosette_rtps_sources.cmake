@@ -24,6 +24,7 @@ set(ROSETTE_RTPS_PROTOCOL_SOURCES
   ${ROSETTE_ROOT}/src/rtps/buf_pool.cpp
   ${ROSETTE_ROOT}/src/rtps/message_parser.cpp
   ${ROSETTE_ROOT}/src/rtps/participant.cpp
+  ${ROSETTE_ROOT}/src/rtps/participant_peer_tiers.cpp
   ${ROSETTE_ROOT}/src/rtps/reader_proxy.cpp
   ${ROSETTE_ROOT}/src/rtps/sedp.cpp
   ${ROSETTE_ROOT}/src/rtps/endpoint_match_table.cpp

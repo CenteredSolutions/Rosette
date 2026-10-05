@@ -122,6 +122,23 @@
       "statement": "When a discovered participant re-announces SPDP with new default or metatraffic unicast locators, user DATA, ACKNACKs and SEDP traffic to it use the new locators without a rematch.",
       "status": "implemented",
       "test_ids": ["TC-PART-8.5.3-001"]
+    },
+    {
+      "id": "REQ-PART-8.5.3.2-KNOWN-AND-ACTIVE-PEERS",
+      "section": "8.5.3.2",
+      "page": 160,
+      "normativity": "implementation-behavior",
+      "statement": "Every announced participant is recorded, up to RTPS_MAX_KNOWN_PEERS; SEDP is exchanged with at most RTPS_MAX_PEERS of them. A peer finding that active tier full is admitted once a settled peer is parked for it, a parked peer's SPDP renews its lease, and a parked peer announcing a newer SEDP change is reactivated and its announcement processed.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.3-011"]
+    },
+    {
+      "id": "REQ-PART-8.5.4.1-PARK-ONLY-SETTLED-PEERS",
+      "section": "8.5.4.1",
+      "normativity": "implementation-behavior",
+      "statement": "A peer is parked only when settled: its SEDP is fully received and acknowledged, no SEDP DATA from it within RTPS_PEER_SETTLE_MS, and none of its endpoints in a match except with the discovery writer; parking removes its builtin SEDP proxies and its remote endpoints.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.3-012"]
     }
   ]
 }

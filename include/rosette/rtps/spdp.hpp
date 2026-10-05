@@ -181,7 +181,7 @@ inline bool plcdr_write_sentinel(Octet* buf, uint32_t cap, uint32_t& off) noexce
 // with it (RTPSParticipant::on_spdp_new_peer()).
 // On a network of dozens of participants, the table is one of the largest
 // discovery structures a microcontroller holds, so every octet here is
-// multiplied by RTPS_MAX_PEERS.
+// multiplied by RTPS_MAX_KNOWN_PEERS.
 // ============================================================
 
 /// Locators kept per list of a discovered participant. Sending uses the
@@ -230,12 +230,60 @@ struct DiscoveredParticipant {
                                       const LocalSubnets& subnets) noexcept;
 };
 
+// ============================================================
+// Known and active peers
+//
+// The peer table has a record for every participant on the network
+// (RTPS_MAX_KNOWN_PEERS), and at most RTPS_MAX_PEERS of them are active:
+// their SEDP announcers and detectors are matched with the builtin SEDP
+// endpoints, whose proxies are what a peer really costs. A known peer is in
+// one of three states:
+//
+//   pending  known from SPDP, waiting for an active slot;
+//   active   SEDP is exchanged with it (sedp_announced);
+//   parked   it was active, has everything this participant announced and
+//            this participant has everything it announced, and it shares
+//            no match that counts; its slot went to another peer.
+//
+// The participant decides who is active (participant_peer_tiers.cpp); the
+// reader only keeps the records. A record never moves while its peer is
+// known, since active proxies refer to its locator lists.
+// ============================================================
+
+/// Records of known participants, active or not; size it for the network.
+#ifndef RTPS_MAX_KNOWN_PEERS
+#define RTPS_MAX_KNOWN_PEERS RTPS_MAX_PEERS
+#endif
+
+/// How long an active peer must go without sending SEDP DATA before it can
+/// be parked: long enough for the exchange that follows its activation, and
+/// for a peer creating its endpoints one after another, to finish.
+#ifndef RTPS_PEER_SETTLE_MS
+#define RTPS_PEER_SETTLE_MS 2000u
+#endif
+
+static_assert(RTPS_MAX_KNOWN_PEERS >= RTPS_MAX_PEERS && RTPS_MAX_KNOWN_PEERS < 256,
+              "RTPS_MAX_KNOWN_PEERS must hold every active peer and fit a one-octet index");
+
 /// A slot of SpdpReader's peer table.
 struct PeerEntry {
     DiscoveredParticipant data;                 ///< What discovery keeps of the peer.
     uint32_t              leaseExpiryMs  = 0;   ///< rosette::platform::monotonic_ms() at expiry.
+    uint32_t leaseMs = 0;                       ///< Lease duration the peer announced.
+    /// monotonic_ms() of the peer's activation or of the latest SEDP DATA
+    /// from it; a peer is parked only once this is RTPS_PEER_SETTLE_MS old.
+    uint32_t lastSedpMs = 0;
+    /// Low 32 bits of the highest sequence number received from the peer's
+    /// publications and subscriptions announcers when it was parked; an
+    /// announcement above either reactivates it.
+    uint32_t parkedPublicationsSn = 0;
+    uint32_t parkedSubscriptionsSn = 0;
     bool                  alive          = false;
-    bool                  sedp_announced = false; ///< SEDP sent for this peer.
+    bool sedp_announced = false;  ///< Active: SEDP is exchanged with the peer.
+    bool parked = false;          ///< Parked: see "Known and active peers".
+    /// Parked while this participant's announcements changed: the peer is
+    /// reactivated, when a slot allows, to receive them.
+    bool owed = false;
 };
 
 // ============================================================
@@ -461,9 +509,11 @@ public:
     //  — §8.5.3.3, p. 162.
     //
     // If the GuidPrefix is new: insert into peer table, fire on_new_peer.
-    // If already present: refresh peer data + leaseExpiryMs.
-    // If already present and SEDP has not been announced yet, on_new_peer
-    // may be fired when metatraffic locator information appears later.
+    // If already present and parked: renew leaseExpiryMs only, without
+    // decoding the payload.
+    // If already present otherwise: refresh peer data + leaseExpiryMs, and
+    // fire on_new_peer again while the peer is pending (not yet active), so
+    // the participant can admit it once an active slot can be made.
     //
     // @param sender_prefix  GUID prefix from the RTPS message header.
     // @param payload        Pointer to the PL_CDR serialized payload.
@@ -534,47 +584,69 @@ public:
     }
 
     // ----------------------------------------------------------
-    // Iterate over live peers.
-    // fn : void(const PeerEntry&)
+    // Iterate over live peers, active or not.
+    // fn : void(const PeerEntry&) or void(PeerEntry&)
     // ----------------------------------------------------------
     template<typename Fn>
     void for_each_peer(Fn&& fn) const noexcept {
-        for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
-            if (peers_[i].alive) fn(peers_[i]);
+        for (uint16_t i = 0; i < RTPS_MAX_KNOWN_PEERS; ++i) {
+            if (peers_[i].alive) {
+                fn(peers_[i]);
+            }
         }
     }
 
+    template <typename Fn>
+    void for_each_peer(Fn&& fn) noexcept {
+        for (uint16_t i = 0; i < RTPS_MAX_KNOWN_PEERS; ++i) {
+            if (peers_[i].alive) {
+                fn(peers_[i]);
+            }
+        }
+    }
+
+    /// @brief Live peers, active or not.
     uint8_t peer_count() const noexcept {
         uint8_t n = 0;
-        for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
-            if (peers_[i].alive) ++n;
-        }
+        for_each_peer([&n](const PeerEntry&) noexcept { ++n; });
         return n;
+    }
+
+    /// @brief Peers SEDP is exchanged with; at most RTPS_MAX_PEERS.
+    uint8_t active_count() const noexcept {
+        uint8_t n = 0;
+        for_each_peer([&n](const PeerEntry& p) noexcept { n += p.sedp_announced ? 1u : 0u; });
+        return n;
+    }
+
+    /// @brief The live record of `prefix`, or null.
+    PeerEntry* find_peer(const GuidPrefix& prefix) noexcept {
+        for (uint16_t i = 0; i < RTPS_MAX_KNOWN_PEERS; ++i) {
+            if (peers_[i].alive && peers_[i].data.guidPrefix == prefix) {
+                return &peers_[i];
+            }
+        }
+
+        return nullptr;
     }
 
 private:
     /// Ranks against no addresses until set_local_subnets() is called.
     static const LocalSubnets kNoSubnets;
 
-    PeerEntry  peers_[RTPS_MAX_PEERS] = {};
+    PeerEntry peers_[RTPS_MAX_KNOWN_PEERS] = {};
     const LocalSubnets* subnets_ = &kNoSubnets;
     OnNewPeer  on_new_peer_;
     OnPeerRemoved on_peer_removed_;
     void*      user_data_;
 
-    PeerEntry* find_peer(const GuidPrefix& prefix) noexcept {
-        for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
-            if (peers_[i].alive &&
-                peers_[i].data.guidPrefix == prefix)
-                return &peers_[i];
-        }
-        return nullptr;
-    }
-
     PeerEntry* find_free() noexcept {
-        for (uint8_t i = 0; i < RTPS_MAX_PEERS; ++i) {
-            if (!peers_[i].alive) return &peers_[i];
+        for (uint16_t i = 0; i < RTPS_MAX_KNOWN_PEERS; ++i) {
+            if (!peers_[i].alive) {
+                return &peers_[i];
+            }
         }
+
         return nullptr;
     }
 

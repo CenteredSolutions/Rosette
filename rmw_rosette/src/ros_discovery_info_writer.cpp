@@ -23,6 +23,10 @@ bool RosDiscoveryInfoWriter::create(rtps::RTPSParticipant& participant) noexcept
     }
 
     participant_ = &participant;
+    // Every ROS 2 participant reads this writer, so its matches keep no peer
+    // in the participant's active tier; parked peers are reactivated when
+    // it changes instead.
+    participant.set_discovery_writer(writer_->guid());
     writer_->set_rematch_listener(&RosDiscoveryInfoWriter::on_reader_rematched, this);
     return true;
 }

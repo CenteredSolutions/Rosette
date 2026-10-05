@@ -552,6 +552,22 @@ void EndpointMatchTable::remove_reader(const Guid& reader_guid) noexcept
     if (forgotten) changed();
 }
 
+bool EndpointMatchTable::has_match_with(const GuidPrefix& prefix,
+                                        const Guid& except_local) const noexcept {
+    for (const MatchRecord& m : matches_) {
+        if (!m.active()) {
+            continue;
+        }
+
+        const bool counts = m.writer_guid != except_local && m.reader_guid != except_local;
+        if (counts && (m.writer_guid.prefix == prefix || m.reader_guid.prefix == prefix)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void EndpointMatchTable::remove_participant(const GuidPrefix& gone_prefix) noexcept
 {
     // Copy each GUID: removal clears the record it lives in.

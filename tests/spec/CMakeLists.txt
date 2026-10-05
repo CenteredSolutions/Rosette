@@ -327,6 +327,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     src/test_participant_platform_stub.cpp
     src/test_participant_8_5_1.cpp
     ../../src/rtps/participant.cpp
+    ../../src/rtps/participant_peer_tiers.cpp
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/sn_window.cpp
     ../../src/rtps/history_cache.cpp
@@ -372,6 +373,31 @@ target_compile_definitions(participant_spec_tests_rebuild PRIVATE
 add_test(
     NAME participant_spec_conformance_rebuild
     COMMAND participant_spec_tests_rebuild
+)
+
+# The peer-tier tests need an active tier smaller than the network: two
+# active slots among six known peers, and a short settle time.
+set(PARTICIPANT_TIER_SPEC_TEST_SOURCES ${PARTICIPANT_SPEC_TEST_SOURCES})
+list(REMOVE_ITEM PARTICIPANT_TIER_SPEC_TEST_SOURCES
+    src/spec_participant_test_registry.cpp
+    src/test_participant_8_5_1.cpp)
+list(APPEND PARTICIPANT_TIER_SPEC_TEST_SOURCES
+    src/spec_participant_tier_test_registry.cpp
+    src/test_participant_8_5_3_peer_tiers.cpp)
+add_executable(participant_tier_spec_tests ${PARTICIPANT_TIER_SPEC_TEST_SOURCES})
+target_include_directories(participant_tier_spec_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+)
+target_compile_definitions(participant_tier_spec_tests PRIVATE
+    RTPS_LOG_LEVEL=0
+    RTPS_MAX_PEERS=2
+    RTPS_MAX_KNOWN_PEERS=6
+    RTPS_PEER_SETTLE_MS=100u
+)
+add_test(
+    NAME participant_tier_spec_conformance
+    COMMAND participant_tier_spec_tests
 )
 
 find_package(Python3 COMPONENTS Interpreter)
@@ -737,7 +763,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
 endif()
 
 # Every spec and fuzz target runs on the platform port.
-foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
+foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_tier_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
     if(TARGET ${_t})
         rosette_spec_use_platform(${_t})
     endif()

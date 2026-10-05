@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # Runs rmw_peer_lockout_probe.py on one host: a board on the RMW under test,
-# built with room for ROSETTE_FILLERS remote participants, then that many
-# stock filler participants that share nothing with it, then one late stock
-# participant that calls the board's service. Passes only when the late
-# participant reaches the board's service: a board whose participant table
-# is full of peers it matches nothing with must still serve a peer it does.
+# built with two active peer slots, then ROSETTE_FILLERS stock filler
+# participants that share nothing with it, then one late stock participant
+# that calls the board's service. Passes only when the late participant
+# reaches the board's service: a board whose active tier is full of peers it
+# matches nothing with must still serve a peer it does.
 #
 # Prerequisite: a sourced ROS 2 environment plus a colcon overlay whose
-# rmw_rosette has room for exactly ROSETTE_FILLERS remote participants:
+# rmw_rosette has two active slots and room to know every participant:
 #
 #   colcon build --packages-select rmw_rosette \
-#     --cmake-args -DRMW_ROSETTE_MAX_REMOTE_PARTICIPANTS=2
+#     --cmake-args -DRMW_ROSETTE_MAX_REMOTE_PARTICIPANTS=2 \
+#     -DRMW_ROSETTE_MAX_KNOWN_PARTICIPANTS=8
 #
 # With ROSETTE_FILLERS=0 the same run is the control: the late participant
 # then has a free slot, so a failure there is not about the table.

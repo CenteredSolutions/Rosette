@@ -38,6 +38,8 @@ set(RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE 2 CACHE STRING
     "Publishers each node creates itself (/rosout, /parameter_events)")
 set(RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS 32 CACHE STRING
     "Remote DDS participants tracked at once (every ROS 2 process is one)")
+set(RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS ${RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS} CACHE STRING
+    "Remote DDS participants known at once, active or parked; size it for the whole network. Only RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS of them exchange endpoint discovery at a time")
 set(RMW_ROSETTE_MAX_MATCHED_ENDPOINTS 16 CACHE STRING
     "Remote readers per local writer and remote writers per local reader")
 set(RMW_ROSETTE_MAX_REMOTE_ENDPOINTS 128 CACHE STRING
@@ -201,6 +203,7 @@ function(rmw_rosette_apply_capacity target)
     RTPS_MAX_USER_READERS=${_rr_rtps_readers}
     RTPS_MAX_LOCAL_ENDPOINTS=${_rr_local_endpoints}
     RTPS_MAX_PEERS=${RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS}
+    RTPS_MAX_KNOWN_PEERS=${RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS}
     RTPS_MAX_MATCHED_READERS=${RMW_ROSETTE_MAX_MATCHED_ENDPOINTS}
     RTPS_MAX_MATCHED_WRITERS=${RMW_ROSETTE_MAX_MATCHED_ENDPOINTS}
     RTPS_MAX_DISCOVERED_WRITERS=${_rr_known_writers}

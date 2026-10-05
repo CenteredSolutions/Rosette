@@ -121,9 +121,11 @@ public:
      *
      * Verification:
      * - Correct means: one proxy per matched writer; a RELIABLE reader sends
-     *   exactly one non-final, empty ACKNACK with count 1 on a new match, in
-     *   the form the writer's vendor recognizes; a BEST_EFFORT reader and a
-     *   rejected duplicate send none.
+     *   exactly one non-final, empty ACKNACK on a new match, in the form the
+     *   writer's vendor recognizes, with a count above every ACKNACK this
+     *   reader sent before (1 on its first match), so a writer that
+     *   remembers this reader from an earlier match accepts it; a
+     *   BEST_EFFORT reader and a rejected duplicate send none.
      * - Covered by: TC-SRR-8.4.7.4-001, TC-SRR-8.4.7.4-002,
      *   TC-SRR-8.4.7.4-003, TC-SRR-8.4.7.4-004, TC-SRR-8.4.10-004.
      *
@@ -513,6 +515,13 @@ private:
 
     uint32_t       hb_response_ms_;
     MessageBuilder builder_;
+
+    /// Highest ACKNACK count of any proxy this reader has removed. A writer
+    /// keeps its record of a reader across the reader's unmatch and rematch
+    /// (a participant that parks and reactivates a peer does exactly that)
+    /// and ignores an ACKNACK whose count is not above the last it processed
+    /// (§8.3.7.1), so a new proxy counts on from here.
+    int32_t acknack_count_floor_ = 0;
 };
 
 /**

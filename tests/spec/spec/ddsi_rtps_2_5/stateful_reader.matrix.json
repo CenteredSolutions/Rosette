@@ -117,6 +117,14 @@
       "statement": "A StatefulReader sends ACKNACKs to a matched writer at its unicastLocatorList; the WriterProxy refers to the owning record's entry and follows it when it changes.",
       "status": "implemented",
       "test_ids": ["TC-SRR-8.4.10-004"]
+    },
+    {
+      "id": "REQ-SRR-8.3.7.1-ACKNACK-COUNT-ACROSS-REMATCH",
+      "section": "8.3.7.1",
+      "normativity": "shall",
+      "statement": "A reader's ACKNACK count to a writer keeps increasing across an unmatch and rematch of that writer, since the writer ignores an ACKNACK whose count is not above the last it processed.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.7.4-005"]
     }
   ]
 }

@@ -269,6 +269,7 @@ StatefulReader* RTPSParticipant::create_reader(
     // rebuilding SedpWriter reads it back from there for every send.
     match_table_.add_reader(rd);
     sedp_writer_.register_reader(rd);
+    owe_parked_peers();
 
     RTPS_LOG_I("participant", "reader created: slot=%d topic=%s type=%s",
                slot, cfg.topicName.str, cfg.typeName.str);
@@ -286,6 +287,7 @@ bool RTPSParticipant::delete_writer(StatefulWriter* writer) noexcept
         if (!writer_alive_[i] || writers_[i] != writer) continue;
         const Guid guid = writer->guid();
         sedp_writer_.unregister_writer(guid);
+        owe_parked_peers();
         match_table_.remove_writer(guid);
         writer->~StatefulWriter();
         writers_[i] = nullptr;
@@ -303,6 +305,7 @@ bool RTPSParticipant::delete_reader(StatefulReader* reader) noexcept
         if (!reader_alive_[i] || user_reader(i) != reader) continue;
         const Guid guid = reader->guid();
         sedp_writer_.unregister_reader(guid);
+        owe_parked_peers();
         match_table_.remove_reader(guid);
         user_reader(i)->~DefaultStatefulReader();
         reader_alive_[i] = false;
@@ -333,6 +336,7 @@ void RTPSParticipant::register_writer_endpoint(const Guid&         writer_guid,
     // rebuilding SedpWriter reads it back from there for every send.
     match_table_.add_writer(wd);
     sedp_writer_.register_writer(wd);
+    owe_parked_peers();
 }
 
 // ============================================================
@@ -394,6 +398,7 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
 
     spdp_writer_.tick(now_ms);
     spdp_reader_.tick(now_ms);
+    serve_owed_peer(now_ms);
     sedp_writer_.tick(now_ms);
     sedp_reader_.tick(now_ms);
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
@@ -411,6 +416,15 @@ uint32_t RTPSParticipant::ms_until_next_timer(uint32_t now_ms) const noexcept {
         if (candidate < next) next = candidate;
     };
     consider(spdp_reader_.ms_until_next_expiry(now_ms));
+    // An owed parked peer waits for a peer to settle; look again a few
+    // times per settle period.
+    bool owed = false;
+    spdp_reader_.for_each_peer(
+        [&owed](const PeerEntry& peer) noexcept { owed = owed || peer.owed; });
+    if (owed) {
+        consider(RTPS_PEER_SETTLE_MS / 4u);
+    }
+
     consider(sedp_writer_.ms_until_next_timer(now_ms));
     consider(sedp_reader_.ms_until_next_timer(now_ms));
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
@@ -509,27 +523,14 @@ bool RTPSParticipant::has_addresses() const noexcept
 void RTPSParticipant::on_spdp_new_peer(const PeerEntry& peer,
                                        void*            self) noexcept
 {
+    // SPDP reports a new peer, and every announcement of one still
+    // pending; it is activated when the active tier has room or a settled
+    // peer can be parked for it (participant_peer_tiers.cpp).
     auto* p = static_cast<RTPSParticipant*>(self);
-    RTPS_LOG_I("participant", "SPDP new peer %02x%02x%02x%02x%02x%02x",
-               peer.data.guidPrefix.value[0], peer.data.guidPrefix.value[1],
-               peer.data.guidPrefix.value[2], peer.data.guidPrefix.value[3],
-               peer.data.guidPrefix.value[4], peer.data.guidPrefix.value[5]);
-    p->notify_graph_change();
-    if (peer.data.metatrafficUnicastLocatorCount == 0) {
-        RTPS_LOG_W("participant", "new peer has no metatraffic locator, skipping SEDP");
-        return;
+    PeerEntry* known = p->spdp_reader_.find_peer(peer.data.guidPrefix);
+    if (known != nullptr) {
+        (void)p->admit_peer(*known, rosette::platform::monotonic_ms());
     }
-    // §8.5.3.2: direct SPDP to the new peer first, so it knows this
-    // participant (and has matched its builtin SEDP writers) before any
-    // SEDP DATA arrives; a peer drops DATA from writers it has not matched.
-    const Locator& dest = peer.data.metatrafficUnicastLocatorList[0];
-    p->spdp_writer_.announce_unicast(dest);
-    // Matching the peer's builtin SEDP readers replays every live endpoint
-    // announcement to it (TRANSIENT_LOCAL, §8.5.4.1); matching its SEDP
-    // writers lets the local builtin readers receive and repair its own.
-    p->sedp_writer_.on_peer_discovered(peer.data);
-    p->sedp_reader_.on_peer_discovered(peer.data);
-    p->spdp_reader_.mark_sedp_announced(peer.data.guidPrefix);
 }
 
 void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
@@ -717,6 +718,12 @@ void RTPSParticipant::for_each_addressed_reader(const EntityId& writer_id,
 // ParseOps trampolines
 // ============================================================
 
+/// True for the writerId of a remote participant's SEDP announcer (§8.5.4.3).
+static bool is_sedp_announcer(const EntityId& writer_id) noexcept {
+    return writer_id == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER
+           || writer_id == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER;
+}
+
 void RTPSParticipant::dispatch_data(const ParseContext& ctx,
                                     const ParsedData&   msg) noexcept
 {
@@ -740,6 +747,11 @@ void RTPSParticipant::dispatch_data(const ParseContext& ctx,
                                 msg.serializedPayloadSize, now_ms);
         return;
     }
+
+    if (is_sedp_announcer(msg.writerId)) {
+        p->on_announcer_traffic(ctx.senderGuidPrefix, msg.writerId, msg.writerSN, true, now_ms);
+    }
+
     p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
         r.on_data(ctx, msg);
     });
@@ -763,6 +775,11 @@ void RTPSParticipant::dispatch_heartbeat(const ParseContext&    ctx,
                ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3],
                msg.firstSN.high, (unsigned long)msg.firstSN.low,
                msg.lastSN.high,  (unsigned long)msg.lastSN.low);
+    if (is_sedp_announcer(msg.writerId)) {
+        p->on_announcer_traffic(ctx.senderGuidPrefix, msg.writerId, msg.lastSN, false,
+                                rosette::platform::monotonic_ms());
+    }
+
     p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
         r.on_heartbeat(ctx, msg);
     });

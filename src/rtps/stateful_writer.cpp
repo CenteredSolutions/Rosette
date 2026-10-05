@@ -495,6 +495,27 @@ bool StatefulWriter::acknowledged_by_all() const noexcept {
     return all_readers_acked(lsn);
 }
 
+bool StatefulWriter::acknowledged_by_participant(const GuidPrefix& prefix) const noexcept {
+    if (reliability_ != ReliabilityKind::RELIABLE) {
+        return true;
+    }
+
+    const SequenceNumber lsn = writer_cache_.get_seq_num_max();
+    if (lsn == SEQUENCENUMBER_UNKNOWN) {
+        return true;
+    }
+
+    for (uint8_t i = 0; i < max_readers_; ++i) {
+        const ReaderProxy& proxy = proxies_[i];
+        if (proxy.is_matched() && proxy.remoteReaderGuid.prefix == prefix
+            && proxy.highestAckedSN < lsn) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 uint32_t StatefulWriter::ms_until_next_timer(uint32_t now_ms) const noexcept {
     uint32_t next = UINT32_MAX;
     bool any_announcing = false;

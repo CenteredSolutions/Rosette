@@ -253,7 +253,8 @@ relationships, so an inconsistent set fails to compile.
 | `RMW_ROSETTE_MAX_NODES` | 1 | node pool; multiplies the per-node entities below | |
 | `RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE` | 0 | 6 for `rclc_parameter_server`, 0 without | 6 services per node (≈ 37 KB) |
 | `RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE` | 0 | `/rosout`, `/parameter_events` | 0 when rcl logging is off, as in the firmware C stack |
-| `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` | 8 | peer table, remote origins, SEDP proxies per peer | ≈ 430 B (`PeerEntry`, one origin, SEDP reader and writer proxies) |
+| `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` | 8 | active peers: SEDP reader and writer proxies, remote origins | ≈ 300 B |
+| `RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` | 96 | known-peer records, active or parked (`PeerEntry`) | 144 B |
 | `RMW_ROSETTE_MAX_REMOTE_ENDPOINTS` | 64 | remote writer and reader records | 32 B (16 B in each table) |
 | `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS` | 8 | readers per writer, writers per reader, match records, reassembly slots | 80 B per writer slot + 192 B per reader slot + 32 B per local endpoint |
 | `RMW_ROSETTE_MAX_PENDING_CHANGES` | 10 | `ChangeRing` depth ceiling per subscription, service, and client | 72 B per entry per entity, plus the blocks unread entries pin |
@@ -365,9 +366,14 @@ The participant now has two writer slots (the publisher and
    node, plus what the client library adds (parameter services if you start
    `rclc_parameter_server`; `/rosout` if rcl logging is on). Set the
    `RMW_ROSETTE_MAX_*` limits to exactly those counts.
-2. **Count the network.** `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` must cover
-   every ROS 2 process on the domain that the firmware talks to (each process
-   is one participant; a peer beyond the table is ignored).
+2. **Count the network.** `RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` must cover
+   every ROS 2 process on the domain (each process is one participant; a peer
+   beyond it is ignored). `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` is how many of
+   them exchange endpoint discovery at once: the peers the firmware has a
+   match with, plus a few slots through which the rest of the network rotates
+   (a settled peer with no match is parked to make room; see
+   `src/rtps/participant_peer_tiers.cpp`). More rotating slots let a large
+   network find the firmware's matches sooner after power-up.
    `RMW_ROSETTE_MAX_REMOTE_ENDPOINTS` needs to cover only the remote endpoints
    your endpoints match, thanks to displacement; more lets
    `rmw_count_publishers()` see more of the graph.
