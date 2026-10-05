@@ -86,6 +86,15 @@
       "test_ids": ["TC-SEDP-8.5.4-006", "TC-SEDP-8.5.4-009", "TC-SEDP-8.5.4-011", "TC-SEDP-8.5.4-013"]
     },
     {
+      "id": "REQ-SEDP-8.5.4.1-UNICAST-BUILTIN-MATCH",
+      "section": "8.5.4.1",
+      "page": 165,
+      "normativity": "implementation-behavior",
+      "statement": "The SEDP builtin writers and readers are matched with a discovered participant at its metatraffic unicast locators; a participant that announces none is not matched in either direction.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.4-018"]
+    },
+    {
       "id": "REQ-SEDP-8.5.5.1-TOPIC-TYPE",
       "section": "8.5.5.1",
       "page": 169,

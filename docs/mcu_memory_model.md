@@ -125,7 +125,7 @@ Measured `sizeof` on the RP2350 at the firmware defaults
 | `StatefulWriterStorage<1, 8>` / `<4, 8>` / `<8, 8>` | 1,320 / 1,616 / 2,016 B | depth × 100 + readers × 128 + ~200 |
 | Writer slot | 2,016 B | `RTPS_PARTICIPANT_MAX_WRITER_BYTES` |
 | Reader slot (`BoundedStatefulReader<8>`) | 1,984 B | 8 × `WriterProxy` + an 8-slot `FragmentAssembler` (1,024 B) |
-| `PeerEntry` (one remote participant) | 172 B | `RTPS_MAX_PEERS` |
+| `PeerEntry` (one remote participant) | 128 B | `RTPS_MAX_PEERS` |
 | Remote origin (GUID prefix + locators) | 64 B | `RTPS_MAX_REMOTE_ORIGINS` (= peers) |
 | Remote endpoint record | 16 B | `RTPS_MAX_DISCOVERED_WRITERS` / `_READERS` |
 | Local endpoint record (two 128-octet names + QoS) | 296 B | local endpoints |

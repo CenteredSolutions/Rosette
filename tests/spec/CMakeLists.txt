@@ -166,6 +166,7 @@ set(SEDP_SPEC_TEST_SOURCES
     src/spec_sedp_test_registry.cpp
     src/test_stateful_writer_clock_stub.cpp
     src/test_sedp_8_5_4_behavior.cpp
+    src/test_sedp_8_5_4_peer_locators.cpp
     src/test_sedp_8_5_4_rebuild.cpp
     src/test_sedp_8_5_4_repairs.cpp
     src/test_sedp_8_5_5_1_matching.cpp

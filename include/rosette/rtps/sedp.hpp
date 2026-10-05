@@ -282,7 +282,10 @@ public:
                           const Locator&    dest) noexcept;
 
     // Match the peer's builtin SEDP readers from its SPDP data (using all
-    // of its metatraffic unicast locators), which replays the history.
+    // of its metatraffic unicast locators), which replays the history. A
+    // peer with no metatraffic unicast locator is not matched (§8.5.4.1).
+    //
+    // Verification: TC-SEDP-8.5.4-018.
     void on_peer_discovered(const DiscoveredParticipant& peer) noexcept;
 
     // Remove remote builtin SEDP readers when a peer expires.
@@ -395,16 +398,18 @@ public:
      *
      * Each announcer the peer lists in availableBuiltinEndpoints is matched
      * with the corresponding builtin reader at the peer's metatraffic
-     * unicast locators (multicast when it lists none); an announcer it does
-     * not list is unmatched. Matching an already matched announcer changes
-     * nothing, so its reliability state survives SPDP refreshes.
+     * unicast locators; an announcer it does not list is unmatched. A peer
+     * that announced no metatraffic unicast locator is left unmatched, since
+     * ACKNACKs would have nowhere to go. Matching an already matched
+     * announcer changes nothing, so its reliability state survives SPDP
+     * refreshes.
      *
      * @param[in] peer What the SPDP peer table keeps of the participant.
      *
      * Verification:
      * - Correct means: after the call, DATA and HEARTBEAT from each listed
      *   announcer are processed and ACKNACKs go to the peer's locator.
-     * - Covered by: TC-SEDP-8.5.4-006, TC-SEDP-8.5.4-011.
+     * - Covered by: TC-SEDP-8.5.4-006, TC-SEDP-8.5.4-011, TC-SEDP-8.5.4-018.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.4.1, §8.5.3.2 (availableBuiltinEndpoints)

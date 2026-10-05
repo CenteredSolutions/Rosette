@@ -254,9 +254,6 @@ DiscoveredParticipant DiscoveredParticipant::from(const SPDPdiscoveredParticipan
     p.metatrafficUnicastLocatorCount = subnets.select(
         p.metatrafficUnicastLocatorList, RTPS_MAX_PEER_LOCATORS,
         announced.metatrafficUnicastLocatorList, announced.metatrafficUnicastLocatorCount);
-    p.metatrafficMulticastLocatorCount = copy_udp_locators(
-        p.metatrafficMulticastLocatorList, RTPS_MAX_PEER_LOCATORS,
-        announced.metatrafficMulticastLocatorList, announced.metatrafficMulticastLocatorCount);
     p.defaultUnicastLocatorCount =
         subnets.select(p.defaultUnicastLocatorList, RTPS_MAX_PEER_LOCATORS,
                        announced.defaultUnicastLocatorList, announced.defaultUnicastLocatorCount);

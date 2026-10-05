@@ -529,44 +529,6 @@ inline Locator make_udpv6_locator(const uint8_t (&ipv6)[16], uint16_t port) noex
     return l;
 }
 
-/**
- * @brief Copies the locators this stack can send to, in announced order.
- *
- * Discovery data lists every locator a participant or endpoint can be reached
- * at, of any kind (Fast DDS lists its shared-memory transport too). This stack
- * sends over UDP only, so kinds it can never send to are dropped before they
- * take a slot. Unicast lists are ranked by reachability instead
- * (LocalSubnets::select() in rtps/locator_ranking.hpp); this keeps a list
- * whose order does not decide where traffic goes, such as a participant's
- * metatraffic multicast locators.
- *
- * @param[out] out Destination; at least `cap` locators long.
- * @param[in]  cap Most locators to keep.
- * @param[in]  src Announced locators; may be null when `n` is 0.
- * @param[in]  n   Entries in `src`.
- * @return Locators written to `out`: the first min(`cap`, UDP count) UDPv4
- *   and UDPv6 locators of `src`, in `src` order.
- *
- * Verification:
- * - Correct means: no non-UDP locator is kept, and the kept locators are the
- *   leading UDP locators of `src` in their announced order.
- * - Covered by: TC-SPDP-8.5.3-007.
- *
- * References:
- * - OMG DDSI-RTPS 2.5 §8.2.5 (Locator_t kinds), §8.5.3.2 (participant
- *   locator lists)
- */
-inline uint8_t copy_udp_locators(Locator* out, uint8_t cap,
-                                 const Locator* src, uint8_t n) noexcept {
-    uint8_t kept = 0;
-    for (uint8_t i = 0; i < n && kept < cap; ++i) {
-        if (src[i].kind == locator_kind::UDPv4 || src[i].kind == locator_kind::UDPv6) {
-            out[kept++] = src[i];
-        }
-    }
-    return kept;
-}
-
 // ============================================================
 // §8.2.6  Duration_t
 //

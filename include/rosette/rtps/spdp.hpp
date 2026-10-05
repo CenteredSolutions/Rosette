@@ -168,11 +168,17 @@ inline bool plcdr_write_sentinel(Octet* buf, uint32_t cap, uint32_t& off) noexce
 // versions, liveliness counts. The peer table keeps, per participant, only
 // what SEDP and endpoint addressing read: the GUID prefix, the vendor (the
 // form of preemptive ACKNACK its writers recognize, see
-// StatefulReader::matched_writer_add()), the builtin endpoint set, the most
-// reachable UDP locators of the metatraffic unicast and default unicast lists,
-// ranked across the whole announcement as it is decoded (LocalSubnets::offer())
-// and narrowed by LocalSubnets::select(), and the leading UDP locators of
-// the metatraffic multicast list (copy_udp_locators()).
+// StatefulReader::matched_writer_add()), the builtin endpoint set, and the
+// most reachable UDP locators of the metatraffic unicast and default unicast
+// lists, ranked across the whole announcement as it is decoded
+// (LocalSubnets::offer()) and narrowed by LocalSubnets::select().
+//
+// The multicast lists are not kept. Every participant receives SPDP on the
+// well-known group (§9.6.1), and SEDP and user traffic go to a peer's unicast
+// locators (§8.5.4.1 builtin endpoints are matched at the metatraffic unicast
+// locators; Rosette sends user data unicast only). A peer that announces no
+// metatraffic unicast locator is therefore recorded, but no SEDP is exchanged
+// with it (RTPSParticipant::on_spdp_new_peer()).
 // On a network of dozens of participants, the table is one of the largest
 // discovery structures a microcontroller holds, so every octet here is
 // multiplied by RTPS_MAX_PEERS.
@@ -191,12 +197,10 @@ struct DiscoveredParticipant {
     VendorId vendorId = {};                     ///< §8.5.3.2, PID_VENDOR_ID.
     uint32_t   availableBuiltinEndpoints = 0;   ///< Bitmask — §8.5.4.3.
 
-    Locator metatrafficUnicastLocatorList[RTPS_MAX_PEER_LOCATORS]   = {};
-    Locator metatrafficMulticastLocatorList[RTPS_MAX_PEER_LOCATORS] = {};
-    Locator defaultUnicastLocatorList[RTPS_MAX_PEER_LOCATORS]       = {};
-    uint8_t metatrafficUnicastLocatorCount   = 0;
-    uint8_t metatrafficMulticastLocatorCount = 0;
-    uint8_t defaultUnicastLocatorCount       = 0;
+    Locator metatrafficUnicastLocatorList[RTPS_MAX_PEER_LOCATORS] = {};
+    Locator defaultUnicastLocatorList[RTPS_MAX_PEER_LOCATORS] = {};
+    uint8_t metatrafficUnicastLocatorCount = 0;
+    uint8_t defaultUnicastLocatorCount = 0;
 
     /**
      * @brief Keeps what discovery uses of one received SPDP announcement.
@@ -211,9 +215,7 @@ struct DiscoveredParticipant {
      * @return The prefix, vendor and builtin endpoint set as announced; the
      *   metatraffic and default unicast lists reduced to their
      *   RTPS_MAX_PEER_LOCATORS most reachable locators, best first
-     *   (LocalSubnets::select()); and the metatraffic multicast list reduced
-     *   to its leading RTPS_MAX_PEER_LOCATORS UDP locators
-     *   (copy_udp_locators()).
+     *   (LocalSubnets::select()). The multicast lists are not kept.
      *
      * Verification:
      * - Correct means: no locator of a kind the stack cannot send to is kept;
