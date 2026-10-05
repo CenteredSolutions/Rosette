@@ -1,0 +1,28 @@
+# Build and run the host test suites, which need nothing but a C++ compiler
+# and CMake: tests/spec checks DDSI-RTPS statements by spec section
+# (TC-<AREA>-<section>-<seq>), tests/host checks the portable and port code
+# that has no spec section of its own.
+name: host-tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        suite: [spec, host]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S tests/${{ matrix.suite }} -B build/tests-${{ matrix.suite }}
+
+      - name: Build
+        run: cmake --build build/tests-${{ matrix.suite }} -j "$(nproc)"
+
+      - name: Test
+        run: ctest --test-dir build/tests-${{ matrix.suite }} --output-on-failure
