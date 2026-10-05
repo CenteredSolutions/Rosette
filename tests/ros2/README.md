@@ -168,3 +168,16 @@ colcon build --packages-select rmw_rosette --build-base build-tiers8 \
 On one host the simulated network and the device share the CPU; when the
 network's own peer probes show tails of seconds, the host is saturated and
 the device's round trips say nothing about the device.
+
+For a device on real hardware, run the simulated network on another host on
+the device's LAN segment (multicast discovery must reach both) and measure a
+matched peer from a third, otherwise idle process:
+
+```bash
+python3 discovery_scale/service_rtt_probe.py /ns/device/locate std_srvs/srv/Trigger \
+  --duration-sec 180 --report quiet.json        # then again with the network running
+```
+
+Compare the two runs after the network has settled, and the first seconds of
+the loaded run separately: that is when the device rotates the whole network
+through its active peer slots.
