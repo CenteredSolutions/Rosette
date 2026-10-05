@@ -193,6 +193,11 @@ RTPSParticipant::RTPSParticipant(uint8_t domain_id, uint8_t participant_id, ITra
     // matches would only consume match records.
     match_table_.set_local_prefix(participant_guid_.prefix);
     match_table_.set_local_subnets(local_subnets_);
+    match_table_.set_participant_defaults([](const GuidPrefix& prefix, const Locator*& locators,
+                                             uint8_t& count, void* self) noexcept {
+        return static_cast<const RTPSParticipant*>(self)->peer_default_locators(prefix, locators,
+                                                                                count);
+    });
     spdp_reader_.set_local_subnets(local_subnets_);
 
     refresh_spdp_multicast_locator();
@@ -591,60 +596,41 @@ void RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
     }
 }
 
-namespace {
-
+// An endpoint announcing its participant's defaults keeps the same number of
+// them as the peer record does, so EndpointMatchTable finds them equal.
 static_assert(RTPS_MAX_REMOTE_ENDPOINT_LOCATORS == RTPS_MAX_PEER_LOCATORS,
               "endpoint and participant locator limits must match");
 
-// True when an endpoint's announced locators are owned by its participant's
-// default list: it announced none, or announced exactly that list.
-bool follows_defaults(const Locator* announced, uint8_t announced_count, const Locator* defaults,
-                      uint8_t default_count) noexcept {
-    if (announced_count == 0u) {
-        return true;
-    }
-
-    if (announced_count != default_count) {
-        return false;
-    }
-
-    for (uint8_t i = 0; i < announced_count; ++i) {
-        if (announced[i] != defaults[i]) {
-            return false;
+bool RTPSParticipant::peer_default_locators(const GuidPrefix& prefix, const Locator*& locators,
+                                            uint8_t& count) const noexcept {
+    bool found = false;
+    spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
+        if (peer.data.guidPrefix != prefix) {
+            return;
         }
-    }
 
-    return true;
+        locators = peer.data.defaultUnicastLocatorList;
+        count = peer.data.defaultUnicastLocatorCount;
+        found = true;
+    });
+
+    return found;
 }
-
-}  // namespace
 
 void RTPSParticipant::resolve_endpoint_locators(const GuidPrefix& remote_prefix,
                                                 const Locator*& locators,
                                                 uint8_t& count) const noexcept {
-    if (remote_prefix == participant_guid_.prefix) {
-        const Locator* own = local_participant_data_.defaultUnicastLocatorList;
-        const uint8_t own_count = local_participant_data_.defaultUnicastLocatorCount;
-        if (follows_defaults(locators, count, own, own_count)) {
-            locators = own;
-            count = own_count;
-        }
-
+    if (count > 0u) {
         return;
     }
 
-    spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
-        if (peer.data.guidPrefix != remote_prefix) {
-            return;
-        }
+    if (remote_prefix == participant_guid_.prefix) {
+        locators = local_participant_data_.defaultUnicastLocatorList;
+        count = local_participant_data_.defaultUnicastLocatorCount;
+        return;
+    }
 
-        const Locator* defaults = peer.data.defaultUnicastLocatorList;
-        const uint8_t default_count = peer.data.defaultUnicastLocatorCount;
-        if (follows_defaults(locators, count, defaults, default_count)) {
-            locators = defaults;
-            count = default_count;
-        }
-    });
+    peer_default_locators(remote_prefix, locators, count);
 }
 
 VendorId RTPSParticipant::peer_vendor_id(const GuidPrefix& remote_prefix) const noexcept {

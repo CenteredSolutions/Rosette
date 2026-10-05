@@ -19,20 +19,29 @@
  *   Remote endpoints  16 octets: EntityId, QoS, a 32-bit key of the topic
  *                     name and one of the type name (name_key()), and the
  *                     index of the endpoint's origin. No names.
- *   Origins           a GUID prefix and the UDP locators an endpoint
- *                     announced (none means its participant's defaults).
- *                     At most RTPS_MAX_REMOTE_ORIGINS.
+ *   Origins           16 octets: a GUID prefix and, for endpoints that
+ *                     announced locators of their own, the index of a
+ *                     locator list. At most RTPS_MAX_REMOTE_ORIGINS.
+ *   Locator lists     the UDP locators an endpoint announced when they are
+ *                     not its participant's defaults. At most
+ *                     RTPS_MAX_REMOTE_LOCATOR_LISTS.
  *
  * The endpoints of one participant share its GUID prefix and, in every stack
- * this one interoperates with, announce the same locators (Fast DDS and
- * Rosette list the participant's defaults, Cyclone DDS lists none), so they
- * share one origin, and a remote endpoint costs 16 octets however many
- * locators its participant announced. An endpoint that announces locators of
- * its own takes an origin of its own. At most
- * RTPS_MAX_REMOTE_ENDPOINT_LOCATORS UDP locators are kept, the most
+ * this one interoperates with, announce its default unicast locators (Fast
+ * DDS and Rosette list them, Cyclone DDS lists none), so they share one
+ * origin that keeps no locators: they are reached at the defaults the SPDP
+ * peer table keeps for their participant (RTPSParticipant resolves them),
+ * and follow those defaults when an SPDP refresh changes them. The table
+ * asks the participant for those defaults (set_participant_defaults()) and
+ * compares an announced list with them once, when it is stored; a remote
+ * endpoint then costs 16 octets however many locators its participant
+ * announced, and a participant 16 more for its origin. Only an endpoint that
+ * announces other locators takes an origin with a locator list of its own.
+ * At most RTPS_MAX_REMOTE_ENDPOINT_LOCATORS UDP locators are kept, the most
  * reachable first: SedpReader ranks an announced list as it decodes it
  * (LocalSubnets::offer()), and add_writer() and add_reader() narrow it
- * (LocalSubnets::select()).
+ * (LocalSubnets::select()), as the SPDP peer table narrows a participant's
+ * defaults, so an endpoint announcing those defaults keeps the same list.
  *
  * A remote endpoint is compared by name, exactly, against the local
  * endpoints when it is announced, while its full names are at hand. A local
@@ -52,9 +61,10 @@
  * whole graph. When the table is full, an announcement that completes a
  * match with a local endpoint takes the slot of a remote record that is in
  * no match; an announcement that completes none is not kept. Likewise, when
- * it needs an origin and none is free, it frees an origin none of whose
- * endpoints is in a match, forgetting those endpoints. A record in a match
- * is never displaced, so matching never loses a pair it reported.
+ * it needs an origin, or an origin with a locator list, and none is free, it
+ * frees such an origin none of whose endpoints is in a match, forgetting
+ * those endpoints. A record in a match is never displaced, so matching never
+ * loses a pair it reported.
  * The table therefore needs room only for the remote endpoints the local
  * ones match; beyond that, what it keeps of the rest decides only what
  * count() sees and what a later local endpoint can match without a fresh
@@ -272,10 +282,10 @@ uint32_t name_key(const char* name) noexcept;
 #ifndef RTPS_MAX_LOCAL_ENDPOINTS
 #  define RTPS_MAX_LOCAL_ENDPOINTS 8
 #endif
-/// UDP locators kept per origin, as the SPDP peer record keeps RTPS_MAX_PEER_LOCATORS.
-/// Equal limits let an endpoint announcing its participant's defaults compare
-/// equal to them, so its proxies follow the peer record (see
-/// RTPSParticipant::resolve_endpoint_locators()).
+/// UDP locators kept per remote endpoint, as the SPDP peer record keeps
+/// RTPS_MAX_PEER_LOCATORS. Equal limits let an endpoint announcing its
+/// participant's defaults compare equal to them, so it keeps no list of its
+/// own (see Storage in the file comment).
 #ifndef RTPS_MAX_REMOTE_ENDPOINT_LOCATORS
 #  define RTPS_MAX_REMOTE_ENDPOINT_LOCATORS 2
 #endif
@@ -287,6 +297,14 @@ uint32_t name_key(const char* name) noexcept;
 #endif
 static_assert(RTPS_MAX_REMOTE_ORIGINS >= 1 && RTPS_MAX_REMOTE_ORIGINS < 255,
               "RTPS_MAX_REMOTE_ORIGINS must fit a one-octet index below the none value 0xFF");
+/// Origins whose endpoints announced locators other than their participant's
+/// defaults. No stack this one interoperates with announces such locators by
+/// default, so a few cover endpoints configured with locators of their own.
+#ifndef RTPS_MAX_REMOTE_LOCATOR_LISTS
+#define RTPS_MAX_REMOTE_LOCATOR_LISTS 4
+#endif
+static_assert(RTPS_MAX_REMOTE_LOCATOR_LISTS >= 1 && RTPS_MAX_REMOTE_LOCATOR_LISTS < 255,
+              "RTPS_MAX_REMOTE_LOCATOR_LISTS must fit a one-octet index below the none value 0xFF");
 // Writer-reader pairs tracked at once. Only pairs that involve a local
 // endpoint are tracked, so this scales with local endpoints times their
 // matched peers rather than with the whole graph.
@@ -298,10 +316,11 @@ static_assert(RTPS_MAX_REMOTE_ORIGINS >= 1 && RTPS_MAX_REMOTE_ORIGINS < 255,
 struct MatchedEndpoint {
     Guid           guid             = GUID_UNKNOWN;
     /// Announced unicast locators; none (count 0) means the endpoint is
-    /// reached at its participant's default unicast locators (§8.5.3.2).
-    /// Owned by the table's origin, which stays in place while the pair is
-    /// reported: the table dissolves the pair before it releases the origin
-    /// (unmatch_if_relocated()), so a proxy may refer to them.
+    /// reached at its participant's default unicast locators (§8.5.3.2),
+    /// because it announced none or announced exactly those.
+    /// Owned by a locator list of the table, which stays in place while the
+    /// pair is reported: the table dissolves the pair before it releases the
+    /// list's origin (unmatch_if_relocated()), so a proxy may refer to them.
     const Locator* locators         = nullptr;
     uint8_t        locatorCount     = 0;
     bool           expectsInlineQos = false;   ///< Readers only.
@@ -333,6 +352,12 @@ public:
     /// The set of known endpoints changed.
     using OnChange  = void (*)(void* user_data) noexcept;
 
+    /// Sets `locators` and `count` to the default unicast locators the SPDP
+    /// peer table keeps for the participant with GUID prefix `prefix`;
+    /// returns `false`, leaving them alone, when it keeps no such participant.
+    using ParticipantDefaults = bool (*)(const GuidPrefix& prefix, const Locator*& locators,
+                                         uint8_t& count, void* user_data) noexcept;
+
     EndpointMatchTable(OnMatch   on_match   = nullptr,
                        OnUnmatch on_unmatch = nullptr,
                        void*     user_data  = nullptr,
@@ -354,6 +379,21 @@ public:
 
     /// @brief The addresses remote endpoint locator lists are ranked against.
     const LocalSubnets& local_subnets() const noexcept { return *subnets_; }
+
+    /**
+     * @brief Sets where the table finds a remote participant's default unicast locators.
+     *
+     * add_writer() and add_reader() compare a remote endpoint's kept
+     * locators with its participant's defaults; when they are equal the
+     * endpoint keeps no list and is reported with none, so the owner reaches
+     * it at the defaults (see Storage in the file comment).
+     *
+     * @param[in] defaults The lookup, called with this table's user_data;
+     *   null (the default) treats every announced list as the endpoint's own.
+     */
+    void set_participant_defaults(ParticipantDefaults defaults) noexcept {
+        participant_defaults_ = defaults;
+    }
 
     /// @brief Sets the GUID prefix that marks an endpoint as local.
     void set_local_prefix(const GuidPrefix& prefix) noexcept {
@@ -474,13 +514,22 @@ private:
     /// Origin index of a free RemoteEndpoint.
     static constexpr uint8_t kNoOrigin = 0xFFu;
 
-    /// A remote endpoint's participant prefix and announced UDP locators,
-    /// shared by every stored endpoint that has both in common.
+    /// List index of an origin whose endpoints follow their participant's defaults.
+    static constexpr uint8_t kNoList = 0xFFu;
+
+    /// A remote endpoint's participant prefix and, when the endpoint
+    /// announced locators of its own, their list; shared by every stored
+    /// endpoint that has both in common.
     struct RemoteOrigin {
-        GuidPrefix prefix       = {};
-        uint16_t   users        = 0;   ///< Stored endpoints naming this origin; 0 = free.
-        uint8_t    locatorCount = 0;
-        Locator    locators[RTPS_MAX_REMOTE_ENDPOINT_LOCATORS] = {};
+        GuidPrefix prefix = {};
+        uint16_t users = 0;      ///< Stored endpoints naming this origin; 0 = free.
+        uint8_t list = kNoList;  ///< Index into lists_, or kNoList.
+    };
+
+    /// UDP locators an endpoint announced, owned by exactly one origin.
+    struct RemoteLocatorList {
+        uint8_t count = 0;  ///< 0 = free.
+        Locator locators[RTPS_MAX_REMOTE_ENDPOINT_LOCATORS] = {};
     };
 
     struct RemoteEndpoint {
@@ -523,27 +572,72 @@ private:
     }
 
     /// @brief A stored remote endpoint as on_match reports it; its locators
-    /// live in origins_ and stay valid while the record is stored.
+    /// live in lists_ and stay valid while the record is stored.
     MatchedEndpoint matched(const RemoteEndpoint& r) const noexcept {
         const RemoteOrigin& o = origins_[r.origin];
-        return MatchedEndpoint{guid_of(r), o.locators, o.locatorCount, r.expectsInlineQos};
+        if (o.list == kNoList) {
+            return MatchedEndpoint{guid_of(r), nullptr, 0u, r.expectsInlineQos};
+        }
+
+        const RemoteLocatorList& l = lists_[o.list];
+        return MatchedEndpoint{guid_of(r), l.locators, l.count, r.expectsInlineQos};
     }
+
+    /**
+     * @brief Drops an endpoint's kept locators when they are its participant's defaults.
+     *
+     * Applied to every remote endpoint's kept list before it is compared with
+     * the stored origins, so an endpoint announcing its participant's
+     * defaults shares the origin of one announcing none (see Storage in the
+     * file comment).
+     *
+     * @param[in]     prefix The endpoint's GUID prefix.
+     * @param[in]     kept   Its kept locators (LocalSubnets::select()).
+     * @param[in,out] count  Entries in `kept`; set to 0 when they equal, entry
+     *   for entry, the defaults participant_defaults_ returns for `prefix`.
+     *
+     * Verification:
+     * - Correct means: an endpoint announcing its participant's defaults is
+     *   reported with no locators and takes no locator list; one announcing
+     *   any other list keeps it.
+     * - Covered by: TC-SEDP-8.5.4.2-001, TC-PART-8.5.3-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4.2 (unicastLocatorList of discovered
+     *   endpoints), §8.5.3.2 (defaultUnicastLocatorList)
+     */
+    void drop_participant_defaults(const GuidPrefix& prefix, const Locator* kept,
+                                   uint8_t& count) const noexcept;
+
+    /// @brief True when origin `o` holds exactly `locators` (none: it has no list).
+    bool origin_holds(const RemoteOrigin& o, const Locator* locators,
+                      uint8_t locator_count) const noexcept;
+
+    /// @brief The index of a free locator list, else kNoList.
+    uint8_t free_list() const noexcept;
+
+    /// @brief Drops one user of an origin, freeing it and its locator list at the last.
+    void release_origin(uint8_t origin) noexcept;
 
     /**
      * @brief Finds or makes room for a remote endpoint's record and origin.
      *
      * The record is the one already stored for `guid`, else a free one; the
      * origin is the one already holding `guid`'s prefix and `locators`, else
-     * a free one. When either is missing and the endpoint completes a match
+     * a free one, with a free locator list when `locators` is not empty.
+     * When any of these is missing and the endpoint completes a match
      * (`completes_match`), room is made as the Capacity rule in the file
-     * comment says: evict_unmatched_origin() for an origin, then
-     * displace_unmatched() for a record.
+     * comment says: evict_unmatched_origin() for an origin (one with a list
+     * when only a list is missing), then displace_unmatched() for a record.
+     * The list of the origin the endpoint leaves counts as free when the
+     * endpoint is its last user, since store_remote() releases it first.
      *
      * @param[in,out] table           remote_writers_ or remote_readers_.
      * @param[in]     n               Entries in `table`.
      * @param[in]     is_writer       `true` when `table` holds writers.
      * @param[in]     guid            The announced endpoint's GUID.
-     * @param[in]     locators        Its kept UDP locators (LocalSubnets::select()).
+     * @param[in]     locators        Its kept UDP locators (LocalSubnets::select()),
+     *   none when they are its participant's defaults (drop_participant_defaults()).
      * @param[in]     locator_count   Entries in `locators`.
      * @param[in]     completes_match pairs_with_local() for the endpoint.
      * @param[out]    origin          The origin index to store, when a record is returned.
@@ -551,15 +645,19 @@ private:
      *
      * Verification:
      * - Correct means: a stored endpoint in a match is never cleared, and an
-     *   endpoint that completes a match is refused only when every record or
-     *   every origin it could take belongs to a match.
-     * - Covered by: TC-SEDP-8.5.5.1-008, TC-SEDP-8.5.5.1-009, TC-SEDP-8.5.5.1-011.
+     *   endpoint that completes a match is refused only when every record,
+     *   every origin, or (for one with locators of its own) every origin with
+     *   a locator list it could take belongs to a match.
+     * - Covered by: TC-SEDP-8.5.5.1-008, TC-SEDP-8.5.5.1-009, TC-SEDP-8.5.5.1-011,
+     *   TC-SEDP-8.5.4.2-002, TC-SEDP-8.5.4.2-003.
      */
     RemoteEndpoint* admit_remote(RemoteEndpoint* table, uint32_t n, bool is_writer,
                                  const Guid& guid, const Locator* locators, uint8_t locator_count,
                                  bool completes_match, uint8_t& origin) noexcept;
 
     /// @brief The origin holding `prefix` and `locators`, else a free one, else kNoOrigin.
+    ///
+    /// A free origin is returned whether or not a locator list is free for it.
     uint8_t find_origin(const GuidPrefix& prefix, const Locator* locators,
                         uint8_t locator_count) const noexcept;
 
@@ -568,17 +666,26 @@ private:
      *
      * Every stored endpoint of that origin, writer or reader, is forgotten
      * without notification; the caller's store fires on_change for them.
+     * Freeing an origin frees its locator list too.
      *
+     * @param[in] with_list `true` to free only an origin that has a locator
+     *   list, when the caller needs a list rather than an origin.
      * @return The freed origin's index, or kNoOrigin when every origin in use
-     *   has an endpoint in a match.
+     *   (with a list, when `with_list`) has an endpoint in a match.
      *
      * Verification:
      * - Correct means: no endpoint in a match is forgotten.
-     * - Covered by: TC-SEDP-8.5.5.1-008, TC-SEDP-8.5.5.1-011.
+     * - Covered by: TC-SEDP-8.5.5.1-008, TC-SEDP-8.5.5.1-011, TC-SEDP-8.5.4.2-002.
      */
-    uint8_t evict_unmatched_origin() noexcept;
+    uint8_t evict_unmatched_origin(bool with_list) noexcept;
 
-    /// @brief Stores an endpoint in `slot`, naming `origin`, and releases the origin it named before.
+    /// @brief Stores an endpoint in `slot`, naming `origin`, and releases the origin it named
+    /// before.
+    ///
+    /// Moving to another origin releases the old one first, then a free
+    /// `origin` is claimed for `guid`'s prefix, with a free locator list
+    /// holding `locators` when there are any; admit_remote() has made sure
+    /// one is free by then.
     void store_remote(RemoteEndpoint& slot, const Guid& guid, uint8_t origin,
                       const Locator* locators, uint8_t locator_count, uint32_t topic_key,
                       uint32_t type_key, ReliabilityKind reliability, DurabilityKind durability,
@@ -647,10 +754,12 @@ private:
      * @brief Unmatches a stored remote endpoint that re-announced different locators.
      *
      * The proxies of a matched endpoint that announced locators of its own
-     * refer to its origin's list rather than copying it (see "Locator
+     * refer to its origin's locator list rather than copying it (see "Locator
      * reference" in rtps/reader_proxy.hpp). Storing the re-announcement moves
-     * the endpoint to another origin and can free the old one for another
-     * participant, so every pair of the endpoint is dissolved first; the
+     * the endpoint to another origin and can free the old one, and its list,
+     * for another participant, so every pair of the endpoint is dissolved
+     * first; an endpoint moving between its own locators and its
+     * participant's defaults is rematched the same way. The
      * caller then stores the announcement and reports those pairs again, and
      * the participant matches fresh proxies at the new locators.
      *
@@ -658,14 +767,14 @@ private:
      * @param[in] n         Entries in `table`.
      * @param[in] is_writer `true` when `table` holds writers.
      * @param[in] guid      The announced endpoint.
-     * @param[in] locators  Its kept UDP locators (LocalSubnets::select()).
+     * @param[in] locators  Its kept UDP locators, after drop_participant_defaults().
      * @param[in] count     Entries in `locators`.
      *
      * Verification:
      * - Correct means: no reported pair outlives a change of its remote
      *   endpoint's origin, so no proxy refers to a released origin; an
      *   unchanged re-announcement dissolves nothing.
-     * - Covered by: TC-SEDP-8.5.5.1-012.
+     * - Covered by: TC-SEDP-8.5.5.1-012, TC-SEDP-8.5.4.2-001.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.4.2 (unicastLocatorList of discovered endpoints),
@@ -681,12 +790,14 @@ private:
     RemoteEndpoint remote_writers_[RTPS_MAX_DISCOVERED_WRITERS] = {};
     RemoteEndpoint remote_readers_[RTPS_MAX_DISCOVERED_READERS] = {};
     RemoteOrigin   origins_[RTPS_MAX_REMOTE_ORIGINS]            = {};
+    RemoteLocatorList lists_[RTPS_MAX_REMOTE_LOCATOR_LISTS] = {};
     MatchRecord    matches_[kMaxMatches]                        = {};
 
     /// Ranks against no addresses until set_local_subnets() is called.
     static const LocalSubnets kNoSubnets;
 
     const LocalSubnets* subnets_ = &kNoSubnets;
+    ParticipantDefaults participant_defaults_ = nullptr;
     OnMatch    on_match_;
     OnUnmatch  on_unmatch_;
     OnChange   on_change_;

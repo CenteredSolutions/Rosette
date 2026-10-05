@@ -30,7 +30,7 @@
  * keeps one: a pointer to the chosen entry of the list it was matched with,
  * not a copy. That list belongs to a record that outlives the match and is
  * updated in place: the SPDP peer record for the remote participant's
- * locators, or the EndpointMatchTable origin for locators an endpoint
+ * locators, or an EndpointMatchTable locator list for locators an endpoint
  * announced itself. A peer that keeps its GUID and moves to a new address
  * re-announces SPDP, the peer record takes the new address, and the proxy
  * sends there from then on, with no rematch and no reliability state lost.
