@@ -485,22 +485,24 @@ private:
      *
      * Proxies keep a pointer into the list they are matched with and follow
      * it as its owner updates it (see "Locator reference" in
-     * rtps/reader_proxy.hpp), so this chooses the owner. An endpoint that
-     * announced no unicast locators, or announced exactly its participant's
-     * defaultUnicastLocatorList (Fast DDS and Rosette endpoints do), is
-     * resolved to that list in the SPDP peer record, or in this participant's
-     * own data for a local endpoint. A peer that moves to a new address
-     * re-announces SPDP, the record takes the new address in place, and every
-     * such proxy sends there next. An endpoint that announced other locators
-     * keeps its own list, which lives in an EndpointMatchTable origin.
+     * rtps/reader_proxy.hpp), so this chooses the owner. The
+     * EndpointMatchTable reports an endpoint that announced no unicast
+     * locators, or exactly its participant's defaultUnicastLocatorList (Fast
+     * DDS and Rosette endpoints do), with none; such an endpoint is resolved
+     * to that list in the SPDP peer record (peer_default_locators()), or in
+     * this participant's own data for a local endpoint. A peer that moves to
+     * a new address re-announces SPDP, the record takes the new address in
+     * place, and every such proxy sends there next. An endpoint that
+     * announced other locators keeps its own list, which lives in an
+     * EndpointMatchTable locator list.
      *
      * @param[in]     remote_prefix GUID prefix of the endpoint's participant
      *   (this participant's own prefix for a local endpoint).
-     * @param[in,out] locators      The announced list (an origin's, or null);
-     *   replaced by the participant's default list when that list owns the
-     *   endpoint's locators as described above. Either list outlives the
-     *   match: the peer record until the peer is removed, which unmatches its
-     *   endpoints first; the origin while the endpoint is in a match.
+     * @param[in,out] locators      The reported list (the table's, or null);
+     *   replaced by the participant's default list when `count` is 0. Either
+     *   list outlives the match: the peer record until the peer is removed,
+     *   which unmatches its endpoints first; the table's list while the
+     *   endpoint is in a match.
      * @param[in,out] count         Entries in `locators`; stays 0 when the
      *   participant is unknown or announced no defaults either.
      *
@@ -518,6 +520,32 @@ private:
     void resolve_endpoint_locators(const GuidPrefix& remote_prefix,
                                    const Locator*&   locators,
                                    uint8_t&          count) const noexcept;
+
+    /**
+     * @brief The default unicast locators the SPDP peer table keeps for a remote participant.
+     *
+     * The EndpointMatchTable's lookup (set_participant_defaults()): the table
+     * compares a remote endpoint's kept locators with these and keeps no
+     * list for an endpoint announcing exactly them, and
+     * resolve_endpoint_locators() reaches such an endpoint here.
+     *
+     * @param[in]  prefix    GUID prefix of the remote participant.
+     * @param[out] locators  The peer record's defaultUnicastLocatorList;
+     *   valid until the peer is removed, which unmatches its endpoints first.
+     *   Written only when the peer is found.
+     * @param[out] count     Entries in `locators`; written only when found.
+     * @return `false` when the peer table keeps no participant with `prefix`.
+     *
+     * Verification:
+     * - Correct means: the result is the peer record's own list, so a
+     *   refresh that rewrites it in place is seen through it.
+     * - Covered by: TC-PART-8.5.1-007, TC-PART-8.5.3-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (defaultUnicastLocatorList)
+     */
+    bool peer_default_locators(const GuidPrefix& prefix, const Locator*& locators,
+                               uint8_t& count) const noexcept;
 
     /**
      * @brief The vendor a remote participant announced in SPDP.

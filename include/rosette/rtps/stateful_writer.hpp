@@ -347,7 +347,7 @@ public:
      * @param[in] reader_guid        The remote reader's GUID.
      * @param[in] unicast_locators   Its unicast locators, owned by a record
      *   that stays valid until the reader is unmatched (the SPDP peer record
-     *   or an EndpointMatchTable origin in a participant). May be null when
+     *   or an EndpointMatchTable locator list in a participant). May be null when
      *   `locator_count` is 0.
      * @param[in] locator_count      Number of locators.
      * @param[in] expects_inline_qos Its expectsInlineQos.

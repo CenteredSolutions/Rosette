@@ -42,7 +42,7 @@
  * -----------------
  * ACKNACKs and NACK_FRAGs go to one unicast locator of the writer, and the
  * proxy keeps a pointer to it in the record it was matched from (the SPDP
- * peer record or an EndpointMatchTable origin) rather than a copy, exactly
+ * peer record or an EndpointMatchTable locator list) rather than a copy, exactly
  * as ReaderProxy does (see "Locator reference" in rtps/reader_proxy.hpp).
  * When that record takes a new address, the proxy follows it.
  */
