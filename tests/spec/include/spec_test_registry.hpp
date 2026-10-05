@@ -32,6 +32,7 @@ void append_fragment_tests_8_4_14(std::vector<TestCase>& tests);
 void register_all_fragment_assembler_tests(std::vector<TestCase>& tests);
 
 void append_spdp_tests_8_5_3(std::vector<TestCase>& tests);
+void append_spdp_tests_8_5_3_locator_ranking(std::vector<TestCase>& tests);
 void append_spdp_tests_9_6_1(std::vector<TestCase>& tests);
 void append_spdp_tests_9_6_2_9_6_3_1(std::vector<TestCase>& tests);
 

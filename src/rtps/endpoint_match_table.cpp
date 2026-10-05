@@ -10,6 +10,8 @@
 
 namespace rtps {
 
+const LocalSubnets EndpointMatchTable::kNoSubnets{};
+
 uint32_t name_key(const char* name) noexcept
 {
     constexpr uint32_t kOffsetBasis = 0x811C9DC5u;
@@ -234,8 +236,8 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
     }
 
     Locator kept[RTPS_MAX_REMOTE_ENDPOINT_LOCATORS];
-    const uint8_t kept_count = copy_udp_locators(kept, RTPS_MAX_REMOTE_ENDPOINT_LOCATORS,
-                                                 wd.unicastLocatorList, wd.unicastLocatorCount);
+    const uint8_t kept_count = subnets_->select(kept, RTPS_MAX_REMOTE_ENDPOINT_LOCATORS,
+                                                wd.unicastLocatorList, wd.unicastLocatorCount);
     const bool completes_match = pairs_with_local(wd.topicName, wd.typeName, wd.reliabilityKind,
                                                   wd.durabilityKind, /*remote_is_writer=*/true);
     uint8_t origin = kNoOrigin;
@@ -305,8 +307,8 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
     }
 
     Locator kept[RTPS_MAX_REMOTE_ENDPOINT_LOCATORS];
-    const uint8_t kept_count = copy_udp_locators(kept, RTPS_MAX_REMOTE_ENDPOINT_LOCATORS,
-                                                 rd.unicastLocatorList, rd.unicastLocatorCount);
+    const uint8_t kept_count = subnets_->select(kept, RTPS_MAX_REMOTE_ENDPOINT_LOCATORS,
+                                                rd.unicastLocatorList, rd.unicastLocatorCount);
     const bool completes_match = pairs_with_local(rd.topicName, rd.typeName, rd.reliabilityKind,
                                                   rd.durabilityKind, /*remote_is_writer=*/false);
     uint8_t origin = kNoOrigin;

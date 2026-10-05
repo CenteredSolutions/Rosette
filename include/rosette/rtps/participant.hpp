@@ -276,8 +276,54 @@ public:
     // The application is responsible for adding/removing local
     // interface addresses as they become available/unavailable.
     // ----------------------------------------------------------
-    bool add_ipv4_address(uint32_t ipv4_be) noexcept;
-    bool add_ipv6_address(const uint8_t ipv6[16]) noexcept;
+
+    /**
+     * @brief Announces an IPv4 address this participant can be reached at.
+     *
+     * The address becomes a metatraffic and a default unicast locator in the
+     * next SPDP announcement (§8.5.3.2). With its on-link prefix, it also
+     * decides which of a peer's announced locators this participant sends to:
+     * the SPDP peer table and the endpoint match table rank every locator
+     * list against the addresses held here (rtps/locator_ranking.hpp).
+     *
+     * @param[in] ipv4_be    The address as a number (192.168.1.5 is
+     *   0xC0A80105).
+     * @param[in] prefix_len On-link prefix length in bits (24 for a
+     *   255.255.255.0 netmask), at most 32; 0 when the netmask is unknown, in
+     *   which case no peer address counts as on link.
+     * @return `false` when RTPS_MAX_LOCATORS_PER_PARTICIPANT addresses are
+     *   already announced; `true` once the address is announced. Adding an
+     *   announced address again replaces its prefix length.
+     *
+     * Verification:
+     * - Correct means: the next SPDP announcement lists the address at the
+     *   metatraffic and default unicast ports, and a peer's locator inside
+     *   the prefix is preferred over its other locators.
+     * - Covered by: TC-PART-8.5.1-002, TC-PART-8.5.1-010.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2, §9.6.1.1 (port mapping); RFC 6724 §6
+     *
+     * Example:
+     * @code{.cpp}
+     * const auto& v4 = rosette::net::board_address_snapshot().v4;
+     * participant.add_ipv4_address(rosette::net::board_ipv4_address(),
+     *                              v4.primary().prefix_len);
+     * @endcode
+     * Full program: examples/rtps_chatter/main.cpp
+     */
+    bool add_ipv4_address(uint32_t ipv4_be, uint8_t prefix_len = 0u) noexcept;
+
+    /**
+     * @brief As add_ipv4_address(), for an IPv6 address.
+     *
+     * @param[in] ipv6       The 16 address octets in network order.
+     * @param[in] prefix_len On-link prefix length in bits (64 for a SLAAC
+     *   address), at most 128; 0 when unknown.
+     * @return As add_ipv4_address().
+     */
+    bool add_ipv6_address(const uint8_t ipv6[16], uint8_t prefix_len = 0u) noexcept;
+
     bool remove_ipv4_address(uint32_t ipv4_be) noexcept;
     bool remove_ipv6_address(const uint8_t ipv6[16]) noexcept;
     void clear_addresses() noexcept;
@@ -485,7 +531,17 @@ private:
         return reinterpret_cast<const DefaultStatefulReader*>(reader_storage_[i]);
     }
     void register_writer_endpoint(const Guid& guid, const WriterConfig& cfg) noexcept;
-    bool add_address_locator_pair(const Locator& meta, const Locator& user) noexcept;
+    /**
+     * @brief Announces one address as a metatraffic and a default unicast locator.
+     *
+     * @param[in] meta       The address at the metatraffic unicast port.
+     * @param[in] user       The same address at the default unicast port.
+     * @param[in] prefix_len Its on-link prefix length in bits; 0 when unknown.
+     * @return `false`, with nothing changed, when either list or the
+     *   participant's LocalSubnets is full or the address is unspecified.
+     */
+    bool add_address_locator_pair(const Locator& meta, const Locator& user,
+                                  uint8_t prefix_len) noexcept;
     bool remove_address_locator_pair(const Locator& meta, const Locator& user) noexcept;
     void refresh_spdp_multicast_locator() noexcept;
     uint8_t append_metatraffic_multicast_locators(Locator* out, uint8_t cap) const noexcept;
@@ -500,6 +556,9 @@ private:
     Locator     spdp_multicast_locator_;
 
     SPDPdiscoveredParticipantData local_participant_data_;
+    /// The announced addresses with their on-link prefixes; peer locator
+    /// lists are ranked against them.
+    LocalSubnets local_subnets_;
 
     EndpointMatchTable match_table_;
     SpdpWriter         spdp_writer_;

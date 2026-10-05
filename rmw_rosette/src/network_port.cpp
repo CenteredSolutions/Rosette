@@ -1,6 +1,6 @@
 /**
  * @file network_port.cpp
- * @brief The network port: the board network's sockets and IPv4 address.
+ * @brief The network port: the board network's sockets and IPv4 address and prefix.
  *
  * See rmw_rosette/network_port.hpp. Forwards to the board network
  * (rosette/net/board_network.hpp), which the image links for its own stack:
@@ -32,6 +32,15 @@ rosette::net::SocketProvider& network_socket_provider() noexcept {
  */
 uint32_t network_ipv4_address() noexcept {
     return rosette::net::board_ipv4_address();
+}
+
+/**
+ * @brief The prefix length of the board network's IPv4 address.
+ *
+ * @return The primary IPv4 entry's prefix length, or 0 while it holds none.
+ */
+uint8_t network_ipv4_prefix_len() noexcept {
+    return rosette::net::board_address_snapshot().v4.primary().prefix_len;
 }
 
 }  // namespace rmw_rosette

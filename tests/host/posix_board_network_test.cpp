@@ -40,7 +40,8 @@ void refuses_what_the_host_cannot_run() {
     check(!net::board_network_ready(), "001: nothing started");
 }
 
-/// TC-NET-BRD-002: the address and sockets are valid before bring-up, and bring-up reports them.
+/// TC-NET-BRD-002: the address and sockets are valid before bring-up, and bring-up reports
+/// them; an address no interface holds has an unknown (0) prefix length.
 void brings_up_on_the_host_address() {
     check(net::board_ipv4_address() == kHost, "002: address known before bring-up");
 
@@ -52,6 +53,8 @@ void brings_up_on_the_host_address() {
     check(snapshot.assigned && snapshot.v4.addresses.size() == 1u, "002: one IPv4 address");
     const auto& a = snapshot.v4.address();
     check(a[0] == 192u && a[1] == 0u && a[2] == 2u && a[3] == 10u, "002: it is the host's");
+    check(snapshot.v4.primary().prefix_len == 0u,
+          "002: no interface holds the pinned address, so its prefix is unknown");
     check(snapshot.v4.source == net::AddressSource::manual && snapshot.v6.addresses.empty(),
           "002: source manual, no IPv6");
     check(net::bring_up_board_network("host") == BringUpResult::ready,

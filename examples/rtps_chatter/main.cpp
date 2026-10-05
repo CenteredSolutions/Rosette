@@ -151,7 +151,7 @@ int main() {
         }
     }
     static rtps::RTPSParticipant participant(kDomainId, kParticipantId, transport);
-    participant.add_ipv4_address(addr);
+    participant.add_ipv4_address(addr, net::board_address_snapshot().v4.primary().prefix_len);
     static rtps::ParticipantDriver driver(participant, transport, sockets, g_rx_buffer,
                                           sizeof(g_rx_buffer));
 

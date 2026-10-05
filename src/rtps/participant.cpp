@@ -38,18 +38,20 @@ bool append_unique_locator(Locator* out,
                            uint8_t cap,
                            const Locator& locator) noexcept
 {
-    if ((out == nullptr) || (count >= cap)) {
+    if ((out == nullptr) || locator_address_is_unspecified(locator)) {
         return false;
     }
 
-    if (locator_address_is_unspecified(locator)) {
-        return false;
-    }
-
+    // A locator already listed is found before the capacity check, so
+    // announcing an address again succeeds on a full list.
     for (uint8_t i = 0; i < count; ++i) {
         if (out[i] == locator) {
             return true;
         }
+    }
+
+    if (count >= cap) {
+        return false;
     }
 
     out[count++] = locator;
@@ -190,6 +192,8 @@ RTPSParticipant::RTPSParticipant(uint8_t domain_id, uint8_t participant_id, ITra
     // Only pairs with a local endpoint need proxies; remote-to-remote
     // matches would only consume match records.
     match_table_.set_local_prefix(participant_guid_.prefix);
+    match_table_.set_local_subnets(local_subnets_);
+    spdp_reader_.set_local_subnets(local_subnets_);
 
     refresh_spdp_multicast_locator();
 }
@@ -421,8 +425,7 @@ void RTPSParticipant::announce() noexcept {
     spdp_writer_.announce();
 }
 
-bool RTPSParticipant::add_ipv4_address(uint32_t ipv4_be) noexcept
-{
+bool RTPSParticipant::add_ipv4_address(uint32_t ipv4_be, uint8_t prefix_len) noexcept {
     const uint16_t meta_port = transport_.local_metatraffic_unicast_port() != 0u
         ? transport_.local_metatraffic_unicast_port()
         : calc_metatraffic_unicast_port(domain_id_, participant_id_);
@@ -433,11 +436,10 @@ bool RTPSParticipant::add_ipv4_address(uint32_t ipv4_be) noexcept
         ipv4_be, meta_port);
     const Locator user = make_udpv4_locator(
         ipv4_be, user_port);
-    return add_address_locator_pair(meta, user);
+    return add_address_locator_pair(meta, user, prefix_len);
 }
 
-bool RTPSParticipant::add_ipv6_address(const uint8_t ipv6[16]) noexcept
-{
+bool RTPSParticipant::add_ipv6_address(const uint8_t ipv6[16], uint8_t prefix_len) noexcept {
     const uint16_t meta_port = transport_.local_metatraffic_unicast_port() != 0u
         ? transport_.local_metatraffic_unicast_port()
         : calc_metatraffic_unicast_port(domain_id_, participant_id_);
@@ -448,7 +450,7 @@ bool RTPSParticipant::add_ipv6_address(const uint8_t ipv6[16]) noexcept
         ipv6, meta_port);
     const Locator user = make_udpv6_locator_from_ptr(
         ipv6, user_port);
-    return add_address_locator_pair(meta, user);
+    return add_address_locator_pair(meta, user, prefix_len);
 }
 
 bool RTPSParticipant::remove_ipv4_address(uint32_t ipv4_be) noexcept
@@ -485,6 +487,7 @@ void RTPSParticipant::clear_addresses() noexcept
 {
     local_participant_data_.metatrafficUnicastLocatorCount = 0u;
     local_participant_data_.defaultUnicastLocatorCount = 0u;
+    local_subnets_.clear();
     refresh_spdp_multicast_locator();
 }
 
@@ -843,9 +846,8 @@ uint8_t RTPSParticipant::append_default_unicast_locators(Locator* out,
                          local_participant_data_.defaultUnicastLocatorCount);
 }
 
-bool RTPSParticipant::add_address_locator_pair(const Locator& meta,
-                                               const Locator& user) noexcept
-{
+bool RTPSParticipant::add_address_locator_pair(const Locator& meta, const Locator& user,
+                                               uint8_t prefix_len) noexcept {
     const uint8_t meta_count_before = local_participant_data_.metatrafficUnicastLocatorCount;
     const uint8_t user_count_before = local_participant_data_.defaultUnicastLocatorCount;
 
@@ -863,7 +865,7 @@ bool RTPSParticipant::add_address_locator_pair(const Locator& meta,
         local_participant_data_.defaultUnicastLocatorCount,
         RTPS_MAX_LOCATORS_PER_PARTICIPANT,
         user);
-    if (!user_ok) {
+    if (!user_ok || !local_subnets_.add(meta, prefix_len)) {
         local_participant_data_.metatrafficUnicastLocatorCount = meta_count_before;
         local_participant_data_.defaultUnicastLocatorCount = user_count_before;
         return false;
@@ -883,6 +885,7 @@ bool RTPSParticipant::remove_address_locator_pair(const Locator& meta,
     changed |= remove_locator(local_participant_data_.defaultUnicastLocatorList,
                               local_participant_data_.defaultUnicastLocatorCount,
                               user);
+    changed |= local_subnets_.remove(meta);
     if (changed) {
         refresh_spdp_multicast_locator();
     }

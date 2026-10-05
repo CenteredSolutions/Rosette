@@ -90,6 +90,14 @@ target_sources(posix_board_network_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_socket.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host/chip_host.cpp)
 
+# The host board network's prefix length, in its own process: the host address
+# is computed once per process.
+add_host_test(posix_board_network_prefix_test)
+target_sources(posix_board_network_prefix_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_board_network.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_socket.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host/chip_host.cpp)
+
 # The ROS session supervisor, against a fake network, application, and agent gate.
 add_host_test(session_supervisor_test)
 target_sources(session_supervisor_test PRIVATE
