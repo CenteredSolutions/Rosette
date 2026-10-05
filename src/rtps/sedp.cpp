@@ -691,11 +691,11 @@ void match_builtin_announcer(StatefulReader&              reader,
     }
     if (reader.matched_writer_lookup(announcer)) return;
     const bool unicast = peer.metatrafficUnicastLocatorCount > 0u;
-    reader.matched_writer_add(announcer,
-                              unicast ? peer.metatrafficUnicastLocatorList
-                                      : peer.metatrafficMulticastLocatorList,
-                              unicast ? peer.metatrafficUnicastLocatorCount
-                                      : peer.metatrafficMulticastLocatorCount);
+    reader.matched_writer_add(
+        announcer,
+        unicast ? peer.metatrafficUnicastLocatorList : peer.metatrafficMulticastLocatorList,
+        unicast ? peer.metatrafficUnicastLocatorCount : peer.metatrafficMulticastLocatorCount,
+        peer.vendorId);
 }
 
 }  // namespace

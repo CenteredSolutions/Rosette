@@ -82,6 +82,15 @@
       "test_ids": ["TC-SWR-8.4.1.4-003"]
     },
     {
+      "id": "REQ-SWR-8.7.2.2-REPLAY-HEARTBEAT",
+      "section": "8.7.2.2",
+      "page": 196,
+      "normativity": "should",
+      "statement": "A reliable TRANSIENT_LOCAL writer piggybacks a non-final HEARTBEAT spanning its cache on the newest change it replays to a newly matched reader, so the reader acknowledges or requests repairs without waiting for the periodic HEARTBEAT.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.4-008"]
+    },
+    {
       "id": "REQ-SWR-8.4.1.4-REMATCHED-READER",
       "section": "8.4.1.4",
       "page": 108,

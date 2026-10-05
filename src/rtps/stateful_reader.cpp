@@ -69,23 +69,31 @@ StatefulReader::StatefulReader(const Guid&       guid,
 // §8.4.7.4  matched_writer_add()
 // ============================================================
 
-bool StatefulReader::matched_writer_add(const Guid&    writer_guid,
-                                        const Locator* unicast_locators,
-                                        uint8_t        locator_count) noexcept
-{
-    if (find_proxy(writer_guid)) return false;
+bool StatefulReader::matched_writer_add(const Guid& writer_guid, const Locator* unicast_locators,
+                                        uint8_t locator_count,
+                                        const VendorId& writer_vendor) noexcept {
+    if (find_proxy(writer_guid)) {
+        return false;
+    }
+
     WriterProxy* slot = find_free_slot();
     if (!slot) {
         RTPS_LOG_W("reader", "writer proxy table full (max=%u)",
                    (unsigned)proxy_capacity_);
         return false;
     }
+
     slot->init(writer_guid, unicast_locators, locator_count);
     RTPS_LOG_I("reader", "writer matched %02x%02x%02x%02x entity=%02x%02x%02x%02x",
                writer_guid.prefix.value[0], writer_guid.prefix.value[1],
                writer_guid.prefix.value[2], writer_guid.prefix.value[3],
                writer_guid.entityId.entityKey[0], writer_guid.entityId.entityKey[1],
                writer_guid.entityId.entityKey[2], writer_guid.entityId.entityKind);
+
+    if (reliability_ == ReliabilityKind::RELIABLE) {
+        send_preemptive_acknack(*slot, writer_vendor);
+    }
+
     return true;
 }
 
@@ -505,6 +513,32 @@ void StatefulReader::send_acknack(WriterProxy& proxy,
 bool StatefulReader::narrow_repairs() const noexcept
 {
     return repairs_must_fit_datagram(transport_);
+}
+
+void StatefulReader::send_preemptive_acknack(WriterProxy& proxy,
+                                             const VendorId& writer_vendor) noexcept {
+    const Locator& dest = proxy.best_locator();
+    if (dest == LOCATOR_INVALID || !builder_.begin(guid_.prefix)) {
+        return;
+    }
+
+    const bool zero_base =
+        writer_vendor == VENDORID_EPROSIMA || writer_vendor == VENDORID_RTI_CONNEXT;
+    SequenceNumberSet sn_state{};
+    sn_state.bitmapBase = zero_base ? SEQUENCENUMBER_ZERO : SequenceNumber::from_int64(1);
+
+    builder_.append_info_dst(proxy.remoteWriterGuid.prefix);
+    if (!builder_.append_acknack(guid_.entityId, proxy.remoteWriterGuid.entityId, sn_state,
+                                 proxy.acknackCount + 1, /*final_flag=*/false)) {
+        RTPS_LOG_W("reader", "preemptive ACKNACK builder failed (pool exhausted?)");
+        builder_.abort();
+        return;
+    }
+
+    BufRef buf = builder_.finish();
+    transport_.send_unicast(buf, dest);
+    buf.reset();
+    proxy.on_acknack_sent();
 }
 
 void StatefulReader::request_next_repair(WriterProxy& proxy) noexcept

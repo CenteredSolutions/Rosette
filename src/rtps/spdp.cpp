@@ -250,6 +250,7 @@ DiscoveredParticipant DiscoveredParticipant::from(
 {
     DiscoveredParticipant p{};
     p.guidPrefix                = announced.guidPrefix;
+    p.vendorId = announced.vendorId;
     p.availableBuiltinEndpoints = announced.availableBuiltinEndpoints;
     p.metatrafficUnicastLocatorCount = copy_udp_locators(
         p.metatrafficUnicastLocatorList, RTPS_MAX_PEER_LOCATORS,

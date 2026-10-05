@@ -195,6 +195,7 @@ static bool tc_srr_8_4_9_001(std::string& err) {
                             nullptr,
                             0u);
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+    tx.unicast_msgs.clear();  // drop the preemptive ACKNACK (TC-SRR-8.4.7.4-002)
 
     const Octet wire_payload[5] = {0x00u, 0x01u, 0x00u, 0x00u, 0x11u};
     ParsedData data{};
@@ -264,6 +265,7 @@ static bool tc_srr_8_4_9_002(std::string& err) {
 
     DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+    tx.unicast_msgs.clear();  // drop the preemptive ACKNACK (TC-SRR-8.4.7.4-002)
 
     const Octet frag_payload[4] = {0x10u, 0x11u, 0x12u, 0x13u};
     ParsedDataFrag df{};
@@ -452,6 +454,7 @@ static bool tc_srr_8_4_7_002(std::string& err) {
     const Locator loc = make_udpv4_locator(0xC0A80155u, 7411u);
     DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 0u);
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+    tx.unicast_msgs.clear();  // drop the preemptive ACKNACK (TC-SRR-8.4.7.4-002)
 
     heartbeat(r, reader_guid, writer_guid, 4, 1);
     ParsedAckNack ack{};
@@ -473,6 +476,7 @@ static bool tc_srr_8_4_7_003(std::string& err) {
     const Locator loc = make_udpv4_locator(0xC0A80166u, 7411u);
     DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 0u);
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+    tx.unicast_msgs.clear();  // drop the preemptive ACKNACK (TC-SRR-8.4.7.4-002)
 
     deliver(r, reader_guid, writer_guid, 4);
     heartbeat(r, reader_guid, writer_guid, 4, 1);

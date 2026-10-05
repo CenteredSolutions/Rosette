@@ -103,6 +103,7 @@ static bool tc_sedp_8_5_4_011(std::string& err) {
         EndpointMatchTable table(nullptr, nullptr, nullptr);
         SedpReader reader(local, wide, table);
         peer.discover(reader);
+        wide.sent.clear();  // the preemptive ACKNACKs (TC-SRR-8.4.7.4-002)
         peer.heartbeat(reader, pubs, 1, 4, 1);
         CHECK(wide.sent.size() == 1u && parse_acknack(wide.sent[0], ack), "one ACKNACK");
         CHECK(ack.readerSNState.numBits == 4u, "unrestricted link: all four requested at once");
@@ -113,6 +114,7 @@ static bool tc_sedp_8_5_4_011(std::string& err) {
     EndpointMatchTable table(nullptr, nullptr, nullptr);
     SedpReader reader(local, tx, table);
     peer.discover(reader);
+    tx.sent.clear();  // the preemptive ACKNACKs (TC-SRR-8.4.7.4-002)
 
     // Announcement 4 arrives; 1-3 were in a datagram the link dropped.
     peer.account(reader, pubs, 4);

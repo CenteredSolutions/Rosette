@@ -464,6 +464,15 @@ private:
     void resolve_endpoint_locators(const GuidPrefix& remote_prefix,
                                    const Locator*&   locators,
                                    uint8_t&          count) const noexcept;
+
+    /**
+     * @brief The vendor a remote participant announced in SPDP.
+     *
+     * @param[in] remote_prefix GUID prefix of the participant.
+     * @return Its PID_VENDOR_ID; VENDORID_UNKNOWN for this participant and for
+     *   a prefix with no peer record.
+     */
+    VendorId peer_vendor_id(const GuidPrefix& remote_prefix) const noexcept;
     template <typename Deliver>
     void for_each_addressed_reader(const EntityId& writer_id, const EntityId& reader_id,
                                    Deliver&& deliver) noexcept;

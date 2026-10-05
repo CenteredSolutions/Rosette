@@ -30,6 +30,25 @@ struct CaptureTransport : ITransport {
     }
 };
 
+/// DATA sequence numbers and HEARTBEATs found in one datagram.
+struct Submessages {
+    std::vector<int64_t> data_sns{};
+    std::vector<ParsedHeartbeat> heartbeats{};
+};
+
+/// @brief Parses @p msg into @p out; false when it does not parse.
+bool parse_submessages(const std::vector<Octet>& msg, Submessages& out) {
+    ParseOps ops{};
+    ops.on_data = [](const ParseContext& ctx, const ParsedData& d) noexcept {
+        static_cast<Submessages*>(ctx.user_data)->data_sns.push_back(d.writerSN.to_int64());
+    };
+    ops.on_heartbeat = [](const ParseContext& ctx, const ParsedHeartbeat& hb) noexcept {
+        static_cast<Submessages*>(ctx.user_data)->heartbeats.push_back(hb);
+    };
+    return parse_message(msg.data(), static_cast<uint32_t>(msg.size()), GuidPrefix{}, ops, &out)
+           == ParseResult::OK;
+}
+
 Guid make_guid(Octet p0, Octet p1, Octet p2, const EntityId& eid) {
     Guid g{};
     g.prefix.value[0] = p0;
@@ -144,6 +163,54 @@ static bool tc_swr_8_4_1_4_003(std::string& err) {
           "TRANSIENT_LOCAL replay should be sent at match time, leaving nothing unsent");
     CHECK(tx.unicast_msgs.size() == 1u && tx.unicast_dests[0] == loc,
           "the cached change should be replayed to the new reader's locator");
+
+    Submessages sent{};
+    CHECK(parse_submessages(tx.unicast_msgs[0], sent), "the replay should parse");
+    CHECK(sent.data_sns.size() == 1u && sent.heartbeats.empty(),
+          "a BEST_EFFORT writer replays the DATA without a HEARTBEAT");
+    return true;
+}
+
+static bool tc_swr_8_4_1_4_008(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer_guid = make_guid(0x80u, 0x81u, 0x82u, make_entity(1u, 1u, 1u, 0xC2u));
+    const Guid reader_guid = make_guid(0x90u, 0x91u, 0x92u, make_entity(2u, 2u, 2u, 0xC7u));
+    const Locator loc = make_udpv4_locator(0xC0A80122u, 7411u);
+    StatefulWriterStorage<4, 1> w(writer_guid, ReliabilityKind::RELIABLE,
+                                  DurabilityKind::TRANSIENT_LOCAL, tx);
+
+    const Octet data[4] = {0x11u, 0x22u, 0x33u, 0x44u};
+    CHECK(w.write_async(ChangeKind::ALIVE, data, 4u), "first write should succeed");
+    CHECK(w.write_async(ChangeKind::ALIVE, data, 4u), "second write should succeed");
+    CHECK(tx.unicast_msgs.empty(), "no reader is matched yet, so nothing is sent");
+
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+
+    std::vector<int64_t> data_sns{};
+    std::vector<ParsedHeartbeat> heartbeats{};
+    std::size_t heartbeat_msg = tx.unicast_msgs.size();
+    for (std::size_t i = 0; i < tx.unicast_msgs.size(); ++i) {
+        Submessages sent{};
+        CHECK(parse_submessages(tx.unicast_msgs[i], sent), "every replay datagram should parse");
+        data_sns.insert(data_sns.end(), sent.data_sns.begin(), sent.data_sns.end());
+        if (!sent.heartbeats.empty()) {
+            heartbeat_msg = i;
+        }
+
+        heartbeats.insert(heartbeats.end(), sent.heartbeats.begin(), sent.heartbeats.end());
+    }
+
+    CHECK(data_sns == (std::vector<int64_t>{1, 2}), "both cached changes are replayed in order");
+    CHECK(heartbeats.size() == 1u, "the replay carries exactly one HEARTBEAT");
+    CHECK(heartbeat_msg == tx.unicast_msgs.size() - 1u,
+          "the HEARTBEAT goes with the newest change, after every DATA it advertises");
+
+    const ParsedHeartbeat& hb = heartbeats[0];
+    CHECK(hb.readerId == reader_guid.entityId && hb.writerId == writer_guid.entityId,
+          "the HEARTBEAT names the new reader and this writer");
+    CHECK(hb.firstSN.to_int64() == 1 && hb.lastSN.to_int64() == 2,
+          "the HEARTBEAT spans the replayed cache, SN 1 to 2");
+    CHECK(!hb.finalFlag, "the HEARTBEAT is non-final, so the reader acknowledges at once");
     return true;
 }
 
@@ -157,6 +224,11 @@ void append_stateful_writer_tests_8_4_1_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.1.4-003",
                      "§8.7.2.2: a TRANSIENT_LOCAL writer replays its cached changes to a newly matched reader immediately.",
                      tc_swr_8_4_1_4_003});
+    tests.push_back(
+        {"TC-SWR-8.4.1.4-008",
+         "§8.7.2.2/§8.4.15.4: a RELIABLE TRANSIENT_LOCAL writer replays its cache to a newly "
+         "matched reader with a non-final HEARTBEAT on the newest change spanning the cache.",
+         tc_swr_8_4_1_4_008});
 }
 
 } // namespace spec_test
