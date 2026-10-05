@@ -583,7 +583,7 @@ void RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
             const Locator* locs = writer.locators;
             uint8_t count = writer.locatorCount;
             p->resolve_endpoint_locators(writer.guid.prefix, locs, count);
-            r->matched_writer_add(writer.guid, locs, count);
+            r->matched_writer_add(writer.guid, locs, count, p->peer_vendor_id(writer.guid.prefix));
         }
     }
 }
@@ -603,6 +603,17 @@ void RTPSParticipant::resolve_endpoint_locators(const GuidPrefix& remote_prefix,
         locators = peer.data.defaultUnicastLocatorList;
         count    = peer.data.defaultUnicastLocatorCount;
     });
+}
+
+VendorId RTPSParticipant::peer_vendor_id(const GuidPrefix& remote_prefix) const noexcept {
+    VendorId vendor = VENDORID_UNKNOWN;
+    spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
+        if (peer.data.guidPrefix == remote_prefix) {
+            vendor = peer.data.vendorId;
+        }
+    });
+
+    return vendor;
 }
 
 void RTPSParticipant::on_endpoint_unmatch(const Guid& writer_guid,

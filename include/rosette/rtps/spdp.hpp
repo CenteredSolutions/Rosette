@@ -165,8 +165,10 @@ inline bool plcdr_write_sentinel(Octet* buf, uint32_t cap, uint32_t& off) noexce
 // A peer's announcement carries more than discovery uses afterwards: four
 // locator lists of every kind on every interface, protocol and vendor
 // versions, liveliness counts. The peer table keeps, per participant, only
-// what SEDP and endpoint addressing read: the GUID prefix, the builtin
-// endpoint set, and the leading UDP locators of the metatraffic unicast,
+// what SEDP and endpoint addressing read: the GUID prefix, the vendor (the
+// form of preemptive ACKNACK its writers recognize, see
+// StatefulReader::matched_writer_add()), the builtin endpoint set, and the
+// leading UDP locators of the metatraffic unicast,
 // metatraffic multicast and default unicast lists (copy_udp_locators()).
 // On a network of dozens of participants, the table is one of the largest
 // discovery structures a microcontroller holds, so every octet here is
@@ -182,6 +184,7 @@ inline bool plcdr_write_sentinel(Octet* buf, uint32_t cap, uint32_t& off) noexce
 /// What discovery keeps of a remote participant's SPDPdiscoveredParticipantData.
 struct DiscoveredParticipant {
     GuidPrefix guidPrefix                = {};
+    VendorId vendorId = {};                     ///< §8.5.3.2, PID_VENDOR_ID.
     uint32_t   availableBuiltinEndpoints = 0;   ///< Bitmask — §8.5.4.3.
 
     Locator metatrafficUnicastLocatorList[RTPS_MAX_PEER_LOCATORS]   = {};
@@ -195,7 +198,7 @@ struct DiscoveredParticipant {
      * @brief Keeps what discovery uses of one received SPDP announcement.
      *
      * @param[in] announced The decoded announcement.
-     * @return The prefix and builtin endpoint set as announced, and each
+     * @return The prefix, vendor and builtin endpoint set as announced, and each
      *   locator list reduced to its leading RTPS_MAX_PEER_LOCATORS UDP
      *   locators (copy_udp_locators()).
      *

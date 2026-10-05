@@ -90,15 +90,50 @@ public:
     StatefulReader(const StatefulReader&)            = delete;
     StatefulReader& operator=(const StatefulReader&) = delete;
 
-    // ----------------------------------------------------------
-    // §8.4.7.4  matched_writer_add()
-    //
-    // "Adds the WriterProxy to the set of matched writers."
-    //  — §8.4.7.4, p. 141
-    // ----------------------------------------------------------
-    bool matched_writer_add(const Guid&    writer_guid,
-                            const Locator* unicast_locators,
-                            uint8_t        locator_count) noexcept;
+    /**
+     * @brief Adds a WriterProxy for a newly matched writer and, when RELIABLE, asks it for a
+     * HEARTBEAT.
+     *
+     * Discovery (SEDP, or the participant matching a local reader to a known
+     * remote writer) calls this once per match. A RELIABLE reader drops DATA
+     * from writers it has not matched, so DATA a writer sent before this side
+     * matched it is lost here, and the writer has no reason to resend it until
+     * its next periodic HEARTBEAT (3 s by default in Fast DDS). The first
+     * request a stock ROS 2 client sends right after creating the client is
+     * exactly such DATA.
+     *
+     * A RELIABLE reader therefore sends a preemptive ACKNACK at once
+     * (send_preemptive_acknack()): nothing acknowledged, nothing requested,
+     * F-flag clear. The writer answers with a HEARTBEAT, the HEARTBEAT shows
+     * the dropped changes as MISSING, and the ordinary ACKNACK requests them,
+     * so the loss costs a few round trips instead of a HEARTBEAT period. A
+     * BEST_EFFORT reader sends nothing.
+     *
+     * @param[in] writer_guid      GUID of the remote writer.
+     * @param[in] unicast_locators Locators ACKNACKs are sent to; may be null
+     *   when `locator_count` is 0, in which case no ACKNACK can be sent.
+     * @param[in] locator_count    Number of entries in `unicast_locators`.
+     * @param[in] writer_vendor    Vendor of the writer's participant (SPDP
+     *   PID_VENDOR_ID); selects the preemptive ACKNACK's form. Unknown for a
+     *   local writer.
+     * @return `true` when a proxy was added; `false` when the writer is
+     *   already matched or the proxy table is full.
+     *
+     * Verification:
+     * - Correct means: one proxy per matched writer; a RELIABLE reader sends
+     *   exactly one non-final, empty ACKNACK with count 1 on a new match, in
+     *   the form the writer's vendor recognizes; a BEST_EFFORT reader and a
+     *   rejected duplicate send none.
+     * - Covered by: TC-SRR-8.4.7.4-001, TC-SRR-8.4.7.4-002,
+     *   TC-SRR-8.4.7.4-003, TC-SRR-8.4.7.4-004.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.7.4 (matched_writer_add), §8.3.7.1 (ACKNACK
+     *   F-flag), §8.4.10.4 (WriterProxy)
+     */
+    bool matched_writer_add(const Guid& writer_guid, const Locator* unicast_locators,
+                            uint8_t locator_count,
+                            const VendorId& writer_vendor = VENDORID_UNKNOWN) noexcept;
 
     // ----------------------------------------------------------
     // §8.4.7.4  matched_writer_remove()
@@ -355,6 +390,37 @@ private:
      * - Covered by: TC-SRR-8.4.7-003.
      */
     void request_next_repair(WriterProxy& proxy) noexcept;
+
+    /**
+     * @brief Sends the preemptive ACKNACK of a new match, in the form the writer's vendor
+     * recognizes.
+     *
+     * The ACKNACK acknowledges nothing, requests nothing and has the F-flag
+     * clear. DDSI-RTPS requires a writer to answer any non-final ACKNACK with
+     * a HEARTBEAT, and Cyclone DDS does, for the spec-valid bitmapBase 1.
+     * Fast DDS answers only its own form, bitmapBase 0 (which the spec's
+     * SequenceNumberSet does not allow); for bitmapBase 1 it restarts its
+     * periodic HEARTBEAT timer, which delays the HEARTBEAT a full period.
+     * Cyclone in turn rejects bitmapBase 0 as malformed unless the sender is
+     * eProsima or RTI. So the form follows the writer's vendor: bitmapBase 0
+     * for eProsima and RTI (which sends the same form), bitmapBase 1 for
+     * everyone else.
+     *
+     * @param[in,out] proxy         The writer just matched; its count is
+     *   advanced (on_acknack_sent()).
+     * @param[in]     writer_vendor Vendor of the writer's participant.
+     *
+     * Verification:
+     * - Correct means: one ACKNACK to the writer's unicast locator, empty
+     *   set, F-flag clear, count 1, bitmapBase 0 exactly for eProsima and RTI.
+     * - Covered by: TC-SRR-8.4.7.4-002, TC-SRR-8.4.7.4-004.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.7.1 (ACKNACK), §8.3.5.5 (SequenceNumberSet)
+     * - Fast DDS 2.6 StatefulWriter::process_acknack, WriterProxy::perform_initial_ack_nack
+     * - Cyclone DDS 0.10 q_receive.c validate_AckNack, handle_AckNack
+     */
+    void send_preemptive_acknack(WriterProxy& proxy, const VendorId& writer_vendor) noexcept;
 
     /**
      * @brief True when the change `sn` from `proxy`'s writer should be delivered.

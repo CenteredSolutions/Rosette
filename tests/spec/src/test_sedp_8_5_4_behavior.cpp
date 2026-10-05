@@ -519,6 +519,9 @@ static bool tc_sedp_8_5_4_006(std::string& err) {
     peer.heartbeat(reader, pubs, 1, 3, 1);
     CHECK(tx.sent.empty(), "a HEARTBEAT from an undiscovered participant is ignored");
     peer.discover(reader);
+    CHECK(!tx.sent.empty(), "matching the peer's announcers sends the preemptive ACKNACKs");
+    tx.sent.clear();
+    tx.dests.clear();
 
     // Before any DATA is received, HEARTBEAT should produce a NACK for 1..3.
     peer.heartbeat(reader, pubs, 1, 3, 1);
@@ -533,7 +536,7 @@ static bool tc_sedp_8_5_4_006(std::string& err) {
     CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(1),
           "ACKNACK bitmapBase must be firstSN when no data received");
     CHECK(ack.readerSNState.numBits >= 3u, "ACKNACK must cover SNs 1-3 in the NACK bitmap");
-    CHECK(ack.count == 1, "first ACKNACK count must be 1");
+    CHECK(ack.count == 2, "the first answer follows the preemptive ACKNACK (count 1)");
 
     peer.account(reader, pubs, 1);
     peer.account(reader, pubs, 2);
@@ -549,7 +552,7 @@ static bool tc_sedp_8_5_4_006(std::string& err) {
           "after receiving all data, ACKNACK must be a pure ACK (numBits=0)");
     CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(4),
           "pure ACK bitmapBase must be lastSN+1");
-    CHECK(ack.count == 2, "second ACKNACK count must be 2");
+    CHECK(ack.count == 3, "second answer count must be 3");
     return true;
 }
 

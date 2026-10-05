@@ -358,6 +358,8 @@ static bool tc_spdp_8_5_3_007(std::string& err) {
     memcpy(guid, gp.value, 12u);
     guid[15] = 0xC1u;
     CHECK(plcdr_write_param(buf, sizeof(buf), off, pid::PARTICIPANT_GUID, guid, 16u), "guid");
+    const Octet vendor[4] = {0x01u, 0x0Fu, 0x00u, 0x00u};
+    CHECK(plcdr_write_param(buf, sizeof(buf), off, pid::VENDOR_ID, vendor, 4u), "vendor");
 
     Locator shm{};
     shm.kind = 16;
@@ -382,13 +384,15 @@ static bool tc_spdp_8_5_3_007(std::string& err) {
     bool checked = false;
     r.for_each_peer([&](const PeerEntry& peer) {
         if (peer.data.guidPrefix != gp) return;
-        checked = peer.data.metatrafficUnicastLocatorCount == 2u &&
-                  peer.data.metatrafficUnicastLocatorList[0] == meta_a &&
-                  peer.data.metatrafficUnicastLocatorList[1] == meta_b &&
-                  peer.data.defaultUnicastLocatorCount == 1u &&
-                  peer.data.defaultUnicastLocatorList[0] == user_d;
+        checked = peer.data.metatrafficUnicastLocatorCount == 2u
+                  && peer.data.metatrafficUnicastLocatorList[0] == meta_a
+                  && peer.data.metatrafficUnicastLocatorList[1] == meta_b
+                  && peer.data.defaultUnicastLocatorCount == 1u
+                  && peer.data.defaultUnicastLocatorList[0] == user_d
+                  && peer.data.vendorId == VENDORID_EPROSIMA;
     });
-    CHECK(checked, "the peer keeps its first two UDP metatraffic locators and its UDP default");
+    CHECK(checked,
+          "the peer keeps its vendor, its first two UDP metatraffic locators and its UDP default");
     return true;
 }
 

@@ -751,6 +751,10 @@ struct VendorId {
 inline constexpr VendorId VENDORID_UNKNOWN   = {};
 inline constexpr VendorId VENDORID_THIS_IMPL = { { 0x01, 0xEE } };
 
+/// Vendors whose behavior Rosette adapts to (OMG DDSI-RTPS vendor ID registry).
+inline constexpr VendorId VENDORID_RTI_CONNEXT = {{0x01, 0x01}};
+inline constexpr VendorId VENDORID_EPROSIMA = {{0x01, 0x0F}};
+
 // ============================================================
 // §8.3.3  ReliabilityKind_t, DurabilityKind_t, ChangeKind_t
 //
