@@ -23,9 +23,49 @@ participant that calls the board's service. It fails on every run with the
 filler slots taken, and passes with a free slot.
 
 Raising `RTPS_MAX_PEERS` to the network size is the alternative this design
-avoids. Each full peer costs 528 B on Cortex-M0+ (measured before the
-locator work merged in #9 and step 3; about 430 B estimated after them), so
-70 full peers need about 30 KB.
+avoids; the RAM budget below shows why.
+
+## The RAM budget
+
+Measured on an example firmware based on RP2040 (264 KB of SRAM, 256 KB of it
+in the main banks), built with 8 peer slots, 8 matches per local endpoint, 18
+local writers and 13 local readers, before the locator savings of #9 and the
+origin change that follows it. `.data`, `.bss` and the heap and stack
+reserves take 199 KB of the 256 KB, which leaves about 57 KB free.
+
+The participant itself is 84.5 KB, and most of it does not depend on the
+network size at all:
+
+| Part | Octets | Scales with |
+|---|---|---|
+| Writer slots, 18 × 1,680 (each holds 8 reader proxies) | 30,240 | local writers × matches per endpoint |
+| Reader slots, 13 × 1,600 (each holds 8 writer proxies) | 20,800 | local readers × matches per endpoint |
+| Local endpoint names in the match table | 10,656 | local endpoints |
+| Match records, 248 × 32 | 7,936 | local endpoints × matches per endpoint |
+| Remote endpoint records, 159 × 16 | 2,544 | configured, not peers |
+| Per-peer discovery state, 8 × 528 | 4,224 | **peers** |
+| SEDP announcement storage and the rest | about 8,000 | local endpoints |
+
+So the network size reaches RAM through one line: 528 B per peer slot
+(peer record 176, SEDP proxies 2 × 80 + 2 × 64, match-table origin 64). The
+endpoint lines are already sized by what the board talks to, not by who else
+is on the network.
+
+| Peers the board can hold | Per-peer RAM | Free of the 57 KB |
+|---|---|---|
+| 8 full slots (today) | 4.2 KB | 57 KB |
+| 90 full slots, today's sizes | 47.5 KB | about 14 KB |
+| 90 full slots, after #9 and step 3 (about 430 B each, estimated) | 38.7 KB | about 22 KB |
+| 90 known-peer records + 12 active slots (this design) | 6.1 + 4.8 = 10.9 KB | about 50 KB |
+
+Ninety full slots would technically fit, but leave too little headroom for
+the application and for a board that matches a few more endpoints than
+planned. Two tiers keep the per-peer cost at the size of a small record, and
+spend the full 400 B only on the peers the board actually exchanges data with.
+
+A separate lever, not part of this design: matches per local endpoint. Every
+writer slot reserves 8 reader proxies even when only one or two peers read
+it. Lowering that limit to 4 would save about 13 KB on this firmware.
 
 ## Goals
 
@@ -276,6 +316,39 @@ the peer's remote endpoint records go, and the matches dissolve through
 that is a new participant, and the `ros_discovery_info` rematch republish
 (`RosDiscoveryInfoWriter::on_reader_rematched()`) still applies to it.
 
+## Latency for matched peers
+
+The participant runs in the same loop as the board's matched traffic, so
+every datagram discovery processes delays that traffic by the time it takes.
+Measured on the same board: reading a datagram over SPI takes about 0.3 ms,
+and decoding an SEDP sample 0.4 to 1.8 ms. With 90 participants announcing
+every 3 s, about 30 SPDP datagrams a second arrive by multicast, whatever the
+board does with them. At about 1.5 ms each, that is 4 to 5 % of the CPU in
+stalls of up to 1.5 ms at a time, and a whole burst at once when the machine
+powers up.
+
+Four rules keep discovery out of the way of matched traffic:
+
+1. **Matched traffic first.** Discovery and user traffic arrive on separate
+   sockets (the SPDP multicast port, the metatraffic unicast port, the user
+   unicast port). The participant drains the user socket first, and handles
+   a bounded number of discovery datagrams per pass. Discovery is built to
+   lose datagrams: SPDP repeats about six times per lease, and SEDP is
+   reliable. User traffic is not built to wait.
+2. **A known peer's SPDP costs a lookup, not a decode.** The sender's GUID
+   prefix is in the RTPS header. If it names a known peer and the payload has
+   the same length as last time, the lease is refreshed and the rest of the
+   datagram is skipped without reading it over SPI. The full announcement is
+   decoded again at most once per lease, which catches a changed address
+   within one lease period. Of 30 SPDP datagrams a second, almost all take
+   this path.
+3. **A parked peer costs nothing else.** Beyond its SPDP, it only sends an
+   occasional SEDP HEARTBEAT, answered from its record without a decode.
+4. **The active tier bounds the boot burst.** Only peers with an active slot
+   exchange SEDP, so at most `RTPS_MAX_PEERS` peers' endpoint announcements
+   are in flight at once, instead of every participant on the machine
+   announcing its endpoints to the board in the same second.
+
 ## What peers see
 
 From any peer's point of view the board is an ordinary participant:
@@ -293,7 +366,7 @@ with the proxy state remembered across the gap instead of reset. The spec
 allows both operations at any time, and the remembered state only saves
 retransmissions.
 
-## Memory
+## Known-peer record
 
 All figures are estimates for Cortex-M0+; the ARM `sizeof` probe confirms
 them before and after the change.
@@ -315,17 +388,9 @@ Sequence numbers are kept as their low 32 bits. Neither side's discovery
 writers come anywhere near 2^32 changes; a peer whose numbers do not fit is
 simply never parked.
 
-Active slot: the remainder of a full peer today, about 400 B (the ranked
-locator lists and four SEDP proxies).
-
-| Configuration | Full peers today | Two tiers |
-|---|---|---|
-| 70 peers, all full | about 30 KB | |
-| 96 records, 12 active slots | | about 6.5 KB + 4.8 KB = 11.3 KB |
-
-The number of active slots a board needs is the number of peers it really
-matches plus a few for peers in their first exchange. That number is the
-measurement that decides the configuration (below).
+Active slot: the remainder of a full peer, about 400 B (the ranked locator
+lists and four SEDP proxies). A board needs as many active slots as the peers
+it really matches, plus a few for peers in their first exchange.
 
 ## Configuration
 
@@ -374,6 +439,10 @@ parked.
    the network's topology as an input rather than a measurement.
 2. **Per-peer cost after #9 and step 3.** Re-run the ARM `sizeof` probe; the
    430 B figure above is arithmetic.
+5. **Discovery load on the board.** With the board on the LAN and 90
+   simulated participants on a workstation, the time the board spends per
+   SPDP datagram (decoded and skipped), and the round trip of a service call
+   from a matched peer with and without that load.
 3. **Fast DDS 2.6 SEDP HEARTBEATs to a fully acknowledged reader.** Whether
    they keep coming, how often, and whether they carry the FinalFlag decides
    how much traffic parked peers still cost.
