@@ -446,6 +446,65 @@ static bool tc_sedp_8_5_5_1_011(std::string& err) {
     return true;
 }
 
+// §8.5.4.2: a proxy refers to the locators of the origin its remote endpoint
+// was matched with. When a matched endpoint re-announces other locators, its
+// pairs are dissolved and reported again with the new origin, so no proxy
+// refers to the old origin once another participant's endpoint takes it.
+// An unchanged re-announcement dissolves nothing.
+static bool tc_sedp_8_5_5_1_012(std::string& err) {
+    struct RelocObs {
+        int matches = 0;
+        int unmatches = 0;
+        const Locator* reader_locators = nullptr;
+    } obs{};
+
+    EndpointMatchTable t(
+        [](const MatchedEndpoint&, const MatchedEndpoint& r, const TopicName&, void* u) noexcept {
+            auto* o = static_cast<RelocObs*>(u);
+            o->matches++;
+            o->reader_locators = r.locators;
+        },
+        [](const Guid&, const Guid&, void* u) noexcept { static_cast<RelocObs*>(u)->unmatches++; },
+        &obs);
+    const Guid local_writer = make_guid(0x01u, 0x02u, 0x03u, make_entity(1u, 1u, 1u, 0x03u));
+    t.set_local_prefix(local_writer.prefix);
+    t.add_writer(make_writer(local_writer, "rt/moving", "pkg::msg::dds_::T_",
+                             ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE));
+
+    const Locator before = make_udpv4_locator(0xC0A801A0u, 7411u);
+    const Locator after = make_udpv4_locator(0xC0A801A1u, 7411u);
+    DiscoveredReaderData mover =
+        make_reader(make_guid(0x0Au, 0x0Bu, 0x0Cu, make_entity(2u, 2u, 2u, 0x04u)), "rt/moving",
+                    "pkg::msg::dds_::T_", ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    mover.unicastLocatorList[0] = before;
+    mover.unicastLocatorCount = 1u;
+    t.add_reader(mover);
+    CHECK(obs.matches == 1 && obs.reader_locators != nullptr && *obs.reader_locators == before,
+          "the reader matches at its announced locator");
+
+    t.add_reader(mover);
+    CHECK(obs.matches == 1 && obs.unmatches == 0,
+          "re-announcing the same locators dissolves nothing");
+
+    mover.unicastLocatorList[0] = after;
+    t.add_reader(mover);
+    CHECK(obs.unmatches == 1 && obs.matches == 2,
+          "re-announcing other locators dissolves the pair and reports it again");
+    const Locator* reported = obs.reader_locators;
+    CHECK(reported != nullptr && *reported == after, "the pair is reported at the new locator");
+
+    // Another participant's endpoint with locators of its own takes the
+    // origin the mover left; the reported reference must not see them.
+    DiscoveredReaderData other =
+        make_reader(make_guid(0x0Du, 0x0Eu, 0x0Fu, make_entity(3u, 3u, 3u, 0x04u)), "rt/unrelated",
+                    "pkg::msg::dds_::T_", ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    other.unicastLocatorList[0] = make_udpv4_locator(0xC0A801B0u, 7411u);
+    other.unicastLocatorCount = 1u;
+    t.add_reader(other);
+    CHECK(*reported == after, "the matched reference still holds the mover's locator");
+    return true;
+}
+
 // §8.5.4.2: an endpoint that announces its own locators is reported at the
 // most reachable of them first, as a participant's lists are (TC-SPDP-8.5.3-010):
 // the one inside this participant's prefix, then the rest in announced order.
@@ -529,6 +588,11 @@ void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-8.5.5.1-004",
                      "§8.5.5.1 with restart path: remove_participant dissolves matches and rediscovered endpoints rematch cleanly.",
                      tc_sedp_8_5_5_1_004});
+    tests.push_back({"TC-SEDP-8.5.5.1-012",
+                     "§8.5.4.2: a matched remote endpoint that re-announces other locators is "
+                     "unmatched and matched again at them; its old origin is never referenced "
+                     "after another endpoint takes it.",
+                     tc_sedp_8_5_5_1_012});
 }
 
 } // namespace spec_test

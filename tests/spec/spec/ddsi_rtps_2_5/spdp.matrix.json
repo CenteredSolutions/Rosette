@@ -64,7 +64,7 @@
       "section": "8.5.3.2",
       "page": 160,
       "normativity": "implementation-limit",
-      "statement": "A discovered participant keeps at most RTPS_MAX_PEER_LOCATORS locators per metatraffic unicast, metatraffic multicast and default unicast list; locator kinds the stack cannot send to are not kept, and without local addresses to rank against, kept locators stay in announced order.",
+      "statement": "A discovered participant keeps at most RTPS_MAX_PEER_LOCATORS locators per metatraffic unicast and default unicast list, and no multicast list; locator kinds the stack cannot send to are not kept, and without local addresses to rank against, kept locators stay in announced order.",
       "status": "implemented",
       "test_ids": ["TC-SPDP-8.5.3-007"]
     },

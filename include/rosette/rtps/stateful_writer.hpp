@@ -339,8 +339,15 @@ public:
      * the client without delay. A VOLATILE writer makes only
      * changes written after this relevant to the new reader.
      *
+     * The proxy refers to one entry of `unicast_locators` rather than copying
+     * it (ReaderProxy::init()), so the reader's traffic follows the owning
+     * record when it takes a new address.
+     *
      * @param[in] reader_guid        The remote reader's GUID.
-     * @param[in] unicast_locators   Its unicast locators.
+     * @param[in] unicast_locators   Its unicast locators, owned by a record
+     *   that stays valid until the reader is unmatched (the SPDP peer record
+     *   or an EndpointMatchTable origin in a participant). May be null when
+     *   `locator_count` is 0.
      * @param[in] locator_count      Number of locators.
      * @param[in] expects_inline_qos Its expectsInlineQos.
      * @return `false` when the reader is already matched or every proxy slot
@@ -351,11 +358,11 @@ public:
      *   TRANSIENT_LOCAL writer, and a reliable writer's newest one arrives
      *   with a non-final HEARTBEAT spanning the cache; a best-effort writer
      *   sends no HEARTBEAT.
-     * - Covered by: TC-SWR-8.4.1.4-002, TC-SWR-8.4.1.4-003,
+     * - Covered by: , TC-SWR-8.4.1.1-001, TC-SWR-8.4.1.4-002, TC-SWR-8.4.1.4-003,
      *   TC-SWR-8.4.1.4-008.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.7.2.2,
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.4.1.1, §8.7.2.2,
      *   §8.4.15.4 (piggybacked HEARTBEAT)
      */
     bool matched_reader_add(const Guid&    reader_guid,

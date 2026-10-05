@@ -19,13 +19,9 @@ void ReaderProxy::init(const Guid& reader_guid, const Locator* unicast_locs,
     remoteReaderGuid = reader_guid;
     expectsInlineQos = expects_inline_qos;
     isActive         = true;
-    const uint8_t n = unicast_count < RTPS_MAX_READER_PROXY_LOCATORS
-                          ? unicast_count
-                          : static_cast<uint8_t>(RTPS_MAX_READER_PROXY_LOCATORS);
-    for (uint8_t i = 0; i < n; ++i) unicastLocatorList[i] = unicast_locs[i];
-    unicastLocatorCount = n;
-    firstRelevantSN_    = first_relevant_sn;
-    highestSentSN_      = first_relevant_sn - 1;
+    unicastLocator = preferred_unicast_locator(unicast_locs, unicast_count);
+    firstRelevantSN_ = first_relevant_sn;
+    highestSentSN_ = first_relevant_sn - 1;
 }
 
 void ReaderProxy::restart(const SequenceNumber& first_relevant_sn) noexcept {
@@ -44,7 +40,7 @@ void ReaderProxy::clear() noexcept {
     remoteReaderGuid    = GUID_UNKNOWN;
     expectsInlineQos    = false;
     isActive            = false;
-    unicastLocatorCount = 0;
+    unicastLocator = nullptr;
     highestAckedSN      = SEQUENCENUMBER_ZERO;
     lastAcknackCount    = 0;
     lastNackFragCount   = 0;
@@ -128,15 +124,6 @@ bool ReaderProxy::is_announcing(const HistoryCache& history) const noexcept {
 SequenceNumber ReaderProxy::next_requested_change() const noexcept {
     if (requestedBits_ == 0u) return SEQUENCENUMBER_UNKNOWN;
     return requestedBase_ + static_cast<int64_t>(__builtin_ctzll(requestedBits_));
-}
-
-const Locator& ReaderProxy::best_locator() const noexcept {
-    for (uint8_t i = 0; i < unicastLocatorCount; ++i) {
-        const Long kind = unicastLocatorList[i].kind;
-        if (kind == locator_kind::UDPv4 || kind == locator_kind::UDPv6) return unicastLocatorList[i];
-    }
-    if (unicastLocatorCount > 0) return unicastLocatorList[0];
-    return LOCATOR_INVALID;
 }
 
 }  // namespace rtps

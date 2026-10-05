@@ -86,6 +86,15 @@
       "test_ids": ["TC-SEDP-8.5.4-006", "TC-SEDP-8.5.4-009", "TC-SEDP-8.5.4-011", "TC-SEDP-8.5.4-013"]
     },
     {
+      "id": "REQ-SEDP-8.5.4.1-UNICAST-BUILTIN-MATCH",
+      "section": "8.5.4.1",
+      "page": 165,
+      "normativity": "implementation-behavior",
+      "statement": "The SEDP builtin writers and readers are matched with a discovered participant at its metatraffic unicast locators; a participant that announces none is not matched in either direction.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.4-018"]
+    },
+    {
       "id": "REQ-SEDP-8.5.5.1-TOPIC-TYPE",
       "section": "8.5.5.1",
       "page": 169,
@@ -138,6 +147,15 @@
       "statement": "Discovered endpoint data requires PID_ENDPOINT_GUID for valid endpoint identity.",
       "status": "implemented",
       "test_ids": ["TC-SEDP-9.6.3.2-002"]
+    },
+    {
+      "id": "REQ-SEDP-8.5.4.2-ENDPOINT-RELOCATION",
+      "section": "8.5.4.2",
+      "page": 166,
+      "normativity": "shall",
+      "statement": "A matched remote endpoint that re-announces a different unicastLocatorList is matched again at the new locators, and no match refers to the locators it left.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.5.1-012"]
     }
   ]
 }

@@ -238,6 +238,8 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
     Locator kept[RTPS_MAX_REMOTE_ENDPOINT_LOCATORS];
     const uint8_t kept_count = subnets_->select(kept, RTPS_MAX_REMOTE_ENDPOINT_LOCATORS,
                                                 wd.unicastLocatorList, wd.unicastLocatorCount);
+    unmatch_if_relocated(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, /*is_writer=*/true,
+                         wd.writerGuid, kept, kept_count);
     const bool completes_match = pairs_with_local(wd.topicName, wd.typeName, wd.reliabilityKind,
                                                   wd.durabilityKind, /*remote_is_writer=*/true);
     uint8_t origin = kNoOrigin;
@@ -309,6 +311,8 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
     Locator kept[RTPS_MAX_REMOTE_ENDPOINT_LOCATORS];
     const uint8_t kept_count = subnets_->select(kept, RTPS_MAX_REMOTE_ENDPOINT_LOCATORS,
                                                 rd.unicastLocatorList, rd.unicastLocatorCount);
+    unmatch_if_relocated(remote_readers_, RTPS_MAX_DISCOVERED_READERS, /*is_writer=*/false,
+                         rd.readerGuid, kept, kept_count);
     const bool completes_match = pairs_with_local(rd.topicName, rd.typeName, rd.reliabilityKind,
                                                   rd.durabilityKind, /*remote_is_writer=*/false);
     uint8_t origin = kNoOrigin;
@@ -371,6 +375,29 @@ void EndpointMatchTable::dissolve(const Guid& guid, bool is_writer) noexcept
         m = MatchRecord{};
         if (on_unmatch_) on_unmatch_(gone.writer_guid, gone.reader_guid, user_data_);
     }
+}
+
+void EndpointMatchTable::unmatch_if_relocated(RemoteEndpoint* table, uint32_t n, bool is_writer,
+                                              const Guid& guid, const Locator* locators,
+                                              uint8_t count) noexcept {
+    const RemoteEndpoint* stored = find_remote(table, n, guid);
+    if ((stored == nullptr) || !stored->valid()) {
+        return;
+    }
+
+    const RemoteOrigin& o = origins_[stored->origin];
+    bool same = o.locatorCount == count;
+    for (uint8_t k = 0; same && (k < count); ++k) {
+        same = o.locators[k] == locators[k];
+    }
+
+    if (same) {
+        return;
+    }
+
+    RTPS_LOG_I("match", "remote %s re-announced with new locators, matching it again",
+               is_writer ? "writer" : "reader");
+    dissolve(guid, is_writer);
 }
 
 void EndpointMatchTable::remove_writer(const Guid& writer_guid) noexcept

@@ -512,11 +512,7 @@ void SedpWriter::announce_to_peer(const GuidPrefix& peer_prefix,
 void SedpWriter::on_peer_discovered(const DiscoveredParticipant& peer) noexcept
 {
     const Locator* locs = peer.metatrafficUnicastLocatorList;
-    uint8_t count = peer.metatrafficUnicastLocatorCount;
-    if (count == 0u) {
-        locs = peer.metatrafficMulticastLocatorList;
-        count = peer.metatrafficMulticastLocatorCount;
-    }
+    const uint8_t count = peer.metatrafficUnicastLocatorCount;
     if (count == 0u) {
         return;
     }
@@ -679,13 +675,13 @@ void match_builtin_announcer(StatefulReader&              reader,
         reader.matched_writer_remove(announcer);
         return;
     }
-    if (reader.matched_writer_lookup(announcer)) return;
-    const bool unicast = peer.metatrafficUnicastLocatorCount > 0u;
-    reader.matched_writer_add(
-        announcer,
-        unicast ? peer.metatrafficUnicastLocatorList : peer.metatrafficMulticastLocatorList,
-        unicast ? peer.metatrafficUnicastLocatorCount : peer.metatrafficMulticastLocatorCount,
-        peer.vendorId);
+
+    if (reader.matched_writer_lookup(announcer)) {
+        return;
+    }
+
+    reader.matched_writer_add(announcer, peer.metatrafficUnicastLocatorList,
+                              peer.metatrafficUnicastLocatorCount, peer.vendorId);
 }
 
 }  // namespace
@@ -704,6 +700,10 @@ SedpReader::SedpReader(const GuidPrefix&   local_prefix,
 
 void SedpReader::on_peer_discovered(const DiscoveredParticipant& peer) noexcept
 {
+    if (peer.metatrafficUnicastLocatorCount == 0u) {
+        return;
+    }
+
     match_builtin_announcer(publications_reader_, peer,
                             builtin_endpoint::DISC_BUILTIN_ENDPOINT_PUBLICATIONS_ANNOUNCER,
                             entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER);

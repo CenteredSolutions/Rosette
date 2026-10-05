@@ -15,13 +15,27 @@
  *
  * Attributes (§8.4.1.1, Table 8.49, p. 103):
  *   remoteReaderGuid          — GUID of the matched remote reader.
- *   unicastLocatorList        — locators used to address this reader.
+ *   unicastLocatorList        — the locator this reader is addressed at
+ *                               (see "Locator reference" below).
  *   expectsInlineQos          — whether this reader requires inline QoS.
  *   isActive                  — true while reader is reachable / alive.
  *
  * remoteGroupEntityId and multicastLocatorList are not stored: Rosette has
  * no group (Publisher/Subscriber) entities, and a writer sends to each
  * matched reader at its unicast locators only.
+ *
+ * Locator reference
+ * -----------------
+ * A writer sends each reader's traffic to one unicast locator, so the proxy
+ * keeps one: a pointer to the chosen entry of the list it was matched with,
+ * not a copy. That list belongs to a record that outlives the match and is
+ * updated in place: the SPDP peer record for the remote participant's
+ * locators, or the EndpointMatchTable origin for locators an endpoint
+ * announced itself. A peer that keeps its GUID and moves to a new address
+ * re-announces SPDP, the peer record takes the new address, and the proxy
+ * sends there from then on, with no rematch and no reliability state lost.
+ * The proxy costs the size of a pointer however many locators the reader
+ * announced.
  *
  * changes_for_reader as sequence-number bounds
  * --------------------------------------------
@@ -80,10 +94,6 @@
 
 namespace rtps {
 
-#ifndef RTPS_MAX_READER_PROXY_LOCATORS
-#  define RTPS_MAX_READER_PROXY_LOCATORS 2
-#endif
-
 /**
  * @brief A StatefulWriter's record of one matched remote reader (§8.4.1.1).
  *
@@ -107,9 +117,10 @@ public:
     bool    expectsInlineQos   = false;         ///< §8.4.1.1
     bool    isActive           = false;         ///< §8.4.1.1
 
-    /// Unicast locators used to address this reader — §8.4.1.1.
-    Locator unicastLocatorList[RTPS_MAX_READER_PROXY_LOCATORS]   = {};
-    uint8_t unicastLocatorCount                                   = 0;
+    /// The entry of this reader's unicastLocatorList it is addressed at
+    /// (§8.4.1.1), owned by the record the proxy was matched from; null
+    /// when it was matched with none. See "Locator reference" above.
+    const Locator* unicastLocator = nullptr;
 
     // ----------------------------------------------------------
     // Implementation tracking attributes
@@ -146,13 +157,19 @@ public:
      * @brief Starts tracking a newly matched reader.
      *
      * Resets every attribute, then records the reader's GUID, inline-QoS
-     * expectation, up to RTPS_MAX_READER_PROXY_LOCATORS unicast locators,
-     * and the first change relevant to it. Every relevant change still in
-     * the writer's history is then UNSENT (§8.4.1.4, "matched_reader_add").
+     * expectation, the locator it is addressed at, and the first change
+     * relevant to it. Every relevant change still in the writer's history is
+     * then UNSENT (§8.4.1.4, "matched_reader_add").
+     *
+     * The proxy refers to the first UDP entry of `unicast_locs` (else its
+     * first entry) and reads it at every send; see "Locator reference" in
+     * the file comment.
      *
      * @param[in] reader_guid        The remote reader's GUID.
-     * @param[in] unicast_locs       Its unicast locators; `unicast_count` entries.
-     * @param[in] unicast_count      Number of locators; extra ones are dropped.
+     * @param[in] unicast_locs       Its unicast locators; `unicast_count`
+     *   entries. Not copied: the array must stay valid, and is read in place,
+     *   until the proxy is cleared. May be null when `unicast_count` is 0.
+     * @param[in] unicast_count      Number of entries in `unicast_locs`.
      * @param[in] expects_inline_qos Its expectsInlineQos (§8.4.1.1).
      * @param[in] first_relevant_sn  Lowest sequence number the reader is to
      *   receive: 1 for a TRANSIENT_LOCAL writer, which replays its history;
@@ -160,8 +177,11 @@ public:
      *
      * Verification:
      * - Correct means: after init, next_unsent_change() walks exactly the
-     *   history's changes at or above `first_relevant_sn`, lowest first.
-     * - Covered by: TC-SWR-8.4.1.4-002, TC-SWR-8.4.1.4-003, TC-SWR-8.4.9-001.
+     *   history's changes at or above `first_relevant_sn`, lowest first; and
+     *   best_locator() returns the referenced entry's current value, so a
+     *   change to it in place redirects the reader's traffic.
+     * - Covered by: TC-SWR-8.4.1.4-002, TC-SWR-8.4.1.4-003, TC-SWR-8.4.9-001,
+     *   TC-SWR-8.4.1.1-001.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.4.1.1, §8.7.2.2
@@ -398,13 +418,24 @@ public:
     /**
      * @brief The locator to send this reader's traffic to.
      *
-     * Prefers a UDP locator, because some peers advertise other transports
-     * (for example shared memory) ahead of UDP in SEDP.
+     * init() chose the entry: a UDP locator when the reader announced one,
+     * because some peers advertise other transports (for example shared
+     * memory) ahead of UDP. Its value is read now, so it reflects the owning
+     * record's latest update.
      *
-     * @return The first UDPv4/UDPv6 locator, else the first locator, else
-     *   LOCATOR_INVALID.
+     * @return The referenced locator; LOCATOR_INVALID when the proxy has
+     *   none, or the owning record has since emptied that entry (its kind is
+     *   INVALID or RESERVED). Callers skip the send on LOCATOR_INVALID.
+     *
+     * Verification:
+     * - Correct means: after the referenced entry changes in place, the
+     *   next HEARTBEAT and DATA go to its new value.
+     * - Covered by: TC-SWR-8.4.1.1-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.1 (unicastLocatorList)
      */
-    const Locator& best_locator() const noexcept;
+    const Locator& best_locator() const noexcept { return referenced_locator(unicastLocator); }
 
 private:
     /// @brief Records one request in the requested window (see requested_changes_set()).

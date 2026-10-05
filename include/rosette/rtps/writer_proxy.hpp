@@ -37,6 +37,14 @@
  *   heartbeatResponseDelay             §8.4.10.1
  *   HEARTBEAT final-flag rule          §8.3.7.5
  *   reliable reader behavior           §8.4.12.2
+ *
+ * Locator reference
+ * -----------------
+ * ACKNACKs and NACK_FRAGs go to one unicast locator of the writer, and the
+ * proxy keeps a pointer to it in the record it was matched from (the SPDP
+ * peer record or an EndpointMatchTable origin) rather than a copy, exactly
+ * as ReaderProxy does (see "Locator reference" in rtps/reader_proxy.hpp).
+ * When that record takes a new address, the proxy follows it.
  */
 
 #pragma once
@@ -45,10 +53,6 @@
 #include "types.hpp"
 
 namespace rtps {
-
-#ifndef RTPS_MAX_WRITER_PROXY_LOCATORS
-#  define RTPS_MAX_WRITER_PROXY_LOCATORS 2
-#endif
 
 class WriterProxy {
 public:
@@ -63,8 +67,9 @@ public:
 
     Guid remoteWriterGuid = GUID_UNKNOWN;
 
-    Locator unicastLocatorList[RTPS_MAX_WRITER_PROXY_LOCATORS] = {};
-    uint8_t unicastLocatorCount                                 = 0;
+    /// The entry of the writer's unicastLocatorList ACKNACKs go to, owned by
+    /// the record the proxy was matched from; null when matched with none.
+    const Locator* unicastLocator = nullptr;
 
     // ----------------------------------------------------------
     // Reader-side protocol state
@@ -90,11 +95,19 @@ public:
     /**
      * @brief Starts tracking a newly matched writer from a clean state.
      *
+     * The proxy refers to the first UDP entry of `unicast_locs` (else its
+     * first entry; preferred_unicast_locator()) and reads it at every send.
+     *
      * @param[in] writer_guid   GUID of the remote writer.
-     * @param[in] unicast_locs  Locators ACKNACKs are sent to; at most
-     *   RTPS_MAX_WRITER_PROXY_LOCATORS are kept. May be null when
-     *   `unicast_count` is 0.
+     * @param[in] unicast_locs  Locators ACKNACKs are sent to. Not copied: the
+     *   array must stay valid, and is read in place, until the proxy is
+     *   cleared. May be null when `unicast_count` is 0.
      * @param[in] unicast_count Number of entries in `unicast_locs`.
+     *
+     * Verification:
+     * - Correct means: the proxy is matched with no changes resolved, and
+     *   best_locator() tracks the referenced entry's current value.
+     * - Covered by: TC-SRR-8.4.7.4-001, TC-SRR-8.4.10-004.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.10.4, §8.4.7.4 (matched_writer_add)
@@ -287,8 +300,9 @@ public:
         heartbeatResponseDeadlineMs = 0;
     }
 
-    /// @brief Locator for ACKNACKs: the first UDP unicast locator, or LOCATOR_INVALID.
-    const Locator& best_locator() const noexcept;
+    /// @brief Locator for ACKNACKs: the referenced locator's current value, or
+    /// LOCATOR_INVALID when there is none (referenced_locator()).
+    const Locator& best_locator() const noexcept { return referenced_locator(unicastLocator); }
 
 private:
     SequenceNumberWindow changes_;          ///< Resolved changes (changes_from_writer).

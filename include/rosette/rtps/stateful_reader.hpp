@@ -125,7 +125,7 @@ public:
      *   the form the writer's vendor recognizes; a BEST_EFFORT reader and a
      *   rejected duplicate send none.
      * - Covered by: TC-SRR-8.4.7.4-001, TC-SRR-8.4.7.4-002,
-     *   TC-SRR-8.4.7.4-003, TC-SRR-8.4.7.4-004.
+     *   TC-SRR-8.4.7.4-003, TC-SRR-8.4.7.4-004, TC-SRR-8.4.10-004.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.7.4 (matched_writer_add), §8.3.7.1 (ACKNACK

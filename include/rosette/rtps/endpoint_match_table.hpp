@@ -272,7 +272,10 @@ uint32_t name_key(const char* name) noexcept;
 #ifndef RTPS_MAX_LOCAL_ENDPOINTS
 #  define RTPS_MAX_LOCAL_ENDPOINTS 8
 #endif
-/// UDP locators kept per origin, as a WriterProxy or ReaderProxy keeps.
+/// UDP locators kept per origin, as the SPDP peer record keeps RTPS_MAX_PEER_LOCATORS.
+/// Equal limits let an endpoint announcing its participant's defaults compare
+/// equal to them, so its proxies follow the peer record (see
+/// RTPSParticipant::resolve_endpoint_locators()).
 #ifndef RTPS_MAX_REMOTE_ENDPOINT_LOCATORS
 #  define RTPS_MAX_REMOTE_ENDPOINT_LOCATORS 2
 #endif
@@ -296,6 +299,9 @@ struct MatchedEndpoint {
     Guid           guid             = GUID_UNKNOWN;
     /// Announced unicast locators; none (count 0) means the endpoint is
     /// reached at its participant's default unicast locators (§8.5.3.2).
+    /// Owned by the table's origin, which stays in place while the pair is
+    /// reported: the table dissolves the pair before it releases the origin
+    /// (unmatch_if_relocated()), so a proxy may refer to them.
     const Locator* locators         = nullptr;
     uint8_t        locatorCount     = 0;
     bool           expectsInlineQos = false;   ///< Readers only.
@@ -636,6 +642,37 @@ private:
                 const TopicName& topic) noexcept;
     /// Reports every recorded pair involving `guid` as dissolved and forgets it.
     void dissolve(const Guid& guid, bool is_writer) noexcept;
+
+    /**
+     * @brief Unmatches a stored remote endpoint that re-announced different locators.
+     *
+     * The proxies of a matched endpoint that announced locators of its own
+     * refer to its origin's list rather than copying it (see "Locator
+     * reference" in rtps/reader_proxy.hpp). Storing the re-announcement moves
+     * the endpoint to another origin and can free the old one for another
+     * participant, so every pair of the endpoint is dissolved first; the
+     * caller then stores the announcement and reports those pairs again, and
+     * the participant matches fresh proxies at the new locators.
+     *
+     * @param[in] table     remote_writers_ or remote_readers_.
+     * @param[in] n         Entries in `table`.
+     * @param[in] is_writer `true` when `table` holds writers.
+     * @param[in] guid      The announced endpoint.
+     * @param[in] locators  Its kept UDP locators (LocalSubnets::select()).
+     * @param[in] count     Entries in `locators`.
+     *
+     * Verification:
+     * - Correct means: no reported pair outlives a change of its remote
+     *   endpoint's origin, so no proxy refers to a released origin; an
+     *   unchanged re-announcement dissolves nothing.
+     * - Covered by: TC-SEDP-8.5.5.1-012.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4.2 (unicastLocatorList of discovered endpoints),
+     *   §8.4.7.4 and §8.4.1.4 (matched_writer_remove, matched_reader_remove)
+     */
+    void unmatch_if_relocated(RemoteEndpoint* table, uint32_t n, bool is_writer, const Guid& guid,
+                              const Locator* locators, uint8_t count) noexcept;
     /// @brief Tells the owner the set of known endpoints changed.
     void changed() noexcept { if (on_change_) on_change_(user_data_); }
 

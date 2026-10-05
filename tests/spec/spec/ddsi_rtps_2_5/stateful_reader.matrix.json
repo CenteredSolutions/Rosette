@@ -12,7 +12,8 @@
     "8.4.7.4",
     "8.4.8",
     "8.4.9",
-    "8.4.12"
+    "8.4.12",
+    "8.4.10.4"
   ],
   "statements": [
     {
@@ -107,6 +108,15 @@
       "statement": "A reliable StatefulReader answering a HEARTBEAT requests each MISSING change of which some fragments have arrived with a NACK_FRAG naming exactly its missing fragments, in the ACKNACK's message, and leaves the change out of the ACKNACK's readerSNState (bitmapBase unchanged); a change with no fragment received stays in readerSNState.",
       "status": "implemented",
       "test_ids": ["TC-SRR-8.4.12-002", "TC-SRR-8.4.12-003"]
+    },
+    {
+      "id": "REQ-SRR-8.4.10.4-UNICAST-LOCATOR-REFERENCE",
+      "section": "8.4.10.4",
+      "page": 146,
+      "normativity": "shall",
+      "statement": "A StatefulReader sends ACKNACKs to a matched writer at its unicastLocatorList; the WriterProxy refers to the owning record's entry and follows it when it changes.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.10-004"]
     }
   ]
 }

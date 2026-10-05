@@ -14,10 +14,7 @@ void WriterProxy::init(const Guid& writer_guid, const Locator* unicast_locs,
     clear();
     remoteWriterGuid = writer_guid;
     isAlive          = true;
-    const uint8_t n = unicast_count < RTPS_MAX_WRITER_PROXY_LOCATORS
-                      ? unicast_count : RTPS_MAX_WRITER_PROXY_LOCATORS;
-    for (uint8_t i = 0; i < n; ++i) unicastLocatorList[i] = unicast_locs[i];
-    unicastLocatorCount = n;
+    unicastLocator = preferred_unicast_locator(unicast_locs, unicast_count);
 }
 
 void WriterProxy::received_change_set(const SequenceNumber& sn) noexcept {
@@ -56,17 +53,6 @@ bool WriterProxy::on_heartbeat(const SequenceNumber& first_sn,
         heartbeatResponseDeadlineMs = now_ms + response_delay_ms;
     }
     return must_reply;
-}
-
-const Locator& WriterProxy::best_locator() const noexcept {
-    for (uint8_t i = 0; i < unicastLocatorCount; ++i) {
-        const Long kind = unicastLocatorList[i].kind;
-        if (kind == locator_kind::UDPv4 || kind == locator_kind::UDPv6) {
-            return unicastLocatorList[i];
-        }
-    }
-    if (unicastLocatorCount > 0) return unicastLocatorList[0];
-    return LOCATOR_INVALID;
 }
 
 }  // namespace rtps

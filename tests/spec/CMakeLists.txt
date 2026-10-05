@@ -166,6 +166,7 @@ set(SEDP_SPEC_TEST_SOURCES
     src/spec_sedp_test_registry.cpp
     src/test_stateful_writer_clock_stub.cpp
     src/test_sedp_8_5_4_behavior.cpp
+    src/test_sedp_8_5_4_peer_locators.cpp
     src/test_sedp_8_5_4_rebuild.cpp
     src/test_sedp_8_5_4_repairs.cpp
     src/test_sedp_8_5_5_1_matching.cpp
@@ -246,6 +247,7 @@ add_executable(stateful_writer_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    src/test_stateful_writer_8_4_1_1_locator_reference.cpp
     src/test_stateful_writer_8_4_1_4.cpp
     src/test_stateful_writer_8_4_1_4_rematch.cpp
     src/test_stateful_writer_8_4_2_2.cpp
@@ -286,6 +288,7 @@ add_executable(stateful_reader_spec_tests
     src/test_stateful_reader_8_4_8_8_4_9.cpp
     src/test_stateful_reader_8_4_9_gap_ranges.cpp
     src/test_stateful_reader_8_4_10_4_changes_from_writer.cpp
+    src/test_stateful_reader_8_4_10_4_locator_reference.cpp
     src/test_stateful_reader_8_4_12_nack_frag_on_heartbeat.cpp
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/sn_window.cpp

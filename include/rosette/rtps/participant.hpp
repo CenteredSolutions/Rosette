@@ -481,27 +481,35 @@ private:
     StatefulReader* find_reader(const EntityId& eid) noexcept;
 
     /**
-     * @brief Resolves where a matched endpoint is reached.
+     * @brief Resolves the record a matched endpoint's proxy refers to for its locators.
      *
-     * An endpoint's announcement may omit its unicast locators; it is then
-     * reached at its participant's defaultUnicastLocatorList from SPDP. This
-     * participant's own endpoints are always resolved this way, to its own
-     * default unicast locators. Locators an endpoint announced are used as
-     * they are.
+     * Proxies keep a pointer into the list they are matched with and follow
+     * it as its owner updates it (see "Locator reference" in
+     * rtps/reader_proxy.hpp), so this chooses the owner. An endpoint that
+     * announced no unicast locators, or announced exactly its participant's
+     * defaultUnicastLocatorList (Fast DDS and Rosette endpoints do), is
+     * resolved to that list in the SPDP peer record, or in this participant's
+     * own data for a local endpoint. A peer that moves to a new address
+     * re-announces SPDP, the record takes the new address in place, and every
+     * such proxy sends there next. An endpoint that announced other locators
+     * keeps its own list, which lives in an EndpointMatchTable origin.
      *
      * @param[in]     remote_prefix GUID prefix of the endpoint's participant
      *   (this participant's own prefix for a local endpoint).
-     * @param[in,out] locators      The announced list; replaced by the
-     *   participant's defaults (owned by the SPDP peer table or this
-     *   participant, valid until they next change) when `count` is 0.
+     * @param[in,out] locators      The announced list (an origin's, or null);
+     *   replaced by the participant's default list when that list owns the
+     *   endpoint's locators as described above. Either list outlives the
+     *   match: the peer record until the peer is removed, which unmatches its
+     *   endpoints first; the origin while the endpoint is in a match.
      * @param[in,out] count         Entries in `locators`; stays 0 when the
      *   participant is unknown or announced no defaults either.
      *
      * Verification:
      * - Correct means: DATA to a matched remote reader and ACKNACKs to a
-     *   matched remote writer that announced no locators go to its
-     *   participant's default unicast locators.
-     * - Covered by: TC-PART-8.5.1-007.
+     *   matched remote writer that announced no locators, or its
+     *   participant's defaults, go to its participant's current default
+     *   unicast locator, including after an SPDP refresh changes it.
+     * - Covered by: TC-PART-8.5.1-007, TC-PART-8.5.3-001.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.3.2 (defaultUnicastLocatorList),

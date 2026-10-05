@@ -15,7 +15,8 @@
     "8.4.4",
     "8.4.6",
     "8.4.15",
-    "8.7.2.2"
+    "8.7.2.2",
+    "8.4.1.1"
   ],
   "statements": [
     {
@@ -183,6 +184,15 @@
       "statement": "A reliable StatefulWriter answers a NACK_FRAG, once nackResponseDelay has passed, by resending exactly the named fragments of the change followed by a HEARTBEAT; a NACK_FRAG whose count is not above the last processed from that reader is ignored; one for a change no longer held is answered with GAP.",
       "status": "implemented",
       "test_ids": ["TC-SWR-8.4.4-002", "TC-SWR-8.4.4-003"]
+    },
+    {
+      "id": "REQ-SWR-8.4.1.1-UNICAST-LOCATOR-REFERENCE",
+      "section": "8.4.1.1",
+      "page": 103,
+      "normativity": "shall",
+      "statement": "A StatefulWriter sends to a matched reader at its unicastLocatorList; the ReaderProxy refers to the owning record's entry and sends to its current value, never to an emptied entry.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.1-001"]
     }
   ]
 }

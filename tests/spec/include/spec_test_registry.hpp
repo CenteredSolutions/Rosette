@@ -41,6 +41,7 @@ void register_all_spdp_tests(std::vector<TestCase>& tests);
 void append_sedp_tests_8_5_4(std::vector<TestCase>& tests);
 void append_sedp_tests_8_5_4_repairs(std::vector<TestCase>& tests);
 void append_sedp_tests_8_5_4_rebuild(std::vector<TestCase>& tests);
+void append_sedp_tests_8_5_4_peer_locators(std::vector<TestCase>& tests);
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests);
 void append_sedp_tests_9_6_3_2(std::vector<TestCase>& tests);
 
@@ -49,6 +50,7 @@ void register_all_sedp_tests(std::vector<TestCase>& tests);
 void append_history_cache_tests_8_2_2_8_3_1(std::vector<TestCase>& tests);
 void register_all_history_cache_tests(std::vector<TestCase>& tests);
 
+void append_stateful_writer_tests_8_4_1_1_locator_reference(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_1_4(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_1_4_rematch(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_2_2(std::vector<TestCase>& tests);
@@ -67,6 +69,7 @@ void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests);
 void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests);
 void append_stateful_reader_tests_8_4_9_gap_ranges(std::vector<TestCase>& tests);
 void append_stateful_reader_tests_8_4_10_4(std::vector<TestCase>& tests);
+void append_stateful_reader_tests_8_4_10_4_locator_reference(std::vector<TestCase>& tests);
 void append_stateful_reader_tests_8_4_12_nack_frag_on_heartbeat(std::vector<TestCase>& tests);
 
 void register_all_stateful_reader_tests(std::vector<TestCase>& tests);
