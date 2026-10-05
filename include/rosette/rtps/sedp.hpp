@@ -483,28 +483,53 @@ private:
      *   §9.6.3.8), or else the PID_ENDPOINT_GUID of the serialized key.
      * @return `false` when the change names no endpoint.
      */
-    static bool withdrawn_endpoint(const CacheChange& change, Guid& endpoint) noexcept;
+    bool withdrawn_endpoint(const CacheChange& change, Guid& endpoint) const noexcept;
 
-    /// Deserialise a PL_CDR_LE payload into a DiscoveredWriterData.
-    static bool deserialise_writer(const Octet*         payload,
-                                   uint32_t             len,
-                                   DiscoveredWriterData& out) noexcept;
+    /// @brief As read_plcdr_fields(), into a DiscoveredWriterData.
+    bool deserialise_writer(const Octet* payload, uint32_t len,
+                            DiscoveredWriterData& out) const noexcept;
 
-    /// Deserialise a PL_CDR_LE payload into a DiscoveredReaderData.
-    static bool deserialise_reader(const Octet*         payload,
-                                   uint32_t             len,
-                                   DiscoveredReaderData& out) noexcept;
+    /// @brief As read_plcdr_fields(), into a DiscoveredReaderData.
+    bool deserialise_reader(const Octet* payload, uint32_t len,
+                            DiscoveredReaderData& out) const noexcept;
 
-    /// Shared PL_CDR field reader.
-    static bool read_plcdr_fields(const Octet*  payload,
-                                  uint32_t      len,
-                                  TopicName&    topic_out,
-                                  TopicName&    type_out,
-                                  Guid&         endpoint_guid_out,
-                                  ReliabilityKind& reliability_out,
-                                  DurabilityKind&  durability_out,
-                                  Locator*         unicast_locs,
-                                  uint8_t&         unicast_count) noexcept;
+    /**
+     * @brief Decodes the fields publication and subscription data share.
+     *
+     * Reads the parameter list of §9.6.2 up to PID_SENTINEL, skipping unknown
+     * PIDs. The unicast locator list keeps the
+     * RTPS_MAX_LOCATORS_PER_PARTICIPANT most reachable locators of the whole
+     * announcement, ranked as it is read against the match table's addresses
+     * (LocalSubnets::offer()), so EndpointMatchTable keeps the reachable one
+     * however many the endpoint announced before it.
+     *
+     * @param[in]  payload           Serialized payload from its
+     *   representation header; `len` octets long.
+     * @param[in]  len               Payload length in octets.
+     * @param[out] topic_out         PID_TOPIC_NAME, when present.
+     * @param[out] type_out          PID_TYPE_NAME, when present.
+     * @param[out] endpoint_guid_out PID_ENDPOINT_GUID, when present.
+     * @param[out] reliability_out   PID_RELIABILITY kind, when present.
+     * @param[out] durability_out    PID_DURABILITY kind, when present.
+     * @param[out] unicast_locs      Ranked PID_UNICAST_LOCATOR list; at least
+     *   RTPS_MAX_LOCATORS_PER_PARTICIPANT long.
+     * @param[out] unicast_count     Entries written to `unicast_locs`.
+     * @return `true` when PID_ENDPOINT_GUID was decoded.
+     *
+     * Verification:
+     * - Correct means: unknown PIDs are skipped, a payload without an
+     *   endpoint GUID is rejected, and the most reachable announced locator
+     *   is kept whatever its position.
+     * - Covered by: TC-SEDP-9.6.3.2-001, TC-SEDP-9.6.3.2-002,
+     *   TC-SEDP-9.6.3.2-003.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4.2, §9.6.2, §9.6.3.2 (Table 9.15)
+     */
+    bool read_plcdr_fields(const Octet* payload, uint32_t len, TopicName& topic_out,
+                           TopicName& type_out, Guid& endpoint_guid_out,
+                           ReliabilityKind& reliability_out, DurabilityKind& durability_out,
+                           Locator* unicast_locs, uint8_t& unicast_count) const noexcept;
 
     EndpointMatchTable& match_table_;
     BuiltinReader       publications_reader_;

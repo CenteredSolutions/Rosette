@@ -30,7 +30,9 @@
  * locators its participant announced. An endpoint that announces locators of
  * its own takes an origin of its own. At most
  * RTPS_MAX_REMOTE_ENDPOINT_LOCATORS UDP locators are kept, the most
- * reachable first (LocalSubnets::select()).
+ * reachable first: SedpReader ranks an announced list as it decodes it
+ * (LocalSubnets::offer()), and add_writer() and add_reader() narrow it
+ * (LocalSubnets::select()).
  *
  * A remote endpoint is compared by name, exactly, against the local
  * endpoints when it is announced, while its full names are at hand. A local
@@ -343,6 +345,9 @@ public:
      *   keeps every usable locator in announced order.
      */
     void set_local_subnets(const LocalSubnets& subnets) noexcept { subnets_ = &subnets; }
+
+    /// @brief The addresses remote endpoint locator lists are ranked against.
+    const LocalSubnets& local_subnets() const noexcept { return *subnets_; }
 
     /// @brief Sets the GUID prefix that marks an endpoint as local.
     void set_local_prefix(const GuidPrefix& prefix) noexcept {

@@ -196,4 +196,34 @@ uint8_t LocalSubnets::select(Locator* out, uint8_t cap, const Locator* src,
     return kept;
 }
 
+bool LocalSubnets::offer(Locator* list, uint8_t& count, uint8_t cap,
+                         const Locator& candidate) const noexcept {
+    const LocatorReach reach = rank(candidate);
+    if ((list == nullptr) || (cap == 0u) || (reach == LocatorReach::unusable)) {
+        return false;
+    }
+
+    uint8_t pos = 0u;
+    while ((pos < count) && (rank(list[pos]) <= reach)) {
+        ++pos;
+    }
+
+    if (pos >= cap) {
+        return false;
+    }
+
+    // Shift the worse-ranked tail down one place; a full list loses its last.
+    const uint8_t last = count < cap ? count : static_cast<uint8_t>(cap - 1u);
+    for (uint8_t k = last; k > pos; --k) {
+        list[k] = list[k - 1u];
+    }
+
+    list[pos] = candidate;
+    if (count < cap) {
+        ++count;
+    }
+
+    return true;
+}
+
 }  // namespace rtps

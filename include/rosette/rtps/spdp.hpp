@@ -169,9 +169,10 @@ inline bool plcdr_write_sentinel(Octet* buf, uint32_t cap, uint32_t& off) noexce
 // what SEDP and endpoint addressing read: the GUID prefix, the vendor (the
 // form of preemptive ACKNACK its writers recognize, see
 // StatefulReader::matched_writer_add()), the builtin endpoint set, the most
-// reachable UDP locators of the metatraffic unicast and default unicast lists
-// (LocalSubnets::select()), and the leading UDP locators of the metatraffic
-// multicast list (copy_udp_locators()).
+// reachable UDP locators of the metatraffic unicast and default unicast lists,
+// ranked across the whole announcement as it is decoded (LocalSubnets::offer())
+// and narrowed by LocalSubnets::select(), and the leading UDP locators of
+// the metatraffic multicast list (copy_udp_locators()).
 // On a network of dozens of participants, the table is one of the largest
 // discovery structures a microcontroller holds, so every octet here is
 // multiplied by RTPS_MAX_PEERS.
@@ -575,10 +576,34 @@ private:
         return nullptr;
     }
 
-    /// Deserialise a PL_CDR payload into out.
-    /// Returns true if at least the guidPrefix PID was found.
-    static bool deserialise(const Octet*              payload,
-                            uint32_t                  len,
+    /**
+     * @brief Decodes an SPDP PL_CDR payload into participant data.
+     *
+     * Reads the parameter list of §9.6.2 up to PID_SENTINEL, skipping unknown
+     * PIDs. Each unicast locator list keeps its
+     * RTPS_MAX_LOCATORS_PER_PARTICIPANT most reachable locators of the whole
+     * announcement, ranked as it is read (LocalSubnets::offer()); the
+     * multicast lists keep their leading locators.
+     *
+     * @param[in]  payload Serialized payload, starting at its representation
+     *   header; `len` octets long.
+     * @param[in]  len     Payload length in octets.
+     * @param[in]  subnets This participant's addresses, which rank the
+     *   unicast locators.
+     * @param[out] out     The decoded fields; fields the payload omits keep
+     *   their prior values.
+     * @return `true` when PID_PARTICIPANT_GUID was decoded; `false` for an
+     *   unknown representation or a payload without it.
+     *
+     * Verification:
+     * - Correct means: a unicast list holds the most reachable announced
+     *   locators however many the peer announced and in whatever order.
+     * - Covered by: TC-SPDP-8.5.3-010, TC-SPDP-8.5.3-011.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2, §9.6.2, §9.6.3.1 (Table 9.14)
+     */
+    static bool deserialise(const Octet* payload, uint32_t len, const LocalSubnets& subnets,
                             SPDPdiscoveredParticipantData& out) noexcept;
 };
 

@@ -206,6 +206,68 @@ static bool tc_spdp_8_5_3_010(std::string& err) {
     return true;
 }
 
+// §8.5.3.2 / §9.6.2: a list is ranked as it is decoded, so the reachable
+// address is kept even when the peer announces it after more locators than a
+// list holds: here a shared-memory locator and four Docker bridges come first.
+// offer() keeps what select() would keep from every locator offered.
+static bool tc_spdp_8_5_3_011(std::string& err) {
+    LocalSubnets subnets{};
+    CHECK(subnets.add(make_udpv4_locator(0xC0A80105u, 0u), 24u), "add 192.168.1.5/24");
+    SpdpReader r{};
+    r.set_local_subnets(subnets);
+    const GuidPrefix gp = make_prefix(0x91u, 0x92u, 0x93u);
+
+    Locator shm{};
+    shm.kind = 16;
+    shm.port = 7410u;
+    const Locator bridges[4] = {
+        make_udpv4_locator(0xAC110001u, 7410u),  // 172.17.0.1
+        make_udpv4_locator(0xAC120001u, 7410u),  // 172.18.0.1
+        make_udpv4_locator(0xAC130001u, 7410u),  // 172.19.0.1
+        make_udpv4_locator(0xAC140001u, 7410u),  // 172.20.0.1
+    };
+    const Locator lan = make_udpv4_locator(0xC0A80164u, 7410u);  // 192.168.1.100
+    const Locator lan_user = make_udpv4_locator(0xC0A80164u, 7411u);
+    std::vector<Octet> ann{};
+    CHECK(build_announcement(gp, {shm, bridges[0], bridges[1], bridges[2], bridges[3], lan},
+                             {bridges[0], bridges[1], bridges[2], bridges[3], lan_user}, ann),
+          "announcement");
+    CHECK(r.on_data(gp, ann.data(), static_cast<uint32_t>(ann.size()), 0u), "accepted");
+
+    const PeerEntry* peer = find(r, gp);
+    CHECK(peer != nullptr, "peer recorded");
+    CHECK(peer->data.metatrafficUnicastLocatorCount == 2u
+              && peer->data.metatrafficUnicastLocatorList[0] == lan
+              && peer->data.metatrafficUnicastLocatorList[1] == bridges[0],
+          "the sixth metatraffic locator is kept first, then the first routed one");
+    CHECK(peer->data.defaultUnicastLocatorCount == 2u
+              && peer->data.defaultUnicastLocatorList[0] == lan_user
+              && peer->data.defaultUnicastLocatorList[1] == bridges[0],
+          "the fifth default locator is kept first, then the first routed one");
+
+    const Locator offered[7] = {shm,
+                                bridges[0],
+                                lan,
+                                bridges[1],
+                                make_udpv4_locator(0xC0A80165u, 7410u),
+                                bridges[2],
+                                make_udpv4_locator(0xC0A80166u, 7410u)};
+    Locator list[3] = {};
+    uint8_t count = 0u;
+    for (const Locator& l : offered) {
+        subnets.offer(list, count, 3u, l);
+    }
+
+    Locator expect[3] = {};
+    const uint8_t expect_count = subnets.select(expect, 3u, offered, 7u);
+    CHECK(count == expect_count && list[0] == expect[0] && list[1] == expect[1]
+              && list[2] == expect[2],
+          "offering each locator keeps what select() keeps from them all");
+    CHECK(list[2] == make_udpv4_locator(0xC0A80166u, 7410u),
+          "a full list pushes off its worst locator for a better one");
+    return true;
+}
+
 void append_spdp_tests_8_5_3_locator_ranking(std::vector<TestCase>& tests) {
     tests.push_back(
         {"TC-SPDP-8.5.3-008",
@@ -221,6 +283,10 @@ void append_spdp_tests_8_5_3_locator_ranking(std::vector<TestCase>& tests) {
                      "§8.5.3.2: a peer's unicast locator lists are kept most reachable first, in "
                      "announced order within a class, and re-ranked on each announcement.",
                      tc_spdp_8_5_3_010});
+    tests.push_back({"TC-SPDP-8.5.3-011",
+                     "§8.5.3.2 / §9.6.2: a peer's most reachable unicast locator is kept however "
+                     "many locators it announces before it.",
+                     tc_spdp_8_5_3_011});
 }
 
 }  // namespace spec_test

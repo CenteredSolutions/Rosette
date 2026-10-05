@@ -9,7 +9,9 @@
  * first is often one no other machine can reach. This stack keeps only the
  * leading RTPS_MAX_PEER_LOCATORS (and RTPS_MAX_REMOTE_ENDPOINT_LOCATORS) of a
  * list and sends to the first, so a list kept in announced order can drop the
- * one reachable address and send to an unreachable one.
+ * one reachable address and send to an unreachable one. The decoders hold at
+ * most RTPS_MAX_LOCATORS_PER_PARTICIPANT locators of a list, so the ranking
+ * applies as each locator is decoded, not to the decoded list.
  *
  * LocalSubnets holds this participant's addresses with their on-link prefix
  * lengths and ranks a remote locator by destination address selection in the
@@ -69,8 +71,10 @@ enum class LocatorReach : uint8_t {
  *
  * The participant adds an address when the network assigns one and removes
  * it when the network takes it away (RTPSParticipant::add_ipv4_address(),
- * add_ipv6_address()); the SPDP peer table and the endpoint match table rank
- * every locator list they keep with select() (see the file comment).
+ * add_ipv6_address()). The SPDP and SEDP decoders rank each announced
+ * locator list with offer() as they read it, and the SPDP peer table and the
+ * endpoint match table narrow those lists with select() (see the file
+ * comment).
  *
  * A locator kept before an address change keeps the place it was ranked into
  * until the list is announced again: SPDP replaces a peer's record on its
@@ -169,6 +173,39 @@ public:
      * - OMG DDSI-RTPS 2.5 §8.5.3.2, §8.5.4.2; RFC 6724 §6
      */
     uint8_t select(Locator* out, uint8_t cap, const Locator* src, uint8_t n) const noexcept;
+
+    /**
+     * @brief Offers one decoded locator to a bounded list kept most reachable first.
+     *
+     * The SPDP and SEDP decoders call this for each locator parameter as they
+     * read it, so a list holds the `cap` most reachable locators of the whole
+     * announcement rather than its first `cap`: a peer that announces its
+     * shared-memory locator and four Docker bridges before its LAN address
+     * still has the LAN address kept. select() later narrows a list decoded
+     * this way without changing its order.
+     *
+     * The candidate goes behind every kept locator that ranks no worse than
+     * it, so equally ranked locators keep their announced order. When the list
+     * is full, the last locator is pushed off to make room, or the candidate is
+     * not kept when every kept locator ranks no worse than it.
+     *
+     * @param[in,out] list      The list, ordered as this function leaves it;
+     *   at least `cap` locators long.
+     * @param[in,out] count     Entries in `list`; at most `cap`.
+     * @param[in]     cap       Most locators the list keeps.
+     * @param[in]     candidate The locator just decoded.
+     * @return `true` when the candidate is kept, `false` when it is unusable
+     *   or ranks no better than any of a full list.
+     *
+     * Verification:
+     * - Correct means: after any sequence of offers, the list equals
+     *   select() over every locator offered, in the order offered.
+     * - Covered by: TC-SPDP-8.5.3-011, TC-SEDP-9.6.3.2-003.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2, §9.6.2 (parameter lists); RFC 6724 §6
+     */
+    bool offer(Locator* list, uint8_t& count, uint8_t cap, const Locator& candidate) const noexcept;
 
 private:
     struct Entry {

@@ -284,10 +284,8 @@ const LocalSubnets SpdpReader::kNoSubnets{};
 // Returns true if the mandatory PID_PARTICIPANT_GUID was found.
 // ----------------------------------------------------------
 
-bool SpdpReader::deserialise(const Octet*               payload,
-                              uint32_t                   len,
-                              SPDPdiscoveredParticipantData& out) noexcept
-{
+bool SpdpReader::deserialise(const Octet* payload, uint32_t len, const LocalSubnets& subnets,
+                             SPDPdiscoveredParticipantData& out) noexcept {
     if (len < 4u) return false;
 
     // RepresentationHeader — §9.6.2, p. 256.
@@ -337,17 +335,18 @@ bool SpdpReader::deserialise(const Octet*               payload,
                 break;
 
             // PID_METATRAFFIC_UNICAST_LOCATOR — 24 bytes per locator.
-            case pid::METATRAFFIC_UNICAST_LOCATOR:
-                if (param_len >= 24u &&
-                    out.metatrafficUnicastLocatorCount <
-                        RTPS_MAX_LOCATORS_PER_PARTICIPANT) {
-                    if (Locator::read_from(out.metatrafficUnicastLocatorList[
-                                       out.metatrafficUnicastLocatorCount],
-                                       val, 24u, little_endian)) {
-                        out.metatrafficUnicastLocatorCount++;
-                    }
+            // Ranked as read, so a reachable locator announced after the
+            // list's capacity is still kept (LocalSubnets::offer()).
+            case pid::METATRAFFIC_UNICAST_LOCATOR: {
+                Locator locator{};
+                if (param_len >= 24u && Locator::read_from(locator, val, 24u, little_endian)) {
+                    subnets.offer(out.metatrafficUnicastLocatorList,
+                                  out.metatrafficUnicastLocatorCount,
+                                  RTPS_MAX_LOCATORS_PER_PARTICIPANT, locator);
                 }
+
                 break;
+            }
 
             // PID_METATRAFFIC_MULTICAST_LOCATOR.
             case pid::METATRAFFIC_MULTICAST_LOCATOR:
@@ -366,18 +365,15 @@ bool SpdpReader::deserialise(const Octet*               payload,
             // Accept legacy PID_UNICAST_LOCATOR (0x002F) in SPDP payloads
             // for interoperability with older stacks/captures.
             case pid::DEFAULT_UNICAST_LOCATOR:
-            case pid::UNICAST_LOCATOR:
-                if (param_len >= 24u &&
-                    out.defaultUnicastLocatorCount <
-                        RTPS_MAX_LOCATORS_PER_PARTICIPANT
-                ) {
-                    if (Locator::read_from(out.defaultUnicastLocatorList[
-                                       out.defaultUnicastLocatorCount],
-                                       val, 24u, little_endian)) {
-                        out.defaultUnicastLocatorCount++;
-                    }
+            case pid::UNICAST_LOCATOR: {
+                Locator locator{};
+                if (param_len >= 24u && Locator::read_from(locator, val, 24u, little_endian)) {
+                    subnets.offer(out.defaultUnicastLocatorList, out.defaultUnicastLocatorCount,
+                                  RTPS_MAX_LOCATORS_PER_PARTICIPANT, locator);
                 }
+
                 break;
+            }
 
             // PID_DEFAULT_MULTICAST_LOCATOR.
             case pid::DEFAULT_MULTICAST_LOCATOR:
@@ -433,7 +429,7 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
                           uint32_t          now_ms) noexcept
 {
     SPDPdiscoveredParticipantData parsed{};
-    if (!deserialise(payload, payload_len, parsed)) {
+    if (!deserialise(payload, payload_len, *subnets_, parsed)) {
         RTPS_LOG_W("spdp", "failed to deserialise participant data (%lu bytes)",
                    (unsigned long)payload_len);
         return false;

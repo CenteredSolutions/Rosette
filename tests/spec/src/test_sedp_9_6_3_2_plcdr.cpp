@@ -85,6 +85,33 @@ static bool build_writer_payload(bool include_guid,
     return true;
 }
 
+/// A writer announcement for the "imu" topic listing `locators` as
+/// PID_UNICAST_LOCATOR parameters, in that order.
+static bool build_writer_payload_with_locators(std::initializer_list<Locator> locators,
+                                               std::vector<Octet>& out) {
+    std::vector<Octet> head{};
+    if (!build_writer_payload(true, false, head)) {
+        return false;
+    }
+
+    // Drop the sentinel, append the locators, then close the list again.
+    Octet buf[768] = {};
+    uint32_t off = static_cast<uint32_t>(head.size()) - 4u;
+    memcpy(buf, head.data(), off);
+    for (const Locator& l : locators) {
+        if (!plcdr_write_param(buf, sizeof(buf), off, pid::UNICAST_LOCATOR, &l, 24u)) {
+            return false;
+        }
+    }
+
+    if (!plcdr_write_sentinel(buf, sizeof(buf), off)) {
+        return false;
+    }
+
+    out.assign(buf, buf + off);
+    return true;
+}
+
 } // namespace
 
 static bool tc_sedp_9_6_3_2_001(std::string& err) {
@@ -127,6 +154,54 @@ static bool tc_sedp_9_6_3_2_002(std::string& err) {
     return true;
 }
 
+// §8.5.4.2 / §9.6.2: an endpoint's locator list is ranked as it is decoded,
+// so the reachable locator is kept even when the endpoint announces it after
+// more locators than the decoded list holds: here a shared-memory locator and
+// four Docker bridges come first.
+static bool tc_sedp_9_6_3_2_003(std::string& err) {
+    struct Reported {
+        int calls = 0;
+        uint8_t count = 0u;
+        Locator first = LOCATOR_INVALID;
+    } obs{};
+
+    FakeTransport tx{};
+    EndpointMatchTable table(
+        [](const MatchedEndpoint& w, const MatchedEndpoint&, const TopicName&, void* u) noexcept {
+            auto* o = static_cast<Reported*>(u);
+            o->calls++;
+            o->count = w.locatorCount;
+            o->first = w.locatorCount > 0u ? w.locators[0] : LOCATOR_INVALID;
+        },
+        nullptr, &obs);
+    LocalSubnets subnets{};
+    CHECK(subnets.add(make_udpv4_locator(0xC0A80105u, 0u), 24u), "add 192.168.1.5/24");
+    table.set_local_subnets(subnets);
+    SedpReader reader(GuidPrefix{}, tx, table);
+
+    const Guid local_reader = make_guid(0x30u, 0x31u, 0x32u, make_entity(3u, 3u, 3u, 0xC7u));
+    table.set_local_prefix(local_reader.prefix);
+    table.add_reader(make_local_reader(local_reader));
+
+    Locator shm{};
+    shm.kind = 16;
+    shm.port = 7411u;
+    const Locator lan = make_udpv4_locator(0xC0A80164u, 7411u);  // 192.168.1.100
+    std::vector<Octet> payload{};
+    CHECK(build_writer_payload_with_locators(
+              {shm, make_udpv4_locator(0xAC110001u, 7411u), make_udpv4_locator(0xAC120001u, 7411u),
+               make_udpv4_locator(0xAC130001u, 7411u), make_udpv4_locator(0xAC140001u, 7411u), lan},
+              payload),
+          "payload build failed");
+
+    const SedpPeer peer{GuidPrefix{}, make_udpv4_locator(0xC0A80101u, 7410u)};
+    peer.discover(reader);
+    peer.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, payload);
+    CHECK(obs.calls == 1, "the remote writer matches");
+    CHECK(obs.count > 0u && obs.first == lan, "the sixth announced locator is reported first");
+    return true;
+}
+
 void append_sedp_tests_9_6_3_2(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-9.6.3.2-001",
                      "§9.6.3.2: SEDP PL_CDR endpoint data parsing skips unknown PID entries while preserving mandatory-field processing.",
@@ -134,6 +209,10 @@ void append_sedp_tests_9_6_3_2(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-9.6.3.2-002",
                      "§9.6.3.2: endpoint discovery payload without PID_ENDPOINT_GUID is rejected.",
                      tc_sedp_9_6_3_2_002});
+    tests.push_back({"TC-SEDP-9.6.3.2-003",
+                     "§8.5.4.2 / §9.6.2: an endpoint's most reachable unicast locator is kept "
+                     "however many locators it announces before it.",
+                     tc_sedp_9_6_3_2_003});
 }
 
 } // namespace spec_test
