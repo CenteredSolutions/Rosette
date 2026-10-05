@@ -221,8 +221,14 @@ bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* 
                reader_guid.entityId.entityKey[2], reader_guid.entityId.entityKind);
 
     // TRANSIENT_LOCAL: push the cached changes now rather than waiting for
-    // the next write (§8.7.2.2).
-    if (durability_ == DurabilityKind::TRANSIENT_LOCAL) send_unsent_changes();
+    // the next write (§8.7.2.2). A reliable reader delivers nothing until a
+    // HEARTBEAT tells it which sequence numbers to expect, so the newest
+    // replayed change carries one; without it the replay waits for the
+    // periodic HEARTBEAT.
+    if (durability_ == DurabilityKind::TRANSIENT_LOCAL) {
+        send_unsent_changes(reliability_ == ReliabilityKind::RELIABLE);
+    }
+
     return true;
 }
 

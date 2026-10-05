@@ -331,7 +331,13 @@ public:
      * @brief Matches a remote reader.
      *
      * A TRANSIENT_LOCAL writer then sends the new reader every cached change
-     * at once, in sequence order (§8.7.2.2). A VOLATILE writer makes only
+     * at once, in sequence order (§8.7.2.2). When the writer is reliable, the
+     * newest change carries a non-final HEARTBEAT: a reliable reader holds
+     * what it receives until a HEARTBEAT names the range it belongs to, so
+     * the reader acknowledges the replay, or requests what the cache no
+     * longer holds, at once instead of at the next periodic HEARTBEAT. This
+     * is how a service reply written before the client's reply reader
+     * matched reaches the client without delay. A VOLATILE writer makes only
      * changes written after this relevant to the new reader.
      *
      * @param[in] reader_guid        The remote reader's GUID.
@@ -342,10 +348,16 @@ public:
      *   is in use.
      *
      * Verification:
-     * - Covered by: TC-SWR-8.4.1.4-002, TC-SWR-8.4.1.4-003.
+     * - Correct means: the new reader is sent every cached change of a
+     *   TRANSIENT_LOCAL writer, and a reliable writer's newest one arrives
+     *   with a non-final HEARTBEAT spanning the cache; a best-effort writer
+     *   sends no HEARTBEAT.
+     * - Covered by: TC-SWR-8.4.1.4-002, TC-SWR-8.4.1.4-003,
+     *   TC-SWR-8.4.1.4-008.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.7.2.2
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.7.2.2,
+     *   §8.4.15.4 (piggybacked HEARTBEAT)
      */
     bool matched_reader_add(const Guid&    reader_guid,
                             const Locator* unicast_locators,
