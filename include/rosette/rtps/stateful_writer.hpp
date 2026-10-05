@@ -71,7 +71,8 @@
  * for readers that match later, except a service reply writer
  * (release_replies_on_delivery()): it is TRANSIENT_LOCAL so a reply reaches
  * a client whose reply reader matches late, and it drops each reply once
- * that client has it. Payload blocks then stay in the pool only while some
+ * that client has it, or once every reader of that client has unmatched.
+ * Payload blocks then stay in the pool only while some
  * reader may still ask for them, which matters on a board whose pool holds a
  * few large blocks: a reply writer holding its last depth replies exhausts
  * it. A NACK for a dropped change is answered with GAP, as for an evicted one.
@@ -363,7 +364,28 @@ public:
                             uint8_t        locator_count,
                             bool           expects_inline_qos = false) noexcept;
 
-    /// @brief Unmatches a remote reader; unknown GUIDs are ignored (§8.4.1.4).
+    /**
+     * @brief Unmatches a remote reader; unknown GUIDs are ignored.
+     *
+     * The reader is done with every change from then on, so changes it alone
+     * held are released (release_finished_changes()). A service reply writer
+     * (release_replies_on_delivery()) also drops the replies to a requester
+     * whose last matched reader this was: no reader of that participant is
+     * left to receive or acknowledge them, and kept, they would be replayed
+     * to every later client and pin their blocks until KEEP_LAST evicts them.
+     *
+     * @param[in] reader_guid The remote reader's GUID.
+     *
+     * Verification:
+     * - Correct means: the proxy is cleared; a reply naming a request writer
+     *   of the reader's participant leaves the history once no reader of
+     *   that participant is matched, and stays while one still is.
+     * - Covered by: TC-SWR-8.4.7-003, TC-SWR-8.4.7-009.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_remove), §8.4.7.1;
+     *   OMG DDS-RPC 1.0 §7.8.2 (related sample identity)
+     */
     void matched_reader_remove(const Guid& reader_guid) noexcept;
 
     /// @brief The proxy of a matched reader, or null (§8.4.1.4 matched_reader_lookup).
@@ -966,6 +988,10 @@ private:
      *   durability); OMG DDS 1.4 §2.2.3.4 (DURABILITY)
      */
     void release_finished_changes() noexcept;
+
+    /// @brief Drops the replies to `requester` when none of its readers is
+    ///   matched any more (see matched_reader_remove()).
+    void drop_replies_to_departed(const GuidPrefix& requester) noexcept;
 
     /// @brief True when `reply` names a requester whose matched readers are
     ///   all done with it, and at least one of them is matched.

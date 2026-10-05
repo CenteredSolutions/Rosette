@@ -11,7 +11,7 @@
  * replies: each reply writer otherwise pins its last depth replies. A
  * TRANSIENT_LOCAL writer keeps its history for readers that match later,
  * except that a service reply writer drops each reply once the client that
- * asked for it has it.
+ * asked for it has it, or has left.
  */
 
 #include "spec_test_common.hpp"
@@ -311,6 +311,39 @@ static bool tc_swr_8_4_7_008(std::string& err) {
     return true;
 }
 
+// DDS-RPC 1.0 §7.8.2, §8.4.1.4: a reply whose requester leaves before
+// acknowledging it is dropped when the requester's last reader unmatches, so
+// it is not replayed to the next client; while another reader of that
+// requester stays matched, the reply stays.
+static bool tc_swr_8_4_7_009(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer = make_guid(0x78u, make_entity(1u, 2u, 3u, 0x02u));
+    const Guid a_reader = make_guid(0x89u, make_entity(4u, 5u, 6u, 0x07u));
+    const Guid a_reader2 = make_guid(0x89u, make_entity(4u, 5u, 7u, 0x07u));
+    const Guid a_request_writer = make_guid(0x89u, make_entity(7u, 8u, 9u, 0x03u));
+    const Guid b_reader = make_guid(0x9Au, make_entity(4u, 5u, 6u, 0x07u));
+    StatefulWriterStorage<4, 3> w(writer, ReliabilityKind::RELIABLE,
+                                  DurabilityKind::TRANSIENT_LOCAL, tx, 5u, 1000u);
+    w.release_replies_on_delivery(true);
+    CHECK(w.matched_reader_add(a_reader, &kLocA, 1u, false), "match A's first reader");
+    CHECK(w.matched_reader_add(a_reader2, &kLocA, 1u, false), "match A's second reader");
+    CHECK(w.write_async(ChangeKind::ALIVE, kPayload, 4u, reply_to(a_request_writer)), "reply to A");
+    const BufBlock* reply_block =
+        w.cache().get_change(SequenceNumber::from_int64(1))->payload.block;
+
+    w.matched_reader_remove(a_reader);
+    CHECK(holds(w, 1), "a reply stays while a reader of its requester is matched");
+
+    w.matched_reader_remove(a_reader2);
+    CHECK(!holds(w, 1), "the requester's last unmatch drops its unacknowledged reply");
+    CHECK(reply_block->refcount.load() == 0, "and returns its block to the pool");
+
+    tx.unicast_msgs.clear();
+    CHECK(w.matched_reader_add(b_reader, &kLocB, 1u, false), "the next client matches");
+    CHECK(tx.unicast_msgs.empty(), "it is replayed nothing");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.7-003",
                      "§8.4.7.1/§8.7.2.2.1: a RELIABLE VOLATILE writer releases a change, and its "
@@ -337,6 +370,10 @@ void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& 
                      "DDS-RPC §7.8.2/§8.7.2.2: a reply to a requester that has not matched stays, "
                      "reaches its reader on match, and is released on its acknowledgement.",
                      tc_swr_8_4_7_008});
+    tests.push_back({"TC-SWR-8.4.7-009",
+                     "DDS-RPC §7.8.2/§8.4.1.4: a reply is dropped when its requester's last reader "
+                     "unmatches, and is not replayed to the next client.",
+                     tc_swr_8_4_7_009});
 }
 
 }  // namespace spec_test

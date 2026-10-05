@@ -239,9 +239,29 @@ void StatefulWriter::matched_reader_remove(const Guid& reader_guid) noexcept {
             fragRepair_ = FragmentRepair{};
         }
 
+        const GuidPrefix requester = p->remoteReaderGuid.prefix;
         p->clear();
+        if (releaseRepliesOnDelivery_) {
+            drop_replies_to_departed(requester);
+        }
+
         release_finished_changes();
     }
+}
+
+void StatefulWriter::drop_replies_to_departed(const GuidPrefix& requester) noexcept {
+    for (uint8_t i = 0; i < max_readers_; ++i) {
+        if (proxies_[i].is_matched() && proxies_[i].remoteReaderGuid.prefix == requester) {
+            return;
+        }
+    }
+
+    writer_cache_.for_each_change([&](CacheChange& c) noexcept {
+        if (c.inlineQos.hasRelatedSampleIdentity
+            && c.inlineQos.relatedSampleIdentity.writerGuid.prefix == requester) {
+            c.clear();
+        }
+    });
 }
 
 void StatefulWriter::heartbeat_range(SequenceNumber& first, SequenceNumber& last) const noexcept {
