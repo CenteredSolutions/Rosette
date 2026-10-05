@@ -593,6 +593,9 @@ void RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
 
 namespace {
 
+static_assert(RTPS_MAX_REMOTE_ENDPOINT_LOCATORS == RTPS_MAX_PEER_LOCATORS,
+              "endpoint and participant locator limits must match");
+
 // True when an endpoint's announced locators are owned by its participant's
 // default list: it announced none, or announced exactly that list.
 bool follows_defaults(const Locator* announced, uint8_t announced_count, const Locator* defaults,
