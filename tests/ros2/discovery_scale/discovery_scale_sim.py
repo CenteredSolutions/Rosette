@@ -142,14 +142,22 @@ class SimParticipant:
         self.matched_at.setdefault(name, time.monotonic() - self.t0)
 
     def _probe(self, client, type_name: str, name: str) -> None:
-        """Calls a probed service once, if it is available, and records the round trip."""
+        """Calls a probed service once, if it is available, and records a successful round trip.
+
+        A call that completes with an exception records nothing, so only a
+        response from the server counts toward summarize()'s requirement
+        that every device probe completed a call.
+        """
         if not client.service_is_ready():
             return
 
         start = time.monotonic()
-        future = client.call_async(get_service(type_name).Request())
-        future.add_done_callback(
-            lambda _f: self.probes[name].append((time.monotonic() - start) * 1000.0))
+
+        def record(future) -> None:
+            if not future.cancelled() and future.exception() is None:
+                self.probes[name].append((time.monotonic() - start) * 1000.0)
+
+        client.call_async(get_service(type_name).Request()).add_done_callback(record)
 
     def _observe(self) -> None:
         """Records entities that became matched and whether the watched node is listed."""
