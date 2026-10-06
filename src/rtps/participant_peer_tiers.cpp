@@ -24,7 +24,9 @@
  * announcers, so a parked peer that announces a new endpoint (a HEARTBEAT
  * or DATA above that number) is reactivated and its announcements are
  * received again in full. When this participant's own announcements
- * change, every parked peer is owed them and is reactivated in turn.
+ * change, or its discovery writer writes new contents
+ * (discovery_info_changed()), every parked peer is owed them and is
+ * reactivated in turn.
  *
  * Verification: TC-PART-8.5.3-011 and -012 (tests/spec), and at network
  * scale tests/ros2/discovery_scale.

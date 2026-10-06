@@ -134,6 +134,27 @@ private:
     bool publish() noexcept;
 
     /**
+     * @brief Publishes the table after its contents changed, and owes the change to parked peers.
+     *
+     * Every mutator (add_node(), remove_node(), add_endpoints(),
+     * remove_endpoints()) publishes through here. A peer parked by the
+     * participant's tiers is not matched to this writer, so the participant
+     * is told (RTPSParticipant::discovery_info_changed()) and reactivates
+     * each parked peer to deliver the new message. The identical republish
+     * of on_reader_rematched() goes through publish() alone.
+     *
+     * @return `true` when published; `false` as publish() fails, and then no
+     *   peer is owed anything.
+     *
+     * Verification:
+     * - Correct means: a stock peer parked before a node-only change lists
+     *   the new node set afterwards.
+     * - Covered by: TC-PART-8.5.3-013 (the participant side), and at network
+     *   scale tests/ros2/discovery_scale with `--watch-node`.
+     */
+    bool publish_change() noexcept;
+
+    /**
      * @brief Republishes the current message for a reader that started over.
      *
      * The writer's rematch listener: the RTPS writer calls it, under the

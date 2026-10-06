@@ -25,7 +25,7 @@ bool RosDiscoveryInfoWriter::create(rtps::RTPSParticipant& participant) noexcept
     participant_ = &participant;
     // Every ROS 2 participant reads this writer, so its matches keep no peer
     // in the participant's active tier; parked peers are reactivated when
-    // it changes instead.
+    // its contents change instead (publish_change()).
     participant.set_discovery_writer(writer_->guid());
     writer_->set_rematch_listener(&RosDiscoveryInfoWriter::on_reader_rematched, this);
     return true;
@@ -36,25 +36,46 @@ void RosDiscoveryInfoWriter::on_reader_rematched(void* self) noexcept {
 }
 
 bool RosDiscoveryInfoWriter::add_node(const Node& node) noexcept {
-    if (!entities_.add_node(node)) return false;
-    if (publish()) return true;
+    if (!entities_.add_node(node)) {
+        return false;
+    }
+
+    if (publish_change()) {
+        return true;
+    }
+
     entities_.remove_node(node);
     return false;
 }
 
 void RosDiscoveryInfoWriter::remove_node(const Node& node) noexcept {
     entities_.remove_node(node);
-    publish();
+    (void)publish_change();
 }
 
 bool RosDiscoveryInfoWriter::add_endpoints(const Node& node, const rtps::Guid* reader,
                                            const rtps::Guid* writer) noexcept {
     bool ok = true;
-    if (reader) ok = entities_.associate(node, *reader, true);
-    if (ok && writer) ok = entities_.associate(node, *writer, false);
-    if (ok && publish()) return true;
-    if (reader) entities_.dissociate(*reader);
-    if (writer) entities_.dissociate(*writer);
+    if (reader) {
+        ok = entities_.associate(node, *reader, true);
+    }
+
+    if (ok && writer) {
+        ok = entities_.associate(node, *writer, false);
+    }
+
+    if (ok && publish_change()) {
+        return true;
+    }
+
+    if (reader) {
+        entities_.dissociate(*reader);
+    }
+
+    if (writer) {
+        entities_.dissociate(*writer);
+    }
+
     return false;
 }
 
@@ -62,7 +83,16 @@ void RosDiscoveryInfoWriter::remove_endpoints(const rtps::Guid* reader,
                                               const rtps::Guid* writer) noexcept {
     if (reader) entities_.dissociate(*reader);
     if (writer) entities_.dissociate(*writer);
-    publish();
+    (void)publish_change();
+}
+
+bool RosDiscoveryInfoWriter::publish_change() noexcept {
+    if (!publish()) {
+        return false;
+    }
+
+    participant_->discovery_info_changed();
+    return true;
 }
 
 bool RosDiscoveryInfoWriter::publish() noexcept {

@@ -388,6 +388,28 @@ public:
         discovery_writer_guid_ = writer_guid;
     }
 
+    /**
+     * @brief Owes every parked peer the discovery writer's new sample.
+     *
+     * A parked peer's readers are unmatched from the discovery writer
+     * (set_discovery_writer()), so a sample written while it is parked never
+     * reaches it. The writer's owner calls this after writing a sample whose
+     * contents changed, which marks every parked peer owed; each is then
+     * reactivated in turn, its reader of the discovery writer is matched
+     * again, and the TRANSIENT_LOCAL history delivers the new sample. A
+     * republish of identical contents does not call it.
+     *
+     * Verification:
+     * - Correct means: a stock peer parked before a node is added or removed
+     *   lists the device's new node set once the change is written.
+     * - Covered by: TC-PART-8.5.3-013.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.7.2.2.1 (TRANSIENT_LOCAL history to new readers)
+     * - rmw_dds_common/msg/ParticipantEntitiesInfo.msg (Humble)
+     */
+    void discovery_info_changed() noexcept { owe_parked_peers(); }
+
     // ----------------------------------------------------------
     // Accessors
     // ----------------------------------------------------------

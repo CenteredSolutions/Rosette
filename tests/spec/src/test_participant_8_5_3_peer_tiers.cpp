@@ -204,6 +204,55 @@ static bool tc_part_8_5_3_012(std::string& err) {
     return true;
 }
 
+// A peer parked while it reads only the discovery writer receives no sample
+// written after: discovery_info_changed() owes it the change, tick()
+// reactivates it in place of a settled peer, and its replayed reader is
+// matched to the discovery writer again, whose history then reaches it.
+static bool tc_part_8_5_3_013(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+
+    WriterConfig wcfg{};
+    wcfg.topicName.assign("rt/discovery");
+    wcfg.typeName.assign("pkg::msg::dds_::T_");
+    wcfg.reliability = ReliabilityKind::RELIABLE;
+    auto* discovery = p.create_writer<1>(wcfg);
+    CHECK(discovery != nullptr, "the discovery writer is created");
+    p.set_discovery_writer(discovery->guid());
+
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1000u), "two peers are active");
+    CHECK(deliver_announcement(p, a, false, "rt/discovery", 1, 1000u),
+          "peer A reads the discovery topic");
+    CHECK(acknowledge_sedp(p, a, true, 1) && acknowledge_sedp(p, a, false, 0),
+          "peer A acknowledges the announcement");
+
+    CHECK(announce(p, c, 0x13u, 2000u), "a third peer is recorded");
+    CHECK(is_parked(p, a) && is_active(p, c),
+          "A, matched only with the discovery writer, is parked");
+    CHECK(!record(p, a)->owed, "a peer is owed nothing when it is parked");
+
+    p.discovery_info_changed();
+    CHECK(record(p, a)->owed, "a change of the discovery writer's contents is owed to A");
+
+    CHECK(acknowledge_sedp(p, c, true, 1) && acknowledge_sedp(p, c, false, 0),
+          "peer C acknowledges the announcement");
+    g_participant_test_now_ms = 2200u;
+    p.tick(2200u);
+    CHECK(is_active(p, a) && !record(p, a)->owed,
+          "the next tick reactivates the owed peer in place of a settled one");
+
+    const Guid a_reader{a, make_entity(0x61u, 0x62u, 1u, 0x04u)};
+    CHECK(deliver_announcement(p, a, false, "rt/discovery", 1, 2200u),
+          "the reactivated peer replays its reader");
+    CHECK(discovery->matched_reader_lookup(a_reader) != nullptr,
+          "its reader of the discovery writer is matched again");
+    return true;
+}
+
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.3-011",
                      "§8.5.3.2/§8.5.4.1: a peer finding the active tier full waits until a "
@@ -215,6 +264,10 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "no match except with the discovery writer, whose reader proxy parking "
                      "removes.",
                      tc_part_8_5_3_012});
+    tests.push_back({"TC-PART-8.5.3-013",
+                     "§8.5.4.1/§8.7.2.2.1: a change of the discovery writer's contents is owed "
+                     "to parked peers, which are reactivated and matched to it again.",
+                     tc_part_8_5_3_013});
 }
 
 }  // namespace spec_test
