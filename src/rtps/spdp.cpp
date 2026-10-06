@@ -455,58 +455,49 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
         static_cast<uint32_t>(parsed.leaseDuration.seconds) * 1000u +
         parsed.leaseDuration.nanoseconds / 1'000'000u;
 
-    PeerEntry* existing = find_peer(parsed.guidPrefix);
-    if (existing) {
-        // Refresh existing participant data and lease.
-        // If SEDP was previously deferred due to missing locator, trigger it
-        // once locator information arrives.
-        //
-        // The record is overwritten in place, never moved to another slot:
-        // matched proxies refer to its locator lists (see "Locator reference"
-        // in rtps/reader_proxy.hpp), so a peer that re-announces from a new
-        // address is reached there from the next send on.
-        existing->data = DiscoveredParticipant::from(parsed, *subnets_);
-        existing->leaseMs = lease_ms;
-        existing->leaseExpiryMs = now_ms + lease_ms;
-
-        // A pending peer asks for an active slot again with every
-        // announcement, so it is admitted as soon as one can be made.
-        if (!existing->sedp_announced &&
-            existing->data.metatrafficUnicastLocatorCount > 0u &&
-            on_new_peer_) {
-            on_new_peer_(*existing, user_data_);
+    const DiscoveredParticipant announced = DiscoveredParticipant::from(parsed, *subnets_);
+    PeerEntry* record = find_peer(parsed.guidPrefix);
+    const bool is_new = record == nullptr;
+    if (is_new) {
+        record = find_free();
+        if (record == nullptr) {
+            RTPS_LOG_W("spdp", "known-peer table full, dropping %02x%02x%02x%02x",
+                       parsed.guidPrefix.value[0], parsed.guidPrefix.value[1],
+                       parsed.guidPrefix.value[2], parsed.guidPrefix.value[3]);
+            return false;
         }
 
-        RTPS_LOG_D("spdp", "lease refreshed for %02x%02x%02x%02x (expires in %lums)",
+        *record = PeerEntry{};
+        record->alive = true;
+        RTPS_LOG_I("spdp", "new participant %02x%02x%02x%02x%02x%02x lease=%lums",
                    parsed.guidPrefix.value[0], parsed.guidPrefix.value[1],
                    parsed.guidPrefix.value[2], parsed.guidPrefix.value[3],
-                   (unsigned long)lease_ms);
+                   parsed.guidPrefix.value[4], parsed.guidPrefix.value[5], (unsigned long)lease_ms);
+    }
+
+    record->remember(announced);
+    record->leaseMs = lease_ms;
+    record->leaseExpiryMs = now_ms + lease_ms;
+
+    if (record->active()) {
+        // The slot is overwritten in place, never moved: matched proxies
+        // refer to its locator lists (see "Locator reference" in
+        // rtps/reader_proxy.hpp), so a peer that re-announces from a new
+        // address is reached there from the next send on.
+        slots_[record->activeSlot] = announced;
         return true;
     }
 
-    // New participant — insert into peer table.
-    PeerEntry* slot = find_free();
-    if (!slot) {
-        RTPS_LOG_W("spdp", "known-peer table full, dropping %02x%02x%02x%02x",
-                   parsed.guidPrefix.value[0], parsed.guidPrefix.value[1],
-                   parsed.guidPrefix.value[2], parsed.guidPrefix.value[3]);
-        return false;   // Table full; drop.
+    // A new peer is reported once; a pending one asks for an active slot
+    // again with every announcement that gives it a metatraffic locator, so
+    // it is admitted as soon as one can be made. activate() takes the
+    // announcement's ranked lists while it is in hand.
+    if (on_new_peer_ != nullptr && (is_new || record->has_metatraffic_locator())) {
+        announcement_ = &announced;
+        on_new_peer_(*record, user_data_);
+        announcement_ = nullptr;
     }
 
-    *slot = PeerEntry{};
-    slot->data = DiscoveredParticipant::from(parsed, *subnets_);
-    slot->alive          = true;
-    slot->leaseMs = lease_ms;
-    slot->leaseExpiryMs  = now_ms + lease_ms;
-
-    RTPS_LOG_I("spdp", "new participant %02x%02x%02x%02x%02x%02x"
-               " lease=%lums",
-               parsed.guidPrefix.value[0], parsed.guidPrefix.value[1],
-               parsed.guidPrefix.value[2], parsed.guidPrefix.value[3],
-               parsed.guidPrefix.value[4], parsed.guidPrefix.value[5],
-               (unsigned long)lease_ms);
-
-    if (on_new_peer_) on_new_peer_(*slot, user_data_);
     return true;
 }
 
@@ -528,44 +519,45 @@ uint32_t SpdpReader::ms_until_next_expiry(uint32_t now_ms) const noexcept {
     return next;
 }
 
-bool SpdpReader::remove_peer(const GuidPrefix& prefix) noexcept {
-    for (uint16_t i = 0; i < RTPS_MAX_KNOWN_PEERS; ++i) {
-        if (!peers_[i].alive || peers_[i].data.guidPrefix != prefix) continue;
-        RTPS_LOG_I("spdp", "participant disposed: %02x%02x%02x%02x%02x%02x",
-                   prefix.value[0], prefix.value[1], prefix.value[2],
-                   prefix.value[3], prefix.value[4], prefix.value[5]);
-        // Unmatch before freeing the slot: proxies refer to this record's
-        // locators until on_peer_removed_ has removed them.
-        if (on_peer_removed_) on_peer_removed_(peers_[i], user_data_);
-        peers_[i].alive = false;
-        return true;
+void SpdpReader::forget(PeerEntry& peer) noexcept {
+    // Unmatch before freeing the active slot: proxies refer to its locators
+    // until on_peer_removed_ has removed them.
+    if (on_peer_removed_ != nullptr) {
+        on_peer_removed_(peer, user_data_);
     }
-    return false;
+
+    deactivate(peer);
+    peer.alive = false;
+}
+
+bool SpdpReader::remove_peer(const GuidPrefix& prefix) noexcept {
+    PeerEntry* peer = find_peer(prefix);
+    if (peer == nullptr) {
+        return false;
+    }
+
+    RTPS_LOG_I("spdp", "participant disposed: %02x%02x%02x%02x%02x%02x", prefix.value[0],
+               prefix.value[1], prefix.value[2], prefix.value[3], prefix.value[4], prefix.value[5]);
+    forget(*peer);
+    return true;
 }
 
 void SpdpReader::tick(uint32_t now_ms) noexcept {
-    for (uint16_t i = 0; i < RTPS_MAX_KNOWN_PEERS; ++i) {
-        if (!peers_[i].alive) continue;
+    for (PeerEntry& peer : peers_) {
+        if (!peer.alive) {
+            continue;
+        }
 
-        // Wrap-safe: if leaseExpiryMs is in the past, the subtraction
-        // overflows to a large positive — check the sign via comparison.
+        // Wrap-safe: an expiry in the past, or one so far ahead that it can
+        // only be a past time seen across a wrap of monotonic_ms().
         const bool expired =
-            (now_ms >= peers_[i].leaseExpiryMs) ||
-            // Also handle the uint32 wrap case: if expiry is very far
-            // from now, the peer was refreshed after a wrap.
-            ((peers_[i].leaseExpiryMs - now_ms) > 0x80000000u);
-
+            now_ms >= peer.leaseExpiryMs || peer.leaseExpiryMs - now_ms > 0x80000000u;
         if (expired) {
             RTPS_LOG_I("spdp", "participant lease expired: %02x%02x%02x%02x%02x%02x",
-                       peers_[i].data.guidPrefix.value[0],
-                       peers_[i].data.guidPrefix.value[1],
-                       peers_[i].data.guidPrefix.value[2],
-                       peers_[i].data.guidPrefix.value[3],
-                       peers_[i].data.guidPrefix.value[4],
-                       peers_[i].data.guidPrefix.value[5]);
-            // As in remove_peer(): unmatch before the slot is freed.
-            if (on_peer_removed_) on_peer_removed_(peers_[i], user_data_);
-            peers_[i].alive = false;
+                       peer.guidPrefix.value[0], peer.guidPrefix.value[1], peer.guidPrefix.value[2],
+                       peer.guidPrefix.value[3], peer.guidPrefix.value[4],
+                       peer.guidPrefix.value[5]);
+            forget(peer);
         }
     }
 }

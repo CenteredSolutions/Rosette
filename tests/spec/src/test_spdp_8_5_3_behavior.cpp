@@ -68,7 +68,7 @@ struct PeerObs {
 static void on_new_peer(const PeerEntry& p, void* user) noexcept {
     auto* obs = static_cast<PeerObs*>(user);
     obs->new_calls++;
-    obs->last_new = p.data.guidPrefix;
+    obs->last_new = p.guidPrefix;
 }
 
 static void on_peer_removed(const PeerEntry&, void* user) noexcept {
@@ -112,6 +112,10 @@ static bool build_payload_for_peer(const GuidPrefix& guid_prefix,
 
     const Locator meta = make_udpv4_locator(0xC0A80164u, 7410u);
     if (!plcdr_write_param(buf, sizeof(buf), off, pid::METATRAFFIC_UNICAST_LOCATOR, &meta, 24u)) return false;
+    const Locator user = make_udpv4_locator(0xC0A80164u, 7411u);
+    if (!plcdr_write_param(buf, sizeof(buf), off, pid::DEFAULT_UNICAST_LOCATOR, &user, 24u)) {
+        return false;
+    }
 
     if (!plcdr_write_sentinel(buf, sizeof(buf), off)) return false;
     out.assign(buf, buf + off);
@@ -179,20 +183,16 @@ static bool tc_spdp_8_5_3_002(std::string& err) {
     CHECK(obs.new_calls == 1, "first sighting should trigger new peer callback");
     CHECK(r.peer_count() == 1u, "expected one live peer");
 
-    r.mark_sedp_announced(gp);
+    PeerEntry* known = r.find_peer(gp);
+    CHECK(known != nullptr && r.activate(*known) != nullptr, "the peer can be activated");
 
     CHECK(r.on_data(gp, payload.data(), static_cast<uint32_t>(payload.size()), 200u),
           "refresh DATA should be accepted");
     CHECK(obs.new_calls == 1, "refresh should not retrigger new peer callback");
     CHECK(r.peer_count() == 1u, "refresh should keep exactly one live peer");
 
-    bool sedp_announced_seen = false;
-    r.for_each_peer([&](const PeerEntry& peer) {
-        if (peer.data.guidPrefix == gp) {
-            sedp_announced_seen = peer.sedp_announced;
-        }
-    });
-    CHECK(sedp_announced_seen, "sedp_announced flag should persist across refresh");
+    CHECK(r.find_peer(gp) != nullptr && r.find_peer(gp)->active(),
+          "the peer should stay active across a refresh");
 
     r.tick(1300u);
     CHECK(obs.removed_calls == 1, "lease expiry should trigger peer removed callback");
@@ -202,13 +202,8 @@ static bool tc_spdp_8_5_3_002(std::string& err) {
           "rediscovery after expiry should be accepted");
     CHECK(obs.new_calls == 2, "rediscovery after removal should trigger new callback again");
 
-    bool sedp_reset = false;
-    r.for_each_peer([&](const PeerEntry& peer) {
-        if (peer.data.guidPrefix == gp) {
-            sedp_reset = !peer.sedp_announced;
-        }
-    });
-    CHECK(sedp_reset, "rediscovered peer should reset sedp_announced until re-marked");
+    CHECK(r.find_peer(gp) != nullptr && !r.find_peer(gp)->active() && r.active_count() == 0u,
+          "a rediscovered peer starts pending: expiry freed its active slot");
     return true;
 }
 
@@ -382,16 +377,16 @@ static bool tc_spdp_8_5_3_007(std::string& err) {
     CHECK(plcdr_write_sentinel(buf, sizeof(buf), off), "sentinel");
 
     CHECK(r.on_data(gp, buf, off, 0u), "participant DATA should be accepted");
-    bool checked = false;
-    r.for_each_peer([&](const PeerEntry& peer) {
-        if (peer.data.guidPrefix != gp) return;
-        checked = peer.data.metatrafficUnicastLocatorCount == 2u
-                  && peer.data.metatrafficUnicastLocatorList[0] == meta_a
-                  && peer.data.metatrafficUnicastLocatorList[1] == meta_b
-                  && peer.data.defaultUnicastLocatorCount == 1u
-                  && peer.data.defaultUnicastLocatorList[0] == user_d
-                  && peer.data.vendorId == VENDORID_EPROSIMA;
-    });
+    PeerEntry* known = r.find_peer(gp);
+    CHECK(known != nullptr && r.activate(*known) != nullptr, "the peer can be activated");
+    CHECK(r.on_data(gp, buf, off, 1u), "a refresh fills the active slot");
+    const DiscoveredParticipant* peer = r.active_data(*known);
+    const bool checked = peer != nullptr && peer->metatrafficUnicastLocatorCount == 2u
+                         && peer->metatrafficUnicastLocatorList[0] == meta_a
+                         && peer->metatrafficUnicastLocatorList[1] == meta_b
+                         && peer->defaultUnicastLocatorCount == 1u
+                         && peer->defaultUnicastLocatorList[0] == user_d
+                         && peer->vendorId == VENDORID_EPROSIMA;
     CHECK(checked,
           "the peer keeps its vendor, its first two UDP metatraffic locators and its UDP default");
     return true;

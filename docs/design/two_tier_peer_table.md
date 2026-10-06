@@ -388,8 +388,18 @@ Sequence numbers are kept as their low 32 bits. Neither side's discovery
 writers come anywhere near 2^32 changes; a peer whose numbers do not fit is
 simply never parked.
 
+The record as built (`PeerEntry` in `rtps/spdp.hpp`) measures 68 B on the
+RP2040 example firmware: the GUID prefix, metatraffic locator and default
+port above, the full builtin set and vendor ID, the lease expiry and
+duration, the time of the peer's last SEDP DATA, the two processed sequence
+numbers, and the slot index with state flags. Reactivation resyncs SEDP from
+the start, so the record keeps no acknowledged sequence numbers and no
+`ros_discovery_info` reader. With 96 records and 8 active slots (120 B
+each), the table costs 7.5 KB of `.bss`, 6.5 KB more than a table of 8 full
+peers.
+
 Active slot: the remainder of a full peer, about 400 B (the ranked locator
-lists and four SEDP proxies). A board needs as many active slots as the peers
+lists, 120 B, and four SEDP proxies). A board needs as many active slots as the peers
 it really matches, plus a few for peers in their first exchange.
 
 ## Configuration

@@ -78,6 +78,15 @@
       "test_ids": ["TC-SPDP-8.5.3-008", "TC-SPDP-8.5.3-009", "TC-SPDP-8.5.3-010", "TC-SPDP-8.5.3-011"]
     },
     {
+      "id": "REQ-SPDP-8.5.3.2-KNOWN-PEER-RECORDS",
+      "section": "8.5.3.2",
+      "page": 160,
+      "normativity": "implementation-behavior",
+      "statement": "Every known participant keeps a compact record (its most reachable metatraffic unicast locator and the port of its default unicast locator at that address); only an active participant holds a slot with both ranked locator lists, taken from the announcement being processed or rebuilt from a record that restores both lists, refreshed in place by each announcement, and freed when the participant is deactivated or removed.",
+      "status": "implemented",
+      "test_ids": ["TC-SPDP-8.5.3-012"]
+    },
+    {
       "id": "REQ-SPDP-9.6.1-WELLKNOWN-PORTS",
       "section": "9.6.1",
       "page": 254,

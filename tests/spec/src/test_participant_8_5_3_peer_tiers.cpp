@@ -105,7 +105,7 @@ const PeerEntry* record(RTPSParticipant& p, const GuidPrefix& prefix) {
 
 bool is_active(RTPSParticipant& p, const GuidPrefix& prefix) {
     const PeerEntry* e = record(p, prefix);
-    return e != nullptr && e->sedp_announced;
+    return e != nullptr && e->active();
 }
 
 bool is_parked(RTPSParticipant& p, const GuidPrefix& prefix) {

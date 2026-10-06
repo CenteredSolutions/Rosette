@@ -17,7 +17,7 @@ struct ReaderObs {
 static void on_new_peer(const PeerEntry& peer, void* user) noexcept {
     auto* obs = static_cast<ReaderObs*>(user);
     obs->new_calls++;
-    obs->last_new = peer.data.guidPrefix;
+    obs->last_new = peer.guidPrefix;
 }
 
 static void on_removed(const PeerEntry&, void* user) noexcept {

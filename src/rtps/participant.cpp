@@ -527,7 +527,7 @@ void RTPSParticipant::on_spdp_new_peer(const PeerEntry& peer,
     // pending; it is activated when the active tier has room or a settled
     // peer can be parked for it (participant_peer_tiers.cpp).
     auto* p = static_cast<RTPSParticipant*>(self);
-    PeerEntry* known = p->spdp_reader_.find_peer(peer.data.guidPrefix);
+    PeerEntry* known = p->spdp_reader_.find_peer(peer.guidPrefix);
     if (known != nullptr) {
         (void)p->admit_peer(*known, rosette::platform::monotonic_ms());
     }
@@ -538,9 +538,8 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
 {
     auto* p = static_cast<RTPSParticipant*>(self);
     RTPS_LOG_I("participant", "SPDP peer removed %02x%02x%02x%02x%02x%02x",
-               peer.data.guidPrefix.value[0], peer.data.guidPrefix.value[1],
-               peer.data.guidPrefix.value[2], peer.data.guidPrefix.value[3],
-               peer.data.guidPrefix.value[4], peer.data.guidPrefix.value[5]);
+               peer.guidPrefix.value[0], peer.guidPrefix.value[1], peer.guidPrefix.value[2],
+               peer.guidPrefix.value[3], peer.guidPrefix.value[4], peer.guidPrefix.value[5]);
 
     // Remove all writer and reader endpoints announced by this participant
     // and fire on_unmatch for every affected proxy pair.
@@ -555,9 +554,9 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
     // remove_reader on each, and fires on_unmatch (→ on_endpoint_unmatch)
     // for every dissolved match — which in turn calls matched_reader_remove /
     // matched_writer_remove on the affected local endpoints.
-    p->match_table_.remove_participant(peer.data.guidPrefix);
-    p->sedp_writer_.on_peer_removed(peer.data.guidPrefix);
-    p->sedp_reader_.on_peer_removed(peer.data.guidPrefix);
+    p->match_table_.remove_participant(peer.guidPrefix);
+    p->sedp_writer_.on_peer_removed(peer.guidPrefix);
+    p->sedp_reader_.on_peer_removed(peer.guidPrefix);
     p->notify_graph_change();
 }
 
@@ -604,14 +603,17 @@ static_assert(RTPS_MAX_REMOTE_ENDPOINT_LOCATORS == RTPS_MAX_PEER_LOCATORS,
 
 bool RTPSParticipant::peer_default_locators(const GuidPrefix& prefix, const Locator*& locators,
                                             uint8_t& count) const noexcept {
+    // Only an active peer has endpoints in the match table, and its slot
+    // holds the default list.
     bool found = false;
     spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
-        if (peer.data.guidPrefix != prefix) {
+        const DiscoveredParticipant* data = spdp_reader_.active_data(peer);
+        if (peer.guidPrefix != prefix || data == nullptr) {
             return;
         }
 
-        locators = peer.data.defaultUnicastLocatorList;
-        count = peer.data.defaultUnicastLocatorCount;
+        locators = data->defaultUnicastLocatorList;
+        count = data->defaultUnicastLocatorCount;
         found = true;
     });
 
@@ -637,8 +639,8 @@ void RTPSParticipant::resolve_endpoint_locators(const GuidPrefix& remote_prefix,
 VendorId RTPSParticipant::peer_vendor_id(const GuidPrefix& remote_prefix) const noexcept {
     VendorId vendor = VENDORID_UNKNOWN;
     spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
-        if (peer.data.guidPrefix == remote_prefix) {
-            vendor = peer.data.vendorId;
+        if (peer.guidPrefix == remote_prefix) {
+            vendor = peer.vendorId;
         }
     });
 

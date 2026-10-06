@@ -68,7 +68,8 @@ Declaring what the firmware actually creates fixes both at once (see
 ```
 RTPSParticipant ─────────────────────────────── one per process / firmware
 ├── SpdpWriter, SpdpReader        participant discovery; SpdpReader holds the
-│                                 peer table (RTPS_MAX_PEERS × PeerEntry)
+│                                 peer table: RTPS_MAX_KNOWN_PEERS × PeerEntry
+│                                 records, RTPS_MAX_PEERS active slots
 ├── SedpWriter, SedpReader        endpoint discovery (ordinary reliable
 │                                 StatefulWriter/StatefulReader underneath)
 ├── EndpointMatchTable            local endpoints with full names; remote
@@ -126,7 +127,8 @@ identically) at the firmware defaults
 | `StatefulWriterStorage<1, 8>` / `<4, 8>` / `<8, 8>` | 984 / 1,280 / 1,680 B | depth × 100 + readers × 80 + ~240 |
 | Writer slot | 1,680 B | `RTPS_PARTICIPANT_MAX_WRITER_BYTES` |
 | Reader slot (`BoundedStatefulReader<8>`) | 1,600 B | 8 × `WriterProxy` + an 8-slot `FragmentAssembler` (1,024 B) |
-| `PeerEntry` (one remote participant) | 128 B | `RTPS_MAX_PEERS` |
+| `PeerEntry` (one known remote participant: identity, lease, one locator) | 68 B | `RTPS_MAX_KNOWN_PEERS` |
+| Active slot (`DiscoveredParticipant`: both ranked locator lists) | 120 B | `RTPS_MAX_PEERS` |
 | Remote origin (GUID prefix + locator list index) | 16 B | `RTPS_MAX_REMOTE_ORIGINS` (= peers) |
 | Remote locator list (endpoint locators other than its participant's defaults) | 52 B | `RTPS_MAX_REMOTE_LOCATOR_LISTS` (4) |
 | Remote endpoint record | 16 B | `RTPS_MAX_DISCOVERED_WRITERS` / `_READERS` |
@@ -253,8 +255,8 @@ relationships, so an inconsistent set fails to compile.
 | `RMW_ROSETTE_MAX_NODES` | 1 | node pool; multiplies the per-node entities below | |
 | `RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE` | 0 | 6 for `rclc_parameter_server`, 0 without | 6 services per node (≈ 37 KB) |
 | `RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE` | 0 | `/rosout`, `/parameter_events` | 0 when rcl logging is off, as in the firmware C stack |
-| `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` | 8 | active peers: SEDP reader and writer proxies, remote origins | ≈ 300 B |
-| `RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` | 96 | known-peer records, active or parked (`PeerEntry`) | 144 B |
+| `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` | 8 | active peers: active slot, SEDP reader and writer proxies, remote origins | ≈ 420 B |
+| `RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` | 96 | known-peer records, active or parked (`PeerEntry`) | 68 B |
 | `RMW_ROSETTE_MAX_REMOTE_ENDPOINTS` | 64 | remote writer and reader records | 32 B (16 B in each table) |
 | `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS` | 8 | readers per writer, writers per reader, match records, reassembly slots | 80 B per writer slot + 192 B per reader slot + 32 B per local endpoint |
 | `RMW_ROSETTE_MAX_PENDING_CHANGES` | 10 | `ChangeRing` depth ceiling per subscription, service, and client | 72 B per entry per entity, plus the blocks unread entries pin |

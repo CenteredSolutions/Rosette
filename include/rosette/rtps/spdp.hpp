@@ -51,9 +51,9 @@
  *
  * SEDP trigger (implementation policy)
  * -------------------------------------
- * Per the project constraint, SEDP announcements are sent *once* on first
- * discovery of a new peer.  SpdpReader tracks a `sedp_announced` flag per
- * peer so that subsequent SPDP refreshes do not re-trigger SEDP.
+ * SEDP is exchanged with a peer while it holds an active slot (see "Known
+ * and active peers" below), so an SPDP refresh of an active peer only
+ * updates its slot in place and does not re-trigger SEDP.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -240,14 +240,26 @@ struct DiscoveredParticipant {
 // one of three states:
 //
 //   pending  known from SPDP, waiting for an active slot;
-//   active   SEDP is exchanged with it (sedp_announced);
+//   active   SEDP is exchanged with it: it holds an active slot;
 //   parked   it was active, has everything this participant announced and
 //            this participant has everything it announced, and it shares
 //            no match that counts; its slot went to another peer.
 //
+// A record (PeerEntry) is what every known peer costs, so it keeps only what
+// recognises the peer, keeps its lease, and lets it be activated again: its
+// most reachable metatraffic unicast locator and the port its default
+// unicast locator has at the same address. An active slot holds the full
+// DiscoveredParticipant, with both ranked locator lists, which SEDP and the
+// matched proxies read. A peer whose default unicast locators are at
+// another address cannot be rebuilt from its record, so it is never parked
+// (every stack Rosette interoperates with announces one address for both).
+//
 // The participant decides who is active (participant_peer_tiers.cpp); the
-// reader only keeps the records. A record never moves while its peer is
-// known, since active proxies refer to its locator lists.
+// reader keeps the records and the slots. Neither moves while in use: an
+// active slot stays put until its peer is parked or removed, since matched
+// proxies refer to its locator lists.
+//
+// References: docs/design/two_tier_peer_table.md.
 // ============================================================
 
 /// Records of known participants, active or not; size it for the network.
@@ -264,12 +276,20 @@ struct DiscoveredParticipant {
 
 static_assert(RTPS_MAX_KNOWN_PEERS >= RTPS_MAX_PEERS && RTPS_MAX_KNOWN_PEERS < 256,
               "RTPS_MAX_KNOWN_PEERS must hold every active peer and fit a one-octet index");
+static_assert(RTPS_MAX_PEERS < 255, "RTPS_MAX_PEERS must leave a one-octet slot index free");
 
-/// A slot of SpdpReader's peer table.
+/// A known participant's record in SpdpReader's peer table.
 struct PeerEntry {
-    DiscoveredParticipant data;                 ///< What discovery keeps of the peer.
-    uint32_t              leaseExpiryMs  = 0;   ///< rosette::platform::monotonic_ms() at expiry.
-    uint32_t leaseMs = 0;                       ///< Lease duration the peer announced.
+    /// activeSlot of a peer without an active slot.
+    static constexpr uint8_t kNoActiveSlot = 0xFFu;
+
+    GuidPrefix guidPrefix = {};
+    /// The most reachable metatraffic unicast locator; RESERVED when the
+    /// peer announced none, and then no SEDP is exchanged with it.
+    Locator metatrafficLocator = {};
+    uint32_t availableBuiltinEndpoints = 0;  ///< Bitmask, §8.5.4.3.
+    uint32_t leaseExpiryMs = 0;              ///< rosette::platform::monotonic_ms() at expiry.
+    uint32_t leaseMs = 0;                    ///< Lease duration the peer announced.
     /// monotonic_ms() of the peer's activation or of the latest SEDP DATA
     /// from it; a peer is parked only once this is RTPS_PEER_SETTLE_MS old.
     uint32_t lastSedpMs = 0;
@@ -278,12 +298,70 @@ struct PeerEntry {
     /// announcement above either reactivates it.
     uint32_t parkedPublicationsSn = 0;
     uint32_t parkedSubscriptionsSn = 0;
-    bool                  alive          = false;
-    bool sedp_announced = false;  ///< Active: SEDP is exchanged with the peer.
-    bool parked = false;          ///< Parked: see "Known and active peers".
+    /// Port of the most reachable default unicast locator at the address of
+    /// metatrafficLocator; 0 when there is none, and the record cannot
+    /// rebuild the peer's default list.
+    uint16_t defaultUnicastPort = 0;
+    VendorId vendorId = {};              ///< §8.5.3.2, PID_VENDOR_ID.
+    uint8_t activeSlot = kNoActiveSlot;  ///< Index of the peer's active slot.
+    bool alive = false;
+    bool parked = false;  ///< Parked: see "Known and active peers".
     /// Parked while this participant's announcements changed: the peer is
     /// reactivated, when a slot allows, to receive them.
     bool owed = false;
+
+    /// @brief Whether SEDP is exchanged with the peer.
+    bool active() const noexcept { return activeSlot != kNoActiveSlot; }
+
+    /// @brief Whether the peer announced a metatraffic unicast locator.
+    bool has_metatraffic_locator() const noexcept {
+        return metatrafficLocator.kind != locator_kind::RESERVED;
+    }
+
+    /// @brief Whether rebuild() restores both of the peer's locator lists.
+    bool rebuildable() const noexcept {
+        return has_metatraffic_locator() && defaultUnicastPort != 0u;
+    }
+
+    /**
+     * @brief Keeps in the record what activating the peer again needs.
+     *
+     * The SPDP reader calls this for every decoded announcement of a peer
+     * that is not parked, so the record follows the peer's address.
+     *
+     * @param[in] announced The peer's announcement, ranked
+     *   (DiscoveredParticipant::from()).
+     *
+     * Verification:
+     * - Correct means: the record keeps the prefix, vendor, builtin set, the
+     *   first metatraffic locator, and the port of the first default locator
+     *   at that locator's address (0 when none is).
+     * - Covered by: TC-SPDP-8.5.3-012.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2, Table 8.73
+     */
+    void remember(const DiscoveredParticipant& announced) noexcept;
+
+    /**
+     * @brief Rebuilds the peer's discovery data from the record.
+     *
+     * Activation outside an announcement uses this; the peer's next
+     * announcement restores its full ranked lists.
+     *
+     * @return The prefix, vendor and builtin set; a metatraffic list of
+     *   metatrafficLocator; a default list of that address at
+     *   defaultUnicastPort, or empty when the port is 0.
+     *
+     * Verification:
+     * - Correct means: for a rebuildable() record, both lists start with
+     *   the locators the announcement's lists started with.
+     * - Covered by: TC-SPDP-8.5.3-012.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2, Table 8.73
+     */
+    DiscoveredParticipant rebuild() const noexcept;
 };
 
 // ============================================================
@@ -479,7 +557,9 @@ private:
 //
 // on_new_peer callback: fired once per newly discovered participant.
 // on_peer_removed callback: fired when a participant's lease expires.
-// Both callbacks carry a const PeerEntry& valid for the call duration.
+// Both callbacks carry a const PeerEntry& valid for the call duration;
+// on_peer_removed runs while the peer still holds its active slot, which is
+// freed after it returns.
 // ============================================================
 
 class SpdpReader {
@@ -511,9 +591,11 @@ public:
     // If the GuidPrefix is new: insert into peer table, fire on_new_peer.
     // If already present and parked: renew leaseExpiryMs only, without
     // decoding the payload.
-    // If already present otherwise: refresh peer data + leaseExpiryMs, and
-    // fire on_new_peer again while the peer is pending (not yet active), so
-    // the participant can admit it once an active slot can be made.
+    // If already present and active: refresh its record, its active slot
+    // (in place) and leaseExpiryMs.
+    // If already present and pending: refresh its record and leaseExpiryMs,
+    // and fire on_new_peer again, so the participant can admit it once an
+    // active slot can be made; activate() takes this announcement's lists.
     //
     // @param sender_prefix  GUID prefix from the RTPS message header.
     // @param payload        Pointer to the PL_CDR serialized payload.
@@ -572,15 +654,56 @@ public:
      */
     void set_local_subnets(const LocalSubnets& subnets) noexcept { subnets_ = &subnets; }
 
-    // ----------------------------------------------------------
-    // mark_sedp_announced()
-    //
-    // Called by the participant after SEDP has been sent for a peer
-    // so that subsequent SPDP refreshes do not re-trigger SEDP.
-    // ----------------------------------------------------------
-    void mark_sedp_announced(const GuidPrefix& prefix) noexcept {
-        PeerEntry* e = find_peer(prefix);
-        if (e) e->sedp_announced = true;
+    /**
+     * @brief Gives a known peer an active slot and the full discovery data
+     *   SEDP reads.
+     *
+     * The participant calls this to activate a peer (participant_peer_tiers.cpp),
+     * either from on_new_peer, while the peer's announcement is being
+     * processed, or later, when a slot is made for a pending or parked peer.
+     *
+     * During the peer's announcement the slot takes the announcement's ranked
+     * lists. Otherwise it takes what the record rebuilds (PeerEntry::rebuild()),
+     * which needs a rebuildable() record, and the peer's next announcement
+     * restores the full lists in place.
+     *
+     * @param[in,out] peer A live record of this reader; its activeSlot is set.
+     * @return The slot's data, valid until deactivate() or the peer's removal;
+     *   the peer's slot when it is already active; null when every slot is
+     *   taken, when the peer announced no metatraffic unicast locator, or
+     *   outside the peer's announcement when its record is not rebuildable().
+     *
+     * Verification:
+     * - Correct means: no two peers share a slot; a slot holds the most
+     *   recent ranked announcement of its peer, or the rebuilt record until
+     *   the next one; a peer outside its announcement is activated only from
+     *   a record that restores both lists.
+     * - Covered by: TC-SPDP-8.5.3-012, TC-PART-8.5.3-011.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2, §8.5.4.1
+     */
+    const DiscoveredParticipant* activate(PeerEntry& peer) noexcept;
+
+    /**
+     * @brief Frees a peer's active slot.
+     *
+     * @param[in,out] peer A record of this reader; nothing happens when it is
+     *   not active. The caller has removed every proxy that refers to the
+     *   slot's locators first.
+     */
+    void deactivate(PeerEntry& peer) noexcept;
+
+    /// @brief Whether activate() can give `peer` a slot's data once one is free.
+    bool can_activate(const PeerEntry& peer) const noexcept {
+        return peer.rebuildable()
+               || (peer.has_metatraffic_locator() && announcement_ != nullptr
+                   && announcement_->guidPrefix == peer.guidPrefix);
+    }
+
+    /// @brief The full discovery data of an active peer, or null.
+    const DiscoveredParticipant* active_data(const PeerEntry& peer) const noexcept {
+        return peer.active() ? &slots_[peer.activeSlot] : nullptr;
     }
 
     // ----------------------------------------------------------
@@ -615,14 +738,17 @@ public:
     /// @brief Peers SEDP is exchanged with; at most RTPS_MAX_PEERS.
     uint8_t active_count() const noexcept {
         uint8_t n = 0;
-        for_each_peer([&n](const PeerEntry& p) noexcept { n += p.sedp_announced ? 1u : 0u; });
+        for (bool used : slot_used_) {
+            n += used ? 1u : 0u;
+        }
+
         return n;
     }
 
     /// @brief The live record of `prefix`, or null.
     PeerEntry* find_peer(const GuidPrefix& prefix) noexcept {
         for (uint16_t i = 0; i < RTPS_MAX_KNOWN_PEERS; ++i) {
-            if (peers_[i].alive && peers_[i].data.guidPrefix == prefix) {
+            if (peers_[i].alive && peers_[i].guidPrefix == prefix) {
                 return &peers_[i];
             }
         }
@@ -635,10 +761,17 @@ private:
     static const LocalSubnets kNoSubnets;
 
     PeerEntry peers_[RTPS_MAX_KNOWN_PEERS] = {};
+    DiscoveredParticipant slots_[RTPS_MAX_PEERS] = {};
+    bool slot_used_[RTPS_MAX_PEERS] = {};
+    /// The announcement on_data() is processing, while on_new_peer runs.
+    const DiscoveredParticipant* announcement_ = nullptr;
     const LocalSubnets* subnets_ = &kNoSubnets;
     OnNewPeer  on_new_peer_;
     OnPeerRemoved on_peer_removed_;
     void*      user_data_;
+
+    /// @brief Removes a known peer: reports it, then frees its slot and record.
+    void forget(PeerEntry& peer) noexcept;
 
     PeerEntry* find_free() noexcept {
         for (uint16_t i = 0; i < RTPS_MAX_KNOWN_PEERS; ++i) {

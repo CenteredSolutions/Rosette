@@ -132,9 +132,11 @@ add_executable(spdp_spec_tests
     src/spec_spdp_test_registry.cpp
     src/test_spdp_8_5_3_behavior.cpp
     src/test_spdp_8_5_3_locator_ranking.cpp
+    src/test_spdp_8_5_3_peer_records.cpp
     src/test_spdp_9_6_1_locators.cpp
     src/test_spdp_9_6_2_9_6_3_1_plcdr.cpp
     ../../src/rtps/spdp.cpp
+    ../../src/rtps/spdp_peer_records.cpp
     ../../src/rtps/locator_ranking.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
@@ -335,6 +337,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     ../../src/rtps/stateful_writer.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/spdp.cpp
+    ../../src/rtps/spdp_peer_records.cpp
     ../../src/rtps/sedp.cpp
     ../../src/rtps/endpoint_match_table.cpp
     ../../src/rtps/locator_ranking.cpp
@@ -521,6 +524,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
     add_executable(spdp_fuzz_replay
         fuzz/replay_spdp_corpus.cpp
         ../../src/rtps/spdp.cpp
+        ../../src/rtps/spdp_peer_records.cpp
         ../../src/rtps/locator_ranking.cpp
         ../../src/rtps/buf_pool.cpp
     )
@@ -691,6 +695,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         add_executable(spdp_fuzz
             fuzz/fuzz_spdp.cpp
             ../../src/rtps/spdp.cpp
+            ../../src/rtps/spdp_peer_records.cpp
             ../../src/rtps/locator_ranking.cpp
             ../../src/rtps/buf_pool.cpp
         )

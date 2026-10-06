@@ -42,12 +42,16 @@
 namespace rtps {
 
 bool RTPSParticipant::admit_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
-    if (peer.sedp_announced) {
+    if (peer.active()) {
         return true;
     }
 
-    if (peer.data.metatrafficUnicastLocatorCount == 0u) {
+    if (!peer.has_metatraffic_locator()) {
         RTPS_LOG_W("participant", "peer has no metatraffic locator, skipping SEDP");
+        return false;
+    }
+
+    if (!spdp_reader_.can_activate(peer)) {
         return false;
     }
 
@@ -60,12 +64,15 @@ bool RTPSParticipant::admit_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
 }
 
 void RTPSParticipant::activate_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
-    RTPS_LOG_I("participant", "peer active %02x%02x%02x%02x%02x%02x%s",
-               peer.data.guidPrefix.value[0], peer.data.guidPrefix.value[1],
-               peer.data.guidPrefix.value[2], peer.data.guidPrefix.value[3],
-               peer.data.guidPrefix.value[4], peer.data.guidPrefix.value[5],
+    RTPS_LOG_I("participant", "peer active %02x%02x%02x%02x%02x%02x%s", peer.guidPrefix.value[0],
+               peer.guidPrefix.value[1], peer.guidPrefix.value[2], peer.guidPrefix.value[3],
+               peer.guidPrefix.value[4], peer.guidPrefix.value[5],
                peer.parked ? " (was parked)" : "");
-    peer.sedp_announced = true;
+    const DiscoveredParticipant* data = spdp_reader_.activate(peer);
+    if (data == nullptr) {
+        return;
+    }
+
     peer.parked = false;
     peer.owed = false;
     peer.lastSedpMs = now_ms;
@@ -73,22 +80,22 @@ void RTPSParticipant::activate_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
     // §8.5.3.2: direct SPDP to the peer first, so it knows this participant
     // (and has matched its builtin SEDP writers) before any SEDP DATA
     // arrives; a peer drops DATA from writers it has not matched.
-    spdp_writer_.announce_unicast(peer.data.metatrafficUnicastLocatorList[0]);
+    spdp_writer_.announce_unicast(data->metatrafficUnicastLocatorList[0]);
 
     // Matching the peer's builtin SEDP readers replays every live endpoint
     // announcement to it (TRANSIENT_LOCAL, §8.5.4.1); matching its SEDP
     // writers lets the local builtin readers receive and repair its own.
-    sedp_writer_.on_peer_discovered(peer.data);
-    sedp_reader_.on_peer_discovered(peer.data);
+    sedp_writer_.on_peer_discovered(*data);
+    sedp_reader_.on_peer_discovered(*data);
     notify_graph_change();
 }
 
 bool RTPSParticipant::peer_is_settled(const PeerEntry& peer, uint32_t now_ms) noexcept {
-    if (!peer.sedp_announced || now_ms - peer.lastSedpMs < RTPS_PEER_SETTLE_MS) {
+    if (!peer.active() || !peer.rebuildable() || now_ms - peer.lastSedpMs < RTPS_PEER_SETTLE_MS) {
         return false;
     }
 
-    const GuidPrefix& prefix = peer.data.guidPrefix;
+    const GuidPrefix& prefix = peer.guidPrefix;
     if (match_table_.has_match_with(prefix, discovery_writer_guid_)) {
         return false;
     }
@@ -110,7 +117,7 @@ bool RTPSParticipant::peer_is_settled(const PeerEntry& peer, uint32_t now_ms) no
 }
 
 void RTPSParticipant::park_peer(PeerEntry& peer) noexcept {
-    const GuidPrefix prefix = peer.data.guidPrefix;
+    const GuidPrefix prefix = peer.guidPrefix;
     SequenceNumber publications;
     SequenceNumber subscriptions;
     (void)sedp_reader_.caught_up_with(prefix, publications, subscriptions);
@@ -122,21 +129,21 @@ void RTPSParticipant::park_peer(PeerEntry& peer) noexcept {
     // largest that does; any announcement above it still reactivates.
     peer.parkedPublicationsSn = publications.high != 0 ? UINT32_MAX : publications.low;
     peer.parkedSubscriptionsSn = subscriptions.high != 0 ? UINT32_MAX : subscriptions.low;
-    peer.sedp_announced = false;
     peer.parked = true;
     peer.owed = false;
 
-    // The endpoints go first: their unmatching refers to the proxies'
-    // locators, which belong to the peer's record and stay in place.
+    // The proxies go first: they refer to the active slot's locators, which
+    // stay in place until the slot is freed.
     match_table_.remove_participant(prefix);
     sedp_writer_.on_peer_removed(prefix);
     sedp_reader_.on_peer_removed(prefix);
+    spdp_reader_.deactivate(peer);
 }
 
 bool RTPSParticipant::park_settled_peer(uint32_t now_ms) noexcept {
     PeerEntry* oldest = nullptr;
     spdp_reader_.for_each_peer([&](PeerEntry& peer) noexcept {
-        if (!peer.sedp_announced) {
+        if (!peer.active()) {
             return;
         }
 
@@ -163,7 +170,7 @@ void RTPSParticipant::on_announcer_traffic(const GuidPrefix& prefix, const Entit
         return;
     }
 
-    if (peer->sedp_announced) {
+    if (peer->active()) {
         if (is_data) {
             peer->lastSedpMs = now_ms;
         }
