@@ -33,7 +33,8 @@
  * peer table keeps for their participant (RTPSParticipant resolves them),
  * and follow those defaults when an SPDP refresh changes them. The table
  * asks the participant for those defaults (set_participant_defaults()) and
- * compares an announced list with them once, when it is stored; a remote
+ * compares an announced list with them once, when it is stored, by the
+ * entry a proxy is addressed at (drop_participant_defaults()); a remote
  * endpoint then costs 16 octets however many locators its participant
  * announced, and a participant 16 more for its origin. Only an endpoint that
  * announces other locators takes an origin with a locator list of its own.
@@ -615,14 +616,27 @@ private:
      *
      * @param[in]     prefix The endpoint's GUID prefix.
      * @param[in]     kept   Its kept locators (LocalSubnets::select()).
-     * @param[in,out] count  Entries in `kept`; set to 0 when they equal, entry
-     *   for entry, the defaults participant_defaults_ returns for `prefix`.
+     * A proxy is addressed at one locator, the preferred entry of the list it
+     * is matched with (preferred_unicast_locator()), so the kept list counts
+     * as the defaults when its preferred entry is the defaults' preferred
+     * entry, whatever follows it. A peer reactivated from its known-peer
+     * record has an active slot holding only that preferred default until its
+     * next SPDP announcement, while its replayed SEDP endpoints announce the
+     * full list; both name the same preferred entry, so those endpoints take
+     * no locator list, and the refresh that restores the rest in place leaves
+     * them addressed where they were.
+     *
+     * @param[in,out] count  Entries in `kept`; set to 0 when its preferred
+     *   entry equals that of the defaults participant_defaults_ returns for
+     *   `prefix`.
      *
      * Verification:
-     * - Correct means: an endpoint announcing its participant's defaults is
-     *   reported with no locators and takes no locator list; one announcing
-     *   any other list keeps it.
-     * - Covered by: TC-SEDP-8.5.4.2-001, TC-PART-8.5.3-001.
+     * - Correct means: an endpoint whose preferred locator is its
+     *   participant's default preferred locator is reported with no locators
+     *   and takes no locator list, including while the participant's defaults
+     *   are rebuilt to that one entry; one addressed elsewhere keeps its list.
+     * - Covered by: TC-SEDP-8.5.4.2-001, TC-SEDP-8.5.4.2-004,
+     *   TC-PART-8.5.3-001.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.4.2 (unicastLocatorList of discovered

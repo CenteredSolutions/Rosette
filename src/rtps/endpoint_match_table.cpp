@@ -100,18 +100,21 @@ void EndpointMatchTable::drop_participant_defaults(const GuidPrefix& prefix, con
     const Locator* defaults = nullptr;
     uint8_t default_count = 0u;
     if ((count == 0u) || (participant_defaults_ == nullptr)
-        || !participant_defaults_(prefix, defaults, default_count, user_data_)
-        || (default_count != count)) {
+        || !participant_defaults_(prefix, defaults, default_count, user_data_)) {
         return;
     }
 
-    for (uint8_t k = 0; k < count; ++k) {
-        if (kept[k] != defaults[k]) {
-            return;
-        }
+    // A proxy sends to one locator, the preferred entry of its list, so an
+    // endpoint whose preferred entry is its participant's is reached the
+    // same way through the defaults. Comparing that entry, not the whole
+    // list, also holds for a peer reactivated from its record, whose active
+    // slot keeps only that default until its next SPDP announcement
+    // restores the rest in place.
+    const Locator* own = preferred_unicast_locator(kept, count);
+    const Locator* shared = preferred_unicast_locator(defaults, default_count);
+    if ((shared != nullptr) && (*own == *shared)) {
+        count = 0u;
     }
-
-    count = 0u;
 }
 
 uint8_t EndpointMatchTable::find_origin(const GuidPrefix& prefix, const Locator* locators,

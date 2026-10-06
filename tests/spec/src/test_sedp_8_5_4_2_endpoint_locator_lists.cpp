@@ -2,10 +2,11 @@
  * @file test_sedp_8_5_4_2_endpoint_locator_lists.cpp
  * @brief Where EndpointMatchTable keeps a remote endpoint's announced locators (§8.5.4.2).
  *
- * An endpoint that announces no unicast locators, or exactly its
- * participant's defaults as the SPDP peer table keeps them, keeps no list of
- * its own and is reported with none, so the participant reaches it at the
- * defaults. Only an endpoint announcing other locators takes one of the
+ * An endpoint that announces no unicast locators, or a list whose preferred
+ * entry is that of its participant's defaults as the SPDP peer table keeps
+ * them, keeps no list of its own and is reported with none, so the
+ * participant reaches it at the defaults. Only an endpoint addressed
+ * elsewhere takes one of the
  * RTPS_MAX_REMOTE_LOCATOR_LISTS lists, under the same capacity rule as an
  * origin (see Storage and Capacity in rtps/endpoint_match_table.hpp).
  */
@@ -29,7 +30,8 @@ namespace {
 /// One remote participant's defaults, and what on_match last reported.
 struct Fixture {
     GuidPrefix prefix = {};
-    Locator defaults[1] = {};
+    Locator defaults[RTPS_MAX_REMOTE_ENDPOINT_LOCATORS] = {};
+    uint8_t default_count = 1u;
     int matches = 0;
     int unmatches = 0;
     uint8_t reported_count = 0xFFu;
@@ -44,7 +46,17 @@ bool lookup_defaults(const GuidPrefix& prefix, const Locator*& locators, uint8_t
     }
 
     locators = f->defaults;
-    count = 1u;
+    count = f->default_count;
+    return true;
+}
+
+/// The fixture's defaults for every remote participant, as for a network of
+/// peers that each announce the same default list.
+bool lookup_defaults_of_any(const GuidPrefix&, const Locator*& locators, uint8_t& count,
+                            void* user) noexcept {
+    auto* f = static_cast<Fixture*>(user);
+    locators = f->defaults;
+    count = f->default_count;
     return true;
 }
 
@@ -233,11 +245,68 @@ static bool tc_sedp_8_5_4_2_003(std::string& err) {
     return true;
 }
 
+static_assert(RTPS_MAX_REMOTE_ENDPOINT_LOCATORS >= 2,
+              "TC-SEDP-8.5.4.2-004 needs endpoints that keep two locators");
+static_assert(RTPS_MAX_DISCOVERED_WRITERS >= RTPS_MAX_REMOTE_LOCATOR_LISTS + 2,
+              "TC-SEDP-8.5.4.2-004 needs a writer per list and two more");
+
+namespace {
+
+/// A writer of `prefix_octet` on `topic` announcing `first` then `second`.
+DiscoveredWriterData make_writer_with_two(Octet prefix_octet, const char* topic,
+                                          const Locator& first, const Locator& second) {
+    DiscoveredWriterData wd = make_writer(make_guid(prefix_octet, 1u), topic, &first);
+    wd.unicastLocatorList[1] = second;
+    wd.unicastLocatorCount = 2u;
+    return wd;
+}
+
+}  // namespace
+
+// §8.5.4.2 with two-tier peers: a peer reactivated from its known-peer
+// record has only its preferred default until its next SPDP announcement,
+// while its replayed endpoints announce its full default list. Those
+// endpoints share the preferred entry, so they take no locator list however
+// many such peers there are, and the refresh restoring the full defaults
+// rematches nothing; an endpoint whose preferred entry differs keeps its list.
+static bool tc_sedp_8_5_4_2_004(std::string& err) {
+    Fixture f{};
+    const Locator lan = make_udpv4_locator(0xC0A80164u, 7411u);
+    const Locator lan_alt = make_udpv4_locator(0xC0A80166u, 7411u);
+    const Locator other = make_udpv4_locator(0xC0A80165u, 7411u);
+    const Guid local_reader = make_guid(0x01u, 1u);
+    f.defaults[0] = lan;
+    f.defaults[1] = lan_alt;
+    f.default_count = 1u;
+
+    EndpointMatchTable t(on_match, on_unmatch, &f);
+    t.set_participant_defaults(lookup_defaults_of_any);
+    t.set_local_prefix(local_reader.prefix);
+    t.add_reader(make_reader(local_reader, "rt/a", nullptr));
+
+    for (uint8_t i = 0; i <= RTPS_MAX_REMOTE_LOCATOR_LISTS; ++i) {
+        t.add_writer(make_writer_with_two(static_cast<Octet>(0x20u + i), "rt/a", lan, lan_alt));
+        CHECK(f.matches == i + 1 && f.reported_count == 0u,
+              "a replayed writer announcing the full defaults against a rebuilt slot is "
+              "reported with none");
+    }
+
+    f.default_count = 2u;
+    t.add_writer(make_writer_with_two(0x20u, "rt/a", lan, lan_alt));
+    CHECK(f.unmatches == 0, "the SPDP refresh restoring the full defaults rematches nothing");
+
+    t.add_writer(make_writer_with_two(0x40u, "rt/a", other, lan));
+    CHECK(f.matches == RTPS_MAX_REMOTE_LOCATOR_LISTS + 2 && f.reported_count == 2u
+              && f.reported_first == other,
+          "with every list still free, a writer addressed elsewhere is kept with its own list");
+    return true;
+}
+
 void append_sedp_tests_8_5_4_2_endpoint_locator_lists(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-8.5.4.2-001",
-                     "§8.5.4.2: a remote endpoint announcing its participant's defaults keeps no "
-                     "list and is reported with none, like one announcing none; other lists are "
-                     "kept and reported as announced.",
+                     "§8.5.4.2: a remote endpoint addressed at its participant's preferred "
+                     "default keeps no list and is reported with none, like one announcing none; "
+                     "other lists are kept and reported as announced.",
                      tc_sedp_8_5_4_2_001});
     tests.push_back({"TC-SEDP-8.5.4.2-002",
                      "§8.5.4.2 capacity: with every locator list taken, an endpoint with its own "
@@ -249,6 +318,11 @@ void append_sedp_tests_8_5_4_2_endpoint_locator_lists(std::vector<TestCase>& tes
                      "re-announces other locators of its own moves to them, completing a match "
                      "or not.",
                      tc_sedp_8_5_4_2_003});
+    tests.push_back({"TC-SEDP-8.5.4.2-004",
+                     "§8.5.4.2 with two-tier peers: endpoints replayed by peers reactivated from "
+                     "their records, whose defaults are rebuilt to the preferred entry, take no "
+                     "locator list, and the SPDP refresh restoring the defaults rematches none.",
+                     tc_sedp_8_5_4_2_004});
 }
 
 }  // namespace spec_test
