@@ -4,7 +4,7 @@
  *
  * The monotonic clock is CLOCK_MONOTONIC. A host runs many Rosette processes
  * at once, so the unique ID mixes the machine's identity with the process ID
- * and start time; wall-clock time comes from the OS, which keeps it
+ * and start time, and the boot nonce hashes the process ID and start time; wall-clock time comes from the OS, which keeps it
  * synchronized. A host has no GPIO interrupts.
  */
 
@@ -55,6 +55,20 @@ void device_unique_id(uint8_t out[8]) noexcept {
         return h;
     }();
     for (int i = 0; i < 8; ++i) out[i] = static_cast<uint8_t>(id >> (8 * i));
+}
+
+uint32_t boot_nonce() noexcept {
+    // Computed once: the process ID and start time differ at every process start.
+    static const uint32_t nonce = [] {
+        uint64_t h = 0xCBF29CE484222325ull;
+        const pid_t pid = getpid();
+        h = fnv1a(h, &pid, sizeof(pid));
+        timespec start{};
+        clock_gettime(CLOCK_REALTIME, &start);
+        h = fnv1a(h, &start, sizeof(start));
+        return static_cast<uint32_t>(h ^ (h >> 32));
+    }();
+    return nonce;
 }
 
 bool realtime_hint_us(int64_t& unix_us) noexcept {

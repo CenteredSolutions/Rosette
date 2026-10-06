@@ -57,20 +57,31 @@ namespace rtps {
  *
  * Layout (§9.3.1.5 recommends the vendor ID in the first two octets):
  *   0-1   VENDORID_THIS_IMPL
- *   2-9   platform::device_unique_id(): unique per device, and per process
- *         on a host
+ *   2-5   platform::device_unique_id() folded to 32 bits (FNV-1a): tells
+ *         devices, and processes on a host, apart
+ *   6-9   platform::boot_nonce(), big-endian: tells successive boots of one
+ *         device apart
  *   10    instance counter: differs for each participant this process
- *         creates, so a participant recreated after shutdown is never
- *         mistaken for its predecessor by peers still holding its lease
+ *         creates
  *   11    participant_id
+ *
+ * A participant must never reuse its predecessor's GUID while peers still
+ * hold the predecessor's lease, whether the predecessor was shut down by this
+ * process (the counter) or lost to a reset (the nonce). A peer that sees a
+ * known GUID announce again treats it as a lease refresh and keeps its
+ * per-writer state, so the new participant's samples, numbered from 1 again,
+ * are dropped as already received, and discovery and services stay broken
+ * until the peer restarts or the old lease runs out.
  *
  * @param[in] participant_id Participant ID from the port mapping (§9.6.1.1).
  * @return The 12-octet prefix; participant and endpoint GUIDs share it.
  *
  * Verification:
- * - Correct means: distinct across devices, processes, and successive
- *   participants of one process; octet 11 equals `participant_id`.
- * - Covered by: TC-PART-8.5.1-003.
+ * - Correct means: distinct across devices, processes, boots of one device,
+ *   and successive participants of one process; octets 0-1 are the vendor ID,
+ *   6-9 the boot nonce, and 11 equals `participant_id`.
+ * - Covered by: TC-PART-8.5.1-003 (layout); a device reset while a ROS 2
+ *   host stays up, the host then rediscovering it (boots).
  *
  * References:
  * - OMG DDSI-RTPS 2.5 §8.2.4.2 (GuidPrefix_t), §9.3.1.5 (vendor ID octets)
@@ -570,6 +581,33 @@ private:
 
     /// @brief Reactivates one owed parked peer when a slot is free or can be made.
     void serve_owed_peer(uint32_t now_ms) noexcept;
+
+    /**
+     * @brief Sends this participant's SPDP announcement directly to every active peer.
+     *
+     * Runs with each periodic SPDP announcement. The multicast announcement
+     * alone does not keep active peers informed: a network that does not
+     * carry the group between this participant and a peer leaves the peer
+     * with only the direct announcement activate_peer() sent, which is best
+     * effort and sent once. A WIZnet board drops a datagram whose next hop it
+     * has not resolved yet, which is how that one is lost after the board
+     * resets. The peer then never learns the new participant, ignores its
+     * SEDP HEARTBEATs, and keeps no endpoints of it until it restarts.
+     * Repeating the direct announcement every period repairs the loss, as
+     * Fast DDS and Cyclone DDS do by announcing to every known peer's
+     * metatraffic unicast locator.
+     *
+     * Verification:
+     * - Correct means: each periodic announcement reaches every active peer's
+     *   first metatraffic unicast locator, and no parked or departed peer.
+     * - Covered by: TC-PART-8.5.1-008; on hardware, a ROS 2 host that stays
+     *   up rediscovers a board after the board resets.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (SPDP sends to the locators of known
+     *   remote participants as well as the SPDP multicast locator), §8.5.3.3
+     */
+    void announce_to_active_peers() noexcept;
 
     /// @brief Tells the graph observer, if any, that the graph changed.
     void notify_graph_change() noexcept {

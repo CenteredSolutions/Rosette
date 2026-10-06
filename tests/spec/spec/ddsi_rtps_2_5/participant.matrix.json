@@ -115,6 +115,15 @@
       "test_ids": ["TC-PART-8.5.1-010"]
     },
     {
+      "id": "REQ-PART-8.5.3.2-PERIODIC-DIRECTED-SPDP",
+      "section": "8.5.3.2",
+      "page": 160,
+      "normativity": "implementation-behavior",
+      "statement": "Every periodic SPDP announcement also goes to each active peer's metatraffic unicast locator, so a peer that lost the directed announcement sent at discovery learns the participant within one period.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-011"]
+    },
+    {
       "id": "REQ-PART-8.5.3.2-PEER-ADDRESS-CHANGE",
       "section": "8.5.3.2",
       "page": 160,

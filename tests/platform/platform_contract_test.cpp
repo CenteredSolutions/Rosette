@@ -62,6 +62,13 @@ void test_unique_id_stable() {
     check(!blank, "UniqueIdStable", "identifier is not all zeros");
 }
 
+/// Boot nonce: one value for the whole boot. That it changes at the next boot
+/// is checked on hardware, by a peer rediscovering a device that reset.
+void test_boot_nonce_stable() {
+    const uint32_t first = pf::boot_nonce();
+    check(pf::boot_nonce() == first, "BootNonceStable", "repeated calls return the same nonce");
+}
+
 /// Mutex: exclusive and non-recursive.
 void test_mutex() {
     pf::Mutex m;
@@ -193,6 +200,7 @@ int run_contract() {
     g_failures = 0;
     test_monotonic_advances();
     test_unique_id_stable();
+    test_boot_nonce_stable();
     test_mutex();
     test_event();
 #if defined(ROSETTE_OS_POSIX)

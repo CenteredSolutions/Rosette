@@ -25,6 +25,10 @@ void device_unique_id(uint8_t out[8]) noexcept {
     for (int i = 0; i < 8; ++i) out[i] = static_cast<uint8_t>(0x10 + i);
 }
 
+uint32_t boot_nonce() noexcept {
+    return 0x10203040u;
+}
+
 bool realtime_hint_us(int64_t& unix_us) noexcept {
     (void)unix_us;
     return false;
