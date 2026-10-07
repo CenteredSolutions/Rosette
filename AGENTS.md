@@ -133,6 +133,10 @@ The RTPS stack is `rosette::rtps`. A `.cpp` file that uses it heavily (three or 
   step, loop, or branch.
 - A closing `}` on a line by itself is always followed by a blank line before the next statement. The exceptions
   are a `}` followed by another `}`, by `else`, by the `while` of a `do` loop, or by a `case` label.
+- A run of one-line definitions that together read as a table, such as a chip's register offsets or a set of
+  `constexpr` traits, may sit on consecutive lines with no blank line between them. Start a new group with a blank
+  line and a heading comment. A definition whose body spans lines still ends in a lone `}` and takes a blank line
+  after it.
 
 ```cpp
 for (auto& proxy : proxies_) {
@@ -144,6 +148,13 @@ for (auto& proxy : proxies_) {
 }
 
 return proxies_.size();
+```
+
+```cpp
+// ── common registers ──
+static constexpr address_type common_mode() { return reg(0x0000u, common_block()); }     // MR
+static constexpr address_type common_gateway() { return reg(0x0001u, common_block()); }  // GAR
+static constexpr address_type common_subnet() { return reg(0x0005u, common_block()); }   // SUBR
 ```
 
 ### Function length
