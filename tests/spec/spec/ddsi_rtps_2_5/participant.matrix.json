@@ -157,6 +157,14 @@
       "statement": "A participant's user writers and readers bind proxies from two participant-wide pools. Every endpoint slot's floor is reserved from construction; a larger floor is reserved when the endpoint is created, which is refused when the pool cannot hold it; deleting an endpoint returns its proxies and its larger floor.",
       "status": "implemented",
       "test_ids": ["TC-PART-8.5.1-011"]
+    },
+    {
+      "id": "REQ-PART-8.4.1.4-WAITING-MATCHES",
+      "section": "8.4.1.4",
+      "normativity": "implementation-behavior",
+      "statement": "A match whose proxy the pool or the endpoint's cap refuses is kept waiting, not dropped, and keeps its peer in a match. After a proxy frees, each tick binds one waiting match, the oldest by the order the matches were reported among those that can bind; the bound endpoint starts it as a newly matched one, replaying TRANSIENT_LOCAL history, a service reply to that client included.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.4.1.4-001", "TC-PART-8.4.1.4-002", "TC-PART-8.4.1.4-003"]
     }
   ]
 }

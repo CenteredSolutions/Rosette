@@ -476,9 +476,15 @@ void EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
 {
     MatchRecord* free_slot = nullptr;
     for (MatchRecord& m : matches_) {
-        if (m.writer_guid == writer.guid && m.reader_guid == reader.guid) return;
-        if (!free_slot && !m.active()) free_slot = &m;
+        if (m.writer_guid == writer.guid && m.reader_guid == reader.guid) {
+            return;
+        }
+
+        if (!free_slot && !m.active()) {
+            free_slot = &m;
+        }
     }
+
     // Without a free record the pair is not reported, so every reported
     // match has a matching unmatch.
     if (!free_slot) {
@@ -486,9 +492,91 @@ void EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
                    (unsigned long)kMaxMatches);
         return;
     }
+
+    // A proxy freed since the last rebind belongs to the oldest waiting pair
+    // that can take it, not to a pair reported after it.
+    const bool queued = oldest_bindable() != nullptr;
     free_slot->writer_guid = writer.guid;
     free_slot->reader_guid = reader.guid;
-    if (on_match_) on_match_(writer, reader, topic, user_data_);
+    free_slot->ticket = next_ticket_++;
+    free_slot->waiting = queued || (on_match_ && !on_match_(writer, reader, topic, user_data_));
+}
+
+bool EndpointMatchTable::describe(const MatchRecord& m, MatchedEndpoint& writer,
+                                  MatchedEndpoint& reader, const TopicName*& topic) noexcept {
+    topic = nullptr;
+    if (is_local(m.writer_guid)) {
+        const LocalEndpoint* w = find(local_writers_, RTPS_MAX_LOCAL_ENDPOINTS, m.writer_guid);
+        if (w == nullptr) {
+            return false;
+        }
+
+        writer = MatchedEndpoint{w->guid, nullptr, 0u, false};
+        topic = &w->topicName;
+    } else {
+        const RemoteEndpoint* w =
+            find_remote(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, m.writer_guid);
+        if (w == nullptr || !w->valid()) {
+            return false;
+        }
+
+        writer = matched(*w);
+    }
+
+    if (is_local(m.reader_guid)) {
+        const LocalEndpoint* r = find(local_readers_, RTPS_MAX_LOCAL_ENDPOINTS, m.reader_guid);
+        if (r == nullptr) {
+            return false;
+        }
+
+        reader = MatchedEndpoint{r->guid, nullptr, 0u, r->expectsInlineQos};
+        topic = &r->topicName;
+    } else {
+        const RemoteEndpoint* r =
+            find_remote(remote_readers_, RTPS_MAX_DISCOVERED_READERS, m.reader_guid);
+        if (r == nullptr || !r->valid()) {
+            return false;
+        }
+
+        reader = matched(*r);
+    }
+
+    return topic != nullptr;
+}
+
+EndpointMatchTable::MatchRecord* EndpointMatchTable::oldest_bindable() noexcept {
+    if (may_match_ == nullptr) {
+        return nullptr;
+    }
+
+    MatchRecord* oldest = nullptr;
+    for (MatchRecord& m : matches_) {
+        if (!m.active() || !m.waiting) {
+            continue;
+        }
+
+        // Tickets wrap; a ticket is older when it lies less than half the
+        // counter's range behind the other.
+        const bool older = oldest == nullptr || static_cast<int16_t>(m.ticket - oldest->ticket) < 0;
+        if (older && may_match_(m.writer_guid, m.reader_guid, user_data_)) {
+            oldest = &m;
+        }
+    }
+
+    return oldest;
+}
+
+bool EndpointMatchTable::match_oldest_waiting() noexcept {
+    MatchRecord* oldest = oldest_bindable();
+    MatchedEndpoint writer{};
+    MatchedEndpoint reader{};
+    const TopicName* topic = nullptr;
+    if (oldest == nullptr || on_match_ == nullptr || !describe(*oldest, writer, reader, topic)) {
+        return false;
+    }
+
+    oldest->waiting = !on_match_(writer, reader, *topic, user_data_);
+    return !oldest->waiting;
 }
 
 // ------------------------------------------------------------

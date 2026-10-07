@@ -169,19 +169,30 @@ are left to one mechanism decided later.
 ## Waiting matches
 
 A match the pool refuses is not dropped. `EndpointMatchTable::MatchRecord`
-gains a `bound` flag and a `ticket`, the value of a 16-bit counter taken when
-the pair was reported:
+carries a `waiting` flag and a `ticket`, the value of a 16-bit counter taken
+when the pair was reported:
 
-* `report()` records the pair and calls `on_match` as today. The participant
-  tries to bind a proxy; on success it sets `bound`.
-* Refused, the record stays with `bound` clear. The pair counts as matched in
-  the table, so dissolving it later still pairs every report with an unmatch,
-  and the two-tier table does not park a peer with which it shares one.
-* Releasing a proxy, through an unmatch or `delete_writer()` /
-  `delete_reader()`, sets a flag on the pool. The next `tick()` binds the
-  waiting record with the oldest ticket (modulo-2^16 comparison) whose
-  endpoint may now take a proxy. It binds at most one record per pool per
-  tick.
+* `report()` records the pair and calls `on_match`, which binds a proxy for
+  every local half of the pair and returns whether it could. Refused, the
+  record stays with `waiting` set. The pair counts as matched in the table,
+  so dissolving it later still pairs every report with an unmatch, and the
+  two-tier table does not park a peer with which it shares one.
+* Releasing a user endpoint's proxy, through an unmatch or `delete_writer()`
+  / `delete_reader()`, marks a rebind due in the participant, and
+  `ms_until_next_timer()` returns 0. The next `tick()` calls
+  `match_oldest_waiting()`, which binds the waiting record with the oldest
+  ticket (modulo-2^16 comparison) whose endpoints may now take a proxy; the
+  participant answers that through `MayMatch`, the same admission test
+  `bind()` applies. It binds at most one pair per tick, so a tick replays at
+  most one TRANSIENT_LOCAL history; the rebind stays due while a tick binds
+  one and clears on the first tick that binds none.
+* A pair reported while an older waiting pair may bind is recorded waiting
+  without trying, so a match discovered between the release and the next
+  tick does not take the freed proxy ahead of the matches already waiting.
+  Pairs bind in the order they were reported.
+* Offering a waiting pair again binds only the half that waited: a half
+  that already holds its proxy is left alone, which matters for a pair of
+  two local endpoints.
 * `matched_reader_count()` and `matched_writer_count()` count bound proxies
   only, so `rmw_publisher_count_matched_subscriptions`,
   `rmw_subscription_count_matched_publishers` and
@@ -216,7 +227,7 @@ server does not discard a reply because its client's reader matched late.
 | Send, HEARTBEAT, ACKNACK, NACK handling | O(cap) over the proxy array | O(k) over the k bound proxies |
 | Find a proxy by GUID on receive | O(cap) | O(k) |
 | Bind on a new match (SEDP DATA) | O(cap) free-slot scan + TRANSIENT_LOCAL replay | O(1) admission and free-list pop + O(k) append + the same replay |
-| Bind a waiting match | never happens | at most one per pool per `tick()`: O(match records) + one replay |
+| Bind a waiting match | never happens | at most one per `tick()`: O(match records × k) admission checks + one replay |
 | Rescan after a record overflow | never happens | O(local × remote endpoints), once per freed record after an overflow |
 | Whether an endpoint gets its floor | depends on creation order | proven by `static_assert` |
 
@@ -290,6 +301,10 @@ default pool sizes, which hold every endpoint at its cap, the participant is
 83,272 B: the pools cost 880 B over per-endpoint arrays, the per-proxy links
 and pool headers.
 
+Waiting matches add a ticket and a flag to each match record, 4 B with
+padding, and a few bytes of table and participant state: 272 B on the
+example firmware's 64 records.
+
 ## Configuration
 
 | `rmw_rosette` knob | RTPS macro | Default | Meaning |
@@ -326,15 +341,17 @@ New spec tests, under the areas they belong to:
   floor binds with every unreserved proxy borrowed; above its floor it binds
   only an unreserved proxy; it never exceeds its cap; `free ≥ reserved` after
   every bind and release.
-* Waiting matches (participant): with the pool exhausted, a new pair waits;
-  the first release binds the oldest waiting pair at the next `tick()`, one
-  per tick; the bound reader receives the writer's TRANSIENT_LOCAL history
-  and its later DATA; matched counts report bound pairs only.
+* Waiting matches (participant, TC-PART-8.4.1.4-001/002): with an endpoint
+  full, a new pair waits; the first release binds the oldest waiting pair at
+  the next `tick()`, ahead of a pair reported after the release, one per
+  tick; the bound reader receives the writer's TRANSIENT_LOCAL history;
+  matched counts report bound pairs only.
 * Record overflow: a pair refused by a full record table is reported after a
   record frees.
-* Service under pressure: a reply written while the client's reply reader
-  waits is delivered when it binds; the client reports the server unavailable
-  until both of its endpoints are bound.
+* Service under pressure (TC-PART-8.4.1.4-003): a reply written while the
+  client's reply reader waits is delivered when it binds, and the waiting
+  pair keeps the client's peer in a match; the client reports the server
+  unavailable until both of its endpoints are bound.
 * Reassembly pool: eviction stays within a reader; a refused fragmented sample
   from a reliable writer completes after repair.
 * Every existing spec suite, and the loopback suites against `rmw_fastrtps_cpp`
@@ -348,7 +365,7 @@ New spec tests, under the areas they belong to:
 
 1. Proxy pools for user writers and readers, with floors and caps; builtin
    endpoints on private pools.
-2. Waiting matches and the record-overflow rescan.
+2. Waiting matches, then the record-overflow rescan.
 3. The participant-wide reassembly pool.
 4. Firmware sizing in `docs/mcu_memory_model.md` and the example firmware's
    capacity settings.

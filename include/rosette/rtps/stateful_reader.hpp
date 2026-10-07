@@ -126,7 +126,8 @@ public:
      * @return `true` when a proxy was added; `false` when the writer is
      *   already matched or the pool refuses a proxy (the reader is at its
      *   cap, or above its floor with every free proxy promised to other
-     *   floors; ProxyPool::bind()).
+     *   floors; ProxyPool::bind()). RTPSParticipant keeps a refused match
+     *   waiting and calls this again once may_add_writer() holds.
      *
      * Verification:
      * - Correct means: one proxy per matched writer; a RELIABLE reader sends
@@ -338,6 +339,10 @@ public:
 
     /// @brief Most writers this reader can match at once (its cap).
     uint8_t max_matched_writers() const noexcept { return writers_.cap; }
+
+    /// @brief Whether matched_writer_add() of a new writer would now get a
+    /// proxy: below the cap, and below the floor or with an unpromised one free.
+    bool may_add_writer() const noexcept { return pool_.may_bind(writers_); }
 
 protected:
     /**

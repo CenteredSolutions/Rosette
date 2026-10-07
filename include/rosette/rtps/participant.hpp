@@ -342,9 +342,32 @@ public:
     // ----------------------------------------------------------
     ParseResult parse_received(const Octet* buf, uint32_t len) noexcept;
 
-    // ----------------------------------------------------------
-    // tick() — drives SPDP, lease expiry, writer/reader maintenance.
-    // ----------------------------------------------------------
+    /**
+     * @brief Runs the participant's timed work: SPDP, lease expiry, waiting
+     *   matches, and every endpoint's heartbeats and repairs.
+     *
+     * The driver calls this whenever ms_until_next_timer() has elapsed or a
+     * datagram was handled. Nothing runs until the participant has an
+     * address.
+     *
+     * After a user endpoint's proxy frees (an unmatch or a deleted
+     * endpoint), each tick binds at most one waiting match, the oldest the
+     * pools can now serve (EndpointMatchTable::match_oldest_waiting()), and
+     * keeps doing so on later ticks until none can bind. A tick therefore
+     * replays at most one TRANSIENT_LOCAL history for a waiting match.
+     *
+     * @param[in] now_ms Current platform::monotonic_ms().
+     *
+     * Verification:
+     * - Correct means: no timer runs late by more than the driver's wake-up
+     *   latency, and a waiting match binds within one tick per match ahead
+     *   of it once a proxy is free for it.
+     * - Covered by: TC-PART-8.5.1-006, TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-002.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (lease), §8.4.1.4 (matched_reader_add),
+     *   §8.4.7.4 (matched_writer_add)
+     */
     void tick(uint32_t now_ms) noexcept;
 
     // ----------------------------------------------------------
@@ -352,9 +375,10 @@ public:
     //
     // How long tick() can be deferred: the soonest of the SPDP
     // announcement, any peer lease expiry, and every builtin and user
-    // writer's and reader's pending timer. A driver that sleeps between
-    // ticks waits no longer than this, so no heartbeat, repair, or lease
-    // expiry is late.
+    // writer's and reader's pending timer, or now while a freed proxy may
+    // let a waiting match bind. A driver that sleeps between ticks waits no
+    // longer than this, so no heartbeat, repair, lease expiry, or waiting
+    // match is late.
     //
     // Verification: TC-PART-8.5.1-006.
     //
@@ -553,10 +577,36 @@ private:
     // ── Discovery callbacks ───────────────────────────────────
     static void on_spdp_new_peer    (const PeerEntry&, void*) noexcept;
     static void on_spdp_peer_removed(const PeerEntry&, void*) noexcept;
-    static void on_endpoint_match   (const MatchedEndpoint&,
-                                     const MatchedEndpoint&,
-                                     const TopicName&,
-                                     void*) noexcept;
+    /**
+     * @brief Binds a proxy for every local half of a matched pair.
+     *
+     * The match table's OnMatch: called once when a pair is reported and
+     * again for a waiting pair from match_oldest_waiting(). A half that
+     * already holds its proxy is left alone, so offering a pair again binds
+     * only the half that waited.
+     *
+     * @param[in] writer The pair's writer, with the locators it announced.
+     * @param[in] reader The pair's reader, with the locators it announced.
+     * @param[in] topic  The local endpoint's topic name, for the log.
+     * @param[in] self   The participant.
+     * @return `true` when every local half holds its proxy; `false` when a
+     *   pool or an endpoint's cap refused one, and the pair waits.
+     *
+     * Verification:
+     * - Correct means: a half is bound at most once; a refused half leaves
+     *   the pool unchanged.
+     * - Covered by: TC-PART-8.5.1-011, TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-003.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.4.7.4 (matched_writer_add)
+     */
+    static bool on_endpoint_match(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
+                                  const TopicName& topic, void* self) noexcept;
+
+    /// @brief The match table's MayMatch: whether every local half of the pair
+    /// that holds no proxy yet could bind one now.
+    static bool may_bind_pair(const Guid& writer_guid, const Guid& reader_guid,
+                              void* self) noexcept;
     static void on_endpoint_unmatch (const Guid&, const Guid&, void*) noexcept;
     static void on_endpoints_changed(void*) noexcept;
 
@@ -896,6 +946,10 @@ private:
 
     OnGraphChange on_graph_change_   = nullptr;
     void*         graph_change_user_ = nullptr;
+
+    /// A user endpoint's proxy freed since the last tick that bound no
+    /// waiting match, so one may bind now.
+    bool rebind_due_ = false;
 };
 
 } // namespace rtps

@@ -88,11 +88,25 @@
  * Callbacks
  * ---------
  * on_match(writer, reader, topic): a compatible pair was found; the owner
- *   (RTPSParticipant) adds the matching proxies.
+ *   (RTPSParticipant) adds the matching proxies and returns whether it could.
  * on_unmatch(writer_guid, reader_guid): a reported pair was dissolved.
  * on_change(): the set of known endpoints changed (one was recorded, its
  *   topic or type changed, or it was forgotten); the owner tells graph
  *   observers to re-query.
+ *
+ * Waiting matches
+ * ---------------
+ * The owner binds a proxy from a fixed pool for every local half of a pair
+ * (rtps/proxy_pool.hpp), and a pool can refuse. A refused pair keeps its
+ * record, marked waiting, with the ticket it drew from a 16-bit counter when
+ * it was reported. It counts as a match for everything the table decides
+ * (has_match_with(), displacement, dissolving), so a later unmatch still
+ * pairs with its report. When a proxy frees, the owner calls
+ * match_oldest_waiting(), which reports again the waiting pair with the
+ * oldest ticket among those the owner says may now bind (set_may_match()).
+ * A pair reported while an older waiting pair may bind waits behind it
+ * rather than take the freed proxy first, so pairs bind in the order they
+ * were reported.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -337,13 +351,17 @@ struct MatchedEndpoint {
  */
 class EndpointMatchTable {
 public:
+    /// A writer-reader pair became compatible, or a waiting pair is offered
+    /// again. `topic` is the topic name of the pair's local endpoint. Returns
+    /// `true` when every local endpoint of the pair holds a proxy for its
+    /// partner, `false` when the pair waits for one.
+    using OnMatch = bool (*)(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
+                             const TopicName& topic, void* user_data) noexcept;
 
-    /// A writer-reader pair became compatible. `topic` is the topic name of
-    /// the pair's local endpoint.
-    using OnMatch   = void (*)(const MatchedEndpoint& writer,
-                               const MatchedEndpoint& reader,
-                               const TopicName&       topic,
-                               void*                  user_data) noexcept;
+    /// Whether the owner could now bind every local half of the waiting pair
+    /// (`writer_guid`, `reader_guid`) that holds no proxy yet.
+    using MayMatch = bool (*)(const Guid& writer_guid, const Guid& reader_guid,
+                              void* user_data) noexcept;
 
     /// A previously reported pair was dissolved.
     using OnUnmatch = void (*)(const Guid& writer_guid,
@@ -397,6 +415,10 @@ public:
     }
 
     /// @brief Sets the GUID prefix that marks an endpoint as local.
+    /// Asks the owner whether a waiting pair could bind now; without it, a
+    /// waiting pair never binds again and a new pair never waits behind one.
+    void set_may_match(MayMatch may_match) noexcept { may_match_ = may_match; }
+
     void set_local_prefix(const GuidPrefix& prefix) noexcept {
         local_prefix_ = prefix;
         has_local_prefix_ = true;
@@ -468,6 +490,37 @@ public:
      * - Covered by: TC-PART-8.5.3-012.
      */
     bool has_match_with(const GuidPrefix& prefix, const Guid& except_local) const noexcept;
+
+    /**
+     * @brief Reports again the oldest waiting pair the owner may now bind.
+     *
+     * A pair whose proxy a pool refused waits in its record (see Waiting
+     * matches in the file comment). The owner calls this after a proxy
+     * frees; it binds at most one pair per call, so the work a single call
+     * does, one TRANSIENT_LOCAL replay at most, stays bounded, and the owner
+     * calls again while calls succeed.
+     *
+     * Among waiting records for which the owner's MayMatch holds, the one with the
+     * oldest ticket (compared modulo 2^16) is described from the stored
+     * endpoints exactly as report() first described it and passed to
+     * on_match; its waiting mark follows what on_match returns. Records whose
+     * endpoint cannot bind yet are skipped, so a full endpoint does not hold
+     * up a pair of another endpoint.
+     *
+     * @return `true` when a waiting pair bound, so another may bind too;
+     *   `false` when no waiting pair could.
+     *
+     * Verification:
+     * - Correct means: the bound pair is the oldest waiting one MayMatch
+     *   accepts; at most one pair binds per call; a pair that binds again
+     *   is reported to on_match with the same locators and topic as when
+     *   first reported, and is never reported twice while bound.
+     * - Covered by: TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-002, TC-PART-8.4.1.4-003.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.4.7.4 (matched_writer_add)
+     */
+    bool match_oldest_waiting() noexcept;
 
     /**
      * @brief Counts the known writers or readers on one topic.
@@ -575,6 +628,10 @@ private:
     struct MatchRecord {
         Guid writer_guid = GUID_UNKNOWN;
         Guid reader_guid = GUID_UNKNOWN;
+        /// Drawn from next_ticket_ when the pair was reported; orders waiting pairs.
+        uint16_t ticket = 0u;
+        /// The owner could not bind a proxy for some local half of the pair.
+        bool waiting = false;
         bool active() const noexcept { return writer_guid != GUID_UNKNOWN; }
     };
 
@@ -788,9 +845,21 @@ private:
      */
     RemoteEndpoint* displace_unmatched(RemoteEndpoint* table, uint32_t n, bool is_writer) noexcept;
 
-    /// Reports the pair unless it was reported before or no record is free.
+    /// Reports the pair unless it was reported before or no record is free;
+    /// a pair that would bind ahead of an older waiting one that may bind
+    /// is recorded waiting instead.
     void report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
                 const TopicName& topic) noexcept;
+
+    /// @brief Describes a recorded pair as report() described it; false when
+    /// either endpoint is no longer stored, which no active record allows:
+    /// every path that forgets an endpoint dissolves its pairs first, and
+    /// displacement spares an endpoint in any record, waiting or not.
+    bool describe(const MatchRecord& m, MatchedEndpoint& writer, MatchedEndpoint& reader,
+                  const TopicName*& topic) noexcept;
+
+    /// @brief The waiting record with the oldest ticket MayMatch accepts, or null.
+    MatchRecord* oldest_bindable() noexcept;
     /// Reports every recorded pair involving `guid` as dissolved and forgets it.
     void dissolve(const Guid& guid, bool is_writer) noexcept;
 
@@ -842,11 +911,13 @@ private:
 
     const LocalSubnets* subnets_ = &kNoSubnets;
     ParticipantDefaults participant_defaults_ = nullptr;
+    MayMatch may_match_ = nullptr;
     OnMatch    on_match_;
     OnUnmatch  on_unmatch_;
     OnChange   on_change_;
     void*      user_data_;
     GuidPrefix local_prefix_ = {};
+    uint16_t next_ticket_ = 0u;
     bool       has_local_prefix_ = false;
 };
 

@@ -207,6 +207,7 @@ RTPSParticipant::RTPSParticipant(uint8_t domain_id, uint8_t participant_id, ITra
     // Only pairs with a local endpoint need proxies; remote-to-remote
     // matches would only consume match records.
     match_table_.set_local_prefix(participant_guid_.prefix);
+    match_table_.set_may_match(may_bind_pair);
     match_table_.set_local_subnets(local_subnets_);
     match_table_.set_participant_defaults([](const GuidPrefix& prefix, const Locator*& locators,
                                              uint8_t& count, void* self) noexcept {
@@ -314,6 +315,7 @@ bool RTPSParticipant::delete_writer(StatefulWriter* writer) noexcept
         const uint8_t floor = writer->min_matched_readers();
         writer->~StatefulWriter();
         release_endpoint_floor(reader_proxies_, floor);
+        rebind_due_ = true;
         writers_[i] = nullptr;
         writer_alive_[i] = false;
         RTPS_LOG_I("participant", "writer deleted: slot=%d", i);
@@ -334,6 +336,7 @@ bool RTPSParticipant::delete_reader(StatefulReader* reader) noexcept
         const uint8_t floor = reader->min_matched_writers();
         user_reader(i)->~SharedPoolStatefulReader();
         release_endpoint_floor(writer_proxies_, floor);
+        rebind_due_ = true;
         reader_alive_[i] = false;
         RTPS_LOG_I("participant", "reader deleted: slot=%d", i);
         return true;
@@ -455,6 +458,10 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
     serve_owed_peer(now_ms);
     sedp_writer_.tick(now_ms);
     sedp_reader_.tick(now_ms);
+    if (rebind_due_) {
+        rebind_due_ = match_table_.match_oldest_waiting();
+    }
+
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
         if (writer_alive_[i] && writers_[i])
             writers_[i]->tick(now_ms);
@@ -477,6 +484,10 @@ uint32_t RTPSParticipant::ms_until_next_timer(uint32_t now_ms) const noexcept {
         [&owed](const PeerEntry& peer) noexcept { owed = owed || peer.owed; });
     if (owed) {
         consider(RTPS_PEER_SETTLE_MS / 4u);
+    }
+
+    if (rebind_due_) {
+        consider(0u);
     }
 
     consider(sedp_writer_.ms_until_next_timer(now_ms));
@@ -619,35 +630,63 @@ void RTPSParticipant::on_endpoints_changed(void* self) noexcept
     static_cast<RTPSParticipant*>(self)->notify_graph_change();
 }
 
-void RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
-                                        const MatchedEndpoint& reader,
-                                        const TopicName&       topic,
-                                        void*                  self) noexcept
-{
+bool RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
+                                        const MatchedEndpoint& reader, const TopicName& topic,
+                                        void* self) noexcept {
     auto* p = static_cast<RTPSParticipant*>(self);
-    RTPS_LOG_I("participant", "endpoint match: topic=%s", topic.str);
+    bool bound = true;
 
     // Local writer matched to a reader.
     if (writer.guid.prefix == p->participant_guid_.prefix) {
         StatefulWriter* iw = p->find_writer(writer.guid.entityId);
-        if (iw) {
+        if (iw && !iw->matched_reader_lookup(reader.guid)) {
             const Locator* locs = reader.locators;
             uint8_t count = reader.locatorCount;
             p->resolve_endpoint_locators(reader.guid.prefix, locs, count);
-            iw->matched_reader_add(reader.guid, locs, count, reader.expectsInlineQos);
+            bound = iw->matched_reader_add(reader.guid, locs, count, reader.expectsInlineQos);
         }
     }
 
     // Local reader matched to a writer.
     if (reader.guid.prefix == p->participant_guid_.prefix) {
         StatefulReader* r = p->find_reader(reader.guid.entityId);
-        if (r) {
+        if (r && !r->matched_writer_lookup(writer.guid)) {
             const Locator* locs = writer.locators;
             uint8_t count = writer.locatorCount;
             p->resolve_endpoint_locators(writer.guid.prefix, locs, count);
-            r->matched_writer_add(writer.guid, locs, count, p->peer_vendor_id(writer.guid.prefix));
+            bound = r->matched_writer_add(writer.guid, locs, count,
+                                          p->peer_vendor_id(writer.guid.prefix))
+                    && bound;
         }
     }
+
+    if (bound) {
+        RTPS_LOG_I("participant", "endpoint match: topic=%s", topic.str);
+    } else {
+        RTPS_LOG_I("participant", "endpoint match waits for a proxy: topic=%s", topic.str);
+    }
+
+    return bound;
+}
+
+bool RTPSParticipant::may_bind_pair(const Guid& writer_guid, const Guid& reader_guid,
+                                    void* self) noexcept {
+    auto* p = static_cast<RTPSParticipant*>(self);
+    if (writer_guid.prefix == p->participant_guid_.prefix) {
+        StatefulWriter* w = p->find_writer(writer_guid.entityId);
+        if (w && !w->matched_reader_lookup(reader_guid) && !w->may_add_reader()) {
+            return false;
+        }
+    }
+
+    if (reader_guid.prefix == p->participant_guid_.prefix) {
+        StatefulReader* r = p->find_reader(reader_guid.entityId);
+        if (r && !r->matched_writer_lookup(writer_guid) && !r->may_add_writer()) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 // An endpoint announcing its participant's defaults keeps the same number of
@@ -713,12 +752,20 @@ void RTPSParticipant::on_endpoint_unmatch(const Guid& writer_guid,
                reader_guid.prefix.value[2], reader_guid.prefix.value[3]);
     if (writer_guid.prefix == p->participant_guid_.prefix) {
         StatefulWriter* iw = p->find_writer(writer_guid.entityId);
-        if (iw) iw->matched_reader_remove(reader_guid);
+        if (iw) {
+            iw->matched_reader_remove(reader_guid);
+        }
     }
+
     if (reader_guid.prefix == p->participant_guid_.prefix) {
         StatefulReader* r = p->find_reader(reader_guid.entityId);
-        if (r) r->matched_writer_remove(writer_guid);
+        if (r) {
+            r->matched_writer_remove(writer_guid);
+        }
     }
+
+    // The freed proxy may let a waiting match bind at the next tick().
+    p->rebind_due_ = true;
 }
 
 // ============================================================

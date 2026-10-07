@@ -335,6 +335,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     src/spec_participant_test_registry.cpp
     src/test_participant_platform_stub.cpp
     src/test_participant_8_5_1.cpp
+    src/test_participant_waiting_matches.cpp
     ../../src/rtps/participant.cpp
     ../../src/rtps/participant_peer_tiers.cpp
     ../../src/rtps/stateful_reader.cpp
@@ -391,7 +392,8 @@ add_test(
 set(PARTICIPANT_TIER_SPEC_TEST_SOURCES ${PARTICIPANT_SPEC_TEST_SOURCES})
 list(REMOVE_ITEM PARTICIPANT_TIER_SPEC_TEST_SOURCES
     src/spec_participant_test_registry.cpp
-    src/test_participant_8_5_1.cpp)
+    src/test_participant_8_5_1.cpp
+    src/test_participant_waiting_matches.cpp)
 list(APPEND PARTICIPANT_TIER_SPEC_TEST_SOURCES
     src/spec_participant_tier_test_registry.cpp
     src/test_participant_8_5_3_peer_tiers.cpp)

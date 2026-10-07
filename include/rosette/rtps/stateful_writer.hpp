@@ -367,7 +367,8 @@ public:
      * @param[in] expects_inline_qos Its expectsInlineQos.
      * @return `false` when the reader is already matched or the pool refuses
      *   a proxy (the writer is at its cap, or above its floor with every
-     *   free proxy promised to other floors).
+     *   free proxy promised to other floors). RTPSParticipant keeps a refused
+     *   match waiting and calls this again once may_add_reader() holds.
      *
      * Verification:
      * - Correct means: the new reader is sent every cached change of a
@@ -683,6 +684,10 @@ public:
 
     /// @brief Most readers this writer matches at once (its cap).
     uint8_t max_matched_readers() const noexcept { return readers_.cap; }
+
+    /// @brief Whether matched_reader_add() of a new reader would now get a
+    /// proxy: below the cap, and below the floor or with an unpromised one free.
+    bool may_add_reader() const noexcept { return pool_.may_bind(readers_); }
 
 protected:
     /**
