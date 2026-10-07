@@ -458,8 +458,11 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
     serve_owed_peer(now_ms);
     sedp_writer_.tick(now_ms);
     sedp_reader_.tick(now_ms);
-    // Waiting pairs are older than any pair the rescan finds, so the rescan
-    // runs only on a tick that binds no waiting pair.
+    // Both steps are flag checks until a match frees room: a rebind is due
+    // only after a proxy frees, and a rescan only after a pair was turned
+    // away and a record or waiting place has freed since. Waiting pairs are
+    // older than any pair the rescan finds, so a tick that binds one skips
+    // the rescan.
     if (rebind_due_) {
         rebind_due_ = match_table_.match_oldest_waiting();
     }
