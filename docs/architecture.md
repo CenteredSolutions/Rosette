@@ -54,7 +54,7 @@ Each layer reaches the one below through a narrow, build-time seam:
 | --- | --- | --- |
 | Platform port: clock, mutex, wake event, unique ID | `rosette/platform/platform.hpp` | `ROSETTE_OS` and `ROSETTE_CHIP` in the board's `board.cmake` (`cmake/rosette_platform.cmake`) |
 | Sockets | `rosette/net/socket.hpp` (`SocketProvider`) | `ROSETTE_NET_STACK` in the board's `board.cmake` (`cmake/rosette_net.cmake`): WIZnet boards use the chip's hardware sockets, hosts use BSD sockets |
-| Board network: bring-up, addresses, the image's `SocketProvider` | `rosette/net/board_network.hpp` | one implementation per image: `ports/net/posix/posix_board_network.cpp` on hosts, `boards/common/rp2_wiznet/wiznet_board_network.cpp` on WIZnet boards |
+| Board network: bring-up, addresses, the image's `SocketProvider` | `rosette/net/board_network.hpp` | one implementation per image: `ports/net/posix/posix_board_network.cpp` on hosts, `boards/common/wiznet/wiznet_board_network.cpp` on WIZnet boards |
 | Network port for `rmw_rosette` | `rmw_rosette/network_port.hpp` | `network_port.cpp`, which forwards to the board network |
 | Capacity | `rmw_rosette/capacity.hpp`, `RTPS_*` macros | `rmw_rosette/cmake/rmw_rosette_capacity.cmake` from a few application limits |
 
@@ -151,7 +151,7 @@ becomes `std_msgs::msg::dds_::String_`, and a service `/x` becomes the topics
 The W5100S, W6100, and W6300 run UDP/IP in silicon, so a WIZnet board needs no
 software IP stack and no RTOS. The board network
 (`rosette/net/board_network.hpp`, implemented for WIZnet boards in
-`boards/common/rp2_wiznet/wiznet_board_network.cpp`) owns the chip for the
+`boards/common/wiznet/wiznet_board_network.cpp`) owns the chip for the
 whole image: `bring_up_board_network()` initializes the chip, waits for link,
 and acquires the addresses the firmware's `NetworkConfig` names
 (`rosette/net/network_config.hpp`; by default DHCP, falling back to RFC 3927
@@ -205,7 +205,7 @@ application. `examples/storage_demo` exercises it on a host.
 | `ports/net/<name>` | network ports: `posix` (BSD sockets and the host board network), `wiznet` (the chip's hardware sockets), `freertos_tcp` (FreeRTOS+TCP adapters; no board network yet) |
 | `include/rosette/storage`, `src/storage` | LittleFS volume and file store |
 | `boards/<name>` | `board.cmake` (chip, OS, and network ports, pins), `board_config.h` (pins, chip), `board_init.c` |
-| `boards/common/<name>` | compositions several boards share: `rp2_wiznet` (bus choice, WIZnet driver types, the WIZnet board network), `freertos` (`FreeRTOSConfig.h`) |
+| `boards/common/<name>` | compositions several boards share: `wiznet` (WIZnet driver types over the chip port's bus, the WIZnet board network), `freertos` (`FreeRTOSConfig.h`) |
 | `cmake/` | board selection (`rosette_prelude.cmake`, `boards.cmake`), port lookup (`rosette_ports.cmake`, `rosette_platform.cmake`, `rosette_net.cmake`), `rosette_rtps.cmake`, `rmw_rosette_firmware.cmake`, dependency fetchers |
 | `examples/` | firmware and host examples, per-board status, planned examples ([examples/README.md](../examples/README.md)) |
 | `tests/spec` | DDSI-RTPS conformance tests with `TC-<AREA>-<section>-<seq>` IDs and spec-coverage reports |

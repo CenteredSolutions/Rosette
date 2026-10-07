@@ -25,7 +25,7 @@ ports/
 boards/
   <board>/              board.cmake (ROSETTE_CHIP / ROSETTE_OS / ROSETTE_NET_STACK, ROSETTE_BOARD_COMMON, pins),
                         board_config.h, board_init.c
-  common/rp2_wiznet/    composition shared by the WIZnet EVB-Pico boards: bus choice, driver types, board network
+  common/wiznet/        composition shared by the WIZnet boards: driver types over the chip port's bus, board network
   common/freertos/      FreeRTOSConfig.h
 include/rosette/, src/  portable only
 ```
@@ -51,6 +51,7 @@ Three choices follow from this layout:
 | Zone | May include |
 |---|---|
 | `ports/chip/rp2/` | Pico SDK, `board_config.h` |
+| `ports/chip/imxrt/` | MCUXpresso SDK (with CMSIS), `board_config.h` |
 | `ports/chip/host/`, `ports/os/posix/`, `ports/net/posix/` | POSIX |
 | `ports/net/wiznet/` | nothing third-party (it only has a `port.cmake`) |
 | `ports/os/baremetal/` | nothing third-party: it is built on chip-layer hooks |
@@ -79,7 +80,7 @@ Three choices follow from this layout:
 | chip | `__atomic_*` helpers (`fetch_add`, `exchange`, `compare_exchange`, ...) on a core without atomic instructions | the RTPS buffer pool's `std::atomic` counts call them on Cortex-M0+; the Pico SDK's `pico_atomic` supplies them on the RP2040, `ports/chip/stub/stub_atomic.c` shows the set |
 | os | `rosette_os_port.hpp`: `Mutex`, `Event` (with `signal_from_isr`), `sleep_ms` | one per `ports/os/<name>/` |
 | net | `rosette::net::SocketProvider`, `AddressProvider`, `Interface` | |
-| net | `rosette/net/board_network.hpp`: `bring_up_board_network`, `poll_board_network`, `board_socket_provider`, `board_ipv4_address`, `board_network_watch`, ... | each network port (`ports/net/posix/`) or board composition (`boards/common/rp2_wiznet/`) implements it; `rmw_rosette/src/network_port.cpp` forwards to it |
+| net | `rosette/net/board_network.hpp`: `bring_up_board_network`, `poll_board_network`, `board_socket_provider`, `board_ipv4_address`, `board_network_watch`, ... | each network port (`ports/net/posix/`) or board composition (`boards/common/wiznet/`) implements it; `rmw_rosette/src/network_port.cpp` forwards to it |
 
 ### What an application includes
 

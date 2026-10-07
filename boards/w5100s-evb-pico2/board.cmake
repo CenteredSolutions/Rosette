@@ -8,9 +8,9 @@ set(ROSETTE_CHIP      "rp2"       PARENT_SCOPE)
 set(ROSETTE_OS        "baremetal" PARENT_SCOPE)
 set(ROSETTE_NET_STACK "wiznet"    PARENT_SCOPE)
 
-# The composition the WIZnet EVB-Pico boards share (boards/common/rp2_wiznet/):
+# The composition the WIZnet EVB-Pico boards share (boards/common/wiznet/):
 # the bus, the driver types, and the board network.
-set(ROSETTE_BOARD_COMMON "rp2_wiznet" PARENT_SCOPE)
+set(ROSETTE_BOARD_COMMON "wiznet" PARENT_SCOPE)
 
 set(PICO_BOARD "wiznet_w5100s_evb_pico2" CACHE STRING "" FORCE)
 set(ROSETTE_PROCESSOR  "RP2350"   PARENT_SCOPE)

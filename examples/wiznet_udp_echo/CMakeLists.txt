@@ -11,10 +11,20 @@
 #   tools/pico_uf2_flash.py build-hw/w6100-pico/examples/wiznet_udp_echo/wiznet_udp_echo.uf2 --monitor 30
 #   tools/wiznet_udp_echo_probe.py            # from a host on the same link
 #
+# On the SparkFun MicroMod Teensy with the Ethernet Function Board, the console
+# is MicroMod UART1 (TX1/RX1) at 115200, and the image loads through the
+# Teensy bootloader (press the main board's BOOT button when the loader waits):
+#
+#   cmake -S . -B build-hw/teensy-mm -DROSETTE_BOARD=micromod-teensy-w5500 \
+#         -DROSETTE_ENABLE_MICRO_ROS=OFF
+#   cmake --build build-hw/teensy-mm --target wiznet_udp_echo
+#   teensy_loader_cli --mcu=TEENSY_MICROMOD -w -v \
+#       build-hw/teensy-mm/examples/wiznet_udp_echo/wiznet_udp_echo.hex
+#
 # -DWIZNET_UDP_ECHO_NTP_SERVER=<IPv4> names an NTP server the board asks
 # before any DHCP offers; the status reply's `clock` line shows the result.
 
-if(NOT ROSETTE_BOARD_ENABLE_WIZNET OR NOT ROSETTE_BOARD_ENABLE_PICO_SDK)
+if(NOT ROSETTE_BOARD_ENABLE_WIZNET)
     return()
 endif()
 

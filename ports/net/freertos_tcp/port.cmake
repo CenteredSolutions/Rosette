@@ -13,7 +13,7 @@
 #                                 over any rosette::net::MacDevice (rosette/net/mac.hpp)
 #   freertos_tcp_board_interface.hpp
 #                                 the hook a board implements to register its
-#                                 interface (boards/common/rp2_wiznet/ does, over
+#                                 interface (boards/common/wiznet/ does, over
 #                                 the WIZnet chip in MACRAW mode)
 #   FreeRTOSIPConfig.h            the stack's configuration; a board may supply its
 #                                 own by putting its directory first

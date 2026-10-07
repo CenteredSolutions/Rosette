@@ -16,8 +16,8 @@
  *   - echoes each datagram on the socket it arrived on;
  *   - reports its addresses, per-family echo counters, and wall clock every
  *     five seconds on the console, and to any datagram sent to UDP port 8
- *     (the datagram `bootsel` restarts the board into its USB bootloader for
- *     reflashing);
+ *     (on an RP2040 / RP2350 the datagram `bootsel` restarts the board into its
+ *     USB bootloader for reflashing);
  *   - sets its wall clock by SNTP from the server named at configure time
  *     (`-DWIZNET_UDP_ECHO_NTP_SERVER=<IPv4>`), then from any server DHCP
  *     offers, so a host can compare the `clock` status line with its own.
@@ -51,8 +51,9 @@
 #include "rosette/platform/platform.hpp"
 #include "rosette/platform/wall_clock.hpp"
 
+#if defined(ROSETTE_CHIP_RP2)
 #include "pico/bootrom.h"
-#include "pico/stdlib.h"
+#endif
 
 namespace {
 
@@ -205,10 +206,11 @@ int format_status(char* out, int cap, const EchoSocket& v4, const EchoSocket& v6
 /**
  * @brief Answers every datagram on a status socket with format_status().
  *
- * The datagram `bootsel` instead restarts the board into the RP2 USB
- * bootloader, so a host whose USB CDC link is unreliable (a VM's USB
- * passthrough) can still reach the BOOTSEL drive for the next flash. This is a
- * development convenience of this example: anyone on the link can send it.
+ * On an RP2040 / RP2350 the datagram `bootsel` instead restarts the board
+ * into the RP2 USB bootloader, so a host whose USB CDC link is unreliable (a
+ * VM's USB passthrough) can still reach the BOOTSEL drive for the next flash.
+ * This is a development convenience of this example: anyone on the link can
+ * send it.
  */
 void serve_status(net::Socket* s, const EchoSocket& v4, const EchoSocket& v6) {
     if (s == nullptr) {
@@ -218,11 +220,13 @@ void serve_status(net::Socket* s, const EchoSocket& v4, const EchoSocket& v6) {
     net::SocketAddress from{};
     std::ptrdiff_t got = 0;
     while ((got = s->recv_from(g_buffer.data(), g_buffer.size(), &from)) >= 0) {
+#if defined(ROSETTE_CHIP_RP2)
         if (got == 7 && std::memcmp(g_buffer.data(), "bootsel", 7) == 0) {
             (void)s->send_to("rebooting to BOOTSEL\n", 21, from);
             pf::sleep_ms(50u);
             reset_usb_boot(0u, 0u);
         }
+#endif
 
         char text[512];
         const int n = format_status(text, sizeof(text), v4, v6);
@@ -236,7 +240,7 @@ void serve_status(net::Socket* s, const EchoSocket& v4, const EchoSocket& v6) {
 
 int main() {
     board_init();
-    pf::sleep_ms(1500u);  // give the USB console time to enumerate
+    pf::sleep_ms(1500u);  // give a USB console time to enumerate
     std::printf("\n[echo] wiznet_udp_echo\n");
 
     net::NetworkConfig network = net::board_default_network();

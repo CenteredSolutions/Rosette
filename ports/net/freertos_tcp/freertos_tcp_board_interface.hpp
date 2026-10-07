@@ -9,7 +9,7 @@
  *
  * The FreeRTOS+TCP port does not know which MAC a board carries. A board
  * composition instantiates NetworkInterface<Device> over its MAC provider
- * (boards/common/rp2_wiznet/wiznet_macraw_interface.cpp does, over the WIZnet
+ * (boards/common/wiznet/wiznet_macraw_interface.cpp does, over the WIZnet
  * chip in MACRAW mode) and implements this function; the port's start-up
  * code calls it, then adds endpoints and starts the IP task.
  */

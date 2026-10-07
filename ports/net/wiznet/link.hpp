@@ -15,7 +15,7 @@
  *
  *     namespace wiz = rosette::net::wiznet;
  *     auto bus = wiz::make_board_bus();      // a board's types, e.g.
- *     wiz::BoardDevice device{bus};          // boards/common/rp2_wiznet/wiznet_board_types.hpp
+ *     wiz::BoardDevice device{bus};          // boards/common/wiznet/wiznet_board_types.hpp
  *     wiz::BoardLink link{device, mac};
  *     while (!link.bring_chip_up()) { rosette::platform::sleep_ms(500u); }
  *

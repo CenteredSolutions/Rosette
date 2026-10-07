@@ -6,11 +6,14 @@
  * @brief `WiznetDevice` UDP receive and send against a register-file model of
  *        each chip, IPv4 and IPv6.
  *
- * The W5100S and the W6100/W6300 store a different packet-info header in
- * front of every received datagram (`Chip::read_udp_rx_header()`), and the
- * W61xx/W63xx send IPv6 with SEND6 to Sn_DIP6R. These tests run the driver's
- * real receive and send paths on `fake::FakeWiznetChip` and check payload,
- * sender, ring position, and the registers the chip would transmit from.
+ * The W5100S and W5500 store one packet-info header in front of every received
+ * datagram and the W6100/W6300 another (`Chip::read_udp_rx_header()`), and the
+ * W61xx/W63xx send IPv6 with SEND6 to Sn_DIP6R. The W5500 reaches its
+ * per-socket buffer blocks through the W6x00 addressing but the W5100S register
+ * layout, so it gets its own receive, send, and multicast checks. These tests
+ * run the driver's real receive and send paths on `fake::FakeWiznetChip` and
+ * check payload, sender, ring position, and the registers the chip would
+ * transmit from.
  *
  * Build and run: `cmake -S tests/host -B build/tests-host && ctest --test-dir build/tests-host`.
  */
@@ -21,6 +24,7 @@
 
 #include "ports/net/wiznet/device.hpp"
 #include "ports/net/wiznet/w5100s.hpp"
+#include "ports/net/wiznet/w5500.hpp"
 #include "ports/net/wiznet/w6x00.hpp"
 
 #include <array>
@@ -282,6 +286,55 @@ void check_w5100s()
     check(dev.udp_send_to(1, &x, 1, to6) == -1 && chip.sent.empty(), "W5100S: IPv6 send refused");
 }
 
+// The W5500: W5100S packet-info header, W6x00-style buffer blocks that the
+// chip wraps itself (TC-NET-WIZ-W5500-001 .. 004).
+void check_w5500() {
+    using Chip = wiz::W5500;
+    using Chipset = fake::FakeWiznetChip<Chip>;
+    using Device = wiz::WiznetDevice<Chip, Chipset>;
+    Chipset chip;
+    Device dev{chip};
+    dev.init_socket_mode(kMac);
+
+    check(dev.open_udp_socket(1, 7400), "W5500: IPv4 socket opens (TC-NET-WIZ-W5500-001)");
+    check(!dev.open_udp_socket(2, 7400, true), "W5500: IPv6 socket refused (no hardware IPv6)");
+
+    chip.set_rx_pointer(1, static_cast<uint16_t>(2048u - 4u));
+    chip.deliver(1, w5100s_record(v({10, 0, 0, 7}), 1234, v({'a', 'b', 'c', 'd', 'e', 'f'})));
+    std::array<uint8_t, 64> buf{};
+    wiz::UdpEndpoint from{};
+    const auto n = dev.udp_receive_from(1, buf.data(), buf.size(), &from);
+    check(n == 6 && buf[0] == 'a' && buf[5] == 'f',
+          "W5500: payload after {ip, port, length} header, across the ring end "
+          "(TC-NET-WIZ-W5500-002)");
+    check(!from.ipv6 && from.ipv4() == std::array<uint8_t, 4>{10, 0, 0, 7} && from.port == 1234,
+          "W5500: sender address and port decoded");
+
+    const uint8_t hello[] = {'h', 'e', 'l', 'l', 'o'};
+    wiz::UdpEndpoint unicast{};
+    unicast.address = {192, 168, 32, 96};
+    unicast.port = 7777;
+    check(dev.udp_send_to(1, hello, 5, unicast) == 5 && chip.sent.size() == 1
+              && chip.sent[0].command == Chip::command_send()
+              && chip.sent[0].dest_ip == std::vector<uint8_t>{192, 168, 32, 96}
+              && chip.sent[0].payload == std::vector<uint8_t>(hello, hello + 5),
+          "W5500: unicast send issues SEND to Sn_DIPR, the chip ARPs (TC-NET-WIZ-W5500-003)");
+
+    wiz::UdpEndpoint group{};
+    group.address = {239, 255, 0, 1};
+    group.port = 7400;
+    check(dev.udp_send_to(1, hello, 2, group) == 2 && chip.sent.size() == 2
+              && chip.sent[1].command == Chip::command_send_mac()
+              && chip.sent[1].dest_mac == std::vector<uint8_t>{0x01, 0x00, 0x5E, 0x7F, 0x00, 0x01},
+          "W5500: multicast send issues SEND_MAC to the group MAC (TC-NET-WIZ-W5500-004)");
+
+    wiz::UdpEndpoint to6{};
+    to6.ipv6 = true;
+    const uint8_t x = 1;
+    check(dev.udp_send_to(1, &x, 1, to6) == -1 && chip.sent.size() == 2,
+          "W5500: IPv6 send refused");
+}
+
 }  // namespace
 
 int main()
@@ -296,6 +349,10 @@ int main()
     check_rx_resync<wiz::W5100S>("W5100S", w5100s_with_length);
     check_rx_resync_keeps_flag<wiz::W5100S>("W5100S", w5100s_with_length);
     check_rx_receive_keeps_flag<wiz::W5100S>("W5100S", w5100s_with_length);
+    check_w5500();
+    check_rx_resync<wiz::W5500>("W5500", w5100s_with_length);
+    check_rx_resync_keeps_flag<wiz::W5500>("W5500", w5100s_with_length);
+    check_rx_receive_keeps_flag<wiz::W5500>("W5500", w5100s_with_length);
     const auto w6x00_with_length = [](uint16_t len, const std::vector<uint8_t>& payload) {
         auto r = w6x00_record(false, v({10, 0, 0, 7}), 1234, payload);
         r[0] = static_cast<uint8_t>((r[0] & 0xF8u) | ((len >> 8) & 0x07u));

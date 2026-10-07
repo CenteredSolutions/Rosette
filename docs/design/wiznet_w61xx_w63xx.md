@@ -146,7 +146,8 @@ reference).
 
 The bus seam is already in place:
 
-* `boards/common/rp2_wiznet/wiznet_board_types.hpp` selects `BoardBus` from
+* `ports/chip/rp2/wiznet_board_bus.hpp`, which the shared
+  `boards/common/wiznet/wiznet_board_types.hpp` includes, selects `BoardBus` from
   `ROSETTE_WIZNET_BUS_QSPI` in `board_config.h` — `Rp2SpiBus` (hardware SPI) otherwise, `Rp2QspiBus` when
   set.
 * `ports/chip/rp2/rp2_qspi_bus.hpp` is a **single-lane** `Rp2QspiBus` today: GPIO

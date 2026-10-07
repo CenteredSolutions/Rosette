@@ -122,7 +122,9 @@ void test_event_cross_thread() {
 }
 #endif
 
-#if defined(ROSETTE_OS_BAREMETAL)
+// The bare-metal OS layer's cross-core guarantees, on the dual-core RP2040 /
+// RP2350; a single-core chip has no second core to test against.
+#if defined(ROSETTE_OS_BAREMETAL) && defined(ROSETTE_CHIP_RP2)
 pf::Event* g_core1_event = nullptr;
 
 void core1_signal_after_delay() {
@@ -209,7 +211,7 @@ int run_contract() {
 #if defined(ROSETTE_OS_POSIX)
     test_event_cross_thread();
 #endif
-#if defined(ROSETTE_OS_BAREMETAL)
+#if defined(ROSETTE_OS_BAREMETAL) && defined(ROSETTE_CHIP_RP2)
     test_event_cross_core();
     test_mutex_cross_core();
 #endif

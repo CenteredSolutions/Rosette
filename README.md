@@ -63,7 +63,7 @@ $ ros2 node list
   duplicate address detection, and UDP6 sockets.
 
 **Boards and tools**
-- RP2040 and RP2350 boards, bare metal; POSIX hosts.
+- RP2040, RP2350, and NXP i.MX RT1062 boards, bare metal; POSIX hosts.
 - A LittleFS volume and file store for on-board configuration.
 - `tools/pico_uf2_flash.py`: flash over USB (or trigger BOOTSEL over the
   network) and follow the console.
@@ -131,6 +131,7 @@ Select a board at configure time with `-DROSETTE_BOARD=<name>`.
 | `w6100-evb-pico2` | RP2350 | W6100 hardware UDP, IPv4 + IPv6, SPI | none | builds; not run on hardware | builds; not run on hardware |
 | `w6300-evb-pico2` | RP2350 | W6300 hardware UDP, single-lane QSPI | none | builds; not run on hardware | builds; not run on hardware |
 | `w5100s-evb-pico` | RP2040 | W5100S hardware UDP | none | builds (RP2040 C client stack); not run on hardware | builds |
+| `micromod-teensy-w5500` | i.MX RT1062 | W5500 hardware UDP, IPv4, SPI | none | – | –; `wiznet_udp_echo` builds, not run on hardware |
 
 `posix` is the default board on macOS; `w5100s-evb-pico2` elsewhere. "Runs"
 means verified on the board against stock ROS 2; "builds" means the image

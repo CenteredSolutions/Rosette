@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * @file boards/common/rp2_wiznet/wiznet_board_types.hpp
- * @brief The WIZnet EVB-Pico boards' driver types: chip + bus + socket provider.
+ * @file boards/common/wiznet/wiznet_board_types.hpp
+ * @brief The WIZnet boards' driver types: chip + bus + socket provider.
  *
  * One include resolves the concrete types for the current board from
- * `board_config.h` (`ROSETTE_WIZNET_CHIP`, `ROSETTE_SPI_INST`,
- * `ROSETTE_PIN_SPI_CS`), over the portable driver
- * (ports/net/wiznet/) and the rp2 chip port's buses:
+ * `board_config.h` (`ROSETTE_WIZNET_CHIP`), over the portable driver
+ * (ports/net/wiznet/) and the bus the selected chip port supplies in its
+ * `wiznet_board_bus.hpp` (`BoardBus`, `make_board_bus()`; for example
+ * ports/chip/rp2/ and ports/chip/imxrt/):
  *
  *     #include "wiznet_board_types.hpp"
  *     namespace wiz = rosette::net::wiznet;
@@ -18,17 +19,13 @@
  *     wiz::BoardSocketProvider sockets{device};
  *     auto s = sockets.open(rosette::net::SocketDomain::ipv4);
  *
- * SPI peripheral setup (baud rate, pin alt-functions, reset sequencing) stays
- * in board bring-up; `make_board_bus()` only binds the configured pins.
+ * Peripheral setup (baud rate, pin functions, reset sequencing) stays in
+ * board bring-up; `make_board_bus()` only binds the configured pins.
  *
  * `board_config.h` names the fitted part as the register trait's name in
- * `rosette::net::wiznet` (`w5100s.hpp`, `w6x00.hpp`):
+ * `rosette::net::wiznet` (`w5100s.hpp`, `w5500.hpp`, `w6x00.hpp`):
  *
  *     #define ROSETTE_WIZNET_CHIP  W5100S
- *
- * and chooses the bus: define `ROSETTE_WIZNET_BUS_QSPI` for the W6300's QSPI
- * wiring (single-lane for now, see `rp2_qspi_bus.hpp`); otherwise the
- * hardware SPI peripheral `ROSETTE_SPI_INST` is used.
  */
 
 #pragma once
@@ -42,13 +39,9 @@
 #include "ports/net/wiznet/link.hpp"
 #include "ports/net/wiznet/socket_provider.hpp"
 #include "ports/net/wiznet/w5100s.hpp"
+#include "ports/net/wiznet/w5500.hpp"
 #include "ports/net/wiznet/w6x00.hpp"
-
-#if defined(ROSETTE_WIZNET_BUS_QSPI)
-#include "rp2_qspi_bus.hpp"
-#else
-#include "rp2_spi_bus.hpp"
-#endif
+#include "wiznet_board_bus.hpp"
 
 #ifndef ROSETTE_WIZNET_CHIP
 #error "board_config.h must define ROSETTE_WIZNET_CHIP (e.g. W5100S)"
@@ -58,29 +51,6 @@ namespace rosette::net::wiznet {
 
 /// The register trait for the part this board is built for.
 using BoardChip = ROSETTE_WIZNET_CHIP;
-
-#if defined(ROSETTE_WIZNET_BUS_QSPI)
-using BoardBus = rosette::platform::Rp2QspiBus;
-
-/// Binds the QSPI pins named in `board_config.h` (single-lane driver for now).
-inline BoardBus make_board_bus() noexcept
-{
-    return BoardBus{{
-        ROSETTE_PIN_SPI_SCK,
-        ROSETTE_PIN_SPI_TX,  // IO0 / MOSI
-        ROSETTE_PIN_SPI_RX,  // IO1 / MISO
-        ROSETTE_PIN_SPI_CS,
-    }};
-}
-#else
-using BoardBus = rosette::platform::Rp2SpiBus;
-
-/// Binds the SPI instance and CS pin named in `board_config.h`.
-inline BoardBus make_board_bus() noexcept
-{
-    return BoardBus{ROSETTE_SPI_INST, ROSETTE_PIN_SPI_CS};
-}
-#endif
 
 using BoardDevice = WiznetDevice<BoardChip, BoardBus>;
 using BoardSocketProvider = WiznetSocketProvider<BoardChip, BoardBus>;
@@ -96,12 +66,15 @@ using BoardArpResolver = WiznetArpResolver<BoardChip, BoardBus>;
  * gateway. Idle entries stay in the table as `stale`, so a full table is the
  * usual state and its size, not a timer, decides which next hops keep their
  * MAC. 0 attaches no resolver, and the chip ARPs whenever a socket's
- * destination changes. The fallback serves builds that bypass bsp.cmake.
+ * destination changes; that is always the case on a part without socket-less
+ * ARP (`BoardChip::has_socketless_arp()`, false on the W5500). The fallback
+ * serves builds that bypass bsp.cmake.
  */
 #if defined(ROSETTE_WIZNET_ARP_CACHE_ENTRIES)
-inline constexpr std::size_t kBoardArpCacheEntries = ROSETTE_WIZNET_ARP_CACHE_ENTRIES;
+inline constexpr std::size_t kBoardArpCacheEntries =
+    BoardChip::has_socketless_arp() ? ROSETTE_WIZNET_ARP_CACHE_ENTRIES : 0u;
 #else
-inline constexpr std::size_t kBoardArpCacheEntries = 8u;
+inline constexpr std::size_t kBoardArpCacheEntries = BoardChip::has_socketless_arp() ? 8u : 0u;
 #endif
 
 /**

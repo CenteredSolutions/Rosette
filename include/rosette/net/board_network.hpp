@@ -11,7 +11,7 @@
  * session supervisor all use it without knowing which stack is underneath.
  * The build links exactly one implementation:
  *
- *   - WIZnet boards (boards/common/rp2_wiznet/wiznet_board_network.cpp): the
+ *   - WIZnet boards (boards/common/wiznet/wiznet_board_network.cpp): the
  *     chip's hardware UDP sockets. The board network owns the chip driver
  *     (bus, device, socket provider, link), the address providers the config
  *     names, and the INT-pin routing, configured from the board's `board.h` /

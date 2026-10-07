@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * @file boards/common/rp2_wiznet/wiznet_board_network.cpp
+ * @file boards/common/wiznet/wiznet_board_network.cpp
  * @brief The board network on a WIZnet chip; see rosette/net/board_network.hpp.
  *
  * The chip objects and every provider the board can run live in one struct,
@@ -14,7 +14,9 @@
  *
  * IPv4 sends go through the board's ARP cache (`BoardArp`, sized by
  * kBoardArpCacheEntries), so each carries its next hop's MAC and the chip
- * never ARPs inline; poll() collects the background ARP answers.
+ * never ARPs inline; poll() collects the background ARP answers. A part
+ * without socket-less ARP (the W5500) runs with no cache, and the chip ARPs
+ * whenever a socket's destination changes.
  *
  * IPv6 addressing exists only on parts with hardware IPv6: `BoardIpv6` is an
  * empty struct on the W5100S and a SLAAC provider with its own AddressManager
@@ -33,15 +35,15 @@
 #include <cstdio>
 
 #include "board.h"
+#include "ports/net/wiznet/dhcp_provider.hpp"
+#include "ports/net/wiznet/interface.hpp"
+#include "ports/net/wiznet/link.hpp"
+#include "ports/net/wiznet/slaac_provider.hpp"
 #include "rosette/net/address.hpp"
 #include "rosette/net/inet.h"
 #include "rosette/net/ipv4ll_provider.hpp"
 #include "rosette/net/sntp_client.hpp"
 #include "rosette/net/static_provider.hpp"
-#include "ports/net/wiznet/dhcp_provider.hpp"
-#include "ports/net/wiznet/interface.hpp"
-#include "ports/net/wiznet/link.hpp"
-#include "ports/net/wiznet/slaac_provider.hpp"
 #include "rosette/platform/platform.hpp"
 #include "wiznet_board_types.hpp"
 

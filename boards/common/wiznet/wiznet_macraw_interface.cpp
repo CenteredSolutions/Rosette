@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * @file boards/common/rp2_wiznet/wiznet_macraw_interface.cpp
- * @brief The WIZnet EVB-Pico boards' FreeRTOS+TCP interface: the chip in MACRAW mode.
+ * @file boards/common/wiznet/wiznet_macraw_interface.cpp
+ * @brief The WIZnet boards' FreeRTOS+TCP interface: the chip in MACRAW mode.
  *
  * Composition only: the FreeRTOS+TCP port supplies NetworkInterface<Device>
  * (ports/net/freertos_tcp/freertos_tcp_interface.hpp), the WIZnet port
