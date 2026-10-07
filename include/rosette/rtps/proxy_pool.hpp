@@ -64,7 +64,7 @@ namespace rtps {
 /// Matches every user endpoint is always granted, reserved in its pool for
 /// every endpoint slot whether or not an endpoint is created in it.
 #ifndef RTPS_MIN_MATCHES_PER_ENDPOINT
-#define RTPS_MIN_MATCHES_PER_ENDPOINT 1
+#  define RTPS_MIN_MATCHES_PER_ENDPOINT 1
 #endif
 
 /// Index of a proxy in its pool.

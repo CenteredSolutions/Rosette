@@ -132,19 +132,19 @@ GuidPrefix make_participant_guid_prefix(uint8_t participant_id) noexcept;
 /// Must be >= sizeof(SharedPoolStatefulWriter<D>) for every depth D you intend to use.
 /// Default covers SharedPoolStatefulWriter<8>.
 #ifndef RTPS_PARTICIPANT_MAX_WRITER_BYTES
-#define RTPS_PARTICIPANT_MAX_WRITER_BYTES (sizeof(SharedPoolStatefulWriter<8>))
+#  define RTPS_PARTICIPANT_MAX_WRITER_BYTES (sizeof(SharedPoolStatefulWriter<8>))
 #endif
 
 /// ReaderProxies shared by the user writers: remote readers matched across
 /// all of them at once. The default is the per-writer cap for every slot.
 #ifndef RTPS_READER_PROXY_POOL
-#define RTPS_READER_PROXY_POOL (RTPS_MAX_USER_WRITERS * RTPS_MAX_MATCHED_READERS)
+#  define RTPS_READER_PROXY_POOL (RTPS_MAX_USER_WRITERS * RTPS_MAX_MATCHED_READERS)
 #endif
 
 /// WriterProxies shared by the user readers: remote writers matched across
 /// all of them at once. The default is the per-reader cap for every slot.
 #ifndef RTPS_WRITER_PROXY_POOL
-#define RTPS_WRITER_PROXY_POOL (RTPS_MAX_USER_READERS * RTPS_MAX_MATCHED_WRITERS)
+#  define RTPS_WRITER_PROXY_POOL (RTPS_MAX_USER_READERS * RTPS_MAX_MATCHED_WRITERS)
 #endif
 
 static_assert(
