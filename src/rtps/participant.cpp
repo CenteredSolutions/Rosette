@@ -5,10 +5,11 @@
 
 #include "participant.hpp"
 
-#include <atomic>
-#include "log.hpp"
-#include <new>
 #include <string.h>
+#include <atomic>
+#include <new>
+#include "log.hpp"
+#include "rosette/support/fnv1a.hpp"
 
 namespace rtps {
 
@@ -137,11 +138,7 @@ GuidPrefix make_participant_guid_prefix(uint8_t participant_id) noexcept
     prefix.value[1] = VENDORID_THIS_IMPL.vendorId[1];
     uint8_t unique_id[8] = {};
     rosette::platform::device_unique_id(unique_id);
-    uint32_t folded = 0x811C9DC5u;  // FNV-1a, 32-bit
-    for (const uint8_t octet : unique_id) {
-        folded = (folded ^ octet) * 0x01000193u;
-    }
-
+    const uint32_t folded = rosette::support::fnv1a32(unique_id, sizeof(unique_id));
     const uint32_t nonce = rosette::platform::boot_nonce();
     for (int i = 0; i < 4; ++i) {
         prefix.value[2 + i] = static_cast<uint8_t>(folded >> (24 - 8 * i));
@@ -408,12 +405,7 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
         return;
     }
 
-    const bool announcement_due = spdp_writer_.ms_until_next_announce(now_ms) == 0u;
     spdp_writer_.tick(now_ms);
-    if (announcement_due) {
-        announce_to_active_peers();
-    }
-
     spdp_reader_.tick(now_ms);
     serve_owed_peer(now_ms);
     sedp_writer_.tick(now_ms);

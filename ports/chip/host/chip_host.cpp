@@ -3,13 +3,15 @@
  * @brief Host (Linux, macOS) chip layer of the platform contract.
  *
  * The monotonic clock is CLOCK_MONOTONIC. A host runs many Rosette processes
- * at once, so the unique ID mixes the machine's identity with the process ID
- * and start time, and the boot nonce hashes the process ID and start time; wall-clock time comes from the OS, which keeps it
+ * at once, so the unique ID hashes (FNV-1a) the machine's identity with the
+ * process ID and start time, and the boot nonce hashes the process ID and
+ * start time alone. Wall-clock time comes from the OS, which keeps it
  * synchronized. A host has no GPIO interrupts.
  */
 
 #include "rosette/platform/gpio_interrupt.hpp"
 #include "rosette/platform/platform.hpp"
+#include "rosette/support/fnv1a.hpp"
 
 #include <cstring>
 #include <ctime>
@@ -26,14 +28,10 @@ uint64_t monotonic_us() noexcept {
 
 namespace {
 
-/// FNV-1a over `len` octets, continuing from `h`.
-uint64_t fnv1a(uint64_t h, const void* data, size_t len) noexcept {
-    const auto* p = static_cast<const uint8_t*>(data);
-    for (size_t i = 0; i < len; ++i) {
-        h ^= p[i];
-        h *= 0x100000001B3ull;
-    }
-    return h;
+/// Continues the 64-bit FNV-1a hash @p h over the object representation of @p value.
+template <typename T>
+uint64_t fnv1a_object(uint64_t h, const T& value) noexcept {
+    return support::fnv1a64(reinterpret_cast<const uint8_t*>(&value), sizeof(value), h);
 }
 
 }  // namespace
@@ -41,32 +39,28 @@ uint64_t fnv1a(uint64_t h, const void* data, size_t len) noexcept {
 void device_unique_id(uint8_t out[8]) noexcept {
     // Computed once: the identity must stay stable for the process lifetime.
     static const uint64_t id = [] {
-        uint64_t h = 0xCBF29CE484222325ull;
         char host[256] = {};
         gethostname(host, sizeof(host) - 1);
-        h = fnv1a(h, host, std::strlen(host));
-        const long hostid = gethostid();
-        h = fnv1a(h, &hostid, sizeof(hostid));
-        const pid_t pid = getpid();
-        h = fnv1a(h, &pid, sizeof(pid));
+        uint64_t h = support::fnv1a64(reinterpret_cast<const uint8_t*>(host), std::strlen(host));
+        h = fnv1a_object(h, gethostid());
+        h = fnv1a_object(h, getpid());
         timespec start{};
         clock_gettime(CLOCK_REALTIME, &start);
-        h = fnv1a(h, &start, sizeof(start));
-        return h;
+        return fnv1a_object(h, start);
     }();
-    for (int i = 0; i < 8; ++i) out[i] = static_cast<uint8_t>(id >> (8 * i));
+    for (int i = 0; i < 8; ++i) {
+        out[i] = static_cast<uint8_t>(id >> (8 * i));
+    }
 }
 
 uint32_t boot_nonce() noexcept {
     // Computed once: the process ID and start time differ at every process start.
     static const uint32_t nonce = [] {
-        uint64_t h = 0xCBF29CE484222325ull;
-        const pid_t pid = getpid();
-        h = fnv1a(h, &pid, sizeof(pid));
         timespec start{};
         clock_gettime(CLOCK_REALTIME, &start);
-        h = fnv1a(h, &start, sizeof(start));
-        return static_cast<uint32_t>(h ^ (h >> 32));
+        const pid_t pid = getpid();
+        const uint32_t h = support::fnv1a32(reinterpret_cast<const uint8_t*>(&pid), sizeof(pid));
+        return support::fnv1a32(reinterpret_cast<const uint8_t*>(&start), sizeof(start), h);
     }();
     return nonce;
 }

@@ -20,10 +20,12 @@ add_compile_definitions(ROSETTE_OS_POSIX ROSETTE_CHIP_HOST)
 set(ROSETTE_SPEC_PLATFORM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform)
 set(ROSETTE_SPEC_HOST_CHIP ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host/chip_host.cpp)
 
-# Links a spec target against the platform: WallClock always, plus the real
-# host chip layer unless the target supplies its own test chip layer.
+# Links a spec target against the platform: WallClock and FNV-1a always, plus
+# the real host chip layer unless the target supplies its own test chip layer.
 function(rosette_spec_use_platform target)
-    target_sources(${target} PRIVATE ${ROSETTE_SPEC_PLATFORM_DIR}/wall_clock.cpp)
+    target_sources(${target} PRIVATE
+        ${ROSETTE_SPEC_PLATFORM_DIR}/wall_clock.cpp
+        ${ROSETTE_SPEC_PLATFORM_DIR}/../support/fnv1a.cpp)
     get_target_property(_srcs ${target} SOURCES)
     list(FILTER _srcs INCLUDE REGEX "(_clock_stub|_platform_stub)\\.cpp$")
     if(NOT _srcs)
@@ -768,7 +770,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
 endif()
 
 # Every spec and fuzz target runs on the platform port.
-foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_tier_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
+foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_spec_tests_rebuild participant_tier_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
     if(TARGET ${_t})
         rosette_spec_use_platform(${_t})
     endif()

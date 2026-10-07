@@ -92,15 +92,6 @@ void RTPSParticipant::activate_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
     notify_graph_change();
 }
 
-void RTPSParticipant::announce_to_active_peers() noexcept {
-    spdp_reader_.for_each_peer([this](const PeerEntry& peer) noexcept {
-        const DiscoveredParticipant* data = spdp_reader_.active_data(peer);
-        if (data != nullptr && data->metatrafficUnicastLocatorCount > 0u) {
-            spdp_writer_.announce_unicast(data->metatrafficUnicastLocatorList[0]);
-        }
-    });
-}
-
 bool RTPSParticipant::peer_is_settled(const PeerEntry& peer, uint32_t now_ms) noexcept {
     if (!peer.active() || !peer.rebuildable() || now_ms - peer.lastSedpMs < RTPS_PEER_SETTLE_MS) {
         return false;

@@ -57,7 +57,7 @@ namespace rtps {
  *
  * Layout (§9.3.1.5 recommends the vendor ID in the first two octets):
  *   0-1   VENDORID_THIS_IMPL
- *   2-5   platform::device_unique_id() folded to 32 bits (FNV-1a): tells
+ *   2-5   platform::device_unique_id() hashed to 32 bits (FNV-1a): tells
  *         devices, and processes on a host, apart
  *   6-9   platform::boot_nonce(), big-endian: tells successive boots of one
  *         device apart
@@ -581,33 +581,6 @@ private:
 
     /// @brief Reactivates one owed parked peer when a slot is free or can be made.
     void serve_owed_peer(uint32_t now_ms) noexcept;
-
-    /**
-     * @brief Sends this participant's SPDP announcement directly to every active peer.
-     *
-     * Runs with each periodic SPDP announcement. The multicast announcement
-     * alone does not keep active peers informed: a network that does not
-     * carry the group between this participant and a peer leaves the peer
-     * with only the direct announcement activate_peer() sent, which is best
-     * effort and sent once. A WIZnet board drops a datagram whose next hop it
-     * has not resolved yet, which is how that one is lost after the board
-     * resets. The peer then never learns the new participant, ignores its
-     * SEDP HEARTBEATs, and keeps no endpoints of it until it restarts.
-     * Repeating the direct announcement every period repairs the loss, as
-     * Fast DDS and Cyclone DDS do by announcing to every known peer's
-     * metatraffic unicast locator.
-     *
-     * Verification:
-     * - Correct means: each periodic announcement reaches every active peer's
-     *   first metatraffic unicast locator, and no parked or departed peer.
-     * - Covered by: TC-PART-8.5.1-008; on hardware, a ROS 2 host that stays
-     *   up rediscovers a board after the board resets.
-     *
-     * References:
-     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (SPDP sends to the locators of known
-     *   remote participants as well as the SPDP multicast locator), §8.5.3.3
-     */
-    void announce_to_active_peers() noexcept;
 
     /// @brief Tells the graph observer, if any, that the graph changed.
     void notify_graph_change() noexcept {

@@ -194,8 +194,7 @@ static bool tc_part_8_5_1_003(std::string& err) {
               && prefix.value[9] == 0xDEu,
           "GUID prefix octets 6-9 should be the boot nonce, big-endian, so a reset device "
           "comes back as a new participant");
-    CHECK(prefix.value[11] == participant_id,
-          "GUID prefix octet 11 should be the participant ID");
+    CHECK(prefix.value[11] == participant_id, "GUID prefix octet 11 should be the participant ID");
     CHECK(!p.add_ipv4_address(0u), "unspecified IPv4 address should be rejected");
 
     const uint8_t ipv6[16] = {
@@ -857,55 +856,6 @@ static bool tc_part_8_5_1_009(std::string& err) {
 // first (a workstation's Docker bridge) is answered at the address it shares
 // with this participant's prefix. Removing the address removes its prefix, so
 // a later peer is answered in its own announced order.
-/// Every periodic SPDP announcement also goes to each active peer's metatraffic
-/// unicast locator, so a peer that lost the one-time directed announcement
-/// (a WIZnet board drops sends while ARP is unresolved, as after a reset)
-/// learns the participant at the next period.
-static bool tc_part_8_5_1_011(std::string& err) {
-    CaptureTransport tx{};
-    RTPSParticipant p(0u, 1u, tx);
-    CHECK(p.add_ipv4_address(0xC0A8010Au, 24u), "192.168.1.10/24 setup should succeed");
-
-    auto spdp_to = [&tx](const Locator& dest, bool multicast) {
-        size_t n = 0u;
-        for (const auto& packet : tx.packets) {
-            if (packet_writer_id(packet) == entity_id::SPDP_BUILTIN_PARTICIPANT_WRITER
-                && packet.multicast == multicast && (multicast || packet.dest == dest)) {
-                ++n;
-            }
-        }
-
-        return n;
-    };
-
-    g_participant_test_now_ms = 100u;
-    p.tick(g_participant_test_now_ms);
-    tx.packets.clear();
-
-    const Locator remote_meta = make_udpv4_locator(0xC0A80164u, 7410u);
-    std::vector<Octet> payload{};
-    CHECK(build_spdp_payload(make_prefix(0xD1u, 0xD2u, 0xD3u), 1u, remote_meta, payload),
-          "SPDP payload build failed");
-    CHECK(p.spdp_reader().on_data(make_prefix(0xD1u, 0xD2u, 0xD3u), payload.data(),
-                                  static_cast<uint32_t>(payload.size()),
-                                  g_participant_test_now_ms),
-          "peer should be discovered");
-    CHECK(spdp_to(remote_meta, false) == 1u, "a new peer gets one directed announcement");
-
-    tx.packets.clear();
-    g_participant_test_now_ms = 101u;
-    p.tick(g_participant_test_now_ms);
-    CHECK(spdp_to(remote_meta, false) == 0u && spdp_to(remote_meta, true) == 0u,
-          "nothing is announced before the period ends");
-
-    g_participant_test_now_ms = 100u + RTPS_SPDP_RESEND_PERIOD_MS;
-    p.tick(g_participant_test_now_ms);
-    CHECK(spdp_to(remote_meta, true) == 1u, "the periodic announcement goes to the group");
-    CHECK(spdp_to(remote_meta, false) == 1u,
-          "the periodic announcement also goes to the active peer's metatraffic locator");
-    return true;
-}
-
 static bool tc_part_8_5_1_010(std::string& err) {
     CaptureTransport tx{};
     RTPSParticipant p(0u, 1u, tx);
@@ -991,11 +941,6 @@ void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
                      "participant answer a peer at the peer address inside that prefix; removing "
                      "it removes the preference.",
                      tc_part_8_5_1_010});
-    tests.push_back({"TC-PART-8.5.1-011",
-                     "§8.5.3.2: each periodic SPDP announcement also goes to every active peer's "
-                     "metatraffic unicast locator, so a lost directed announcement is repaired "
-                     "within one period.",
-                     tc_part_8_5_1_011});
     tests.push_back({"TC-PART-8.5.1-009",
                      "§8.5.3/§8.5.4: the graph observer fires when a peer is discovered or expires and when an endpoint is recorded or forgotten, not for a repeated identical announcement.",
                      tc_part_8_5_1_009});
