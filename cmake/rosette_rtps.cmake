@@ -61,7 +61,10 @@ target_link_libraries(rosette_rtps PUBLIC rosette_platform rosette_net)
 
 # Local endpoints: a handful of topics per board.
 set(_rtps_local_endpoints 8)
-math(EXPR _rtps_match_records "8 * 8")
+# Match records: one per proxy in the participant's two pools (four writers
+# and four readers, eight matches each) plus the matches that wait for one.
+set(_rtps_match_waiters 8)
+math(EXPR _rtps_match_records "4 * 8 + 4 * 8 + ${_rtps_match_waiters}")
 
 # Buffer pool. A sample is stored whole in one block (fragmented only on the
 # wire), and alloc() takes the smallest class that fits, so each class is
@@ -110,6 +113,7 @@ target_compile_definitions(rosette_rtps PUBLIC
   RTPS_MAX_DISCOVERED_WRITERS=${ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS}
   RTPS_MAX_DISCOVERED_READERS=${ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS}
   RTPS_MAX_MATCH_RECORDS=${_rtps_match_records}
+  RTPS_MAX_WAITING_MATCHES=${_rtps_match_waiters}
   RTPS_POOL_CLASS0_SIZE=256u
   RTPS_POOL_CLASS0_COUNT=16u
   RTPS_POOL_CLASS1_SIZE=512u

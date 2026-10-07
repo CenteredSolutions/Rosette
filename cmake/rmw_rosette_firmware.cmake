@@ -80,6 +80,7 @@ set(RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE 0 CACHE STRING "Publishers each node
 set(RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS 8 CACHE STRING "Remote DDS participants exchanging endpoint discovery")
 set(RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS 96 CACHE STRING "Remote DDS participants known, active or parked")
 set(RMW_ROSETTE_MAX_MATCHED_ENDPOINTS 8 CACHE STRING "Remote matches per local endpoint")
+set(RMW_ROSETTE_MATCH_WAITERS ${RMW_ROSETTE_MAX_MATCHED_ENDPOINTS} CACHE STRING "Matches waiting at once for a proxy")
 set(RMW_ROSETTE_MAX_REMOTE_ENDPOINTS 64 CACHE STRING "Remote writers (and readers) known from SEDP; when full, only those matching a local endpoint are admitted")
 # The link's datagram limit is the board's (cmake/rosette_rtps.cmake declares
 # the same cache entry); declaring it here too keeps this file independent of

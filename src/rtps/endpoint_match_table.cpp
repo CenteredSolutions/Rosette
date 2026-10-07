@@ -475,6 +475,7 @@ void EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
                                 const TopicName& topic) noexcept
 {
     MatchRecord* free_slot = nullptr;
+    uint32_t waiting = 0u;
     for (MatchRecord& m : matches_) {
         if (m.writer_guid == writer.guid && m.reader_guid == reader.guid) {
             return;
@@ -482,6 +483,10 @@ void EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
 
         if (!free_slot && !m.active()) {
             free_slot = &m;
+        }
+
+        if (m.active() && m.waiting) {
+            ++waiting;
         }
     }
 
@@ -494,12 +499,22 @@ void EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
     }
 
     // A proxy freed since the last rebind belongs to the oldest waiting pair
-    // that can take it, not to a pair reported after it.
-    const bool queued = oldest_bindable() != nullptr;
+    // that can take it, not to a pair reported after it. MayMatch tells
+    // before anything binds whether the pair would wait, so a pair turned
+    // away at the waiting limit holds no proxy and needs no unmatch.
+    const bool may_bind =
+        oldest_bindable() == nullptr
+        && (may_match_ == nullptr || may_match_(writer.guid, reader.guid, user_data_));
+    if (!may_bind && waiting >= RTPS_MAX_WAITING_MATCHES) {
+        RTPS_LOG_W("match", "waiting matches full (RTPS_MAX_WAITING_MATCHES=%lu): topic=%s",
+                   (unsigned long)RTPS_MAX_WAITING_MATCHES, topic.str);
+        return;
+    }
+
     free_slot->writer_guid = writer.guid;
     free_slot->reader_guid = reader.guid;
     free_slot->ticket = next_ticket_++;
-    free_slot->waiting = queued || (on_match_ && !on_match_(writer, reader, topic, user_data_));
+    free_slot->waiting = !may_bind || (on_match_ && !on_match_(writer, reader, topic, user_data_));
 }
 
 bool EndpointMatchTable::describe(const MatchRecord& m, MatchedEndpoint& writer,

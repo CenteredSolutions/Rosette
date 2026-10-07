@@ -47,21 +47,22 @@ Guid remote_reader(const GuidPrefix& prefix, Octet n) {
     return Guid{prefix, make_entity(0x40u, 0x41u, n, 0x07u)};
 }
 
-/// Announces `reader` through the participant's match table, as SEDP does.
-void announce_reader(RTPSParticipant& p, const Guid& reader) {
+/// Announces `reader` of `topic` through the participant's match table, as SEDP does.
+void announce_reader(RTPSParticipant& p, const Guid& reader, const char* topic = "pool_topic") {
     DiscoveredReaderData rd{};
     rd.readerGuid = reader;
-    rd.topicName.assign("pool_topic");
+    rd.topicName.assign(topic);
     rd.typeName.assign("pkg::msg::PoolType");
     rd.reliabilityKind = ReliabilityKind::RELIABLE;
     rd.durabilityKind = DurabilityKind::TRANSIENT_LOCAL;
     p.match_table().add_reader(rd);
 }
 
-/// A reliable TRANSIENT_LOCAL writer of `pool_topic` matching at most `cap` readers.
-StatefulWriter* create_capped_writer(RTPSParticipant& p, uint8_t cap) {
+/// A reliable TRANSIENT_LOCAL writer of `topic` matching at most `cap` readers.
+StatefulWriter* create_capped_writer(RTPSParticipant& p, uint8_t cap,
+                                     const char* topic = "pool_topic") {
     WriterConfig wcfg{};
-    wcfg.topicName.assign("pool_topic");
+    wcfg.topicName.assign(topic);
     wcfg.typeName.assign("pkg::msg::PoolType");
     wcfg.reliability = ReliabilityKind::RELIABLE;
     wcfg.durability = DurabilityKind::TRANSIENT_LOCAL;
@@ -222,6 +223,45 @@ bool tc_part_8_4_1_4_003(std::string& err) {
     return true;
 }
 
+// TC-PART-8.4.1.4-004: with RTPS_MAX_WAITING_MATCHES pairs waiting, a
+// further pair that would wait is not recorded, so it never binds, while a
+// pair that may bind still matches.
+bool tc_part_8_4_1_4_004(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup");
+    const GuidPrefix peer = make_prefix(0xE1u, 0xE2u, 0xE3u);
+    CHECK(add_peer(p, peer, 7411u), "the peer is accepted");
+
+    StatefulWriter* w = create_capped_writer(p, 1u);
+    StatefulWriter* spare = create_capped_writer(p, 1u, "spare_topic");
+    CHECK(w != nullptr && spare != nullptr, "two writers capped at one reader are created");
+
+    // Reader 1 binds; readers 2 .. kWaiting + 1 wait; the last one is turned away.
+    constexpr Octet kWaiting = RTPS_MAX_WAITING_MATCHES;
+    const Guid refused = remote_reader(peer, kWaiting + 2u);
+    for (Octet n = 1u; n <= kWaiting + 1u; ++n) {
+        announce_reader(p, remote_reader(peer, n));
+    }
+
+    announce_reader(p, refused);
+    const Guid other = remote_reader(peer, kWaiting + 3u);
+    announce_reader(p, other, "spare_topic");
+    CHECK(spare->matched_reader_lookup(other) != nullptr,
+          "a pair that may bind matches with the waiting matches full");
+
+    // Free the bound proxy once per waiting reader; each tick binds the next.
+    for (Octet n = 1u; n <= kWaiting + 1u; ++n) {
+        p.match_table().remove_reader(remote_reader(peer, n));
+        p.tick(200u + n);
+    }
+
+    CHECK(w->matched_reader_count() == 0u && w->matched_reader_lookup(refused) == nullptr,
+          "the reader turned away at the waiting limit was never recorded, so never binds");
+    CHECK(p.ms_until_next_timer(400u) != 0u, "nothing is left to bind");
+    return true;
+}
+
 }  // namespace
 
 void append_participant_waiting_match_tests(std::vector<TestCase>& tests) {
@@ -239,6 +279,11 @@ void append_participant_waiting_match_tests(std::vector<TestCase>& tests) {
                      "waits is kept and delivered when the reader binds; a waiting match keeps "
                      "its peer in a match.",
                      tc_part_8_4_1_4_003});
+    tests.push_back({"TC-PART-8.4.1.4-004",
+                     "§8.4.1.4: with RTPS_MAX_WAITING_MATCHES pairs waiting, a further pair "
+                     "that would wait is not recorded and never binds, while a pair that may "
+                     "bind still matches.",
+                     tc_part_8_4_1_4_004});
 }
 
 }  // namespace spec_test

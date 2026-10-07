@@ -55,6 +55,8 @@ set(RMW_ROSETTE_MIN_MATCHED_ENDPOINTS 1 CACHE STRING
     "Remote matches every local endpoint is always granted, reserved in the proxy pools for every endpoint slot")
 set(RMW_ROSETTE_MATCHED_READERS "" CACHE STRING
     "Remote readers matched across all local writers at once (the ReaderProxy pool); empty: every writer at RMW_ROSETTE_MAX_MATCHED_ENDPOINTS and ros_discovery_info at RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS")
+set(RMW_ROSETTE_MATCH_WAITERS 64 CACHE STRING
+    "Matches waiting at once for a proxy their pool or cap refused; they bind oldest first as proxies free. Each costs one match record")
 set(RMW_ROSETTE_MATCHED_WRITERS "" CACHE STRING
     "Remote writers matched across all local readers at once (the WriterProxy pool); empty: every reader at RMW_ROSETTE_MAX_MATCHED_ENDPOINTS")
 set(RMW_ROSETTE_MAX_REMOTE_ENDPOINTS 128 CACHE STRING
@@ -89,7 +91,6 @@ endif()
 # tracks only pairs that involve a local endpoint.
 math(EXPR _rr_known_writers "${_rr_rtps_writers} + ${RMW_ROSETTE_MAX_REMOTE_ENDPOINTS}")
 math(EXPR _rr_known_readers "${_rr_rtps_readers} + ${RMW_ROSETTE_MAX_REMOTE_ENDPOINTS}")
-math(EXPR _rr_match_records "(${_rr_rtps_writers} + ${_rr_rtps_readers}) * ${RMW_ROSETTE_MAX_MATCHED_ENDPOINTS}")
 
 # Proxy pools. The ros_discovery_info writer's floor and cap are both
 # RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS; every other endpoint's cap is
@@ -117,6 +118,14 @@ if(_rr_writer_proxies LESS _rr_min_writer_proxies OR _rr_writer_proxies GREATER 
   message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_MATCHED_WRITERS (${_rr_writer_proxies}) must be "
                       "${_rr_min_writer_proxies} to 65534: one floor per reader")
 endif()
+
+# Match records: every bound match holds a proxy, so one record per proxy in
+# both pools, plus the matches that wait for one.
+if(RMW_ROSETTE_MATCH_WAITERS LESS 0)
+  message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_MATCH_WAITERS must not be negative")
+endif()
+math(EXPR _rr_match_records
+     "${_rr_reader_proxies} + ${_rr_writer_proxies} + ${RMW_ROSETTE_MATCH_WAITERS}")
 
 if(RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER 65532)
   message(FATAL_ERROR "RMW_ROSETTE_MAX_SAMPLE_SIZE must be at most 65532 (16-bit pool block sizes)")
@@ -255,6 +264,7 @@ function(rmw_rosette_apply_capacity target)
     RTPS_MAX_DISCOVERED_WRITERS=${_rr_known_writers}
     RTPS_MAX_DISCOVERED_READERS=${_rr_known_readers}
     RTPS_MAX_MATCH_RECORDS=${_rr_match_records}
+    RTPS_MAX_WAITING_MATCHES=${RMW_ROSETTE_MATCH_WAITERS}
     RTPS_POOL_CLASS0_SIZE=${_rr_size0}u
     RTPS_POOL_CLASS0_COUNT=${_rr_pool0}u
     RTPS_POOL_CLASS1_SIZE=${_rr_size1}u

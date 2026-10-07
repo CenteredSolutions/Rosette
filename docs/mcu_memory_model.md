@@ -133,7 +133,7 @@ identically) at the firmware defaults
 | Remote locator list (endpoint locators other than its participant's defaults) | 52 B | `RTPS_MAX_REMOTE_LOCATOR_LISTS` (4) |
 | Remote endpoint record | 16 B | `RTPS_MAX_DISCOVERED_WRITERS` / `_READERS` |
 | Local endpoint record (two 128-octet names + QoS) | 296 B | local endpoints |
-| Match record (one writer-reader pair) | 32 B | `RTPS_MAX_MATCH_RECORDS` |
+| Match record (one writer-reader pair) | 36 B | `RTPS_MAX_MATCH_RECORDS`: one per pooled proxy plus `RTPS_MAX_WAITING_MATCHES` |
 | `ChangeRing` (rmw take history), `PendingChange` 72 B each | 732 B | `RMW_ROSETTE_MAX_PENDING_CHANGES` (10) |
 | Pool block header | 12 B | every pool block |
 
@@ -258,7 +258,8 @@ relationships, so an inconsistent set fails to compile.
 | `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` | 8 | active peers: active slot, SEDP reader and writer proxies, remote origins | ≈ 420 B |
 | `RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` | 96 | known-peer records, active or parked (`PeerEntry`) | 68 B |
 | `RMW_ROSETTE_MAX_REMOTE_ENDPOINTS` | 64 | remote writer and reader records | 32 B (16 B in each table) |
-| `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS` | 8 | readers per writer, writers per reader, match records, reassembly slots | 80 B per writer slot + 192 B per reader slot + 32 B per local endpoint |
+| `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS` | 8 | readers per writer, writers per reader, match records, reassembly slots | 80 B per writer slot + 192 B per reader slot, plus a 36 B match record for each |
+| `RMW_ROSETTE_MATCH_WAITERS` | 8 (`MAX_MATCHED_ENDPOINTS`) | matches waiting for a proxy at once, oldest bound first | 36 B (one match record) |
 | `RMW_ROSETTE_MAX_PENDING_CHANGES` | 10 | `ChangeRing` depth ceiling per subscription, service, and client | 72 B per entry per entity, plus the blocks unread entries pin |
 | `RMW_ROSETTE_MAX_DATAGRAM_SIZE` | 1472 | receive buffer, datagram pool class, DATA_FRAG threshold | the datagram class × 4 blocks |
 | `RMW_ROSETTE_MAX_SAMPLE_SIZE` | 4096 | largest pool class: the biggest message sent or received | × `RMW_ROSETTE_LARGE_BUFFERS` |

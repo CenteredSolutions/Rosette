@@ -190,6 +190,11 @@ when the pair was reported:
   without trying, so a match discovered between the release and the next
   tick does not take the freed proxy ahead of the matches already waiting.
   Pairs bind in the order they were reported.
+* At most `RTPS_MAX_WAITING_MATCHES` records wait at once. `MayMatch`
+  tells `report()` before anything binds whether a pair would wait, and a
+  pair that would wait beyond the limit is not recorded and binds no proxy.
+  A topic that many peers read therefore cannot take the records that
+  matches which bind at once need.
 * Offering a waiting pair again binds only the half that waited: a half
   that already holds its proxy is left alone, which matters for a pair of
   two local endpoints.
@@ -198,12 +203,15 @@ when the pair was reported:
   `rmw_subscription_count_matched_publishers` and
   `rmw_service_server_is_available` report what the endpoint actually serves.
 
-When the match record table itself is full, `report()` cannot keep the pair.
-It then sets a rescan flag; when a record frees, `tick()` walks the remote
-endpoint table once against the local endpoints and reports every compatible
-pair that has no record. The walk is bounded by local × remote endpoints and
-runs only after an overflow, so a firmware that sizes the record table at
-least as large as its two pools plus the waits it accepts never runs it.
+Every bound match holds at least one proxy, so a record table of one record
+per proxy in both pools plus `RTPS_MAX_WAITING_MATCHES` always has a record
+for a match that binds; `participant.hpp` `static_assert`s that size. A pair
+turned away because the waiting matches are full, or because the record
+table is, has no record. `report()` then sets a rescan flag; when a waiting
+record binds or a record frees, `tick()` walks the remote endpoint table once
+against the local endpoints and reports every compatible pair that has no
+record. The walk is bounded by local × remote endpoints and runs only after a
+pair was turned away.
 
 ### Services under pressure
 
@@ -303,7 +311,8 @@ and pool headers.
 
 Waiting matches add a ticket and a flag to each match record, 4 B with
 padding, and a few bytes of table and participant state: 272 B on the
-example firmware's 64 records.
+example firmware's 64 records, which are its 32 + 24 proxies and 8 waiting
+matches.
 
 ## Configuration
 
@@ -313,6 +322,8 @@ example firmware's 64 records.
 | `RMW_ROSETTE_MATCHED_WRITERS` | `RTPS_WRITER_PROXY_POOL` | readers × `MAX_MATCHED_ENDPOINTS` | remote writers matched across all local readers at once |
 | `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS` | `RTPS_MAX_MATCHED_READERS` / `_WRITERS` | 8 (firmware) | cap per endpoint |
 | `RMW_ROSETTE_MIN_MATCHED_ENDPOINTS` | `RTPS_MIN_MATCHES_PER_ENDPOINT` | 1 | floor per endpoint, reserved per slot |
+| `RMW_ROSETTE_MATCH_WAITERS` | `RTPS_MAX_WAITING_MATCHES` | `MAX_MATCHED_ENDPOINTS` (firmware), 64 (host) | matches waiting for a proxy at once |
+| (derived) | `RTPS_MAX_MATCH_RECORDS` | both pools + `MATCH_WAITERS` | match records: every bound and waiting pair |
 | `RMW_ROSETTE_ASSEMBLY_SLOTS` | `RTPS_ASSEMBLY_SLOTS` | datagram + large block counts | fragmented samples in reassembly at once |
 
 With the defaults the pools hold every endpoint at its cap at once, and the
@@ -329,9 +340,6 @@ endpoints that need more than one match and add their extra to the floors.
   history in most slots is used; a depth-1 writer saves 700 B in a slot of its
   own size, which would bring back slot-size classes for little.
 * **Per-endpoint floors and caps** need a naming mechanism (see above).
-* **Match record sizing.** The record table keeps its present default
-  (endpoints × cap); the rescan makes a smaller table safe, and a firmware may
-  size it to its pools plus the waits it accepts.
 
 ## Verification
 
@@ -346,8 +354,11 @@ New spec tests, under the areas they belong to:
   the next `tick()`, ahead of a pair reported after the release, one per
   tick; the bound reader receives the writer's TRANSIENT_LOCAL history;
   matched counts report bound pairs only.
-* Record overflow: a pair refused by a full record table is reported after a
-  record frees.
+* Waiting limit (TC-PART-8.4.1.4-004): with `RTPS_MAX_WAITING_MATCHES`
+  pairs waiting, a further pair that would wait is not recorded and never
+  binds, while a pair that may bind is still matched.
+* Record overflow: a pair refused by a full record table or the waiting
+  limit is reported after a record frees.
 * Service under pressure (TC-PART-8.4.1.4-003): a reply written while the
   client's reply reader waits is delivered when it binds, and the waiting
   pair keeps the client's peer in a match; the client reports the server

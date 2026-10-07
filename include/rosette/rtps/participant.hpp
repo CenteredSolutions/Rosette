@@ -156,6 +156,13 @@ static_assert(
 static_assert(RTPS_MIN_MATCHES_PER_ENDPOINT <= RTPS_MAX_MATCHED_READERS
                   && RTPS_MIN_MATCHES_PER_ENDPOINT <= RTPS_MAX_MATCHED_WRITERS,
               "an endpoint's floor cannot exceed its cap");
+// Every bound match holds at least one proxy, and at most
+// RTPS_MAX_WAITING_MATCHES others wait, so this many records always leave
+// one for a match that binds (see Waiting matches in endpoint_match_table.hpp).
+static_assert(RTPS_MAX_MATCH_RECORDS
+                  >= RTPS_READER_PROXY_POOL + RTPS_WRITER_PROXY_POOL + RTPS_MAX_WAITING_MATCHES,
+              "RTPS_MAX_MATCH_RECORDS cannot hold a record for every proxy in both pools and "
+              "RTPS_MAX_WAITING_MATCHES waiting matches");
 
 // ============================================================
 // WriterConfig / ReaderConfig

@@ -361,8 +361,12 @@ target_include_directories(participant_spec_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
 )
 
+# Three waiting matches: TC-PART-8.4.1.4-001 queues three readers, and
+# TC-PART-8.4.1.4-004 reaches the limit within the default remote endpoint
+# table.
 target_compile_definitions(participant_spec_tests PRIVATE
     RTPS_LOG_LEVEL=0
+    RTPS_MAX_WAITING_MATCHES=3
 )
 
 set(PARTICIPANT_PASSED_JSON
@@ -380,6 +384,7 @@ target_include_directories(participant_spec_tests_rebuild PRIVATE
 )
 target_compile_definitions(participant_spec_tests_rebuild PRIVATE
     RTPS_LOG_LEVEL=0
+    RTPS_MAX_WAITING_MATCHES=3
     RTPS_SEDP_REBUILD_ANNOUNCEMENTS=1
 )
 add_test(

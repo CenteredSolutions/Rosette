@@ -108,6 +108,12 @@
  * rather than take the freed proxy first, so pairs bind in the order they
  * were reported.
  *
+ * At most RTPS_MAX_WAITING_MATCHES records wait at once. A pair that would
+ * wait beyond them is not recorded, and the owner binds no proxy for it, so
+ * a topic many peers read cannot take the records that pairs which bind at
+ * once need: an owner that sizes the table to its proxy pools plus
+ * RTPS_MAX_WAITING_MATCHES always has a record for a pair that binds.
+ *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
  *   DiscoveredWriterData       — §8.5.4.2, Table 8.78, p. 166
@@ -320,12 +326,22 @@ static_assert(RTPS_MAX_REMOTE_ORIGINS >= 1 && RTPS_MAX_REMOTE_ORIGINS < 255,
 #endif
 static_assert(RTPS_MAX_REMOTE_LOCATOR_LISTS >= 1 && RTPS_MAX_REMOTE_LOCATOR_LISTS < 255,
               "RTPS_MAX_REMOTE_LOCATOR_LISTS must fit a one-octet index below the none value 0xFF");
+// Pairs that wait for a proxy at once (see Waiting matches in the file
+// comment). A pair that would wait beyond this many is not recorded.
+#ifndef RTPS_MAX_WAITING_MATCHES
+#  define RTPS_MAX_WAITING_MATCHES 8
+#endif
 // Writer-reader pairs tracked at once. Only pairs that involve a local
 // endpoint are tracked, so this scales with local endpoints times their
-// matched peers rather than with the whole graph.
+// matched peers rather than with the whole graph. A participant needs one
+// record per proxy in its pools plus RTPS_MAX_WAITING_MATCHES, and checks
+// that it has them (rtps/participant.hpp).
 #ifndef RTPS_MAX_MATCH_RECORDS
-#  define RTPS_MAX_MATCH_RECORDS (RTPS_MAX_DISCOVERED_WRITERS * RTPS_MAX_DISCOVERED_READERS)
+#  define RTPS_MAX_MATCH_RECORDS \
+      (RTPS_MAX_DISCOVERED_WRITERS * RTPS_MAX_DISCOVERED_READERS + RTPS_MAX_WAITING_MATCHES)
 #endif
+static_assert(RTPS_MAX_WAITING_MATCHES < RTPS_MAX_MATCH_RECORDS,
+              "RTPS_MAX_WAITING_MATCHES leaves no record for a pair that binds");
 
 /// One side of a matched pair, as on_match reports it.
 struct MatchedEndpoint {
@@ -845,9 +861,33 @@ private:
      */
     RemoteEndpoint* displace_unmatched(RemoteEndpoint* table, uint32_t n, bool is_writer) noexcept;
 
-    /// Reports the pair unless it was reported before or no record is free;
-    /// a pair that would bind ahead of an older waiting one that may bind
-    /// is recorded waiting instead.
+    /**
+     * @brief Records a compatible pair and asks the owner to bind it.
+     *
+     * Every match the table finds passes through here once. A pair that
+     * would bind ahead of an older waiting pair that may bind, or that the
+     * owner's MayMatch says cannot bind, is to wait; it is recorded waiting
+     * without calling on_match when the waiting records are below
+     * RTPS_MAX_WAITING_MATCHES, and not recorded at all otherwise. A pair
+     * that may bind is recorded and passed to on_match, and waits only if
+     * on_match refuses it after all; an owner whose MayMatch answers from the
+     * same admission rule as on_match never does.
+     *
+     * @param[in] writer The pair's writer, as on_match describes it.
+     * @param[in] reader The pair's reader, as on_match describes it.
+     * @param[in] topic  The topic name of the pair's local endpoint.
+     *
+     * Verification:
+     * - Correct means: a pair is recorded at most once; a pair the table
+     *   does not record holds no proxy, so it is never unmatched; no more
+     *   than RTPS_MAX_WAITING_MATCHES records wait at once, while a pair that
+     *   may bind is recorded whenever a record is free.
+     * - Covered by: TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-004.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.5.1 (matching discovered endpoints),
+     *   §8.4.1.4 (matched_reader_add), §8.4.7.4 (matched_writer_add)
+     */
     void report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
                 const TopicName& topic) noexcept;
 
