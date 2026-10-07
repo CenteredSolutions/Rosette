@@ -81,9 +81,9 @@
       "section": "8.5.4.2",
       "page": 166,
       "normativity": "implementation-behavior",
-      "statement": "A remote endpoint that announces no unicast locators, or exactly its participant's default unicast locators as the SPDP peer table keeps them, keeps no locator list and is reached at its participant's current defaults; only an endpoint announcing other locators keeps them, in one of RTPS_MAX_REMOTE_LOCATOR_LISTS lists; an endpoint moving to other locators of its own while every list is taken reuses the list it leaves.",
+      "statement": "A remote endpoint that announces no unicast locators, or locators whose preferred entry is its participant's preferred default unicast locator as the SPDP peer table keeps them, keeps no locator list and is reached at its participant's current defaults, including while a peer reactivated from its known-peer record holds only that preferred default; only an endpoint whose preferred locator is elsewhere keeps its locators, in one of RTPS_MAX_REMOTE_LOCATOR_LISTS lists; an endpoint moving to other locators of its own while every list is taken reuses the list it leaves.",
       "status": "implemented",
-      "test_ids": ["TC-SEDP-8.5.4.2-001", "TC-SEDP-8.5.4.2-002", "TC-SEDP-8.5.4.2-003"]
+      "test_ids": ["TC-SEDP-8.5.4.2-001", "TC-SEDP-8.5.4.2-002", "TC-SEDP-8.5.4.2-003", "TC-SEDP-8.5.4.2-004"]
     },
     {
       "id": "REQ-SEDP-8.5.4.1-RELIABLE-BUILTIN-READERS",

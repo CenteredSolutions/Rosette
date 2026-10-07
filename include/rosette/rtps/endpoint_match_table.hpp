@@ -614,8 +614,6 @@ private:
      * defaults shares the origin of one announcing none (see Storage in the
      * file comment).
      *
-     * @param[in]     prefix The endpoint's GUID prefix.
-     * @param[in]     kept   Its kept locators (LocalSubnets::select()).
      * A proxy is addressed at one locator, the preferred entry of the list it
      * is matched with (preferred_unicast_locator()), so the kept list counts
      * as the defaults when its preferred entry is the defaults' preferred
@@ -626,6 +624,16 @@ private:
      * no locator list, and the refresh that restores the rest in place leaves
      * them addressed where they were.
      *
+     * An endpoint so classified follows its participant's defaults from then
+     * on. One that announced a list of its own sharing only the preferred
+     * entry with the defaults (endpoint [A, B], defaults [A, C]) is therefore
+     * addressed at the participant's new preferred default if a later SPDP
+     * announcement changes it, not at A from its own list. No stack Rosette interoperates with
+     * announces such a list unconfigured: Fast DDS and Rosette announce the
+     * defaults, and Cyclone DDS announces none.
+     *
+     * @param[in]     prefix The endpoint's GUID prefix.
+     * @param[in]     kept   Its kept locators (LocalSubnets::select()).
      * @param[in,out] count  Entries in `kept`; set to 0 when its preferred
      *   entry equals that of the defaults participant_defaults_ returns for
      *   `prefix`.
