@@ -59,7 +59,10 @@ void replay_one_input(const uint8_t* data, size_t size) {
 
     (void)reader.on_data(sender, payload, payload_len, now_ms);
     if ((size > 0u) && ((data[0] & 0x1u) != 0u)) {
-        reader.mark_sedp_announced(sender);
+        if (PeerEntry* known = reader.find_peer(sender)) {
+            (void)reader.activate(*known);
+        }
+
         (void)reader.on_data(sender, payload, payload_len, now_ms + 1u);
     }
     reader.tick(now_ms + tick_delta);

@@ -1,8 +1,9 @@
 /**
  * @file address_candidate_test.cpp
- * @brief 64-bit FNV-1a and the self-assigned address candidates built on it.
+ * @brief 32- and 64-bit FNV-1a and the self-assigned address candidates built on it.
  *
  * Test cases: TC-NET-FNV-001 (published FNV-1a 64-bit vectors),
+ * TC-NET-FNV-002 (published FNV-1a 32-bit vectors),
  * TC-NET-CAND-001 (IPv6 candidates: counter 0 is EUI-64, later counters are
  * distinct, repeatable, and keep the prefix), TC-NET-CAND-002 (IPv4
  * link-local candidates stay in 169.254.1.0-169.254.254.255 and do not repeat
@@ -33,6 +34,10 @@ uint64_t fnv(const char* text) {
     return rosette::support::fnv1a64(reinterpret_cast<const uint8_t*>(text), std::strlen(text));
 }
 
+uint32_t fnv32(const char* text) {
+    return rosette::support::fnv1a32(reinterpret_cast<const uint8_t*>(text), std::strlen(text));
+}
+
 std::array<uint8_t, 8> iid_of(const std::array<uint8_t, 16>& a) {
     return {a[8], a[9], a[10], a[11], a[12], a[13], a[14], a[15]};
 }
@@ -44,6 +49,11 @@ int main() {
     check(fnv("") == 0xCBF29CE484222325ull, "FNV-1a 64: empty string is the offset basis");
     check(fnv("a") == 0xAF63DC4C8601EC8Cull, "FNV-1a 64: \"a\"");
     check(fnv("foobar") == 0x85944171F73967E8ull, "FNV-1a 64: \"foobar\"");
+
+    // TC-NET-FNV-002
+    check(fnv32("") == 0x811C9DC5u, "FNV-1a 32: empty string is the offset basis");
+    check(fnv32("a") == 0xE40C292Cu, "FNV-1a 32: \"a\"");
+    check(fnv32("foobar") == 0xBF9CF968u, "FNV-1a 32: \"foobar\"");
 
     // TC-NET-CAND-001
     {

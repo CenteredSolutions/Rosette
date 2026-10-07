@@ -20,10 +20,12 @@ add_compile_definitions(ROSETTE_OS_POSIX ROSETTE_CHIP_HOST)
 set(ROSETTE_SPEC_PLATFORM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform)
 set(ROSETTE_SPEC_HOST_CHIP ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host/chip_host.cpp)
 
-# Links a spec target against the platform: WallClock always, plus the real
-# host chip layer unless the target supplies its own test chip layer.
+# Links a spec target against the platform: WallClock and FNV-1a always, plus
+# the real host chip layer unless the target supplies its own test chip layer.
 function(rosette_spec_use_platform target)
-    target_sources(${target} PRIVATE ${ROSETTE_SPEC_PLATFORM_DIR}/wall_clock.cpp)
+    target_sources(${target} PRIVATE
+        ${ROSETTE_SPEC_PLATFORM_DIR}/wall_clock.cpp
+        ${ROSETTE_SPEC_PLATFORM_DIR}/../support/fnv1a.cpp)
     get_target_property(_srcs ${target} SOURCES)
     list(FILTER _srcs INCLUDE REGEX "(_clock_stub|_platform_stub)\\.cpp$")
     if(NOT _srcs)
@@ -132,9 +134,11 @@ add_executable(spdp_spec_tests
     src/spec_spdp_test_registry.cpp
     src/test_spdp_8_5_3_behavior.cpp
     src/test_spdp_8_5_3_locator_ranking.cpp
+    src/test_spdp_8_5_3_peer_records.cpp
     src/test_spdp_9_6_1_locators.cpp
     src/test_spdp_9_6_2_9_6_3_1_plcdr.cpp
     ../../src/rtps/spdp.cpp
+    ../../src/rtps/spdp_peer_records.cpp
     ../../src/rtps/locator_ranking.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
@@ -167,6 +171,7 @@ set(SEDP_SPEC_TEST_SOURCES
     src/test_stateful_writer_clock_stub.cpp
     src/test_sedp_8_5_4_behavior.cpp
     src/test_sedp_8_5_4_peer_locators.cpp
+    src/test_sedp_8_5_4_2_endpoint_locator_lists.cpp
     src/test_sedp_8_5_4_rebuild.cpp
     src/test_sedp_8_5_4_repairs.cpp
     src/test_sedp_8_5_5_1_matching.cpp
@@ -326,6 +331,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     src/test_participant_platform_stub.cpp
     src/test_participant_8_5_1.cpp
     ../../src/rtps/participant.cpp
+    ../../src/rtps/participant_peer_tiers.cpp
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/sn_window.cpp
     ../../src/rtps/history_cache.cpp
@@ -333,6 +339,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     ../../src/rtps/stateful_writer.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/spdp.cpp
+    ../../src/rtps/spdp_peer_records.cpp
     ../../src/rtps/sedp.cpp
     ../../src/rtps/endpoint_match_table.cpp
     ../../src/rtps/locator_ranking.cpp
@@ -371,6 +378,31 @@ target_compile_definitions(participant_spec_tests_rebuild PRIVATE
 add_test(
     NAME participant_spec_conformance_rebuild
     COMMAND participant_spec_tests_rebuild
+)
+
+# The peer-tier tests need an active tier smaller than the network: two
+# active slots among six known peers, and a short settle time.
+set(PARTICIPANT_TIER_SPEC_TEST_SOURCES ${PARTICIPANT_SPEC_TEST_SOURCES})
+list(REMOVE_ITEM PARTICIPANT_TIER_SPEC_TEST_SOURCES
+    src/spec_participant_test_registry.cpp
+    src/test_participant_8_5_1.cpp)
+list(APPEND PARTICIPANT_TIER_SPEC_TEST_SOURCES
+    src/spec_participant_tier_test_registry.cpp
+    src/test_participant_8_5_3_peer_tiers.cpp)
+add_executable(participant_tier_spec_tests ${PARTICIPANT_TIER_SPEC_TEST_SOURCES})
+target_include_directories(participant_tier_spec_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+)
+target_compile_definitions(participant_tier_spec_tests PRIVATE
+    RTPS_LOG_LEVEL=0
+    RTPS_MAX_PEERS=2
+    RTPS_MAX_KNOWN_PEERS=6
+    RTPS_PEER_SETTLE_MS=100u
+)
+add_test(
+    NAME participant_tier_spec_conformance
+    COMMAND participant_tier_spec_tests
 )
 
 find_package(Python3 COMPONENTS Interpreter)
@@ -494,6 +526,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
     add_executable(spdp_fuzz_replay
         fuzz/replay_spdp_corpus.cpp
         ../../src/rtps/spdp.cpp
+        ../../src/rtps/spdp_peer_records.cpp
         ../../src/rtps/locator_ranking.cpp
         ../../src/rtps/buf_pool.cpp
     )
@@ -664,6 +697,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         add_executable(spdp_fuzz
             fuzz/fuzz_spdp.cpp
             ../../src/rtps/spdp.cpp
+            ../../src/rtps/spdp_peer_records.cpp
             ../../src/rtps/locator_ranking.cpp
             ../../src/rtps/buf_pool.cpp
         )
@@ -736,7 +770,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
 endif()
 
 # Every spec and fuzz target runs on the platform port.
-foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
+foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_spec_tests_rebuild participant_tier_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
     if(TARGET ${_t})
         rosette_spec_use_platform(${_t})
     endif()

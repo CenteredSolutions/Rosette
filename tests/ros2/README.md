@@ -14,6 +14,7 @@ session passes, a stock ROS 2 application on `rmw_fastrtps_cpp` or
 | `rmw_reliable_burst_probe.py` / `run_rmw_reliable_burst_loopback.sh` | Reader-history test: a stock publisher sends a reliable burst while the rosette subscription is not taking (the shape of a late-match repair burst); the subscription must then take exactly the newest min(count, depth) samples. The publisher role with `--topic` drives a board's subscription. |
 | `rcl_graph_wait_probe.cpp` / `rmw_graph_peer.py` / `run_rmw_graph_loopback.sh` | Graph test: an rcl program on the RMW under test blocks on its node's graph guard condition (as rclcpp's GraphListener does) until a stock peer's late publisher and subscription appear, checks both counts are 1, then sees them fall to 0 when the peer destroys them. Each wait must end well inside its 10 s timeout, which only a triggered graph guard allows. The script compiles the probe against the sourced rcl. |
 | `rmw_lease_rematch_probe.py` / `run_rmw_lease_rematch_loopback.sh` | Lease re-match test: a board node on the RMW under test, built to announce less often than its lease (`RTPS_SPDP_RESEND_PERIOD_MS=30000u`), so a stock watcher expires it and re-discovers it while the board keeps the watcher. Passes only when the watcher lists the board's node again, with its services, after the expiry. Fast DDS drops a replay of the `ros_discovery_info` message it delivered before the lease loss, so this needs the board to publish a new one for the re-matched reader. |
+| `rmw_peer_lockout_probe.py` / `run_rmw_peer_lockout_loopback.sh` | Participant-table test: a board on the RMW under test, built with two active peer slots (`RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS`), then `ROSETTE_FILLERS` stock filler participants that share nothing with it, then a late stock participant that calls the board's `std_srvs/SetBool` service. Passes only when the late participant reaches the service: a board on a network larger than its active tier must serve the participants it matches whatever order they joined in, by parking settled fillers. `ROSETTE_FILLERS=0` is the control. |
 | `rtps_packet_capture.py` | Optional `tcpdump` capture of one DDS domain's RTPS port block (DDSI-RTPS 2.5 §9.6.1.1). |
 | `run_rmw_interop_loopback.sh` | Runs `alpha` on the RMW under test and `beta` on a stock RMW on one host; `beta` runs with `--expect-peer-graph`. |
 
@@ -89,6 +90,26 @@ topics only:
 ROSETTE_PEER_RMW=rmw_cyclonedds_cpp ROSETTE_EXPECT_CALLS=0 tests/ros2/run_rmw_interop_loopback.sh
 ```
 
+## Participant table
+
+A board exchanges endpoint discovery with far fewer remote participants than a
+ROS 2 network holds. Build an overlay with a small active tier, then fill it
+with participants the board shares nothing with before a participant it serves
+joins:
+
+```bash
+colcon build --packages-select rmw_rosette --build-base build-peers2 \
+  --install-base install-peers2 --cmake-args -DRMW_ROSETTE_MAX_REMOTE_PARTICIPANTS=2 \
+  -DRMW_ROSETTE_MAX_KNOWN_PARTICIPANTS=8
+source install-peers2/rmw_rosette/share/rmw_rosette/local_setup.bash
+tests/ros2/run_rmw_peer_lockout_loopback.sh                     # 2 fillers
+ROSETTE_FILLERS=6 tests/ros2/run_rmw_peer_lockout_loopback.sh   # every known slot taken
+ROSETTE_FILLERS=0 tests/ros2/run_rmw_peer_lockout_loopback.sh   # control
+```
+
+The script reports how many participant announcements the board dropped
+because its known-peer table was full, so a failure names its cause.
+
 ## Two-host session
 
 To put a real network between the peers, run one role per host with the same
@@ -110,3 +131,53 @@ Open the pcap in Wireshark; its RTPS dissector decodes SPDP/SEDP, DATA,
 HEARTBEAT, and ACKNACK. For domain `N` the capture spans UDP ports
 `7400 + 250*N` through `7400 + 250*N + 99`: discovery multicast, user
 multicast, and unicast ports for participant ids 0 through 44.
+
+## Discovery at scale
+
+`discovery_scale/` puts one device under test in a simulated network of
+dozens of stock participants on one host. A topology file describes the
+network by role (see `discovery_scale/example_topology.yaml`), and
+`discovery_scale_sim.py` runs every participant except the device in one
+process, each in its own rclpy context, so 90 participants cost about 1.3 GB
+of RAM instead of 90 processes. The device runs in a second process on the
+RMW under test.
+
+```bash
+cd tests/ros2/discovery_scale
+python3 discovery_topology.py example_topology.yaml --focus board:0   # who matches whom
+bash run_discovery_scale.sh
+```
+
+The run passes when every simulated participant that matches the device
+reached it, every participant's graph lists the device's node (which stock
+peers learn from `ros_discovery_info`), and the device's probed services
+answered. Probes of simulated peers report the same round trips without the
+device, as a baseline. `ROSETTE_DEVICE_START=last` starts the device after the
+network has settled, as a board that reboots on a running machine does. The
+script's header lists the other settings.
+
+To size the device as a firmware is sized, give it few active peer slots and
+room to know the whole network:
+
+```bash
+colcon build --packages-select rmw_rosette --build-base build-tiers8 \
+  --install-base install-tiers8 --cmake-args -DRMW_ROSETTE_MAX_REMOTE_PARTICIPANTS=8 \
+  -DRMW_ROSETTE_MAX_KNOWN_PARTICIPANTS=96
+```
+
+On one host the simulated network and the device share the CPU; when the
+network's own peer probes show tails of seconds, the host is saturated and
+the device's round trips say nothing about the device.
+
+For a device on real hardware, run the simulated network on another host on
+the device's LAN segment (multicast discovery must reach both) and measure a
+matched peer from a third, otherwise idle process:
+
+```bash
+python3 discovery_scale/service_rtt_probe.py /ns/device/locate std_srvs/srv/Trigger \
+  --duration-sec 180 --report quiet.json        # then again with the network running
+```
+
+Compare the two runs after the network has settled, and the first seconds of
+the loaded run separately: that is when the device rotates the whole network
+through its active peer slots.

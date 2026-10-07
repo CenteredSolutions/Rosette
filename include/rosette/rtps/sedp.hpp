@@ -296,6 +296,13 @@ public:
     // Remove remote builtin SEDP readers when a peer expires.
     void on_peer_removed(const GuidPrefix& peer_prefix) noexcept;
 
+    /// @brief True when the peer's builtin SEDP readers have acknowledged
+    /// every announcement in both histories (StatefulWriter::acknowledged_by_participant()).
+    bool acknowledged_by(const GuidPrefix& peer_prefix) const noexcept {
+        return publications_writer_.acknowledged_by_participant(peer_prefix)
+               && subscriptions_writer_.acknowledged_by_participant(peer_prefix);
+    }
+
     /// @brief The builtin SEDP writer with entity ID `writer_id`, or null;
     /// the participant routes ACKNACK and NACK_FRAG through it.
     StatefulWriter* find_writer(const EntityId& writer_id) noexcept;
@@ -427,6 +434,35 @@ public:
 
     /// @brief Unmatches a departed participant's SEDP announcers.
     void on_peer_removed(const GuidPrefix& peer_prefix) noexcept;
+
+    /**
+     * @brief Reports whether every announcement a peer has sent was received.
+     *
+     * The participant parks only a peer whose announcements this reader
+     * holds completely (RTPSParticipant::peer_is_settled()), and keeps the
+     * highest sequence number of each announcer so a parked peer that
+     * announces something newer can be told apart from one repeating
+     * itself.
+     *
+     * @param[in]  peer_prefix   GUID prefix of the peer.
+     * @param[out] publications  Highest sequence number below which every
+     *   change of the peer's publications announcer is resolved; 0 when it
+     *   is not matched.
+     * @param[out] subscriptions As `publications`, for the subscriptions
+     *   announcer.
+     * @return `false` while either matched announcer has a change this
+     *   reader knows of and has not received.
+     *
+     * Verification:
+     * - Correct means: after a HEARTBEAT announces changes the reader has
+     *   not received, the answer is false until they arrive or are GAPped.
+     * - Covered by: TC-PART-8.5.3-012.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (available_changes_max, missing_changes)
+     */
+    bool caught_up_with(const GuidPrefix& peer_prefix, SequenceNumber& publications,
+                        SequenceNumber& subscriptions) noexcept;
 
     /**
      * @brief The builtin reader matched with the SEDP announcer `writer_id`.

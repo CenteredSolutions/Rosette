@@ -33,6 +33,7 @@ void register_all_fragment_assembler_tests(std::vector<TestCase>& tests);
 
 void append_spdp_tests_8_5_3(std::vector<TestCase>& tests);
 void append_spdp_tests_8_5_3_locator_ranking(std::vector<TestCase>& tests);
+void append_spdp_tests_8_5_3_peer_records(std::vector<TestCase>& tests);
 void append_spdp_tests_9_6_1(std::vector<TestCase>& tests);
 void append_spdp_tests_9_6_2_9_6_3_1(std::vector<TestCase>& tests);
 
@@ -42,6 +43,7 @@ void append_sedp_tests_8_5_4(std::vector<TestCase>& tests);
 void append_sedp_tests_8_5_4_repairs(std::vector<TestCase>& tests);
 void append_sedp_tests_8_5_4_rebuild(std::vector<TestCase>& tests);
 void append_sedp_tests_8_5_4_peer_locators(std::vector<TestCase>& tests);
+void append_sedp_tests_8_5_4_2_endpoint_locator_lists(std::vector<TestCase>& tests);
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests);
 void append_sedp_tests_9_6_3_2(std::vector<TestCase>& tests);
 
@@ -75,6 +77,7 @@ void append_stateful_reader_tests_8_4_12_nack_frag_on_heartbeat(std::vector<Test
 void register_all_stateful_reader_tests(std::vector<TestCase>& tests);
 
 void append_participant_tests_8_5_1(std::vector<TestCase>& tests);
+void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests);
 
 void register_all_participant_tests(std::vector<TestCase>& tests);
 

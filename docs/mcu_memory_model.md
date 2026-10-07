@@ -68,7 +68,8 @@ Declaring what the firmware actually creates fixes both at once (see
 ```
 RTPSParticipant ─────────────────────────────── one per process / firmware
 ├── SpdpWriter, SpdpReader        participant discovery; SpdpReader holds the
-│                                 peer table (RTPS_MAX_PEERS × PeerEntry)
+│                                 peer table: RTPS_MAX_KNOWN_PEERS × PeerEntry
+│                                 records, RTPS_MAX_PEERS active slots
 ├── SedpWriter, SedpReader        endpoint discovery (ordinary reliable
 │                                 StatefulWriter/StatefulReader underneath)
 ├── EndpointMatchTable            local endpoints with full names; remote
@@ -126,8 +127,10 @@ identically) at the firmware defaults
 | `StatefulWriterStorage<1, 8>` / `<4, 8>` / `<8, 8>` | 984 / 1,280 / 1,680 B | depth × 100 + readers × 80 + ~240 |
 | Writer slot | 1,680 B | `RTPS_PARTICIPANT_MAX_WRITER_BYTES` |
 | Reader slot (`BoundedStatefulReader<8>`) | 1,600 B | 8 × `WriterProxy` + an 8-slot `FragmentAssembler` (1,024 B) |
-| `PeerEntry` (one remote participant) | 128 B | `RTPS_MAX_PEERS` |
-| Remote origin (GUID prefix + locators) | 64 B | `RTPS_MAX_REMOTE_ORIGINS` (= peers) |
+| `PeerEntry` (one known remote participant: identity, lease, one locator) | 68 B | `RTPS_MAX_KNOWN_PEERS` |
+| Active slot (`DiscoveredParticipant`: both ranked locator lists) | 120 B | `RTPS_MAX_PEERS` |
+| Remote origin (GUID prefix + locator list index) | 16 B | `RTPS_MAX_REMOTE_ORIGINS` (= peers) |
+| Remote locator list (endpoint locators other than its participant's defaults) | 52 B | `RTPS_MAX_REMOTE_LOCATOR_LISTS` (4) |
 | Remote endpoint record | 16 B | `RTPS_MAX_DISCOVERED_WRITERS` / `_READERS` |
 | Local endpoint record (two 128-octet names + QoS) | 296 B | local endpoints |
 | Match record (one writer-reader pair) | 32 B | `RTPS_MAX_MATCH_RECORDS` |
@@ -141,20 +144,26 @@ reader-proxy state; Rosette keeps it in this bounded form).
 
 Neither proxy stores locators. Each keeps a pointer to the one locator it
 sends to, inside the record that already holds it: the SPDP peer record for a
-participant's locators, or the remote origin for locators an endpoint
+participant's locators, or a remote locator list for locators an endpoint
 announced itself. The proxy therefore costs the same however many locators
 its peer announced, and a peer that keeps its GUID and moves to a new address
 is reached there as soon as its SPDP refresh updates the record.
 
 ### Remote endpoints are kept small, and displaced when full
 
-A network can announce far more endpoints than a microcontroller can
-record. `EndpointMatchTable` keeps each remote endpoint as a 16-byte record: its
+A network can announce far more endpoints than a microcontroller can record.
+`EndpointMatchTable` keeps each remote endpoint as a 16-byte record: its
 EntityId, QoS, a 32-bit FNV-1a key of the topic name and one of the type name,
-and an index into a shared *origin* (GUID prefix plus announced locators). All
-endpoints of one participant share its origin. Names are compared exactly
-while the announcement is in hand; later comparisons use the keys, and a false
-match needs both 32-bit keys of two different endpoints to collide.
+and an index into a shared 16-byte *origin*. All endpoints of one participant
+share its origin: its GUID prefix, and no locators, because Fast DDS and
+Rosette endpoints announce their participant's default locators and Cyclone DDS
+endpoints announce none, so they are reached at the defaults the peer record
+already keeps. Only an endpoint that announces other locators takes an origin
+with one of `RTPS_MAX_REMOTE_LOCATOR_LISTS` locator lists, and when those are
+all taken it is kept under the same rule as a full table, below. Names are
+compared exactly while the announcement is in hand; later comparisons use the
+keys, and a false match needs both 32-bit keys of two different endpoints to
+collide.
 
 When the remote table is full, an announcement that completes a match with a
 local endpoint takes the slot of a record that is in no match; one that
@@ -246,7 +255,8 @@ relationships, so an inconsistent set fails to compile.
 | `RMW_ROSETTE_MAX_NODES` | 1 | node pool; multiplies the per-node entities below | |
 | `RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE` | 0 | 6 for `rclc_parameter_server`, 0 without | 6 services per node (≈ 37 KB) |
 | `RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE` | 0 | `/rosout`, `/parameter_events` | 0 when rcl logging is off, as in the firmware C stack |
-| `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` | 8 | peer table, remote origins, SEDP proxies per peer | ≈ 0.5 KB (`PeerEntry`, one origin, SEDP reader and writer proxies) |
+| `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` | 8 | active peers: active slot, SEDP reader and writer proxies, remote origins | ≈ 420 B |
+| `RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` | 96 | known-peer records, active or parked (`PeerEntry`) | 68 B |
 | `RMW_ROSETTE_MAX_REMOTE_ENDPOINTS` | 64 | remote writer and reader records | 32 B (16 B in each table) |
 | `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS` | 8 | readers per writer, writers per reader, match records, reassembly slots | 80 B per writer slot + 192 B per reader slot + 32 B per local endpoint |
 | `RMW_ROSETTE_MAX_PENDING_CHANGES` | 10 | `ChangeRing` depth ceiling per subscription, service, and client | 72 B per entry per entity, plus the blocks unread entries pin |
@@ -324,7 +334,7 @@ translation unit must see the same values (the one-definition rule).
 | `RTPS_MAX_MATCHED_READERS`, `RTPS_MAX_MATCHED_WRITERS` | `stateful_writer.hpp`, `types.hpp` | proxies per endpoint |
 | `RTPS_MAX_ASSEMBLY_SLOTS` | `fragment_assembler.hpp` | samples reassembled at once per reader (defaults to matched writers) |
 | `RTPS_MAX_PEERS`, `RTPS_MAX_PEER_LOCATORS` | `types.hpp`, `spdp.hpp` | peer table |
-| `RTPS_MAX_DISCOVERED_WRITERS/_READERS`, `RTPS_MAX_REMOTE_ORIGINS`, `RTPS_MAX_MATCH_RECORDS` | `endpoint_match_table.hpp` | remote records and match pairs |
+| `RTPS_MAX_DISCOVERED_WRITERS/_READERS`, `RTPS_MAX_REMOTE_ORIGINS`, `RTPS_MAX_REMOTE_LOCATOR_LISTS`, `RTPS_MAX_MATCH_RECORDS` | `endpoint_match_table.hpp` | remote records, endpoint locator lists, and match pairs |
 | `RTPS_MAX_TOPIC_NAME_LEN` | `endpoint_match_table.hpp` | 128; ROS 2 service topics embed the node name, so shorter limits refuse real names |
 | `RTPS_POOL_CLASS<n>_SIZE/_COUNT` | `buf_pool.hpp` | buffer pool layout |
 
@@ -358,9 +368,14 @@ The participant now has two writer slots (the publisher and
    node, plus what the client library adds (parameter services if you start
    `rclc_parameter_server`; `/rosout` if rcl logging is on). Set the
    `RMW_ROSETTE_MAX_*` limits to exactly those counts.
-2. **Count the network.** `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` must cover
-   every ROS 2 process on the domain that the firmware talks to (each process
-   is one participant; a peer beyond the table is ignored).
+2. **Count the network.** `RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` must cover
+   every ROS 2 process on the domain (each process is one participant; a peer
+   beyond it is ignored). `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` is how many of
+   them exchange endpoint discovery at once: the peers the firmware has a
+   match with, plus a few slots through which the rest of the network rotates
+   (a settled peer with no match is parked to make room; see
+   `src/rtps/participant_peer_tiers.cpp`). More rotating slots let a large
+   network find the firmware's matches sooner after power-up.
    `RMW_ROSETTE_MAX_REMOTE_ENDPOINTS` needs to cover only the remote endpoints
    your endpoints match, thanks to displacement; more lets
    `rmw_count_publishers()` see more of the graph.

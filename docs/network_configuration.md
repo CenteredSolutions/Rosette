@@ -150,8 +150,8 @@ rclc_support_init_with_options(&support, 0, nullptr, &init_options, &allocator);
 
 and give the ROS 2 host the same `ROS_DOMAIN_ID`. On a LAN where other
 people run ROS 2, a domain other than 0 keeps your board and theirs apart and
-keeps the board's peer tables (`RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS`) for your
-own nodes.
+keeps the board's peer tables (`RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` and
+`RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS`) for your own nodes.
 
 ## Checking the network below ROS
 

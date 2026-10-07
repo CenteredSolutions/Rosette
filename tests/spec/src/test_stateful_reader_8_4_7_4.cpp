@@ -140,6 +140,43 @@ static bool tc_srr_8_4_7_4_004(std::string& err) {
     return true;
 }
 
+// §8.3.7.1: a writer ignores an ACKNACK whose count is not above the last it
+// processed from that reader, and keeps that record across the reader's
+// unmatch (a participant parking and reactivating a peer does exactly
+// this). A rematched writer's preemptive ACKNACK therefore counts on from the
+// highest count the reader sent before.
+static bool tc_srr_8_4_7_4_005(std::string& err) {
+    CaptureTransport tx{};
+    const Guid reader_guid = make_guid(0x11u, 0x12u, 0x13u, make_entity(1u, 2u, 3u, 0xC7u));
+    const Guid writer_guid = make_guid(0x21u, 0x22u, 0x23u, make_entity(4u, 5u, 6u, 0xC2u));
+    const Locator loc = make_udpv4_locator(0xC0A80114u, 7411u);
+
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
+    r.heartbeat_response_delay(0u);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+    ParsedHeartbeat hb{};
+    hb.writerId = writer_guid.entityId;
+    hb.readerId = reader_guid.entityId;
+    hb.firstSN = SequenceNumber::from_int64(1);
+    hb.lastSN = SequenceNumber::from_int64(1);
+    hb.count = 1;
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+    r.on_heartbeat(ctx, hb);
+    r.tick(0u);
+    ParsedAckNack ack{};
+    CHECK(tx.sent.size() == 2u && parse_acknack(tx.sent[1], ack) && ack.count == 2,
+          "the HEARTBEAT is answered with the second ACKNACK, count 2");
+
+    r.matched_writer_remove(writer_guid);
+    tx.sent.clear();
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "the writer is matched again");
+    CHECK(tx.sent.size() == 1u && parse_acknack(tx.sent[0], ack),
+          "the new match sends a preemptive ACKNACK");
+    CHECK(ack.count == 3, "its count continues above the earlier match's, at 3");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.7.4-001",
                      "§8.4.7.4: matched_writer_add creates one WriterProxy for a newly matched writer, and matched_writer_remove removes it from the matched set.",
@@ -157,6 +194,11 @@ void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
          "§8.4.7.4/§8.3.7.1: the preemptive ACKNACK has bitmapBase 0 for an eProsima or "
          "RTI writer (the form Fast DDS answers) and bitmapBase 1 for any other vendor.",
          tc_srr_8_4_7_4_004});
+    tests.push_back(
+        {"TC-SRR-8.4.7.4-005",
+         "§8.3.7.1/§8.4.7.4: a reader that rematches a writer counts its ACKNACKs on from the "
+         "highest count it sent before, so a writer that remembers it accepts them.",
+         tc_srr_8_4_7_4_005});
 }
 
 } // namespace spec_test

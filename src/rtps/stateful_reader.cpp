@@ -84,6 +84,7 @@ bool StatefulReader::matched_writer_add(const Guid& writer_guid, const Locator* 
     }
 
     slot->init(writer_guid, unicast_locators, locator_count);
+    slot->acknackCount = acknack_count_floor_;
     RTPS_LOG_I("reader", "writer matched %02x%02x%02x%02x entity=%02x%02x%02x%02x",
                writer_guid.prefix.value[0], writer_guid.prefix.value[1],
                writer_guid.prefix.value[2], writer_guid.prefix.value[3],
@@ -103,14 +104,22 @@ bool StatefulReader::matched_writer_add(const Guid& writer_guid, const Locator* 
 // "Removes the WriterProxy from the set of matched writers."
 //  — §8.4.7.4, p. 141
 //
-// Discard any in-progress fragment assembly for this writer so that
-// the pool buffer is returned immediately rather than waiting for the
-// slot to be evicted by a future alloc.
+// The proxy's ACKNACK count raises the reader's floor, so a later match
+// with the same writer counts on from it (§8.3.7.1). Any in-progress
+// fragment assembly for this writer is discarded so that the pool buffer
+// is returned immediately rather than waiting for the slot to be evicted
+// by a future alloc.
 // ============================================================
 
 void StatefulReader::matched_writer_remove(const Guid& writer_guid) noexcept {
     WriterProxy* proxy = find_proxy(writer_guid);
-    if (proxy) proxy->clear();
+    if (proxy) {
+        if (proxy->acknackCount > acknack_count_floor_) {
+            acknack_count_floor_ = proxy->acknackCount;
+        }
+
+        proxy->clear();
+    }
 
     // Release partial assembly buffers for this writer — §8.4.14.
     assembler_.discard_writer(writer_guid);

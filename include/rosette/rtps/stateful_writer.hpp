@@ -347,7 +347,7 @@ public:
      * @param[in] reader_guid        The remote reader's GUID.
      * @param[in] unicast_locators   Its unicast locators, owned by a record
      *   that stays valid until the reader is unmatched (the SPDP peer record
-     *   or an EndpointMatchTable origin in a participant). May be null when
+     *   or an EndpointMatchTable locator list in a participant). May be null when
      *   `locator_count` is 0.
      * @param[in] locator_count      Number of locators.
      * @param[in] expects_inline_qos Its expectsInlineQos.
@@ -613,6 +613,32 @@ public:
      * - OMG DDSI-RTPS 2.5 §8.4.7.1
      */
     bool acknowledged_by_all() const noexcept;
+
+    /**
+     * @brief True when every matched reader of one remote participant has acknowledged the newest
+     * change.
+     *
+     * The participant asks this of each of its writers before it parks a
+     * peer (RTPSParticipant::park_peer()): once parked, the peer's readers
+     * are unmatched, and a change they had not acknowledged would reach
+     * them only when the peer is reactivated.
+     *
+     * @param[in] prefix GUID prefix of the remote participant.
+     * @return `true` when no matched reader has that prefix, for a
+     *   BEST_EFFORT writer, for an empty history, and when every matched
+     *   reader with that prefix has acknowledged the newest change.
+     *
+     * Verification:
+     * - Correct means: the answer ignores readers of other participants,
+     *   and is false while any reader of `prefix` has an unacknowledged
+     *   change.
+     * - Covered by: TC-PART-8.5.3-012 (a peer with unacknowledged SEDP is
+     *   not parked).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.7.1 (is_acked_by_all), §8.4.7.5 (ReaderProxy)
+     */
+    bool acknowledged_by_participant(const GuidPrefix& prefix) const noexcept;
 
     /**
      * @brief Milliseconds tick() can be deferred at `now_ms`.

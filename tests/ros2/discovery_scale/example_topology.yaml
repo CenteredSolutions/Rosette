@@ -1,0 +1,54 @@
+# A small work cell for run_discovery_scale.sh: controller boards, the
+# stations that drive them, a coordinator that watches every board, and an
+# operator panel working with board 0. Stock message types stand in for a
+# real project's own; only names and types matter to discovery.
+#
+# Schema (see discovery_topology.py): roles -> count, participants -> nodes ->
+# endpoints. `${expr}` uses the instance index i, the role count n, and the
+# item j of an endpoint's `for` list. `stock: false` models a firmware node
+# without rclpy's parameter services and /rosout.
+roles:
+  board:
+    count: 8
+    participants:
+      - nodes:
+          - name: "board_${i}"
+            namespace: /cell
+            stock: false
+            endpoints:
+              - {kind: publisher, name: ~/state, type: sensor_msgs/msg/JointState, rate_hz: 10}
+              - {kind: subscription, name: ~/target, type: trajectory_msgs/msg/JointTrajectoryPoint, qos: best_effort}
+              - {kind: subscription, name: /cell/stop, type: std_msgs/msg/Bool}
+              - {kind: service, name: ~/configure, type: std_srvs/srv/SetBool}
+              - {kind: service, name: ~/halt, type: std_srvs/srv/Trigger}
+              - {kind: action_server, name: ~/move, type: tf2_msgs/action/LookupTransform}
+
+  station:
+    count: 4
+    participants:
+      - nodes:
+          - name: "station_${i}"
+            namespace: /cell
+            endpoints:
+              - {kind: publisher, name: "/cell/board_${j}/target", type: trajectory_msgs/msg/JointTrajectoryPoint, qos: best_effort, for: "[2 * i, 2 * i + 1]"}
+              - {kind: subscription, name: "/cell/board_${j}/state", type: sensor_msgs/msg/JointState, for: "[2 * i, 2 * i + 1]"}
+              - {kind: client, name: "/cell/board_${j}/halt", type: std_srvs/srv/Trigger, for: "[2 * i, 2 * i + 1]", probe_period_s: 1}
+              - {kind: subscription, name: /cell/stop, type: std_msgs/msg/Bool}
+
+  coordinator:
+    participants:
+      - nodes:
+          - name: coordinator
+            namespace: /cell
+            endpoints:
+              - {kind: publisher, name: /cell/stop, type: std_msgs/msg/Bool, rate_hz: 1}
+              - {kind: subscription, name: "/cell/board_${j}/state", type: sensor_msgs/msg/JointState, for: "range(8)"}
+
+  panel:
+    participants:
+      - nodes:
+          - name: panel
+            namespace: /cell
+            endpoints:
+              - {kind: action_client, name: /cell/board_0/move, type: tf2_msgs/action/LookupTransform}
+              - {kind: client, name: /cell/board_0/configure, type: std_srvs/srv/SetBool}

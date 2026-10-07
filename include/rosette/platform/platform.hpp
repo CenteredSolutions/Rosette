@@ -26,6 +26,7 @@
  *  - from the chip layer (ports/chip/<name>/):
  *      monotonic_us()        the single time base; never steps
  *      device_unique_id()    8 octets unique per running Rosette instance
+ *      boot_nonce()          32 bits that change at every boot or process start
  *      realtime_hint_us()    wall-clock time when the platform knows it
  *    and, in their own headers, flash (flash.hpp), GPIO interrupts
  *    (gpio_interrupt.hpp), and the critical section and event wait the
@@ -100,6 +101,35 @@ inline uint32_t monotonic_ms() noexcept {
  * - Covered by: tests/platform/platform_contract_test.cpp (UniqueIdStable).
  */
 void device_unique_id(uint8_t out[8]) noexcept;
+
+/**
+ * @brief 32 bits drawn once per boot (or process start) that differ, with high
+ * probability, from the previous boot's.
+ *
+ * RTPS GUID prefixes carry it beside the device's unique ID, so a device that
+ * resets comes back as a new participant. Peers still hold the previous
+ * participant's lease and its sequence numbers; were the GUID the same, they
+ * would take the new SPDP announcement as a lease refresh and drop the new
+ * participant's samples, numbered from 1 again, as ones already received.
+ * `device_unique_id()` stays stable across boots, for anything that names the
+ * device.
+ *
+ * @return The nonce; the same value for every call within one boot.
+ *
+ * Verification:
+ * - Correct means: stable for the life of the instance; a reset of the device
+ *   or a restart of the process draws a new value from a source that differs
+ *   from boot to boot (a hardware entropy source, or the process ID and start
+ *   time on a host).
+ * - Covered by: tests/platform/platform_contract_test.cpp (BootNonceStable);
+ *   TC-PART-8.5.1-003 (the nonce's place in the GUID prefix). That a reset
+ *   draws a new value shows on hardware: a ROS 2 host that stays up
+ *   rediscovers a device after it resets.
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §8.2.4.2 (GuidPrefix_t), §8.5.3 (SPDP lease)
+ */
+uint32_t boot_nonce() noexcept;
 
 /**
  * @brief Reports wall-clock time when the platform already knows it.

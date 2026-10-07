@@ -9,6 +9,7 @@
  * (see rtps/locator_ranking.hpp).
  */
 
+#include "spdp_test_support.hpp"
 #include "spec_test_common.hpp"
 
 #include "rosette/rtps/locator_ranking.hpp"
@@ -17,6 +18,8 @@
 #include <string.h>
 
 namespace spec_test {
+
+using spdp_support::build_announcement;
 
 #define CHECK(COND, MSG)  \
     do {                  \
@@ -47,49 +50,23 @@ Locator v6(std::initializer_list<uint8_t> head, uint8_t last, uint16_t port = 74
     return make_udpv6_locator(a, port);
 }
 
-/// An SPDP announcement listing `metas` as metatraffic unicast and `users` as
-/// default unicast locators, in that order.
-bool build_announcement(const GuidPrefix& gp, std::initializer_list<Locator> metas,
-                        std::initializer_list<Locator> users, std::vector<Octet>& out) {
-    Octet buf[768] = {};
-    uint32_t off = 4u;
-    const uint16_t rep[2] = {0x0003u, 0x0000u};
-    memcpy(buf, rep, 4u);
-    Octet guid[16] = {};
-    memcpy(guid, gp.value, 12u);
-    guid[15] = 0xC1u;
-    if (!plcdr_write_param(buf, sizeof(buf), off, pid::PARTICIPANT_GUID, guid, 16u)) {
-        return false;
+/// Delivers `ann` and returns the peer's active slot: the peer is activated
+/// from its record and announces again, which fills the slot with the
+/// announcement's ranked lists.
+const DiscoveredParticipant* announce_active(SpdpReader& r, const GuidPrefix& gp,
+                                             const std::vector<Octet>& ann, uint32_t now_ms) {
+    const uint32_t len = static_cast<uint32_t>(ann.size());
+    if (!r.on_data(gp, ann.data(), len, now_ms)) {
+        return nullptr;
     }
 
-    for (const Locator& l : metas) {
-        if (!plcdr_write_param(buf, sizeof(buf), off, pid::METATRAFFIC_UNICAST_LOCATOR, &l, 24u)) {
-            return false;
-        }
+    PeerEntry* peer = r.find_peer(gp);
+    if (peer == nullptr || r.activate(*peer) == nullptr
+        || !r.on_data(gp, ann.data(), len, now_ms)) {
+        return nullptr;
     }
 
-    for (const Locator& l : users) {
-        if (!plcdr_write_param(buf, sizeof(buf), off, pid::DEFAULT_UNICAST_LOCATOR, &l, 24u)) {
-            return false;
-        }
-    }
-
-    if (!plcdr_write_sentinel(buf, sizeof(buf), off)) {
-        return false;
-    }
-
-    out.assign(buf, buf + off);
-    return true;
-}
-
-const PeerEntry* find(const SpdpReader& r, const GuidPrefix& gp) {
-    const PeerEntry* found = nullptr;
-    r.for_each_peer([&](const PeerEntry& p) {
-        if (p.data.guidPrefix == gp) {
-            found = &p;
-        }
-    });
-    return found;
+    return r.active_data(*peer);
 }
 
 }  // namespace
@@ -184,24 +161,20 @@ static bool tc_spdp_8_5_3_010(std::string& err) {
     std::vector<Octet> ann{};
     CHECK(build_announcement(gp, {lo, docker, wifi, lan}, {docker_user, lan_user}, ann),
           "announcement");
-    CHECK(r.on_data(gp, ann.data(), static_cast<uint32_t>(ann.size()), 0u), "accepted");
-
-    const PeerEntry* peer = find(r, gp);
-    CHECK(peer != nullptr, "peer recorded");
-    CHECK(peer->data.metatrafficUnicastLocatorCount == 2u, "two metatraffic locators kept");
-    CHECK(peer->data.metatrafficUnicastLocatorList[0] == lan, "the on-link address comes first");
-    CHECK(peer->data.metatrafficUnicastLocatorList[1] == docker,
+    const DiscoveredParticipant* peer = announce_active(r, gp, ann, 0u);
+    CHECK(peer != nullptr, "peer recorded and active");
+    CHECK(peer->metatrafficUnicastLocatorCount == 2u, "two metatraffic locators kept");
+    CHECK(peer->metatrafficUnicastLocatorList[0] == lan, "the on-link address comes first");
+    CHECK(peer->metatrafficUnicastLocatorList[1] == docker,
           "the routed addresses follow in announced order, loopback is dropped");
-    CHECK(peer->data.defaultUnicastLocatorCount == 2u
-              && peer->data.defaultUnicastLocatorList[0] == lan_user
-              && peer->data.defaultUnicastLocatorList[1] == docker_user,
+    CHECK(peer->defaultUnicastLocatorCount == 2u && peer->defaultUnicastLocatorList[0] == lan_user
+              && peer->defaultUnicastLocatorList[1] == docker_user,
           "the default list is ranked the same way");
 
     CHECK(subnets.remove(make_udpv4_locator(0xC0A80105u, 0u)), "the LAN address goes away");
     CHECK(subnets.add(make_udpv4_locator(0xAC110005u, 0u), 16u), "172.17.0.5/16 arrives");
     CHECK(r.on_data(gp, ann.data(), static_cast<uint32_t>(ann.size()), 10u), "refresh accepted");
-    peer = find(r, gp);
-    CHECK(peer != nullptr && peer->data.metatrafficUnicastLocatorList[0] == docker,
+    CHECK(peer->metatrafficUnicastLocatorList[0] == docker,
           "the refresh is ranked against the new address");
     return true;
 }
@@ -232,17 +205,14 @@ static bool tc_spdp_8_5_3_011(std::string& err) {
     CHECK(build_announcement(gp, {shm, bridges[0], bridges[1], bridges[2], bridges[3], lan},
                              {bridges[0], bridges[1], bridges[2], bridges[3], lan_user}, ann),
           "announcement");
-    CHECK(r.on_data(gp, ann.data(), static_cast<uint32_t>(ann.size()), 0u), "accepted");
-
-    const PeerEntry* peer = find(r, gp);
-    CHECK(peer != nullptr, "peer recorded");
-    CHECK(peer->data.metatrafficUnicastLocatorCount == 2u
-              && peer->data.metatrafficUnicastLocatorList[0] == lan
-              && peer->data.metatrafficUnicastLocatorList[1] == bridges[0],
+    const DiscoveredParticipant* peer = announce_active(r, gp, ann, 0u);
+    CHECK(peer != nullptr, "peer recorded and active");
+    CHECK(peer->metatrafficUnicastLocatorCount == 2u
+              && peer->metatrafficUnicastLocatorList[0] == lan
+              && peer->metatrafficUnicastLocatorList[1] == bridges[0],
           "the sixth metatraffic locator is kept first, then the first routed one");
-    CHECK(peer->data.defaultUnicastLocatorCount == 2u
-              && peer->data.defaultUnicastLocatorList[0] == lan_user
-              && peer->data.defaultUnicastLocatorList[1] == bridges[0],
+    CHECK(peer->defaultUnicastLocatorCount == 2u && peer->defaultUnicastLocatorList[0] == lan_user
+              && peer->defaultUnicastLocatorList[1] == bridges[0],
           "the fifth default locator is kept first, then the first routed one");
 
     const Locator offered[7] = {shm,

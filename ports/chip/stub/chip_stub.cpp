@@ -49,6 +49,11 @@ void device_unique_id(uint8_t out[8]) noexcept {
     }
 }
 
+uint32_t boot_nonce() noexcept {
+    // A real port draws this from an entropy source at every boot.
+    return 0u;
+}
+
 bool realtime_hint_us(int64_t& unix_us) noexcept {
     (void)unix_us;
     return false;

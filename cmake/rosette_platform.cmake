@@ -40,7 +40,9 @@ include(${CMAKE_CURRENT_LIST_DIR}/rosette_ports.cmake)
 rosette_require_port(_rp_os_port os "${ROSETTE_OS}" ROSETTE_OS)
 rosette_require_port(_rp_chip_port chip "${ROSETTE_CHIP}" ROSETTE_CHIP)
 
-add_library(rosette_platform STATIC ${ROSETTE_ROOT}/src/platform/wall_clock.cpp)
+add_library(rosette_platform STATIC
+  ${ROSETTE_ROOT}/src/platform/wall_clock.cpp
+  ${ROSETTE_ROOT}/src/support/fnv1a.cpp)
 target_include_directories(rosette_platform PUBLIC ${ROSETTE_ROOT}/include)
 target_compile_features(rosette_platform PUBLIC cxx_std_17)
 

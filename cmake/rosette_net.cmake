@@ -46,8 +46,7 @@ add_library(rosette_net STATIC
   ${ROSETTE_ROOT}/src/net/address_candidate.cpp
   ${ROSETTE_ROOT}/src/net/address_list.cpp
   ${ROSETTE_ROOT}/src/net/address_manager.cpp
-  ${ROSETTE_ROOT}/src/net/network_config.cpp
-  ${ROSETTE_ROOT}/src/support/fnv1a.cpp)
+  ${ROSETTE_ROOT}/src/net/network_config.cpp)
 target_include_directories(rosette_net PUBLIC
   ${ROSETTE_ROOT}/include
   ${ROSETTE_ROOT}/include/rosette/net)

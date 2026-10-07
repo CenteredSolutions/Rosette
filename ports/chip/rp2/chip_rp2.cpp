@@ -5,7 +5,9 @@
  * The monotonic clock is the 64-bit microsecond hardware timer, which runs
  * from reset and is the same whether or not an RTOS is present, so FreeRTOS
  * and bare-metal builds share one time base. The unique ID is the flash
- * chip's 64-bit ID (pico_unique_id). The chip has no wall-clock source; time
+ * chip's 64-bit ID (pico_unique_id); the boot nonce comes from pico_rand,
+ * which seeds from the ring oscillator and the bus performance counters, so
+ * it differs from one reset to the next. The chip has no wall-clock source; time
  * arrives later through NTP or an agent (WallClock).
  *
  * Falling-edge GPIO interrupts use the SDK's raw per-pin handlers, so the
@@ -31,6 +33,7 @@
 #include "hardware/irq.h"
 #include "hardware/sync.h"
 #include "hardware/timer.h"
+#include "pico/rand.h"
 #include "pico/time.h"
 #include "pico/unique_id.h"
 
@@ -113,6 +116,11 @@ void device_unique_id(uint8_t out[8]) noexcept {
     pico_unique_board_id_t id;
     pico_get_unique_board_id(&id);
     for (int i = 0; i < 8; ++i) out[i] = id.id[i];
+}
+
+uint32_t boot_nonce() noexcept {
+    static const uint32_t nonce = get_rand_32();
+    return nonce;
 }
 
 bool realtime_hint_us(int64_t& unix_us) noexcept {

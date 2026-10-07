@@ -720,6 +720,30 @@ void SedpReader::on_peer_removed(const GuidPrefix& peer_prefix) noexcept
         Guid{peer_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER});
 }
 
+/// Resolved prefix of one announcer: false while it is missing a change.
+static bool announcer_caught_up(StatefulReader& reader, const Guid& announcer,
+                                SequenceNumber& resolved) noexcept {
+    resolved = SEQUENCENUMBER_ZERO;
+    const WriterProxy* proxy = reader.matched_writer_lookup(announcer);
+    if (proxy == nullptr) {
+        return true;
+    }
+
+    resolved = proxy->available_changes_max();
+    return !proxy->has_missing_changes();
+}
+
+bool SedpReader::caught_up_with(const GuidPrefix& peer_prefix, SequenceNumber& publications,
+                                SequenceNumber& subscriptions) noexcept {
+    const bool pubs = announcer_caught_up(
+        publications_reader_, Guid{peer_prefix, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER},
+        publications);
+    const bool subs = announcer_caught_up(
+        subscriptions_reader_, Guid{peer_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER},
+        subscriptions);
+    return pubs && subs;
+}
+
 StatefulReader* SedpReader::reader_for_writer(const EntityId& writer_id) noexcept
 {
     if (writer_id == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) return &publications_reader_;

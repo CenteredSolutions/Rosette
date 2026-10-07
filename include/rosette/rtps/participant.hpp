@@ -57,20 +57,31 @@ namespace rtps {
  *
  * Layout (§9.3.1.5 recommends the vendor ID in the first two octets):
  *   0-1   VENDORID_THIS_IMPL
- *   2-9   platform::device_unique_id(): unique per device, and per process
- *         on a host
+ *   2-5   platform::device_unique_id() hashed to 32 bits (FNV-1a): tells
+ *         devices, and processes on a host, apart
+ *   6-9   platform::boot_nonce(), big-endian: tells successive boots of one
+ *         device apart
  *   10    instance counter: differs for each participant this process
- *         creates, so a participant recreated after shutdown is never
- *         mistaken for its predecessor by peers still holding its lease
+ *         creates
  *   11    participant_id
+ *
+ * A participant must never reuse its predecessor's GUID while peers still
+ * hold the predecessor's lease, whether the predecessor was shut down by this
+ * process (the counter) or lost to a reset (the nonce). A peer that sees a
+ * known GUID announce again treats it as a lease refresh and keeps its
+ * per-writer state, so the new participant's samples, numbered from 1 again,
+ * are dropped as already received, and discovery and services stay broken
+ * until the peer restarts or the old lease runs out.
  *
  * @param[in] participant_id Participant ID from the port mapping (§9.6.1.1).
  * @return The 12-octet prefix; participant and endpoint GUIDs share it.
  *
  * Verification:
- * - Correct means: distinct across devices, processes, and successive
- *   participants of one process; octet 11 equals `participant_id`.
- * - Covered by: TC-PART-8.5.1-003.
+ * - Correct means: distinct across devices, processes, boots of one device,
+ *   and successive participants of one process; octets 0-1 are the vendor ID,
+ *   6-9 the boot nonce, and 11 equals `participant_id`.
+ * - Covered by: TC-PART-8.5.1-003 (layout); a device reset while a ROS 2
+ *   host stays up, the host then rediscovering it (boots).
  *
  * References:
  * - OMG DDSI-RTPS 2.5 §8.2.4.2 (GuidPrefix_t), §9.3.1.5 (vendor ID octets)
@@ -366,6 +377,50 @@ public:
         graph_change_user_ = user_data;
     }
 
+    /**
+     * @brief Names the local writer that every participant on the network reads.
+     *
+     * A ROS 2 participant's `ros_discovery_info` writer is matched by every
+     * other ROS 2 participant, so a match with it says nothing about whether
+     * a peer needs to stay active. The participant ignores this writer's
+     * matches when it chooses a peer to park, and requires instead that the
+     * peer's readers have acknowledged everything it wrote; peers parked
+     * while it changes are reactivated to receive the change (see
+     * participant_peer_tiers.cpp).
+     *
+     * @param[in] writer_guid The writer's GUID, or GUID_UNKNOWN for none.
+     *
+     * Verification:
+     * - Correct means: a peer whose only match is with this writer is
+     *   parked once settled; a peer matching any other local endpoint is not.
+     * - Covered by: TC-PART-8.5.3-012.
+     */
+    void set_discovery_writer(const Guid& writer_guid) noexcept {
+        discovery_writer_guid_ = writer_guid;
+    }
+
+    /**
+     * @brief Owes every parked peer the discovery writer's new sample.
+     *
+     * A parked peer's readers are unmatched from the discovery writer
+     * (set_discovery_writer()), so a sample written while it is parked never
+     * reaches it. The writer's owner calls this after writing a sample whose
+     * contents changed, which marks every parked peer owed; each is then
+     * reactivated in turn, its reader of the discovery writer is matched
+     * again, and the TRANSIENT_LOCAL history delivers the new sample. A
+     * republish of identical contents does not call it.
+     *
+     * Verification:
+     * - Correct means: a stock peer parked before a node is added or removed
+     *   lists the device's new node set once the change is written.
+     * - Covered by: TC-PART-8.5.3-013.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.7.2.2.1 (TRANSIENT_LOCAL history to new readers)
+     * - rmw_dds_common/msg/ParticipantEntitiesInfo.msg (Humble)
+     */
+    void discovery_info_changed() noexcept { owe_parked_peers(); }
+
     // ----------------------------------------------------------
     // Accessors
     // ----------------------------------------------------------
@@ -442,6 +497,91 @@ private:
     static bool describe_local_reader(void* user, const Guid& guid,
                                       DiscoveredReaderData& out) noexcept;
 
+    // ── Peer tiers (participant_peer_tiers.cpp) ─────────────
+
+    /**
+     * @brief Makes a pending or parked peer active, parking a settled one when the tier is full.
+     *
+     * SPDP calls this for a new peer and again for every announcement of a
+     * pending one; SEDP traffic from a parked or pending peer calls it too
+     * (on_announcer_traffic()). The active tier holds at most RTPS_MAX_PEERS
+     * peers, the capacity of the builtin SEDP endpoints' proxies.
+     *
+     * @param[in,out] peer   The peer's record in the SPDP table.
+     * @param[in]     now_ms rosette::platform::monotonic_ms().
+     * @return `true` when the peer is active on return.
+     *
+     * Verification:
+     * - Correct means: a peer is admitted while fewer than RTPS_MAX_PEERS
+     *   are active, or when a settled peer can be parked for it, and waits
+     *   otherwise; a peer with a match that counts is never parked for it.
+     * - Covered by: TC-PART-8.5.3-011, TC-PART-8.5.3-012,
+     *   tests/ros2/run_rmw_peer_lockout_loopback.sh.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (SPDP), §8.5.4.1 (SEDP builtin endpoints)
+     */
+    bool admit_peer(PeerEntry& peer, uint32_t now_ms) noexcept;
+
+    /// @brief Matches a peer's builtin SEDP endpoints, which replays this
+    /// participant's announcements to it and requests all of its own.
+    void activate_peer(PeerEntry& peer, uint32_t now_ms) noexcept;
+
+    /**
+     * @brief True when an active peer can be parked without either side missing anything.
+     *
+     * Settled means: no SEDP DATA from the peer for RTPS_PEER_SETTLE_MS;
+     * every announcement it sent has been received; its readers have
+     * acknowledged everything this participant's SEDP and user writers
+     * wrote; and none of its endpoints is in a match other than with the
+     * discovery writer (set_discovery_writer()).
+     *
+     * @param[in] peer   An active peer's record.
+     * @param[in] now_ms rosette::platform::monotonic_ms().
+     * @return `true` when park_peer() may be applied to it.
+     */
+    bool peer_is_settled(const PeerEntry& peer, uint32_t now_ms) noexcept;
+
+    /**
+     * @brief Moves a settled peer from the active tier to the parked one.
+     *
+     * The highest sequence number received from each of its SEDP announcers
+     * is kept in its record, then its builtin SEDP proxies and its remote
+     * endpoints are removed, which also unmatches its readers of the
+     * discovery writer. The peer itself notices nothing: this participant
+     * keeps announcing itself, and the peer already holds all of it.
+     *
+     * @param[in,out] peer A settled peer (peer_is_settled()).
+     */
+    void park_peer(PeerEntry& peer) noexcept;
+
+    /// @brief Parks the active peer that has been settled longest; `false` when none is settled.
+    bool park_settled_peer(uint32_t now_ms) noexcept;
+
+    /**
+     * @brief Notes a DATA or HEARTBEAT from a peer's SEDP announcer before it is routed.
+     *
+     * DATA from an active peer restarts its settle time. A parked peer
+     * whose announcer sends a sequence number above the one kept when it
+     * was parked has a new or withdrawn endpoint, and a pending peer is
+     * still waiting for a slot: both are admitted, when a slot can be made,
+     * before the submessage is routed, so the new proxy processes it.
+     *
+     * @param[in] prefix    GUID prefix of the sending participant.
+     * @param[in] writer_id The SEDP announcer that sent it.
+     * @param[in] sn        DATA writerSN, or HEARTBEAT lastSN.
+     * @param[in] is_data   `true` for DATA.
+     * @param[in] now_ms    rosette::platform::monotonic_ms().
+     */
+    void on_announcer_traffic(const GuidPrefix& prefix, const EntityId& writer_id,
+                              const SequenceNumber& sn, bool is_data, uint32_t now_ms) noexcept;
+
+    /// @brief Marks every parked peer owed this participant's changed announcements.
+    void owe_parked_peers() noexcept;
+
+    /// @brief Reactivates one owed parked peer when a slot is free or can be made.
+    void serve_owed_peer(uint32_t now_ms) noexcept;
+
     /// @brief Tells the graph observer, if any, that the graph changed.
     void notify_graph_change() noexcept {
         if (on_graph_change_) on_graph_change_(graph_change_user_);
@@ -485,22 +625,24 @@ private:
      *
      * Proxies keep a pointer into the list they are matched with and follow
      * it as its owner updates it (see "Locator reference" in
-     * rtps/reader_proxy.hpp), so this chooses the owner. An endpoint that
-     * announced no unicast locators, or announced exactly its participant's
-     * defaultUnicastLocatorList (Fast DDS and Rosette endpoints do), is
-     * resolved to that list in the SPDP peer record, or in this participant's
-     * own data for a local endpoint. A peer that moves to a new address
-     * re-announces SPDP, the record takes the new address in place, and every
-     * such proxy sends there next. An endpoint that announced other locators
-     * keeps its own list, which lives in an EndpointMatchTable origin.
+     * rtps/reader_proxy.hpp), so this chooses the owner. The
+     * EndpointMatchTable reports an endpoint that announced no unicast
+     * locators, or exactly its participant's defaultUnicastLocatorList (Fast
+     * DDS and Rosette endpoints do), with none; such an endpoint is resolved
+     * to that list in the peer's active slot (peer_default_locators()), or
+     * in this participant's own data for a local endpoint. A peer that moves
+     * to a new address re-announces SPDP, the slot takes the new address in
+     * place, and every such proxy sends there next. An endpoint that
+     * announced other locators keeps its own list, which lives in an
+     * EndpointMatchTable locator list.
      *
      * @param[in]     remote_prefix GUID prefix of the endpoint's participant
      *   (this participant's own prefix for a local endpoint).
-     * @param[in,out] locators      The announced list (an origin's, or null);
-     *   replaced by the participant's default list when that list owns the
-     *   endpoint's locators as described above. Either list outlives the
-     *   match: the peer record until the peer is removed, which unmatches its
-     *   endpoints first; the origin while the endpoint is in a match.
+     * @param[in,out] locators      The reported list (the table's, or null);
+     *   replaced by the participant's default list when `count` is 0. Either
+     *   list outlives the match: the active slot until the peer is parked
+     *   or removed, which unmatches its endpoints first; the table's list while the
+     *   endpoint is in a match.
      * @param[in,out] count         Entries in `locators`; stays 0 when the
      *   participant is unknown or announced no defaults either.
      *
@@ -518,6 +660,33 @@ private:
     void resolve_endpoint_locators(const GuidPrefix& remote_prefix,
                                    const Locator*&   locators,
                                    uint8_t&          count) const noexcept;
+
+    /**
+     * @brief The default unicast locators the SPDP peer table keeps for an active peer.
+     *
+     * The EndpointMatchTable's lookup (set_participant_defaults()): the table
+     * compares a remote endpoint's kept locators with these and keeps no
+     * list for an endpoint announcing exactly them, and
+     * resolve_endpoint_locators() reaches such an endpoint here.
+     *
+     * @param[in]  prefix    GUID prefix of the remote participant.
+     * @param[out] locators  The defaultUnicastLocatorList of the peer's active
+     *   slot; valid until the peer is parked or removed, either of which
+     *   unmatches its endpoints first. Written only when the peer is found.
+     * @param[out] count     Entries in `locators`; written only when found.
+     * @return `false` when no active peer has `prefix`: only active peers
+     *   have endpoints in the match table.
+     *
+     * Verification:
+     * - Correct means: the result is the active slot's own list, so a
+     *   refresh that rewrites it in place is seen through it.
+     * - Covered by: TC-PART-8.5.1-007, TC-PART-8.5.3-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (defaultUnicastLocatorList)
+     */
+    bool peer_default_locators(const GuidPrefix& prefix, const Locator*& locators,
+                               uint8_t& count) const noexcept;
 
     /**
      * @brief The vendor a remote participant announced in SPDP.
@@ -569,6 +738,8 @@ private:
     LocalSubnets local_subnets_;
 
     EndpointMatchTable match_table_;
+    /// Local writer every participant reads; its matches keep no peer active.
+    Guid discovery_writer_guid_ = GUID_UNKNOWN;
     SpdpWriter         spdp_writer_;
     SpdpReader         spdp_reader_;
     SedpWriter         sedp_writer_;

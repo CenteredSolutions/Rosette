@@ -13,6 +13,7 @@ add_executable(rtps_loopback_smoke
     rtps_loopback_smoke.cpp
     ${ROSETTE_RTPS_PROTOCOL_SOURCES}
     ../../src/platform/wall_clock.cpp
+    ../../src/support/fnv1a.cpp
     ../../ports/chip/host/chip_host.cpp
 )
 

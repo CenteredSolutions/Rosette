@@ -5,10 +5,11 @@
 
 #include "participant.hpp"
 
-#include <atomic>
-#include "log.hpp"
-#include <new>
 #include <string.h>
+#include <atomic>
+#include <new>
+#include "log.hpp"
+#include "rosette/support/fnv1a.hpp"
 
 namespace rtps {
 
@@ -135,7 +136,15 @@ GuidPrefix make_participant_guid_prefix(uint8_t participant_id) noexcept
     GuidPrefix prefix{};
     prefix.value[0] = VENDORID_THIS_IMPL.vendorId[0];
     prefix.value[1] = VENDORID_THIS_IMPL.vendorId[1];
-    rosette::platform::device_unique_id(&prefix.value[2]);
+    uint8_t unique_id[8] = {};
+    rosette::platform::device_unique_id(unique_id);
+    const uint32_t folded = rosette::support::fnv1a32(unique_id, sizeof(unique_id));
+    const uint32_t nonce = rosette::platform::boot_nonce();
+    for (int i = 0; i < 4; ++i) {
+        prefix.value[2 + i] = static_cast<uint8_t>(folded >> (24 - 8 * i));
+        prefix.value[6 + i] = static_cast<uint8_t>(nonce >> (24 - 8 * i));
+    }
+
     prefix.value[10] = instance.fetch_add(1u);
     prefix.value[11] = participant_id;
     return prefix;
@@ -193,6 +202,11 @@ RTPSParticipant::RTPSParticipant(uint8_t domain_id, uint8_t participant_id, ITra
     // matches would only consume match records.
     match_table_.set_local_prefix(participant_guid_.prefix);
     match_table_.set_local_subnets(local_subnets_);
+    match_table_.set_participant_defaults([](const GuidPrefix& prefix, const Locator*& locators,
+                                             uint8_t& count, void* self) noexcept {
+        return static_cast<const RTPSParticipant*>(self)->peer_default_locators(prefix, locators,
+                                                                                count);
+    });
     spdp_reader_.set_local_subnets(local_subnets_);
 
     refresh_spdp_multicast_locator();
@@ -264,6 +278,7 @@ StatefulReader* RTPSParticipant::create_reader(
     // rebuilding SedpWriter reads it back from there for every send.
     match_table_.add_reader(rd);
     sedp_writer_.register_reader(rd);
+    owe_parked_peers();
 
     RTPS_LOG_I("participant", "reader created: slot=%d topic=%s type=%s",
                slot, cfg.topicName.str, cfg.typeName.str);
@@ -281,6 +296,7 @@ bool RTPSParticipant::delete_writer(StatefulWriter* writer) noexcept
         if (!writer_alive_[i] || writers_[i] != writer) continue;
         const Guid guid = writer->guid();
         sedp_writer_.unregister_writer(guid);
+        owe_parked_peers();
         match_table_.remove_writer(guid);
         writer->~StatefulWriter();
         writers_[i] = nullptr;
@@ -298,6 +314,7 @@ bool RTPSParticipant::delete_reader(StatefulReader* reader) noexcept
         if (!reader_alive_[i] || user_reader(i) != reader) continue;
         const Guid guid = reader->guid();
         sedp_writer_.unregister_reader(guid);
+        owe_parked_peers();
         match_table_.remove_reader(guid);
         user_reader(i)->~DefaultStatefulReader();
         reader_alive_[i] = false;
@@ -328,6 +345,7 @@ void RTPSParticipant::register_writer_endpoint(const Guid&         writer_guid,
     // rebuilding SedpWriter reads it back from there for every send.
     match_table_.add_writer(wd);
     sedp_writer_.register_writer(wd);
+    owe_parked_peers();
 }
 
 // ============================================================
@@ -389,6 +407,7 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
 
     spdp_writer_.tick(now_ms);
     spdp_reader_.tick(now_ms);
+    serve_owed_peer(now_ms);
     sedp_writer_.tick(now_ms);
     sedp_reader_.tick(now_ms);
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
@@ -406,6 +425,15 @@ uint32_t RTPSParticipant::ms_until_next_timer(uint32_t now_ms) const noexcept {
         if (candidate < next) next = candidate;
     };
     consider(spdp_reader_.ms_until_next_expiry(now_ms));
+    // An owed parked peer waits for a peer to settle; look again a few
+    // times per settle period.
+    bool owed = false;
+    spdp_reader_.for_each_peer(
+        [&owed](const PeerEntry& peer) noexcept { owed = owed || peer.owed; });
+    if (owed) {
+        consider(RTPS_PEER_SETTLE_MS / 4u);
+    }
+
     consider(sedp_writer_.ms_until_next_timer(now_ms));
     consider(sedp_reader_.ms_until_next_timer(now_ms));
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
@@ -504,27 +532,14 @@ bool RTPSParticipant::has_addresses() const noexcept
 void RTPSParticipant::on_spdp_new_peer(const PeerEntry& peer,
                                        void*            self) noexcept
 {
+    // SPDP reports a new peer, and every announcement of one still
+    // pending; it is activated when the active tier has room or a settled
+    // peer can be parked for it (participant_peer_tiers.cpp).
     auto* p = static_cast<RTPSParticipant*>(self);
-    RTPS_LOG_I("participant", "SPDP new peer %02x%02x%02x%02x%02x%02x",
-               peer.data.guidPrefix.value[0], peer.data.guidPrefix.value[1],
-               peer.data.guidPrefix.value[2], peer.data.guidPrefix.value[3],
-               peer.data.guidPrefix.value[4], peer.data.guidPrefix.value[5]);
-    p->notify_graph_change();
-    if (peer.data.metatrafficUnicastLocatorCount == 0) {
-        RTPS_LOG_W("participant", "new peer has no metatraffic locator, skipping SEDP");
-        return;
+    PeerEntry* known = p->spdp_reader_.find_peer(peer.guidPrefix);
+    if (known != nullptr) {
+        (void)p->admit_peer(*known, rosette::platform::monotonic_ms());
     }
-    // §8.5.3.2: direct SPDP to the new peer first, so it knows this
-    // participant (and has matched its builtin SEDP writers) before any
-    // SEDP DATA arrives; a peer drops DATA from writers it has not matched.
-    const Locator& dest = peer.data.metatrafficUnicastLocatorList[0];
-    p->spdp_writer_.announce_unicast(dest);
-    // Matching the peer's builtin SEDP readers replays every live endpoint
-    // announcement to it (TRANSIENT_LOCAL, §8.5.4.1); matching its SEDP
-    // writers lets the local builtin readers receive and repair its own.
-    p->sedp_writer_.on_peer_discovered(peer.data);
-    p->sedp_reader_.on_peer_discovered(peer.data);
-    p->spdp_reader_.mark_sedp_announced(peer.data.guidPrefix);
 }
 
 void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
@@ -532,9 +547,8 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
 {
     auto* p = static_cast<RTPSParticipant*>(self);
     RTPS_LOG_I("participant", "SPDP peer removed %02x%02x%02x%02x%02x%02x",
-               peer.data.guidPrefix.value[0], peer.data.guidPrefix.value[1],
-               peer.data.guidPrefix.value[2], peer.data.guidPrefix.value[3],
-               peer.data.guidPrefix.value[4], peer.data.guidPrefix.value[5]);
+               peer.guidPrefix.value[0], peer.guidPrefix.value[1], peer.guidPrefix.value[2],
+               peer.guidPrefix.value[3], peer.guidPrefix.value[4], peer.guidPrefix.value[5]);
 
     // Remove all writer and reader endpoints announced by this participant
     // and fire on_unmatch for every affected proxy pair.
@@ -549,9 +563,9 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
     // remove_reader on each, and fires on_unmatch (→ on_endpoint_unmatch)
     // for every dissolved match — which in turn calls matched_reader_remove /
     // matched_writer_remove on the affected local endpoints.
-    p->match_table_.remove_participant(peer.data.guidPrefix);
-    p->sedp_writer_.on_peer_removed(peer.data.guidPrefix);
-    p->sedp_reader_.on_peer_removed(peer.data.guidPrefix);
+    p->match_table_.remove_participant(peer.guidPrefix);
+    p->sedp_writer_.on_peer_removed(peer.guidPrefix);
+    p->sedp_reader_.on_peer_removed(peer.guidPrefix);
     p->notify_graph_change();
 }
 
@@ -591,67 +605,51 @@ void RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
     }
 }
 
-namespace {
-
+// An endpoint announcing its participant's defaults keeps the same number of
+// them as the peer record does, so EndpointMatchTable finds them equal.
 static_assert(RTPS_MAX_REMOTE_ENDPOINT_LOCATORS == RTPS_MAX_PEER_LOCATORS,
               "endpoint and participant locator limits must match");
 
-// True when an endpoint's announced locators are owned by its participant's
-// default list: it announced none, or announced exactly that list.
-bool follows_defaults(const Locator* announced, uint8_t announced_count, const Locator* defaults,
-                      uint8_t default_count) noexcept {
-    if (announced_count == 0u) {
-        return true;
-    }
-
-    if (announced_count != default_count) {
-        return false;
-    }
-
-    for (uint8_t i = 0; i < announced_count; ++i) {
-        if (announced[i] != defaults[i]) {
-            return false;
+bool RTPSParticipant::peer_default_locators(const GuidPrefix& prefix, const Locator*& locators,
+                                            uint8_t& count) const noexcept {
+    // Only an active peer has endpoints in the match table, and its slot
+    // holds the default list.
+    bool found = false;
+    spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
+        const DiscoveredParticipant* data = spdp_reader_.active_data(peer);
+        if (peer.guidPrefix != prefix || data == nullptr) {
+            return;
         }
-    }
 
-    return true;
+        locators = data->defaultUnicastLocatorList;
+        count = data->defaultUnicastLocatorCount;
+        found = true;
+    });
+
+    return found;
 }
-
-}  // namespace
 
 void RTPSParticipant::resolve_endpoint_locators(const GuidPrefix& remote_prefix,
                                                 const Locator*& locators,
                                                 uint8_t& count) const noexcept {
-    if (remote_prefix == participant_guid_.prefix) {
-        const Locator* own = local_participant_data_.defaultUnicastLocatorList;
-        const uint8_t own_count = local_participant_data_.defaultUnicastLocatorCount;
-        if (follows_defaults(locators, count, own, own_count)) {
-            locators = own;
-            count = own_count;
-        }
-
+    if (count > 0u) {
         return;
     }
 
-    spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
-        if (peer.data.guidPrefix != remote_prefix) {
-            return;
-        }
+    if (remote_prefix == participant_guid_.prefix) {
+        locators = local_participant_data_.defaultUnicastLocatorList;
+        count = local_participant_data_.defaultUnicastLocatorCount;
+        return;
+    }
 
-        const Locator* defaults = peer.data.defaultUnicastLocatorList;
-        const uint8_t default_count = peer.data.defaultUnicastLocatorCount;
-        if (follows_defaults(locators, count, defaults, default_count)) {
-            locators = defaults;
-            count = default_count;
-        }
-    });
+    peer_default_locators(remote_prefix, locators, count);
 }
 
 VendorId RTPSParticipant::peer_vendor_id(const GuidPrefix& remote_prefix) const noexcept {
     VendorId vendor = VENDORID_UNKNOWN;
     spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
-        if (peer.data.guidPrefix == remote_prefix) {
-            vendor = peer.data.vendorId;
+        if (peer.guidPrefix == remote_prefix) {
+            vendor = peer.vendorId;
         }
     });
 
@@ -731,6 +729,12 @@ void RTPSParticipant::for_each_addressed_reader(const EntityId& writer_id,
 // ParseOps trampolines
 // ============================================================
 
+/// True for the writerId of a remote participant's SEDP announcer (§8.5.4.3).
+static bool is_sedp_announcer(const EntityId& writer_id) noexcept {
+    return writer_id == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER
+           || writer_id == entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER;
+}
+
 void RTPSParticipant::dispatch_data(const ParseContext& ctx,
                                     const ParsedData&   msg) noexcept
 {
@@ -754,6 +758,11 @@ void RTPSParticipant::dispatch_data(const ParseContext& ctx,
                                 msg.serializedPayloadSize, now_ms);
         return;
     }
+
+    if (is_sedp_announcer(msg.writerId)) {
+        p->on_announcer_traffic(ctx.senderGuidPrefix, msg.writerId, msg.writerSN, true, now_ms);
+    }
+
     p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
         r.on_data(ctx, msg);
     });
@@ -777,6 +786,11 @@ void RTPSParticipant::dispatch_heartbeat(const ParseContext&    ctx,
                ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3],
                msg.firstSN.high, (unsigned long)msg.firstSN.low,
                msg.lastSN.high,  (unsigned long)msg.lastSN.low);
+    if (is_sedp_announcer(msg.writerId)) {
+        p->on_announcer_traffic(ctx.senderGuidPrefix, msg.writerId, msg.lastSN, false,
+                                rosette::platform::monotonic_ms());
+    }
+
     p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
         r.on_heartbeat(ctx, msg);
     });

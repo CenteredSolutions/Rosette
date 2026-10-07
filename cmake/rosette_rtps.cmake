@@ -20,7 +20,10 @@
 #                                   once, in writer histories awaiting
 #                                   acknowledgment and in reassembly
 #                                   (default 2)
-#   ROSETTE_RTPS_MAX_PEERS          remote participants tracked (default 8)
+#   ROSETTE_RTPS_MAX_PEERS          remote participants exchanging endpoint
+#                                   discovery at once (default 8)
+#   ROSETTE_RTPS_MAX_KNOWN_PEERS    remote participants known, active or
+#                                   parked; size it for the network (default 8)
 #   ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS remote writers, and separately readers,
 #                                   known from SEDP (default 64; a stock
 #                                   rclpy/rclcpp node announces about 9 each).
@@ -39,7 +42,8 @@ endif()
 set(ROSETTE_RTPS_MAX_DATAGRAM_SIZE 1472 CACHE STRING "Largest UDP payload the link carries")
 set(ROSETTE_RTPS_MAX_SAMPLE_SIZE 4096 CACHE STRING "Largest serialized sample sent or received")
 set(ROSETTE_RTPS_MAX_SAMPLE_BLOCKS 2 CACHE STRING "Samples larger than one datagram held at once")
-set(ROSETTE_RTPS_MAX_PEERS 8 CACHE STRING "Remote participants tracked at once")
+set(ROSETTE_RTPS_MAX_PEERS 8 CACHE STRING "Remote participants exchanging endpoint discovery at once")
+set(ROSETTE_RTPS_MAX_KNOWN_PEERS 8 CACHE STRING "Remote participants known, active or parked")
 set(ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS 64 CACHE STRING "Remote writers (and readers) known from SEDP; when full, only those matching a local endpoint are admitted")
 set(ROSETTE_RTPS_LOG_LEVEL 2 CACHE STRING "rosette::rtps log level (0-5)")
 
@@ -100,6 +104,7 @@ target_compile_definitions(rosette_rtps PUBLIC
   RTPS_MAX_LOCAL_ENDPOINTS=${_rtps_local_endpoints}
   RTPS_SEDP_REBUILD_ANNOUNCEMENTS=${RTPS_SEDP_REBUILD_ANNOUNCEMENTS}
   RTPS_MAX_PEERS=${ROSETTE_RTPS_MAX_PEERS}
+  RTPS_MAX_KNOWN_PEERS=${ROSETTE_RTPS_MAX_KNOWN_PEERS}
   RTPS_MAX_MATCHED_READERS=8
   RTPS_MAX_MATCHED_WRITERS=8
   RTPS_MAX_DISCOVERED_WRITERS=${ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS}
