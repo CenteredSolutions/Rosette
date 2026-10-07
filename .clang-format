@@ -29,6 +29,11 @@ AllowShortCaseLabelsOnASingleLine: false
 AllowShortLambdasOnASingleLine: Inline
 AllowShortFunctionsOnASingleLine: Inline
 
+# A directive nested in a conditional is indented after its `#`, two
+# columns per level, so `#  define` shows which `#ifndef` it belongs to.
+IndentPPDirectives: AfterHash
+PPIndentWidth: 2
+
 # Air between blocks is kept; runs of blank lines collapse to one.
 MaxEmptyLinesToKeep: 1
 KeepEmptyLinesAtTheStartOfBlocks: false
