@@ -114,6 +114,19 @@
  * once need: an owner that sizes the table to its proxy pools plus
  * RTPS_MAX_WAITING_MATCHES always has a record for a pair that binds.
  *
+ * Rescan
+ * ------
+ * A pair is derived, not announced: it exists because a stored local and a
+ * stored remote endpoint are compatible. A pair turned away (waiting
+ * matches full, or no free record) loses only its record; both endpoints
+ * stay stored, and SEDP announces an endpoint again only when it changes.
+ * So the table remembers only that some pair was turned away, and once a
+ * record frees or a waiting pair binds, rescan_unrecorded() matches the
+ * stored endpoints again and reports every compatible pair without a
+ * record. A remote endpoint in no record is one that displacement may
+ * clear for a newcomer (see Capacity); a pair whose endpoint was cleared is
+ * found again only when that endpoint is announced again.
+ *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
  *   DiscoveredWriterData       — §8.5.4.2, Table 8.78, p. 166
@@ -538,6 +551,39 @@ public:
      */
     bool match_oldest_waiting() noexcept;
 
+    /// @brief Whether a pair was turned away and a record or waiting place has
+    /// freed since, so rescan_unrecorded() may now record it.
+    bool rescan_due() const noexcept { return turned_away_ && room_freed_; }
+
+    /**
+     * @brief Reports again the compatible pairs that have no record.
+     *
+     * A pair turned away by a full record table or full waiting matches has
+     * no record, and nothing announces it again (see Rescan in the file
+     * comment). The owner calls this when rescan_due(); it walks every local
+     * endpoint against the stored endpoints of the other kind and reports
+     * each compatible pair through report(), which records it, binds it, or
+     * turns it away again under the usual rules.
+     *
+     * The walk stops after the first pair that binds, so one call replays at
+     * most one TRANSIENT_LOCAL history, and the rescan stays due so the next
+     * call resumes; pairs already recorded cost one record scan each. A walk
+     * that binds nothing ends the rescan until a pair is turned away and room
+     * frees again. Cost: O(local × stored endpoints × match records).
+     *
+     * Verification:
+     * - Correct means: after room frees, every compatible pair without a
+     *   record is reported once per walk; a pair reported again keeps the
+     *   order rules of report() (it queues behind older waiting pairs); a
+     *   call binds at most one pair; with nothing turned away, no walk runs.
+     * - Covered by: TC-PART-8.4.1.4-005.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.5.1 (matching discovered endpoints),
+     *   §8.4.1.4 (matched_reader_add), §8.4.7.4 (matched_writer_add)
+     */
+    void rescan_unrecorded() noexcept;
+
     /**
      * @brief Counts the known writers or readers on one topic.
      *
@@ -876,20 +922,31 @@ private:
      * @param[in] writer The pair's writer, as on_match describes it.
      * @param[in] reader The pair's reader, as on_match describes it.
      * @param[in] topic  The topic name of the pair's local endpoint.
+     * @return `true` when a pair not recorded before was recorded and bound;
+     *   `false` when it was recorded already, waits, or was turned away. A
+     *   pair turned away marks a rescan (rescan_unrecorded()).
      *
      * Verification:
      * - Correct means: a pair is recorded at most once; a pair the table
      *   does not record holds no proxy, so it is never unmatched; no more
      *   than RTPS_MAX_WAITING_MATCHES records wait at once, while a pair that
      *   may bind is recorded whenever a record is free.
-     * - Covered by: TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-004.
+     * - Covered by: TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-004, TC-PART-8.4.1.4-005.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.5.1 (matching discovered endpoints),
      *   §8.4.1.4 (matched_reader_add), §8.4.7.4 (matched_writer_add)
      */
-    void report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
+    bool report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
                 const TopicName& topic) noexcept;
+
+    /// @brief Reports every pair of local writer `w` with a stored reader;
+    /// with `stop_at_bind`, returns `true` at the first pair that binds.
+    bool report_writer_pairs(const LocalEndpoint& w, bool stop_at_bind) noexcept;
+
+    /// @brief Reports every pair of local reader `r` with a stored writer;
+    /// with `stop_at_bind`, returns `true` at the first pair that binds.
+    bool report_reader_pairs(const LocalEndpoint& r, bool stop_at_bind) noexcept;
 
     /// @brief Describes a recorded pair as report() described it; false when
     /// either endpoint is no longer stored, which no active record allows:
@@ -958,6 +1015,10 @@ private:
     void*      user_data_;
     GuidPrefix local_prefix_ = {};
     uint16_t next_ticket_ = 0u;
+    /// A pair found no record since the last complete rescan.
+    bool turned_away_ = false;
+    /// A record was dissolved or a waiting pair bound since the last complete rescan.
+    bool room_freed_ = false;
     bool       has_local_prefix_ = false;
 };
 

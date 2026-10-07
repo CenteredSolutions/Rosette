@@ -458,8 +458,14 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
     serve_owed_peer(now_ms);
     sedp_writer_.tick(now_ms);
     sedp_reader_.tick(now_ms);
+    // Waiting pairs are older than any pair the rescan finds, so the rescan
+    // runs only on a tick that binds no waiting pair.
     if (rebind_due_) {
         rebind_due_ = match_table_.match_oldest_waiting();
+    }
+
+    if (!rebind_due_ && match_table_.rescan_due()) {
+        match_table_.rescan_unrecorded();
     }
 
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
@@ -486,7 +492,7 @@ uint32_t RTPSParticipant::ms_until_next_timer(uint32_t now_ms) const noexcept {
         consider(RTPS_PEER_SETTLE_MS / 4u);
     }
 
-    if (rebind_due_) {
+    if (rebind_due_ || match_table_.rescan_due()) {
         consider(0u);
     }
 

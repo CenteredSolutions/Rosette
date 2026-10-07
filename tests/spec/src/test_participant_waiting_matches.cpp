@@ -223,42 +223,121 @@ bool tc_part_8_4_1_4_003(std::string& err) {
     return true;
 }
 
+/// Fills `w`'s waiting matches: reader 1 of `peer` binds and readers
+/// 2 .. RTPS_MAX_WAITING_MATCHES + 1 wait, so the next pair that would wait
+/// is turned away.
+void fill_waiting(RTPSParticipant& p, const GuidPrefix& peer) {
+    for (Octet n = 1u; n <= RTPS_MAX_WAITING_MATCHES + 1u; ++n) {
+        announce_reader(p, remote_reader(peer, n));
+    }
+}
+
 // TC-PART-8.4.1.4-004: with RTPS_MAX_WAITING_MATCHES pairs waiting, a
-// further pair that would wait is not recorded, so it never binds, while a
-// pair that may bind still matches.
+// further pair that would wait is not recorded, while a pair that may bind
+// still matches.
 bool tc_part_8_4_1_4_004(std::string& err) {
     CaptureTransport tx{};
     RTPSParticipant p(0u, 1u, tx);
     CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup");
     const GuidPrefix peer = make_prefix(0xE1u, 0xE2u, 0xE3u);
-    CHECK(add_peer(p, peer, 7411u), "the peer is accepted");
+    const GuidPrefix late = make_prefix(0xE4u, 0xE5u, 0xE6u);
+    CHECK(add_peer(p, peer, 7411u) && add_peer(p, late, 7412u), "both peers are accepted");
 
     StatefulWriter* w = create_capped_writer(p, 1u);
     StatefulWriter* spare = create_capped_writer(p, 1u, "spare_topic");
     CHECK(w != nullptr && spare != nullptr, "two writers capped at one reader are created");
 
-    // Reader 1 binds; readers 2 .. kWaiting + 1 wait; the last one is turned away.
-    constexpr Octet kWaiting = RTPS_MAX_WAITING_MATCHES;
-    const Guid refused = remote_reader(peer, kWaiting + 2u);
-    for (Octet n = 1u; n <= kWaiting + 1u; ++n) {
-        announce_reader(p, remote_reader(peer, n));
-    }
+    fill_waiting(p, peer);
+    announce_reader(p, remote_reader(late, 1u));
+    CHECK(!p.match_table().has_match_with(late, GUID_UNKNOWN),
+          "the reader beyond the waiting limit has no record");
 
-    announce_reader(p, refused);
-    const Guid other = remote_reader(peer, kWaiting + 3u);
+    const Guid other = remote_reader(late, 2u);
     announce_reader(p, other, "spare_topic");
     CHECK(spare->matched_reader_lookup(other) != nullptr,
           "a pair that may bind matches with the waiting matches full");
+    return true;
+}
 
-    // Free the bound proxy once per waiting reader; each tick binds the next.
-    for (Octet n = 1u; n <= kWaiting + 1u; ++n) {
+// TC-PART-8.4.1.4-005: a pair turned away at the waiting limit is found
+// again once room frees, on a tick that binds no waiting pair, and binds
+// after the pairs that waited before it.
+bool tc_part_8_4_1_4_005(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup");
+    const GuidPrefix peer = make_prefix(0xF1u, 0xF2u, 0xF3u);
+    const GuidPrefix late = make_prefix(0xF4u, 0xF5u, 0xF6u);
+    CHECK(add_peer(p, peer, 7411u) && add_peer(p, late, 7412u), "both peers are accepted");
+
+    StatefulWriter* w = create_capped_writer(p, 1u);
+    CHECK(w != nullptr, "a writer capped at one reader is created");
+    fill_waiting(p, peer);
+    const Guid turned_away = remote_reader(late, 1u);
+    announce_reader(p, turned_away);
+    CHECK(!p.match_table().has_match_with(late, GUID_UNKNOWN), "the late reader is turned away");
+    p.tick(100u);
+    CHECK(p.ms_until_next_timer(100u) != 0u, "with no room freed, no rescan is due");
+
+    p.match_table().remove_reader(remote_reader(peer, 1u));
+    CHECK(p.ms_until_next_timer(200u) == 0u, "a freed record makes tick() due");
+    p.tick(200u);
+    CHECK(w->matched_reader_lookup(remote_reader(peer, 2u)) != nullptr,
+          "the oldest waiting reader binds first");
+    CHECK(!p.match_table().has_match_with(late, GUID_UNKNOWN),
+          "a tick that binds a waiting pair does not rescan");
+
+    p.tick(201u);
+    CHECK(p.match_table().has_match_with(late, GUID_UNKNOWN),
+          "the next tick rescans and records the late reader waiting");
+    CHECK(w->matched_reader_lookup(turned_away) == nullptr, "it waits behind the older readers");
+
+    // Free the bound proxy once per reader ahead of it; it binds last.
+    for (Octet n = 2u; n <= RTPS_MAX_WAITING_MATCHES + 1u; ++n) {
+        CHECK(w->matched_reader_lookup(turned_away) == nullptr, "older readers bind first");
         p.match_table().remove_reader(remote_reader(peer, n));
-        p.tick(200u + n);
+        p.tick(300u + n);
     }
 
-    CHECK(w->matched_reader_count() == 0u && w->matched_reader_lookup(refused) == nullptr,
-          "the reader turned away at the waiting limit was never recorded, so never binds");
-    CHECK(p.ms_until_next_timer(400u) != 0u, "nothing is left to bind");
+    CHECK(w->matched_reader_lookup(turned_away) != nullptr, "the late reader binds");
+    p.tick(400u);
+    CHECK(p.ms_until_next_timer(400u) != 0u, "with every pair recorded, no rescan is due");
+    return true;
+}
+
+// TC-PART-8.4.1.4-006: when room frees for several turned-away pairs at
+// once, each rescan binds one of them, so a tick replays at most one history.
+bool tc_part_8_4_1_4_006(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup");
+    const GuidPrefix peer = make_prefix(0x91u, 0x92u, 0x93u);
+    const GuidPrefix first = make_prefix(0x94u, 0x95u, 0x96u);
+    const GuidPrefix late = make_prefix(0x97u, 0x98u, 0x99u);
+    CHECK(add_peer(p, peer, 7411u) && add_peer(p, first, 7412u) && add_peer(p, late, 7413u),
+          "the peers are accepted");
+
+    // `full` holds the waiting matches with readers that cannot bind.
+    StatefulWriter* full = create_capped_writer(p, 1u);
+    StatefulWriter* w = create_capped_writer(p, 2u, "pair_topic");
+    CHECK(full != nullptr && w != nullptr, "the writers are created");
+    fill_waiting(p, peer);
+
+    announce_reader(p, remote_reader(first, 1u), "pair_topic");
+    announce_reader(p, remote_reader(first, 2u), "pair_topic");
+    announce_reader(p, remote_reader(late, 1u), "pair_topic");
+    announce_reader(p, remote_reader(late, 2u), "pair_topic");
+    CHECK(w->matched_reader_count() == 2u && !p.match_table().has_match_with(late, GUID_UNKNOWN),
+          "two readers bind at the cap and the late two are turned away");
+
+    p.match_table().remove_reader(remote_reader(first, 1u));
+    p.match_table().remove_reader(remote_reader(first, 2u));
+    p.tick(200u);
+    CHECK(w->matched_reader_count() == 1u, "the first rescan binds one late reader");
+    CHECK(p.ms_until_next_timer(200u) == 0u, "the rescan stays due for the other");
+
+    p.tick(201u);
+    CHECK(w->matched_reader_count() == 2u, "the next rescan binds the other");
     return true;
 }
 
@@ -281,9 +360,18 @@ void append_participant_waiting_match_tests(std::vector<TestCase>& tests) {
                      tc_part_8_4_1_4_003});
     tests.push_back({"TC-PART-8.4.1.4-004",
                      "§8.4.1.4: with RTPS_MAX_WAITING_MATCHES pairs waiting, a further pair "
-                     "that would wait is not recorded and never binds, while a pair that may "
-                     "bind still matches.",
+                     "that would wait is not recorded, while a pair that may bind still "
+                     "matches.",
                      tc_part_8_4_1_4_004});
+    tests.push_back({"TC-PART-8.4.1.4-005",
+                     "§8.4.1.4/§8.5.5.1: a pair turned away at the waiting limit is found again "
+                     "once room frees, on a tick that binds no waiting pair, and binds after the "
+                     "pairs that waited before it.",
+                     tc_part_8_4_1_4_005});
+    tests.push_back({"TC-PART-8.4.1.4-006",
+                     "§8.4.1.4: when room frees for several turned-away pairs at once, each "
+                     "rescan binds one of them.",
+                     tc_part_8_4_1_4_006});
 }
 
 }  // namespace spec_test

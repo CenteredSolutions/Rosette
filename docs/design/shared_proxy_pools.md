@@ -207,11 +207,24 @@ Every bound match holds at least one proxy, so a record table of one record
 per proxy in both pools plus `RTPS_MAX_WAITING_MATCHES` always has a record
 for a match that binds; `participant.hpp` `static_assert`s that size. A pair
 turned away because the waiting matches are full, or because the record
-table is, has no record. `report()` then sets a rescan flag; when a waiting
-record binds or a record frees, `tick()` walks the remote endpoint table once
-against the local endpoints and reports every compatible pair that has no
-record. The walk is bounded by local × remote endpoints and runs only after a
-pair was turned away.
+table is, has no record. Nothing is lost by that: a pair is derived from two
+stored endpoints that are compatible, and both endpoints stay in the table.
+What is lost is the trigger, since SEDP announces an endpoint again only when
+it changes. So `report()` sets a flag when it turns a pair away, and
+dissolving a record or binding a waiting pair sets a second one. With both
+set, the first `tick()` that binds no waiting pair calls
+`rescan_unrecorded()`, which matches every local endpoint against the stored
+endpoints again and reports each compatible pair without a record through
+`report()`, under the usual rules: it binds, waits behind older waiting
+pairs, or is turned away again. The walk stops at the first pair that binds,
+so a tick still replays at most one TRANSIENT_LOCAL history, and resumes on
+the next tick; a walk that binds nothing ends the rescan until another pair
+is turned away and room frees again.
+
+A remote endpoint whose only pair was turned away is in no record, so the
+table's capacity rule may clear it for a newcomer that completes a match
+(displacement keeps only endpoints in a record). Its pair is then found again
+only when the endpoint is announced again.
 
 ### Services under pressure
 
@@ -236,7 +249,7 @@ server does not discard a reply because its client's reader matched late.
 | Find a proxy by GUID on receive | O(cap) | O(k) |
 | Bind on a new match (SEDP DATA) | O(cap) free-slot scan + TRANSIENT_LOCAL replay | O(1) admission and free-list pop + O(k) append + the same replay |
 | Bind a waiting match | never happens | at most one per `tick()`: O(match records × k) admission checks + one replay |
-| Rescan after a record overflow | never happens | O(local × remote endpoints), once per freed record after an overflow |
+| Rescan after a pair was turned away | never happens | O(local × stored endpoints × match records) per walk, one walk per tick while it binds, then none until room frees again |
 | Whether an endpoint gets its floor | depends on creation order | proven by `static_assert` |
 
 The data path gets faster, not slower. The only new work is in `tick()`, it
@@ -357,8 +370,10 @@ New spec tests, under the areas they belong to:
 * Waiting limit (TC-PART-8.4.1.4-004): with `RTPS_MAX_WAITING_MATCHES`
   pairs waiting, a further pair that would wait is not recorded and never
   binds, while a pair that may bind is still matched.
-* Record overflow: a pair refused by a full record table or the waiting
-  limit is reported after a record frees.
+* Rescan (TC-PART-8.4.1.4-005/006): a pair turned away at the waiting limit
+  is recorded on the first tick after room frees that binds no waiting pair,
+  and binds after the pairs that waited before it; when room frees for
+  several turned-away pairs at once, each tick's rescan binds one.
 * Service under pressure (TC-PART-8.4.1.4-003): a reply written while the
   client's reply reader waits is delivered when it binds, and the waiting
   pair keeps the client's peer in a match; the client reports the server

@@ -360,16 +360,22 @@ public:
      * After a user endpoint's proxy frees (an unmatch or a deleted
      * endpoint), each tick binds at most one waiting match, the oldest the
      * pools can now serve (EndpointMatchTable::match_oldest_waiting()), and
-     * keeps doing so on later ticks until none can bind. A tick therefore
-     * replays at most one TRANSIENT_LOCAL history for a waiting match.
+     * keeps doing so on later ticks until none can bind. On a tick that binds
+     * no waiting match, a pair turned away earlier for want of a record or a
+     * waiting place is found again once room has freed
+     * (EndpointMatchTable::rescan_unrecorded()), again binding at most one.
+     * A tick therefore replays at most one TRANSIENT_LOCAL history for such
+     * a match.
      *
      * @param[in] now_ms Current platform::monotonic_ms().
      *
      * Verification:
      * - Correct means: no timer runs late by more than the driver's wake-up
      *   latency, and a waiting match binds within one tick per match ahead
-     *   of it once a proxy is free for it.
-     * - Covered by: TC-PART-8.5.1-006, TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-002.
+     *   of it once a proxy is free for it; a turned-away pair is recorded
+     *   on the first tick after room frees that binds no waiting match.
+     * - Covered by: TC-PART-8.5.1-006, TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-002,
+     *   TC-PART-8.4.1.4-005.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.3.2 (lease), §8.4.1.4 (matched_reader_add),
@@ -383,7 +389,7 @@ public:
     // How long tick() can be deferred: the soonest of the SPDP
     // announcement, any peer lease expiry, and every builtin and user
     // writer's and reader's pending timer, or now while a freed proxy may
-    // let a waiting match bind. A driver that sleeps between ticks waits no
+    // let a waiting match bind or a rescan is due. A driver that sleeps between ticks waits no
     // longer than this, so no heartbeat, repair, lease expiry, or waiting
     // match is late.
     //
