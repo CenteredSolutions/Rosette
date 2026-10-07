@@ -193,6 +193,24 @@
       "statement": "A StatefulWriter sends to a matched reader at its unicastLocatorList; the ReaderProxy refers to the owning record's entry and sends to its current value, never to an emptied entry.",
       "status": "implemented",
       "test_ids": ["TC-SWR-8.4.1.1-001"]
+    },
+    {
+      "id": "REQ-POOL-8.4.1.1-SHARED-PROXY-ADMISSION",
+      "section": "8.4.1.1",
+      "page": 103,
+      "normativity": "implementation-behavior",
+      "statement": "Matched-endpoint proxies come from a fixed pool shared by a participant's endpoints. An endpoint below its floor always binds a proxy; at or above it, an endpoint binds only a proxy no floor is promised; no endpoint exceeds its cap; free >= reserved holds after every bind and release.",
+      "status": "implemented",
+      "test_ids": ["TC-POOL-8.4.1.1-001", "TC-POOL-8.4.1.1-002", "TC-POOL-8.4.1.1-003", "TC-POOL-8.4.1.1-005"]
+    },
+    {
+      "id": "REQ-POOL-8.4.1.4-BIND-ORDER-AND-REUSE",
+      "section": "8.4.1.4",
+      "page": 108,
+      "normativity": "implementation-behavior",
+      "statement": "An endpoint's bound proxies are iterated in the order they matched and are shared with no other endpoint; a released proxy is free for any endpoint.",
+      "status": "implemented",
+      "test_ids": ["TC-POOL-8.4.1.1-004"]
     }
   ]
 }

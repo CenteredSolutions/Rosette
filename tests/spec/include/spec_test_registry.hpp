@@ -64,6 +64,7 @@ void append_stateful_writer_tests_8_4_9_announcing(std::vector<TestCase>& tests)
 void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_4_fragment_repair(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_15_piggyback_heartbeat(std::vector<TestCase>& tests);
+void append_proxy_pool_tests(std::vector<TestCase>& tests);
 
 void register_all_stateful_writer_tests(std::vector<TestCase>& tests);
 

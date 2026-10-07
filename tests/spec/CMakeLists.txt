@@ -185,6 +185,7 @@ set(SEDP_SPEC_TEST_SOURCES
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
 )
@@ -223,6 +224,7 @@ add_executable(history_cache_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/buf_pool.cpp
 )
 
@@ -252,7 +254,9 @@ add_executable(stateful_writer_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
     src/test_stateful_writer_8_4_1_1_locator_reference.cpp
+    src/test_proxy_pool_admission.cpp
     src/test_stateful_writer_8_4_1_4.cpp
     src/test_stateful_writer_8_4_1_4_rematch.cpp
     src/test_stateful_writer_8_4_2_2.cpp
@@ -300,6 +304,7 @@ add_executable(stateful_reader_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
@@ -337,6 +342,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/spdp.cpp
     ../../src/rtps/spdp_peer_records.cpp
@@ -546,9 +552,11 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         ../../src/rtps/history_cache.cpp
         ../../src/rtps/reader_proxy.cpp
         ../../src/rtps/stateful_writer.cpp
+        ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
         ../../src/rtps/buf_pool.cpp
     )
     target_include_directories(sedp_fuzz_replay PRIVATE
@@ -725,9 +733,11 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         ../../src/rtps/history_cache.cpp
         ../../src/rtps/reader_proxy.cpp
         ../../src/rtps/stateful_writer.cpp
+        ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
             ../../src/rtps/buf_pool.cpp
         )
         target_include_directories(sedp_fuzz PRIVATE
