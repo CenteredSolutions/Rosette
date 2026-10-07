@@ -576,33 +576,48 @@ public:
         , user_data_(user_data)
     {}
 
-    // ----------------------------------------------------------
-    // on_data()
-    //
-    // Process a raw serialized-payload buffer received on the SPDP
-    // well-known locator (already stripped of the RTPS message header
-    // and DATA submessage headers by the parser).
-    //
-    // "The SPDPbuiltinParticipantReader processes DATA Submessages
-    //  containing SPDPdiscoveredParticipantData and updates the
-    //  participant discovery information."
-    //  — §8.5.3.3, p. 162.
-    //
-    // If the GuidPrefix is new: insert into peer table, fire on_new_peer.
-    // If already present and parked: renew leaseExpiryMs only, without
-    // decoding the payload.
-    // If already present and active: refresh its record, its active slot
-    // (in place) and leaseExpiryMs.
-    // If already present and pending: refresh its record and leaseExpiryMs,
-    // and fire on_new_peer again, so the participant can admit it once an
-    // active slot can be made; activate() takes this announcement's lists.
-    //
-    // @param sender_prefix  GUID prefix from the RTPS message header.
-    // @param payload        Pointer to the PL_CDR serialized payload.
-    // @param payload_len    Byte count.
-    // @param now_ms         Current rosette::platform::monotonic_ms().
-    // @returns true if the payload was successfully parsed.
-    // ----------------------------------------------------------
+    /**
+     * @brief Processes one SPDP announcement (SPDPdiscoveredParticipantData).
+     *
+     * The participant calls this for each DATA from a remote
+     * SPDPbuiltinParticipantWriter that does not withdraw its instance; a
+     * disposal goes to remove_peer() instead. The announcement maintains the
+     * peer's record in the known-peer table and its lease.
+     *
+     * A parked peer's announcement only renews its lease: nothing it could
+     * change is used until the peer is active again, so the full decode (with
+     * its locator ranking) is skipped. The renewal still requires a PL_CDR
+     * payload whose PID_PARTICIPANT_GUID names that peer (announces_prefix()),
+     * so a malformed packet, or one about another participant, cannot keep a
+     * departed peer's record alive; such a packet takes the full decode, which
+     * rejects it or files it under the participant it names. Every other
+     * announcement is decoded in full and keyed on its PID_PARTICIPANT_GUID:
+     * a new participant is recorded and reported through on_new_peer; an
+     * active one has its record and active slot refreshed in place; a
+     * pending one has its record refreshed and is reported again, so it is
+     * admitted once an active slot can be made (activate() takes this
+     * announcement's lists).
+     *
+     * @param[in] sender_prefix GUID prefix from the RTPS message header.
+     * @param[in] payload       The PL_CDR serialized payload, starting at its
+     *   representation header; borrowed for the call only.
+     * @param[in] payload_len   Payload length in octets.
+     * @param[in] now_ms        Current rosette::platform::monotonic_ms().
+     * @return `true` when the announcement was accepted (a lease renewed or a
+     *   record written); `false` when the payload does not decode or the
+     *   known-peer table is full, in which case no record or lease changes.
+     *
+     * Verification:
+     * - Correct means: a parked peer's lease is renewed only by a well-formed
+     *   payload carrying its own GUID; an empty, malformed, or foreign
+     *   payload leaves it unchanged.
+     * - Covered by: TC-PART-8.5.3-011 (renewal), TC-PART-8.5.3-014
+     *   (malformed and foreign payloads), TC-SPDP-8.5.3-001..007.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (lease), §8.5.3.3 (SPDP reader),
+     *   §9.6.2 (PL_CDR parameter list), §9.6.3.1 (Table 9.14)
+     */
     bool on_data(const GuidPrefix& sender_prefix,
                  const Octet*      payload,
                  uint32_t          payload_len,
@@ -812,6 +827,36 @@ private:
      */
     static bool deserialise(const Octet* payload, uint32_t len, const LocalSubnets& subnets,
                             SPDPdiscoveredParticipantData& out) noexcept;
+
+    /**
+     * @brief Tells whether an SPDP payload is a PL_CDR parameter list whose
+     * PID_PARTICIPANT_GUID carries @p prefix.
+     *
+     * The check on_data() makes before renewing a parked peer's lease without
+     * a full decode. It reads the representation header, then steps over
+     * parameter headers with the bounds deserialise() applies, decoding no
+     * values, until PID_PARTICIPANT_GUID. Vendors place that parameter near
+     * the start, so the walk is a few steps.
+     *
+     * @param[in] payload Serialized payload, starting at its representation
+     *   header; `len` octets long; may be null when `len` is 0.
+     * @param[in] len     Payload length in octets.
+     * @param[in] prefix  The GUID prefix the payload must announce.
+     * @return `true` when the representation is PL_CDR_LE or PL_CDR_BE and
+     *   PID_PARTICIPANT_GUID, wholly inside the payload and before
+     *   PID_SENTINEL, starts with @p prefix; `false` otherwise.
+     *
+     * Verification:
+     * - Correct means: accepts exactly the payloads deserialise() would
+     *   decode with `guidPrefix == prefix`, apart from parameters after the
+     *   GUID that deserialise() would skip as truncated.
+     * - Covered by: TC-PART-8.5.3-014.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §9.6.2 (ParameterList), §9.6.3.1 (Table 9.14)
+     */
+    static bool announces_prefix(const Octet* payload, uint32_t len,
+                                 const GuidPrefix& prefix) noexcept;
 };
 
 } // namespace rtps

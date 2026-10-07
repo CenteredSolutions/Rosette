@@ -253,6 +253,50 @@ static bool tc_part_8_5_3_013(std::string& err) {
     return true;
 }
 
+// A parked peer's lease is renewed only by a well-formed announcement of its
+// own GUID: an empty payload, an unknown representation, a parameter list
+// cut short, or a payload naming another participant leaves it unchanged.
+static bool tc_part_8_5_3_014(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1010u)
+              && announce(p, c, 0x13u, 1050u) && announce(p, c, 0x13u, 1200u),
+          "three peers are recorded");
+    CHECK(is_parked(p, a), "the peer settled longest is parked for the third");
+
+    std::vector<Octet> valid{};
+    CHECK(build_spdp_payload(a, 30u, make_udpv4_locator(0xC0A80111u, 7410u), valid),
+          "SPDP payload build failed");
+    std::vector<Octet> bad_representation = valid;
+    bad_representation[1] = 0x7Fu;
+    const std::vector<Octet> truncated(valid.begin(), valid.begin() + 8);
+    std::vector<Octet> foreign{};
+    CHECK(build_spdp_payload(make_prefix(0xD1u, 0xD2u, 0xD3u), 30u,
+                             make_udpv4_locator(0xC0A80114u, 7410u), foreign),
+          "SPDP payload build failed");
+
+    const uint32_t expiry = record(p, a)->leaseExpiryMs;
+    SpdpReader& reader = p.spdp_reader();
+    CHECK(!reader.on_data(a, nullptr, 0u, 1300u), "an empty payload is rejected");
+    CHECK(!reader.on_data(a, bad_representation.data(),
+                          static_cast<uint32_t>(bad_representation.size()), 1300u),
+          "an unknown representation is rejected");
+    CHECK(!reader.on_data(a, truncated.data(), static_cast<uint32_t>(truncated.size()), 1300u),
+          "a parameter list cut short is rejected");
+    reader.on_data(a, foreign.data(), static_cast<uint32_t>(foreign.size()), 1300u);
+    CHECK(is_parked(p, a) && record(p, a)->leaseExpiryMs == expiry,
+          "none of them renews the parked peer's lease");
+
+    CHECK(reader.on_data(a, valid.data(), static_cast<uint32_t>(valid.size()), 1300u),
+          "the peer's own announcement is accepted");
+    CHECK(is_parked(p, a) && record(p, a)->leaseExpiryMs == expiry + 300u, "and renews its lease");
+    return true;
+}
+
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.3-011",
                      "§8.5.3.2/§8.5.4.1: a peer finding the active tier full waits until a "
@@ -268,6 +312,10 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "§8.5.4.1/§8.7.2.2.1: a change of the discovery writer's contents is owed "
                      "to parked peers, which are reactivated and matched to it again.",
                      tc_part_8_5_3_013});
+    tests.push_back({"TC-PART-8.5.3-014",
+                     "§8.5.3.2/§9.6.2: a parked peer's lease is renewed only by a well-formed "
+                     "SPDP payload carrying its own PID_PARTICIPANT_GUID.",
+                     tc_part_8_5_3_014});
 }
 
 }  // namespace spec_test

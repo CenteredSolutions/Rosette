@@ -413,6 +413,40 @@ bool SpdpReader::deserialise(const Octet* payload, uint32_t len, const LocalSubn
 }
 
 // ----------------------------------------------------------
+// SpdpReader::announces_prefix()
+//
+// §9.6.2: the same parameter-list walk as deserialise(), stopping at
+// PID_PARTICIPANT_GUID without decoding any value.
+// ----------------------------------------------------------
+
+bool SpdpReader::announces_prefix(const Octet* payload, uint32_t len,
+                                  const GuidPrefix& prefix) noexcept {
+    bool little_endian = true;
+    if (len < 4u || !decode_plcdr_rep_id(payload, len, little_endian)) {
+        return false;
+    }
+
+    uint32_t off = 4u;  // Past the 4-byte RepresentationHeader.
+    while (off + 4u <= len) {
+        const uint16_t pid_val = read_u16_wire(payload + off, little_endian);
+        const uint16_t param_len = read_u16_wire(payload + off + 2u, little_endian);
+        const uint32_t padded = (param_len + 3u) & ~3u;
+        off += 4u;
+        if (pid_val == pid::SENTINEL || off + padded > len) {
+            return false;
+        }
+
+        if (pid_val == pid::PARTICIPANT_GUID) {
+            return param_len >= 12u && memcmp(payload + off, prefix.value, 12u) == 0;
+        }
+
+        off += padded;
+    }
+
+    return false;
+}
+
+// ----------------------------------------------------------
 // SpdpReader::on_data()
 //
 // §8.5.3.3, p. 162:
@@ -430,7 +464,8 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
     // keeps a large network's announcements cheap. Its next announcement
     // after reactivation is decoded in full.
     PeerEntry* known = find_peer(sender_prefix);
-    if (known != nullptr && known->parked) {
+    if (known != nullptr && known->parked
+        && announces_prefix(payload, payload_len, sender_prefix)) {
         known->leaseExpiryMs = now_ms + known->leaseMs;
         return true;
     }

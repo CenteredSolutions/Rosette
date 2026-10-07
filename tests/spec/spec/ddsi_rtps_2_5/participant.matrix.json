@@ -133,6 +133,15 @@
       "test_ids": ["TC-PART-8.5.3-011"]
     },
     {
+      "id": "REQ-PART-8.5.3.2-PARKED-RENEWAL-VALIDATED",
+      "section": "8.5.3.2",
+      "page": 160,
+      "normativity": "implementation-behavior",
+      "statement": "A parked peer's lease is renewed without a full decode only by a PL_CDR payload whose PID_PARTICIPANT_GUID carries that peer's prefix; an empty, malformed, or foreign payload leaves the lease unchanged.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.3-014"]
+    },
+    {
       "id": "REQ-PART-8.5.4.1-PARK-ONLY-SETTLED-PEERS",
       "section": "8.5.4.1",
       "normativity": "implementation-behavior",
