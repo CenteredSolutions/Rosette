@@ -46,23 +46,27 @@ ChangeKind change_kind_of(const ParsedData& msg) noexcept
 
 }  // namespace
 
-StatefulReader::StatefulReader(const Guid&       guid,
-                               ReliabilityKind   reliability,
-                               ITransport&       transport,
-                               WriterProxy*      proxies,
-                               uint8_t           proxy_capacity,
-                               OnChangeAvailable on_change_avail,
-                               void*             user_data,
-                               uint32_t          hb_response_ms) noexcept
-    : guid_(guid)
-    , reliability_(reliability)
-    , transport_(transport)
-    , on_change_avail_(on_change_avail)
-    , user_data_(user_data)
-    , proxies_(proxies)
-    , proxy_capacity_(proxy_capacity)
-    , hb_response_ms_(hb_response_ms)
-{
+StatefulReader::StatefulReader(const Guid& guid, ReliabilityKind reliability, ITransport& transport,
+                               WriterProxyPool& pool, uint8_t min_writers, uint8_t max_writers,
+                               OnChangeAvailable on_change_avail, void* user_data,
+                               uint32_t hb_response_ms) noexcept
+    : guid_(guid),
+      reliability_(reliability),
+      transport_(transport),
+      on_change_avail_(on_change_avail),
+      user_data_(user_data),
+      pool_(pool),
+      hb_response_ms_(hb_response_ms) {
+    writers_.floor = min_writers;
+    writers_.cap = max_writers;
+}
+
+StatefulReader::~StatefulReader() noexcept {
+    while (writers_.head != kNoProxy) {
+        const ProxyIndex index = writers_.head;
+        pool_[index].clear();
+        (void)pool_.release(writers_, index);
+    }
 }
 
 // ============================================================
@@ -76,12 +80,15 @@ bool StatefulReader::matched_writer_add(const Guid& writer_guid, const Locator* 
         return false;
     }
 
-    WriterProxy* slot = find_free_slot();
-    if (!slot) {
-        RTPS_LOG_W("reader", "writer proxy table full (max=%u)",
-                   (unsigned)proxy_capacity_);
+    const ProxyIndex index = pool_.bind(writers_);
+    if (index == kNoProxy) {
+        RTPS_LOG_W("reader", "no writer proxy (matched=%u cap=%u pool free=%u reserved=%u)",
+                   (unsigned)writers_.count, (unsigned)writers_.cap, (unsigned)pool_.free_count(),
+                   (unsigned)pool_.reserved());
         return false;
     }
+
+    WriterProxy* slot = &pool_[index];
 
     slot->init(writer_guid, unicast_locators, locator_count);
     slot->acknackCount = acknack_count_floor_;
@@ -119,6 +126,7 @@ void StatefulReader::matched_writer_remove(const Guid& writer_guid) noexcept {
         }
 
         proxy->clear();
+        (void)pool_.release(writers_, pool_.index_of(*proxy));
     }
 
     // Release partial assembly buffers for this writer — §8.4.14.
@@ -562,10 +570,7 @@ void StatefulReader::request_next_repair(WriterProxy& proxy) noexcept
 // ============================================================
 
 void StatefulReader::tick(uint32_t now_ms) noexcept {
-    for (uint8_t i = 0; i < proxy_capacity_; ++i) {
-        WriterProxy& proxy = proxies_[i];
-        if (!proxy.is_matched()) continue;
-
+    for (WriterProxy& proxy : matched()) {
         if (proxy.acknack_response_due(now_ms)) {
             send_acknack(proxy, !proxy.has_missing_changes());
             proxy.on_acknack_sent();
@@ -579,29 +584,28 @@ void StatefulReader::tick(uint32_t now_ms) noexcept {
 
 uint32_t StatefulReader::ms_until_next_timer(uint32_t now_ms) const noexcept {
     uint32_t next = UINT32_MAX;
-    for (uint8_t i = 0; i < proxy_capacity_; ++i) {
-        const WriterProxy& proxy = proxies_[i];
-        if (!proxy.is_matched() || !proxy.acknackPending) continue;
+    for (const WriterProxy& proxy : matched()) {
+        if (!proxy.acknackPending) {
+            continue;
+        }
+
         // Wrap-safe "is the deadline in the past" test, as in acknack_response_due().
         const uint32_t left = proxy.heartbeatResponseDeadlineMs - now_ms;
         const uint32_t wait = (left > 0x80000000u) ? 0u : left;
-        if (wait < next) next = wait;
+        if (wait < next) {
+            next = wait;
+        }
     }
     return next;
 }
 
-uint8_t StatefulReader::matched_writer_count() const noexcept {
-    uint8_t n = 0;
-    for (uint8_t i = 0; i < proxy_capacity_; ++i)
-        if (proxies_[i].is_matched()) ++n;
-    return n;
-}
-
 WriterProxy* StatefulReader::find_proxy(const Guid& guid) noexcept {
-    for (uint8_t i = 0; i < proxy_capacity_; ++i)
-        if (proxies_[i].is_matched() &&
-            proxies_[i].remoteWriterGuid == guid)
-            return &proxies_[i];
+    for (WriterProxy& proxy : matched()) {
+        if (proxy.remoteWriterGuid == guid) {
+            return &proxy;
+        }
+    }
+
     return nullptr;
 }
 
@@ -609,12 +613,6 @@ WriterProxy* StatefulReader::find_proxy_by_sender(
         const GuidPrefix& prefix, const EntityId& writer_eid) noexcept
 {
     return find_proxy(Guid{ prefix, writer_eid });
-}
-
-WriterProxy* StatefulReader::find_free_slot() noexcept {
-    for (uint8_t i = 0; i < proxy_capacity_; ++i)
-        if (!proxies_[i].is_matched()) return &proxies_[i];
-    return nullptr;
 }
 
 bool StatefulReader::is_new_change(const WriterProxy&    proxy,

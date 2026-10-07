@@ -168,6 +168,12 @@ RTPSParticipant::RTPSParticipant(uint8_t domain_id, uint8_t participant_id, ITra
     memset(writer_alive_, 0, sizeof(writer_alive_));
     memset(reader_alive_, 0, sizeof(reader_alive_));
 
+    // Every endpoint slot's floor is promised from the start, so an
+    // endpoint's first matches never depend on creation order. The
+    // static_asserts in participant.hpp prove both reservations fit.
+    (void)reader_proxies_.reserve(RTPS_MAX_USER_WRITERS * RTPS_MIN_MATCHES_PER_ENDPOINT);
+    (void)writer_proxies_.reserve(RTPS_MAX_USER_READERS * RTPS_MIN_MATCHES_PER_ENDPOINT);
+
     // SPDPdiscoveredParticipantData — §8.5.3.2, Table 8.73, p. 160.
     local_participant_data_.guidPrefix      = participant_guid_.prefix;
     local_participant_data_.protocolVersion = PROTOCOLVERSION_2_5;
@@ -255,12 +261,19 @@ StatefulReader* RTPSParticipant::create_reader(
         return nullptr;
     }
 
+    uint8_t floor = 0u;
+    uint8_t cap = 0u;
+    if (!reserve_endpoint_floor(writer_proxies_, cfg.minMatchedWriters, cfg.maxMatchedWriters,
+                                floor, cap)) {
+        return nullptr;
+    }
+
     const Guid reader_guid{ participant_guid_.prefix,
                             assign_entity_id(cfg.entityId, false, cfg.topicKind) };
 
-    StatefulReader* r = new (reader_storage_[slot]) DefaultStatefulReader(
-        reader_guid, cfg.reliability, transport_,
-        on_change_avail, user_data, cfg.hbResponseMs);
+    StatefulReader* r = new (reader_storage_[slot])
+        SharedPoolStatefulReader(reader_guid, cfg.reliability, transport_, writer_proxies_, floor,
+                                 cap, on_change_avail, user_data, cfg.hbResponseMs);
 
     reader_alive_[slot] = true;
 
@@ -298,7 +311,9 @@ bool RTPSParticipant::delete_writer(StatefulWriter* writer) noexcept
         sedp_writer_.unregister_writer(guid);
         owe_parked_peers();
         match_table_.remove_writer(guid);
+        const uint8_t floor = writer->min_matched_readers();
         writer->~StatefulWriter();
+        release_endpoint_floor(reader_proxies_, floor);
         writers_[i] = nullptr;
         writer_alive_[i] = false;
         RTPS_LOG_I("participant", "writer deleted: slot=%d", i);
@@ -316,7 +331,9 @@ bool RTPSParticipant::delete_reader(StatefulReader* reader) noexcept
         sedp_writer_.unregister_reader(guid);
         owe_parked_peers();
         match_table_.remove_reader(guid);
-        user_reader(i)->~DefaultStatefulReader();
+        const uint8_t floor = reader->min_matched_writers();
+        user_reader(i)->~SharedPoolStatefulReader();
+        release_endpoint_floor(writer_proxies_, floor);
         reader_alive_[i] = false;
         RTPS_LOG_I("participant", "reader deleted: slot=%d", i);
         return true;
@@ -325,7 +342,35 @@ bool RTPSParticipant::delete_reader(StatefulReader* reader) noexcept
 }
 
 // ============================================================
-// register_writer_endpoint()  (called from create_writer<D,R>())
+// Endpoint floors in the proxy pools
+// ============================================================
+
+bool RTPSParticipant::reserve_endpoint_floor(ProxyPool& pool, uint8_t requested_min,
+                                             uint8_t requested_max, uint8_t& floor,
+                                             uint8_t& cap) noexcept {
+    floor = requested_min > RTPS_MIN_MATCHES_PER_ENDPOINT ? requested_min
+                                                          : RTPS_MIN_MATCHES_PER_ENDPOINT;
+    cap = requested_max > floor ? requested_max : floor;
+    if (cap == 0u) {
+        cap = 1u;
+    }
+
+    const uint8_t above_slot = static_cast<uint8_t>(floor - RTPS_MIN_MATCHES_PER_ENDPOINT);
+    if (!pool.reserve(above_slot)) {
+        RTPS_LOG_E("participant", "proxy pool cannot reserve a floor of %u (free=%u reserved=%u)",
+                   (unsigned)floor, (unsigned)pool.free_count(), (unsigned)pool.reserved());
+        return false;
+    }
+
+    return true;
+}
+
+void RTPSParticipant::release_endpoint_floor(ProxyPool& pool, uint8_t floor) noexcept {
+    pool.unreserve(static_cast<uint8_t>(floor - RTPS_MIN_MATCHES_PER_ENDPOINT));
+}
+
+// ============================================================
+// register_writer_endpoint()  (called from create_writer<D>())
 // ============================================================
 
 void RTPSParticipant::register_writer_endpoint(const Guid&         writer_guid,

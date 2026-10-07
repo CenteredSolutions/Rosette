@@ -71,32 +71,42 @@ The participant owns one pool of `ReaderProxy` for its user writers and one
 pool of `WriterProxy` for its user readers. Both are arrays of fixed size,
 sized at build time; a proxy never moves while it is bound, so the pointers
 the rest of the stack holds into it (`FragmentRepair::proxy`, the locator
-lists a proxy refers to) stay valid exactly as they do today.
+lists a proxy refers to) stay valid for as long as it is bound.
 
 ```
 RTPSParticipant
 ├── ReaderProxyPool  reader_proxies_   RTPS_READER_PROXY_POOL × ReaderProxy
 ├── WriterProxyPool  writer_proxies_   RTPS_WRITER_PROXY_POOL × WriterProxy
-├── writer slots     each a StatefulWriterStorage<Depth>: history only
+├── writer slots     each a SharedPoolStatefulWriter<Depth>: history only
 │     └── bound proxies: a list threaded through reader_proxies_
-└── reader slots     each a StatefulReader: no proxy array
+└── reader slots     each a SharedPoolStatefulReader: no proxy array
       └── bound proxies: a list threaded through writer_proxies_
 ```
 
-A pool is the storage pattern the stack already uses. `ProxyPool<Proxy>` is a
-plain class whose operations are compiled once in a `.cpp` file;
-`ProxyPoolStorage<Proxy, N>` owns the array and derives from it, as
-`StatefulWriterStorage<Depth>` owns a history. Each proxy carries a two-octet
-index of the next proxy bound to the same endpoint, and each endpoint keeps the
-head of its list and its count. Iterating an endpoint's matches therefore
-walks only its own proxies, k of them for k matches, as the loop over
-`proxies_[0 .. max_readers_)` does today; it no longer steps over the free
-ones.
+A pool is the storage pattern the stack already uses
+(`include/rosette/rtps/proxy_pool.hpp`). `ProxyPool` is a plain class whose
+operations are compiled once in `src/rtps/proxy_pool.cpp`; it works on proxy
+indices only. `TypedProxyPool<Proxy>` adds typed access, and
+`ProxyPoolStorage<Proxy, N>` owns the N proxies and derives from it, as
+`StatefulWriterStorage` owns a history.
 
-`StatefulWriterStorage<Depth, MaxReaders>` becomes `StatefulWriterStorage<Depth>`,
-and `BoundedStatefulReader<N>` becomes a plain `StatefulReader`: the proxy
-count is no longer part of an endpoint's layout. A writer slot shrinks from
-1,680 B to about 1,040 B, a reader slot from 1,600 B to about 1,090 B.
+The pool keeps one two-octet link per proxy. A bound proxy's link chains it
+into its endpoint's list (`ProxyList`: head, count, floor, cap, kept by the
+endpoint); a free proxy's link chains it into the pool's free list. A proxy is
+on exactly one of those lists, so one link serves both: binding pops the free
+list in O(1), and iterating an endpoint's matches walks only its own proxies,
+k of them for k matches, never stepping over free ones. A release unlinks the
+proxy from its endpoint's list, O(k), the same cost as the GUID lookup that
+finds it.
+
+User endpoints are `SharedPoolStatefulWriter<Depth>` (a history; proxies from
+the participant's pool) and `SharedPoolStatefulReader`. The proxy count is no
+longer part of their layout: on the example firmware a writer slot shrinks
+from 1,680 B to 1,048 B and a reader slot from 1,600 B to 1,092 B (Cortex-M0+,
+measured). `StatefulWriterStorage<Depth, MaxReaders>` and
+`BoundedStatefulReader<N>` keep their meaning for an endpoint whose capacity
+is its own: each owns a private pool of MaxReaders or N proxies, all promised
+to it.
 
 ### Builtin endpoints keep their own pools
 
@@ -205,15 +215,14 @@ server does not discard a reply because its client's reader matched late.
 |---|---|---|
 | Send, HEARTBEAT, ACKNACK, NACK handling | O(cap) over the proxy array | O(k) over the k bound proxies |
 | Find a proxy by GUID on receive | O(cap) | O(k) |
-| Bind on a new match (SEDP DATA) | O(cap) free-slot scan + TRANSIENT_LOCAL replay | O(1) admission + O(pool) free-slot scan + the same replay |
+| Bind on a new match (SEDP DATA) | O(cap) free-slot scan + TRANSIENT_LOCAL replay | O(1) admission and free-list pop + O(k) append + the same replay |
 | Bind a waiting match | never happens | at most one per pool per `tick()`: O(match records) + one replay |
 | Rescan after a record overflow | never happens | O(local × remote endpoints), once per freed record after an overflow |
 | Whether an endpoint gets its floor | depends on creation order | proven by `static_assert` |
 
 The data path gets faster, not slower. The only new work is in `tick()`, it
 is bounded by table sizes the firmware chooses, and it runs only when a match
-waited. The free-slot scan over the pool can be replaced by a free list if a
-host builds pools of thousands; the firmware pools are a few dozen entries.
+waited.
 
 ## What peers see
 
@@ -258,37 +267,43 @@ reader it belongs to; a reader slot shrinks to about 70 B.
 
 ## RAM
 
-The example firmware, today and with pools sized for its graph. The pool
-sizes are an illustration of the arithmetic, not a library default:
+The example firmware (18 writers, 13 readers, 8 active peers, a cap of 8),
+with per-endpoint proxy arrays and with pools sized for its graph. The pool
+sizes are an illustration of the arithmetic, not a library default. The
+first two columns are measured `sizeof` values on Cortex-M0+
+(arm-none-eabi-g++ 10.3, -O2); the reassembly column is estimated:
 
-| Part | Today | Pools: 32 reader proxies, 24 writer proxies | And 6 assembly slots |
+| Part | Per-endpoint arrays | Pools: 32 reader proxies, 24 writer proxies | And 6 assembly slots (est.) |
 |---|---:|---:|---:|
-| Writer slots | 18 × 1,680 = 30,240 | 18 × 1,040 = 18,720 | 18,720 |
-| `ReaderProxy` pool | in the slots | 32 × 82 = 2,624 | 2,624 |
-| Reader slots | 13 × 1,600 = 20,800 | 13 × 1,090 = 14,170 | 13 × 70 = 910 |
-| `WriterProxy` pool | in the slots | 24 × 66 = 1,584 | 1,584 |
+| Writer slots | 18 × 1,680 = 30,240 | 18 × 1,048 = 18,864 | 18,864 |
+| `ReaderProxy` pool | in the slots | 32 × (80 + 2) + 16 = 2,640 | 2,640 |
+| Reader slots | 13 × 1,600 = 20,800 | 13 × 1,092 = 14,196 | 13 × 70 = 910 |
+| `WriterProxy` pool | in the slots | 24 × (64 + 2) + 16 = 1,600 | 1,600 |
 | Assembly pool | in the slots | in the slots | 6 × 130 = 780 |
-| **Total** | **51,040** | **37,098** | **24,618** |
+| **Total** | **51,040** | **37,300** | **24,794** |
+| `RTPSParticipant` | 82,392 | 68,808 | |
 
-About 14 KB for the proxy pools and 26 KB with reassembly, out of the 31.5 KB
-of per-match storage the firmware has today. The 32 reader proxies cover the 8
-the `ros_discovery_info` writer reserves, one floor for each of the other 17
-writers, and 7 to borrow.
+The proxy pools save 13.6 KB of the participant, and reassembly about 13 KB
+more. The 32 reader proxies cover the 8 the `ros_discovery_info` writer
+reserves, one floor for each of the other 17 writers, and 7 to borrow. At the
+default pool sizes, which hold every endpoint at its cap, the participant is
+83,272 B: the pools cost 880 B over per-endpoint arrays, the per-proxy links
+and pool headers.
 
 ## Configuration
 
 | `rmw_rosette` knob | RTPS macro | Default | Meaning |
 |---|---|---|---|
-| `RMW_ROSETTE_MATCHED_READERS` | `RTPS_READER_PROXY_POOL` | writers × `MAX_MATCHED_ENDPOINTS` | remote readers matched across all local writers at once |
+| `RMW_ROSETTE_MATCHED_READERS` | `RTPS_READER_PROXY_POOL` | (writers − 1) × `MAX_MATCHED_ENDPOINTS` + `MAX_REMOTE_PARTICIPANTS` | remote readers matched across all local writers at once |
 | `RMW_ROSETTE_MATCHED_WRITERS` | `RTPS_WRITER_PROXY_POOL` | readers × `MAX_MATCHED_ENDPOINTS` | remote writers matched across all local readers at once |
 | `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS` | `RTPS_MAX_MATCHED_READERS` / `_WRITERS` | 8 (firmware) | cap per endpoint |
 | `RMW_ROSETTE_MIN_MATCHED_ENDPOINTS` | `RTPS_MIN_MATCHES_PER_ENDPOINT` | 1 | floor per endpoint, reserved per slot |
 | `RMW_ROSETTE_ASSEMBLY_SLOTS` | `RTPS_ASSEMBLY_SLOTS` | datagram + large block counts | fragmented samples in reassembly at once |
 
-With the defaults the pools hold exactly the proxies the per-endpoint arrays
-hold today, every floor is met, and nothing borrows beyond a cap, so a build
-that sets nothing behaves as it does now, with the two permanent refusals
-fixed. `rmw_rosette/include/rmw_rosette/capacity.hpp` `static_assert`s the
+With the defaults the pools hold every endpoint at its cap at once, and the
+`ros_discovery_info` writer at one proxy per active peer, so every floor is
+met and nothing borrows beyond a cap: a build that sets nothing serves every
+match a per-endpoint array would, with the two permanent refusals fixed. `rmw_rosette/include/rmw_rosette/capacity.hpp` `static_assert`s the
 floor sums, and `docs/mcu_memory_model.md` gains a sizing step: list the
 endpoints that need more than one match and add their extra to the floors.
 
@@ -331,10 +346,11 @@ New spec tests, under the areas they belong to:
 
 ## Steps
 
-1. Proxy pools for user writers and readers, with floors, caps and waiting
-   matches; builtin endpoints on private pools; the record-overflow rescan.
-2. The participant-wide reassembly pool.
-3. Firmware sizing in `docs/mcu_memory_model.md` and the example firmware's
+1. Proxy pools for user writers and readers, with floors and caps; builtin
+   endpoints on private pools.
+2. Waiting matches and the record-overflow rescan.
+3. The participant-wide reassembly pool.
+4. Firmware sizing in `docs/mcu_memory_model.md` and the example firmware's
    capacity settings.
 
 ## Decisions

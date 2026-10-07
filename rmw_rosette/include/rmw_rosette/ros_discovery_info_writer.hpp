@@ -58,8 +58,14 @@ public:
      * deleted with the participant. It republishes the current message
      * whenever one of its readers starts over (see the file comment).
      *
+     * Every active peer reads the writer, so its floor and cap in the
+     * participant's ReaderProxy pool are both RTPS_MAX_PEERS. Created before
+     * any node, it reserves that floor before any endpoint can have borrowed
+     * a proxy, and capacity.hpp proves the pool holds it.
+     *
      * @param[in,out] participant Participant that owns the writer; must outlive this object.
-     * @return `true` on success; `false` when the participant's writer table is full.
+     * @return `true` on success; `false` when the participant's writer table
+     *   is full or its ReaderProxy pool cannot reserve RTPS_MAX_PEERS.
      *
      * References:
      * - rmw_fastrtps_cpp/src/init_rmw_context_impl.cpp (Humble), `init_context_impl`

@@ -10,7 +10,7 @@
  * Writers of every history depth are one type
  * -------------------------------------------
  * rmw_qos_profile_t.depth is a runtime value, while a writer's history depth
- * is fixed when its storage is laid out (rtps::StatefulWriterStorage<D, R>).
+ * is fixed when its storage is laid out (rtps::SharedPoolStatefulWriter<D>).
  * qos.hpp::create_writer_for_qos() picks D from a small closed set of depths;
  * every choice is an rtps::StatefulWriter, the one compiled writer class, so
  * publishers, service replies, and client requests all hold a plain

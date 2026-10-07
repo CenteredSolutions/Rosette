@@ -16,6 +16,11 @@ bool RosDiscoveryInfoWriter::create(rtps::RTPSParticipant& participant) noexcept
     cfg.typeName.assign(kParticipantEntitiesInfoType);
     cfg.reliability = rtps::ReliabilityKind::RELIABLE;
     cfg.durability = rtps::DurabilityKind::TRANSIENT_LOCAL;
+    // Every active peer reads this writer, and `ros2 node list` on a peer
+    // depends on it, so it is guaranteed one proxy per active peer and never
+    // borrows (capacity.hpp proves the pool holds that floor).
+    cfg.minMatchedReaders = static_cast<uint8_t>(RTPS_MAX_PEERS);
+    cfg.maxMatchedReaders = static_cast<uint8_t>(RTPS_MAX_PEERS);
     writer_ = participant.create_writer<1>(cfg);
     if (writer_ == nullptr) {
         participant_ = nullptr;

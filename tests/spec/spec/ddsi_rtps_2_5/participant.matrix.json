@@ -148,6 +148,15 @@
       "statement": "A peer is parked only when settled: its SEDP is fully received and acknowledged, no SEDP DATA from it within RTPS_PEER_SETTLE_MS, and none of its endpoints in a match except with the discovery writer; parking removes its builtin SEDP proxies and its remote endpoints.",
       "status": "implemented",
       "test_ids": ["TC-PART-8.5.3-012"]
+    },
+    {
+      "id": "REQ-PART-8.5.1-SHARED-PROXY-POOLS",
+      "section": "8.5.1",
+      "page": 149,
+      "normativity": "implementation-behavior",
+      "statement": "A participant's user writers and readers bind proxies from two participant-wide pools. Every endpoint slot's floor is reserved from construction; a larger floor is reserved when the endpoint is created, which is refused when the pool cannot hold it; deleting an endpoint returns its proxies and its larger floor.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-011"]
     }
   ]
 }

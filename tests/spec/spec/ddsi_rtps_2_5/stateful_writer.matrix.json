@@ -211,6 +211,15 @@
       "statement": "An endpoint's bound proxies are iterated in the order they matched and are shared with no other endpoint; a released proxy is free for any endpoint.",
       "status": "implemented",
       "test_ids": ["TC-POOL-8.4.1.1-004"]
+    },
+    {
+      "id": "REQ-SWR-8.4.1.4-SHARED-POOL-MATCH",
+      "section": "8.4.1.4",
+      "page": 108,
+      "normativity": "implementation-behavior",
+      "statement": "A writer binds each matched reader's ReaderProxy from a pool it may share with other writers: matched_reader_add() succeeds exactly when the pool's admission grants a proxy, matched_reader_remove() and the writer's destruction return its proxies, and a write reaches exactly the bound readers.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.4-009"]
     }
   ]
 }
