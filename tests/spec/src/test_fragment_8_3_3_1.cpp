@@ -16,7 +16,7 @@ static Guid make_writer_guid(Octet p0, Octet p1, Octet p2, Octet kind) {
 }
 
 static bool tc_fas_8_3_3_1_001(std::string& err) {
-    FragmentAssembler<1> assembler{};
+    BoundedFragmentAssembler<1> assembler{};
     const Guid writer = make_writer_guid(0x71u, 0x72u, 0x73u, 0xC2u);
     const Timestamp ts{0, 0};
     const Octet frag[4] = {0x01u, 0x02u, 0x03u, 0x04u};

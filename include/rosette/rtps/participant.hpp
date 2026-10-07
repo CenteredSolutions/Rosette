@@ -40,7 +40,17 @@
  * endpoint above its floor borrows unreserved proxies up to its cap
  * (RTPS_MAX_MATCHED_READERS / RTPS_MAX_MATCHED_WRITERS, or the config's own).
  * The SEDP builtin endpoints keep private pools of RTPS_MAX_PEERS proxies,
- * so discovery never waits for a proxy a user endpoint holds. Design:
+ * so discovery never waits for a proxy a user endpoint holds.
+ *
+ * Fragment reassembly
+ * -------------------
+ * The user readers reassemble fragmented samples in one participant-wide
+ * pool of RTPS_ASSEMBLY_SLOTS slots (fragment_assembler.hpp), each reader
+ * holding at most RTPS_ASSEMBLY_SLOTS_PER_READER. A slot holds the
+ * buffer-pool block its sample assembles in, so the pool is sized by the
+ * blocks that can hold a sample, not by readers × matches. A reader replaces
+ * only its own partial samples, so a burst on one topic never discards
+ * another topic's. The SEDP builtin readers keep private pools. Design:
  * docs/design/shared_proxy_pools.md.
  *
  * Spec references (all OMG formal/2022-04-01)
@@ -561,6 +571,9 @@ public:
     /// @brief The WriterProxy pool the user readers bind from.
     const ProxyPool& writer_proxy_pool() const noexcept { return writer_proxies_; }
 
+    /// @brief The slots the user readers reassemble fragmented samples in.
+    const FragmentAssemblyPool& assembly_pool() const noexcept { return assembly_slots_; }
+
     // ----------------------------------------------------------
     // assign_entity_id()
     //
@@ -939,6 +952,11 @@ private:
     // that binds from them.
     ProxyPoolStorage<ReaderProxy, RTPS_READER_PROXY_POOL> reader_proxies_;
     ProxyPoolStorage<WriterProxy, RTPS_WRITER_PROXY_POOL> writer_proxies_;
+
+    // Assembly slots of the user readers' fragmented samples; declared
+    // before the reader storage, whose readers return their slots on
+    // destruction.
+    FragmentAssemblyPoolStorage<RTPS_ASSEMBLY_SLOTS> assembly_slots_;
 
     // Writer storage: opaque byte arrays, each holding one
     // SharedPoolStatefulWriter<D> of any depth; writers_ points at the

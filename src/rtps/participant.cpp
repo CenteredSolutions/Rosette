@@ -272,9 +272,9 @@ StatefulReader* RTPSParticipant::create_reader(
     const Guid reader_guid{ participant_guid_.prefix,
                             assign_entity_id(cfg.entityId, false, cfg.topicKind) };
 
-    StatefulReader* r = new (reader_storage_[slot])
-        SharedPoolStatefulReader(reader_guid, cfg.reliability, transport_, writer_proxies_, floor,
-                                 cap, on_change_avail, user_data, cfg.hbResponseMs);
+    StatefulReader* r = new (reader_storage_[slot]) SharedPoolStatefulReader(
+        reader_guid, cfg.reliability, transport_, writer_proxies_, floor, cap, assembly_slots_,
+        RTPS_ASSEMBLY_SLOTS_PER_READER, on_change_avail, user_data, cfg.hbResponseMs);
 
     reader_alive_[slot] = true;
 

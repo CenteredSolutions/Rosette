@@ -134,6 +134,14 @@
       "statement": "A reader binds each matched writer's WriterProxy from a pool it may share with other readers: matched_writer_add() succeeds exactly when the pool's admission grants a proxy, a refused match sends no ACKNACK, and matched_writer_remove() and the reader's destruction return its proxies.",
       "status": "implemented",
       "test_ids": ["TC-SRR-8.4.7.4-006"]
+    },
+    {
+      "id": "REQ-SRR-8.4.12-REFUSED-ASSEMBLY-REPAIRED",
+      "section": "8.4.12",
+      "normativity": "implementation-behavior",
+      "statement": "A reliable StatefulReader refused a fragmented change because its shared assembly pool is full keeps the change MISSING, requests it whole in the ACKNACK, and delivers it once the writer resends it after a slot frees.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.12-004"]
     }
   ]
 }

@@ -108,7 +108,9 @@ add_executable(fragment_assembler_spec_tests
     src/test_fragment_8_3_3_1.cpp
     src/test_fragment_8_4_12.cpp
     src/test_fragment_8_4_14.cpp
+    src/test_fragment_8_4_14_shared_pool.cpp
     ../../src/rtps/buf_pool.cpp
+    ../../src/rtps/fragment_assembler.cpp
 )
 
 target_include_directories(fragment_assembler_spec_tests PRIVATE
@@ -180,6 +182,7 @@ set(SEDP_SPEC_TEST_SOURCES
     ../../src/rtps/endpoint_match_table.cpp
     ../../src/rtps/locator_ranking.cpp
     ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/sn_window.cpp
     ../../src/rtps/history_cache.cpp
@@ -256,6 +259,7 @@ add_executable(stateful_writer_spec_tests
     ../../src/rtps/stateful_writer.cpp
     ../../src/rtps/proxy_pool.cpp
     src/test_stateful_writer_8_4_1_1_locator_reference.cpp
+    ../../src/rtps/fragment_assembler.cpp
     src/test_proxy_pool_admission.cpp
     src/test_stateful_writer_8_4_1_4.cpp
     src/test_stateful_writer_8_4_1_4_rematch.cpp
@@ -300,6 +304,7 @@ add_executable(stateful_reader_spec_tests
     src/test_stateful_reader_8_4_10_4_locator_reference.cpp
     src/test_stateful_reader_8_4_12_nack_frag_on_heartbeat.cpp
     ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/sn_window.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
@@ -339,6 +344,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     ../../src/rtps/participant.cpp
     ../../src/rtps/participant_peer_tiers.cpp
     ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/sn_window.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
@@ -528,6 +534,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
     add_executable(fragment_assembler_fuzz_replay
         fuzz/replay_fragment_corpus.cpp
         ../../src/rtps/buf_pool.cpp
+        ../../src/rtps/fragment_assembler.cpp
     )
     target_include_directories(fragment_assembler_fuzz_replay PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../..
@@ -693,6 +700,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         add_executable(fragment_assembler_fuzz
             fuzz/fuzz_fragment_assembler.cpp
             ../../src/rtps/buf_pool.cpp
+            ../../src/rtps/fragment_assembler.cpp
         )
         target_include_directories(fragment_assembler_fuzz PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../..

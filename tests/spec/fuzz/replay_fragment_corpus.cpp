@@ -33,7 +33,7 @@ uint32_t rd_u32(const uint8_t* data, size_t size, size_t& off) {
 void replay_one_input(const uint8_t* data, size_t size) {
     if (!data || size < 24u) return;
 
-    FragmentAssembler<4> assembler{};
+    BoundedFragmentAssembler<4> assembler{};
     CacheChange out{};
 
     Guid writer{};

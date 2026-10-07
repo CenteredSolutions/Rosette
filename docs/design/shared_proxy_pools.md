@@ -280,22 +280,35 @@ The two designs are independent and compose:
 
 ## Fragment reassembly pool
 
-The second step applies the same structure to reassembly. The 8-slot
-`FragmentAssembler` inside every reader becomes one participant-wide
+Reassembly has the same structure. Each reader's `FragmentAssembler` holds
+no slots of its own: the user readers share one participant-wide
 `FragmentAssemblyPool` of `RTPS_ASSEMBLY_SLOTS` slots, each tagged with the
-reader it belongs to; a reader slot shrinks to about 70 B.
+assembler that took it, and a reader slot is 76 B.
 
-* A reader may hold at most one partial sample per writer (KEEP_LAST(1) per
-  writer, as today, §8.3.3.1), and at most `RTPS_ASSEMBLY_SLOTS_PER_READER`
-  at once.
-* Eviction stays within a reader: a reader replaces its own oldest partial
-  sample, never another reader's. With the pool full, a new fragmented sample
-  is refused, and a reliable writer repairs it on the next HEARTBEAT and
-  NACK_FRAG (§8.4.12), when a slot has freed. Today's global-oldest eviction
-  would let a burst on one topic discard a partial motion command.
-* The default is the number of blocks that can hold a reassembled sample, the
-  datagram-class plus large-class block counts, because a slot without a
-  buffer assembles nothing.
+* A reader holds at most `RTPS_ASSEMBLY_SLOTS_PER_READER` slots. A new
+  sample takes a free slot while the reader is below that limit.
+* Otherwise the reader replaces one of its own partial samples: the one from
+  the same writer first (KEEP_LAST(1) per writer, §8.3.3.1), then its oldest
+  by the order the slots were taken. It never replaces another reader's, so a
+  burst on one topic cannot discard a partial motion command.
+* A reader that holds no slot while the pool is full is refused. The sample
+  stays MISSING, the next ACKNACK requests it whole, and the writer's resend
+  assembles once a slot has freed (§8.4.12).
+* The default slot count is the number of blocks that can hold a reassembled
+  sample, the datagram-class plus large-class block counts, because a slot
+  without a buffer assembles nothing. The per-reader default is all but one
+  slot, so one topic's burst always leaves a slot for another.
+* The SEDP builtin readers keep private pools, one slot per writer they can
+  match up to the per-reader limit, so discovery never waits on user
+  traffic. A destroyed reader returns its slots and their blocks.
+* **Limit:** a best-effort sample whose fragments were lost holds its slot
+  and its block until the same reader replaces it, the writer unmatches, or a
+  GAP covers it, so a quiet writer's lost sample can hold a slot
+  indefinitely. At the default size slots and blocks are one to one: partial
+  samples that fill the pool have pinned every block a sample could assemble
+  in, which stopped per-reader assemblers just the same. A pool smaller than
+  its blocks runs out of slots first. Ageing partial samples out would remove
+  the limit.
 
 ## RAM
 
@@ -303,20 +316,24 @@ The example firmware (18 writers, 13 readers, 8 active peers, a cap of 8),
 with per-endpoint proxy arrays and with pools sized for its graph. The pool
 sizes are an illustration of the arithmetic, not a library default. The
 first two columns are measured `sizeof` values on Cortex-M0+
-(arm-none-eabi-g++ 10.3, -O2); the reassembly column is estimated:
+(arm-none-eabi-g++ 10.3, -O2):
 
-| Part | Per-endpoint arrays | Pools: 32 reader proxies, 24 writer proxies | And 6 assembly slots (est.) |
+| Part | Per-endpoint arrays | Pools: 32 reader proxies, 24 writer proxies | And 6 assembly slots |
 |---|---:|---:|---:|
 | Writer slots | 18 × 1,680 = 30,240 | 18 × 1,048 = 18,864 | 18,864 |
 | `ReaderProxy` pool | in the slots | 32 × (80 + 2) + 16 = 2,640 | 2,640 |
-| Reader slots | 13 × 1,600 = 20,800 | 13 × 1,092 = 14,196 | 13 × 70 = 910 |
+| Reader slots | 13 × 1,600 = 20,800 | 13 × 1,092 = 14,196 | 13 × 76 = 988 |
 | `WriterProxy` pool | in the slots | 24 × (64 + 2) + 16 = 1,600 | 1,600 |
-| Assembly pool | in the slots | in the slots | 6 × 130 = 780 |
-| **Total** | **51,040** | **37,300** | **24,794** |
+| Assembly pool | in the slots | in the slots | 6 × 136 + 8 = 824 |
+| **Total** | **51,040** | **37,300** | **24,916** |
 | `RTPSParticipant` | 82,392 | 68,808 | |
 
-The proxy pools save 13.6 KB of the participant, and reassembly about 13 KB
-more. The 32 reader proxies cover the 8 the `ros_discovery_info` writer
+The proxy pools save 13.6 KB of the participant, and reassembly 12.4 KB more.
+An assembly slot is the 128 B `FragmentedChange` plus its owner and age. The
+two SEDP readers' private assembly pools shrink from 8 slots to 5, a further
+672 B. Measured whole, the `rclc_chatter` firmware for RP2040 (11 readers, 12
+writers) loses 11,008 B of `.bss` to the assembly pool, and 2.2 KB of `.text`
+because the assembler is no longer a template. The 32 reader proxies cover the 8 the `ros_discovery_info` writer
 reserves, one floor for each of the other 17 writers, and 7 to borrow. At the
 default pool sizes, which hold every endpoint at its cap, the participant is
 83,272 B: the pools cost 880 B over per-endpoint arrays, the per-proxy links
@@ -338,12 +355,14 @@ matches.
 | `RMW_ROSETTE_MATCH_WAITERS` | `RTPS_MAX_WAITING_MATCHES` | `MAX_MATCHED_ENDPOINTS` (firmware), 64 (host) | matches waiting for a proxy at once |
 | (derived) | `RTPS_MAX_MATCH_RECORDS` | both pools + `MATCH_WAITERS` | match records: every bound and waiting pair |
 | `RMW_ROSETTE_ASSEMBLY_SLOTS` | `RTPS_ASSEMBLY_SLOTS` | datagram + large block counts | fragmented samples in reassembly at once |
+| (none) | `RTPS_ASSEMBLY_SLOTS_PER_READER` | `RTPS_ASSEMBLY_SLOTS` − 1 (at least 1) | fragmented samples one reader holds at once |
 
 With the defaults the pools hold every endpoint at its cap at once, and the
 `ros_discovery_info` writer at one proxy per active peer, so every floor is
 met and nothing borrows beyond a cap: a build that sets nothing serves every
-match a per-endpoint array would, with the two permanent refusals fixed. `rmw_rosette/include/rmw_rosette/capacity.hpp` `static_assert`s the
-floor sums, and `docs/mcu_memory_model.md` gains a sizing step: list the
+match a per-endpoint array would, with the two permanent refusals fixed.
+`rmw_rosette/include/rmw_rosette/capacity.hpp` `static_assert`s the floor
+sums, and `docs/mcu_memory_model.md` gives the sizing step: list the
 endpoints that need more than one match and add their extra to the floors.
 
 ## Not in this design
@@ -378,8 +397,12 @@ New spec tests, under the areas they belong to:
   client's reply reader waits is delivered when it binds, and the waiting
   pair keeps the client's peer in a match; the client reports the server
   unavailable until both of its endpoints are bound.
-* Reassembly pool: eviction stays within a reader; a refused fragmented sample
-  from a reliable writer completes after repair.
+* Reassembly pool (TC-FAS-8.4.14-009/010, TC-SRR-8.4.12-004): a reader
+  replaces only its own partial samples, the same writer's first and then its
+  oldest, and never holds more than its limit, even with a slot free; a
+  reader holding no slot is refused while the pool is full and evicts
+  nothing; a destroyed reader returns its slots; a refused fragmented sample
+  from a reliable writer is requested whole and completes after repair.
 * Every existing spec suite, and the loopback suites against `rmw_fastrtps_cpp`
   (interop, lockout, lease re-match, graph), pass unchanged at the default
   sizes, which reproduce today's capacity.
@@ -405,6 +428,8 @@ New spec tests, under the areas they belong to:
 * A refused match waits and binds oldest first when a proxy frees; it is never
   dropped.
 * Builtin discovery endpoints never share a pool with user endpoints.
+* Reassembly slots are pooled the same way, sized by the blocks that can hold
+  a sample, and a reader only ever replaces its own partial samples.
 
 ## References
 

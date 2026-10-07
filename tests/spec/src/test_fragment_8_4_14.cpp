@@ -18,7 +18,7 @@ static Guid make_writer_guid(Octet p0, Octet p1, Octet p2, Octet kind) {
 }
 
 static bool tc_fas_8_4_14_001(std::string& err) {
-    FragmentAssembler<2> assembler{};
+    BoundedFragmentAssembler<2> assembler{};
     const Guid writer = make_writer_guid(0xA1u, 0xB2u, 0xC3u, 0xC2u);
     const SequenceNumber sn = SequenceNumber::from_int64(101);
     const Timestamp ts{7, 9};
@@ -43,7 +43,7 @@ static bool tc_fas_8_4_14_001(std::string& err) {
 }
 
 static bool tc_fas_8_4_14_002(std::string& err) {
-    FragmentAssembler<2> assembler{};
+    BoundedFragmentAssembler<2> assembler{};
     const Guid writer = make_writer_guid(0xD1u, 0xD2u, 0xD3u, 0xC2u);
     const SequenceNumber sn = SequenceNumber::from_int64(202);
     const Timestamp ts{3, 4};
@@ -70,7 +70,7 @@ static bool tc_fas_8_4_14_002(std::string& err) {
 }
 
 static bool tc_fas_8_4_14_003(std::string& err) {
-    FragmentAssembler<2> assembler{};
+    BoundedFragmentAssembler<2> assembler{};
     const Guid writer = make_writer_guid(0xE1u, 0xE2u, 0xE3u, 0xC2u);
     const SequenceNumber sn = SequenceNumber::from_int64(303);
     const Timestamp ts{0, 0};
@@ -85,7 +85,7 @@ static bool tc_fas_8_4_14_003(std::string& err) {
 }
 
 static bool tc_fas_8_4_14_004(std::string& err) {
-    FragmentAssembler<2> assembler{};
+    BoundedFragmentAssembler<2> assembler{};
     const Guid writer = make_writer_guid(0xF1u, 0xF2u, 0xF3u, 0xC2u);
     const SequenceNumber sn = SequenceNumber::from_int64(404);
     const Timestamp ts{0, 0};
@@ -100,7 +100,7 @@ static bool tc_fas_8_4_14_004(std::string& err) {
 }
 
 static bool tc_fas_8_4_14_005(std::string& err) {
-    FragmentAssembler<3> assembler{};
+    BoundedFragmentAssembler<3> assembler{};
     const Guid writer_a = make_writer_guid(0x21u, 0x22u, 0x23u, 0xC2u);
     const Guid writer_b = make_writer_guid(0x31u, 0x32u, 0x33u, 0xC2u);
     const SequenceNumber sn = SequenceNumber::from_int64(1);
@@ -129,7 +129,7 @@ static bool tc_fas_8_4_14_005(std::string& err) {
 // §8.4.14: reassembly of a sample larger than the smallest pool block
 // restores every octet (the assembly buffer must be sized to dataSize).
 static bool tc_fas_8_4_14_006(std::string& err) {
-    FragmentAssembler<1> assembler{};
+    BoundedFragmentAssembler<1> assembler{};
     const Guid writer = make_writer_guid(0xB1u, 0xB2u, 0xB3u, 0x03u);
     const SequenceNumber sn = SequenceNumber::from_int64(5);
     std::vector<Octet> sample(1000u);
@@ -156,7 +156,7 @@ static bool tc_fas_8_4_14_006(std::string& err) {
 // §8.4.14: a sample larger than any pool block cannot be reassembled and must
 // be refused, never delivered short or with stale buffer contents.
 static bool tc_fas_8_4_14_007(std::string& err) {
-    FragmentAssembler<1> assembler{};
+    BoundedFragmentAssembler<1> assembler{};
     const Guid writer = make_writer_guid(0xC1u, 0xC2u, 0xC3u, 0x03u);
     const uint32_t too_big = kPoolMaxBlockSize + 1u;
     const Octet frag[64] = {};
@@ -172,7 +172,7 @@ static bool tc_fas_8_4_14_007(std::string& err) {
 // reused for the writer's next sample must not keep the previous sample's
 // (for service replies, a stale related sample identity misroutes the reply).
 static bool tc_fas_8_4_14_008(std::string& err) {
-    FragmentAssembler<1> assembler{};
+    BoundedFragmentAssembler<1> assembler{};
     const Guid writer = make_writer_guid(0xD1u, 0xD2u, 0xD3u, 0x03u);
     const Octet frag[300] = {};
     for (int64_t sn = 1; sn <= 2; ++sn) {

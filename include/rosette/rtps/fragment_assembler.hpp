@@ -26,10 +26,16 @@
  *
  * Design
  * ------
- *  - One FragmentAssembler<MaxSamples> per StatefulReader.
- *  - Each slot assembles one in-flight fragmented sample.
- *  - KEEP_LAST(1) per writer: a new SN from the same writer evicts
- *    any partial assembly for an older SN (§8.3.3.1, p. 68).
+ *  - One FragmentAssembler per StatefulReader, taking its slots from a
+ *    FragmentAssemblyPool. A participant's user readers share one pool of
+ *    RTPS_ASSEMBLY_SLOTS slots, each reader holding at most
+ *    RTPS_ASSEMBLY_SLOTS_PER_READER; the SEDP builtin readers and
+ *    standalone readers (BoundedStatefulReader) have private pools.
+ *  - Each slot assembles one in-flight fragmented sample and is tagged with
+ *    the reader that holds it. A reader replaces only its own samples: its
+ *    sample from the same writer first (KEEP_LAST(1) per writer, §8.3.3.1,
+ *    p. 68), then its oldest. A reader holding no slot when the pool is full
+ *    is refused, and a reliable writer repairs the sample (§8.4.12).
  *  - The received-fragment set uses a full 256-bit bitmap (kWords = 8
  *    words of 32 bits each) matching the SequenceNumberSet wire format
  *    of FragmentNumberSet (§9.4.2.8, p. 199).  This supports up to 256
@@ -259,167 +265,234 @@ struct FragmentedChange {
 };
 
 // ============================================================
-// FragmentAssembler<MaxSamples>
-//
-// §8.4.14, p. 156 — manages a pool of FragmentedChange slots.
-//
-// MaxSamples: number of simultaneously in-flight fragmented samples
-// this reader can assemble.  One slot per matched writer is typical;
-// default is RTPS_MAX_MATCHED_WRITERS.
-//
-// KEEP_LAST(1) policy (§8.3.3.1, p. 68):
-//   When a new SN arrives from a writer that already has an active
-//   slot, the old slot is cleared and reused.  This ensures a
-//   slow writer cannot block the assembler table indefinitely.
+// Assembly slot sizing
 // ============================================================
 
-#ifndef RTPS_MAX_ASSEMBLY_SLOTS
-#  define RTPS_MAX_ASSEMBLY_SLOTS RTPS_MAX_MATCHED_WRITERS
+/// Fragmented samples in reassembly at once across a participant's user
+/// readers. A slot assembles into one buffer-pool block that holds the whole
+/// sample, which is larger than a datagram's payload, so the default is the
+/// number of blocks of the datagram class and the largest class: a slot
+/// beyond those could never hold a buffer.
+#ifndef RTPS_ASSEMBLY_SLOTS
+#  define RTPS_ASSEMBLY_SLOTS (RTPS_POOL_CLASS3_COUNT + RTPS_POOL_CLASS4_COUNT)
 #endif
 
-template<uint8_t MaxSamples = RTPS_MAX_ASSEMBLY_SLOTS>
-class FragmentAssembler {
-    static_assert(MaxSamples >= 1, "FragmentAssembler needs at least one slot");
+/// Fragmented samples one reader may assemble at once. The default leaves
+/// one slot of the participant's pool to the other readers, so a burst on
+/// one topic never takes the slot another topic's sample needs.
+#ifndef RTPS_ASSEMBLY_SLOTS_PER_READER
+#  define RTPS_ASSEMBLY_SLOTS_PER_READER (RTPS_ASSEMBLY_SLOTS > 1u ? RTPS_ASSEMBLY_SLOTS - 1u : 1u)
+#endif
+
+static_assert(RTPS_ASSEMBLY_SLOTS >= 1u && RTPS_ASSEMBLY_SLOTS <= 65535u,
+              "RTPS_ASSEMBLY_SLOTS must be 1 to 65,535");
+static_assert(RTPS_ASSEMBLY_SLOTS_PER_READER >= 1u
+                  && RTPS_ASSEMBLY_SLOTS_PER_READER <= RTPS_ASSEMBLY_SLOTS,
+              "RTPS_ASSEMBLY_SLOTS_PER_READER must be 1 to RTPS_ASSEMBLY_SLOTS");
+
+class FragmentAssembler;
+
+/// @brief One slot of a FragmentAssemblyPool: a sample in reassembly and the reader it belongs to.
+struct AssemblySlot {
+    FragmentedChange change;
+    /// Assembler that holds the slot; meaningful only while `change` is active.
+    const FragmentAssembler* owner = nullptr;
+    /// Pool allocation count when the slot was taken; orders an owner's
+    /// samples by age, so the oldest is replaced first.
+    uint16_t stamp = 0;
+};
+
+/**
+ * @brief A fixed set of assembly slots that several readers' assemblers share.
+ *
+ * RTPSParticipant holds one, of RTPS_ASSEMBLY_SLOTS slots, for all of its
+ * user readers; BoundedStatefulReader and BoundedFragmentAssembler each hold
+ * a private one. Each slot is
+ * tagged with the assembler that took it, and an assembler only ever finds,
+ * replaces, or discards its own slots, so one reader's traffic never evicts
+ * another reader's partial sample (FragmentAssembler::on_data_frag()).
+ *
+ * The pool holds no slots itself: FragmentAssemblyPoolStorage owns them.
+ */
+class FragmentAssemblyPool {
+public:
+    FragmentAssemblyPool(const FragmentAssemblyPool&) = delete;
+    FragmentAssemblyPool& operator=(const FragmentAssemblyPool&) = delete;
+
+    /// @brief Slots in the pool.
+    uint16_t capacity() const noexcept { return capacity_; }
+
+    /// @brief Slots holding a sample in reassembly, whatever reader holds them.
+    uint16_t active_count() const noexcept;
+
+protected:
+    /// @brief Creates a pool over `capacity` slots owned by the derived class.
+    FragmentAssemblyPool(AssemblySlot* slots, uint16_t capacity) noexcept
+        : slots_(slots), capacity_(capacity) {}
+
+    ~FragmentAssemblyPool() noexcept = default;
+
+private:
+    friend class FragmentAssembler;
+
+    AssemblySlot* slots_;
+    uint16_t capacity_;
+    uint16_t next_stamp_ = 0;
+};
+
+namespace detail {
+/// @brief The slots of a FragmentAssemblyPoolStorage, as a base class so they
+/// are constructed before the pool that points at them.
+template <uint16_t N>
+struct AssemblyPoolSlots {
+    AssemblySlot slots[N];
+};
+}  // namespace detail
+
+/**
+ * @brief A FragmentAssemblyPool that owns its N slots.
+ *
+ * @tparam N Slots in the pool, 1 to 65,535.
+ */
+template <uint16_t N>
+class FragmentAssemblyPoolStorage : private detail::AssemblyPoolSlots<N>,
+                                    public FragmentAssemblyPool {
+    static_assert(N >= 1u, "an assembly pool holds at least one slot");
 
 public:
+    FragmentAssemblyPoolStorage() noexcept : FragmentAssemblyPool(this->slots, N) {}
+};
 
-    FragmentAssembler() noexcept = default;
+// ============================================================
+// FragmentAssembler
+// ============================================================
 
-    // ----------------------------------------------------------
-    // on_data_frag()
-    //
-    // Process one DATA_FRAG submessage.
-    //
-    // §8.4.14, p. 156 — algorithm:
-    //   1. Find or create a FragmentedChange slot for
-    //      (writerGuid, writerSN).
-    //   2. For each fragment number in
-    //      [fragmentStartingNum .. fragmentStartingNum +
-    //       fragmentsInSubmessage - 1]:
-    //        a. write_fragment() into the assembly buffer.
-    //        b. mark_received().
-    //   3. If is_complete(): return the assembled change via out_change.
-    //
-    // @param writer_guid         GUID of the sending writer.
-    // @param writer_sn           SequenceNumber of the sample.
-    // @param frag_start          1-based first fragment in this submessage.
-    // @param frags_in_submsg     Number of fragments in this submessage.
-    // @param frag_size           Size of each fragment in bytes.
-    // @param data_size           Total serialized payload size.
-    // @param payload             Pointer to the fragment bytes.
-    // @param payload_len         Byte count in payload.
-    // @param source_ts           Source timestamp (from INFO_TS or invalid).
-    // @param out_change          Set to the completed CacheChange on return
-    //                            of true; untouched otherwise.
-    // @param inline_qos          This fragment's inline QoS, or null when it
-    //                            carried none; kept for the completed change.
-    // @returns true when the sample is complete and out_change is valid.
-    // ----------------------------------------------------------
-    bool on_data_frag(const Guid&           writer_guid,
-                      const SequenceNumber& writer_sn,
-                      uint32_t              frag_start,
-                      uint16_t              frags_in_submsg,
-                      uint16_t              frag_size,
-                      uint32_t              data_size,
-                      const Octet*          payload,
-                      uint32_t              payload_len,
-                      const Timestamp&      source_ts,
-                      CacheChange&          out_change,
-                      const InlineQos*      inline_qos = nullptr) noexcept
-    {
-        if (frag_start == 0 || frag_size == 0 || data_size == 0) return false;
+/**
+ * @brief One reader's fragment reassembly, in slots taken from a shared pool (§8.4.14).
+ *
+ * Every StatefulReader holds one. It takes a slot for each fragmented sample
+ * it starts, writes each DATA_FRAG's fragments into the slot's buffer, and
+ * hands the sample back once every fragment has arrived; the reader then
+ * accepts it as it would a DATA. Its missing fragments answer HEARTBEAT_FRAG
+ * and the ACKNACK with a NACK_FRAG (§8.4.12), and a GAP or an unmatch
+ * discards a partial sample.
+ *
+ * A reader holds at most `limit` slots. A new sample takes a free slot while
+ * the reader is below its limit. Otherwise it replaces the reader's partial
+ * sample from the same writer (KEEP_LAST(1) per writer, §8.3.3.1), or else
+ * the reader's oldest partial sample. A reader that holds no slot when the
+ * pool is full is refused: the sample's fragments are dropped, and a
+ * reliable writer repairs them once a slot frees, as it would any lost
+ * fragment.
+ *
+ * The pool tags each slot with the assembler's address, so an assembler is
+ * neither copied nor moved; its destructor returns its slots and their
+ * buffers to the pool.
+ *
+ * Verification:
+ * - Correct means: a reader never finds, replaces, or discards another
+ *   reader's slot; it never holds more than its limit; a refused sample
+ *   completes after repair.
+ * - Covered by: TC-FAS-8.4.14-001…008, TC-FAS-8.3.3.1-001,
+ *   TC-FAS-8.4.14-009…010 (pool sharing), TC-SRR-8.4.12-004 (repair after
+ *   refusal).
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §8.4.14 (fragment reassembly), §8.4.12 (NACK_FRAG),
+ *   §8.3.3.1 (KEEP_LAST), §9.4.5.4 (DATA_FRAG)
+ *
+ * Example:
+ * @code{.cpp}
+ * rtps::FragmentAssemblyPoolStorage<6> pool;
+ * rtps::FragmentAssembler motion(pool, 5);
+ * rtps::FragmentAssembler map(pool, 5);
+ * rtps::CacheChange done{};
+ * if (map.on_data_frag(writer, sn, 1u, 1u, 1024u, 2000u, bytes, 1024u, ts, done)) {
+ *     // `done` holds the whole sample.
+ * }
+ * @endcode
+ * Full program: tests/spec/src/test_fragment_8_4_14.cpp (TC-FAS-8.4.14-009)
+ */
+class FragmentAssembler {
+public:
+    /**
+     * @brief Creates an assembler that holds no slots yet.
+     *
+     * @param[in] pool  Slots shared with other assemblers; outlives this one.
+     * @param[in] limit Most slots this assembler holds at once, 1 to the
+     *   pool's capacity.
+     */
+    FragmentAssembler(FragmentAssemblyPool& pool, uint16_t limit) noexcept
+        : pool_(pool), limit_(limit) {}
 
-        const uint32_t total_frags =
-            (data_size + static_cast<uint32_t>(frag_size) - 1u) /
-            static_cast<uint32_t>(frag_size);
+    /// @brief Returns every slot this assembler holds, and its buffer, to the pool.
+    ~FragmentAssembler() noexcept;
 
-        if (total_frags > static_cast<uint32_t>(FragmentedChange::kWords * 32))
-            return false;   // Beyond 256-fragment limit.
-
-        // 1. Find or allocate slot.
-        FragmentedChange* slot = find_slot(writer_guid, writer_sn);
-        if (!slot) {
-            slot = alloc_slot(writer_guid, writer_sn, frag_size,
-                              data_size, total_frags);
-            if (!slot) return false;
-        }
-
-        // 2. Write fragments.
-        for (uint16_t i = 0; i < frags_in_submsg; ++i) {
-            const uint32_t frag_num = frag_start + static_cast<uint32_t>(i);
-            if (frag_num > total_frags) break;
-
-            // Byte length of this particular fragment.
-            // The last fragment may be smaller than frag_size.
-            const uint32_t frag_byte_offset =
-                (frag_num - 1u) * static_cast<uint32_t>(frag_size);
-            const uint32_t frag_byte_len =
-                (frag_num == total_frags)
-                    ? (data_size - frag_byte_offset)
-                    : static_cast<uint32_t>(frag_size);
-
-            // Source offset within this DATA_FRAG payload.
-            const uint32_t src_off = i * static_cast<uint32_t>(frag_size);
-            if (src_off + frag_byte_len > payload_len) break;
-
-            // Only a fragment actually stored counts toward completion.
-            if (!slot->write_fragment(frag_num, payload + src_off, frag_byte_len)) break;
-            if (inline_qos && !inline_qos->empty() && slot->inlineQos.empty()) {
-                slot->inlineQos = *inline_qos;
-            }
-            slot->mark_received(frag_num);
-        }
-
-        // 3. Check for completion.
-        if (!slot->is_complete()) return false;
-
-        out_change = slot->take_as_cache_change(source_ts);
-        return true;
-    }
-
-    // ----------------------------------------------------------
-    // missing_fragments()
-    //
-    // Returns the FragmentNumberSet of fragments missing for the
-    // sample identified by (writerGuid, writerSN), up to
-    // last_known_frag_num.
-    //
-    // Called from StatefulReader::on_heartbeat_frag() to build a
-    // NACK_FRAG.  — §8.4.12, p. 153.
-    //
-    // @param writer_guid     Writer sending the fragmented sample.
-    // @param writer_sn       SN of the fragmented sample.
-    // @param last_known      lastFragmentNum from HEARTBEAT_FRAG.
-    // @param out             Populated with missing fragment numbers.
-    // @returns true if a slot exists (i.e. there is something to NACK).
-    // ----------------------------------------------------------
-    bool missing_fragments(const Guid&           writer_guid,
-                           const SequenceNumber& writer_sn,
-                           uint32_t              last_known,
-                           FragmentNumberSet&    out) const noexcept
-    {
-        const FragmentedChange* slot = find_slot(writer_guid, writer_sn);
-        if (!slot) return false;
-        slot->missing_fragments(last_known, out);
-        return true;
-    }
-
-    // ----------------------------------------------------------
-    // discard()
-    //
-    // Remove the assembly slot for (writerGuid, writerSN) and
-    // release the pool buffer.  Called when a GAP covers the SN
-    // (the writer will never send the remaining fragments).
-    // ----------------------------------------------------------
-    void discard(const Guid&           writer_guid,
-                 const SequenceNumber& writer_sn) noexcept
-    {
-        FragmentedChange* slot = find_slot(writer_guid, writer_sn);
-        if (slot) slot->clear();
-    }
+    FragmentAssembler(const FragmentAssembler&) = delete;
+    FragmentAssembler& operator=(const FragmentAssembler&) = delete;
 
     /**
-     * @brief Drops every assembly from `writer_guid` whose SN is in [first, end).
+     * @brief Writes one DATA_FRAG's fragments into its sample's slot, and returns the sample once
+     * complete.
+     *
+     * Finds the slot of (writer_guid, writer_sn), or takes one by the rule in
+     * the class comment and allocates a buffer-pool block that holds the
+     * whole sample. Each fragment is copied to offset (n − 1) × frag_size
+     * and marked received; the first inline QoS any fragment carries is
+     * kept. When every fragment is marked, the slot's buffer moves into
+     * `out_change` and the slot frees.
+     *
+     * @param[in]  writer_guid      GUID of the sending writer.
+     * @param[in]  writer_sn        Sequence number of the sample.
+     * @param[in]  frag_start       1-based number of the first fragment in the submessage.
+     * @param[in]  frags_in_submsg  Fragments in the submessage.
+     * @param[in]  frag_size        Octets per fragment; the last may be shorter.
+     * @param[in]  data_size        Octets in the whole serialized sample.
+     * @param[in]  payload          The submessage's fragment octets.
+     * @param[in]  payload_len      Octets at `payload`.
+     * @param[in]  source_ts        Source timestamp (INFO_TS), or invalid.
+     * @param[out] out_change       The completed sample, written only when this returns true.
+     * @param[in]  inline_qos       This fragment's inline QoS, or null when it carried none.
+     * @return true when the sample is complete and `out_change` holds it;
+     *   false while fragments are outstanding, and when the fields are
+     *   invalid, the sample has more than 256 fragments, no slot is
+     *   available, or no buffer-pool block holds the sample.
+     *
+     * Verification:
+     * - Correct means: a sample completes exactly once, with its fragments
+     *   at their offsets; a refused or invalid fragment takes no slot.
+     * - Covered by: TC-FAS-8.4.14-001…010, TC-FAS-8.3.3.1-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.14, §9.4.5.4
+     */
+    bool on_data_frag(const Guid& writer_guid, const SequenceNumber& writer_sn, uint32_t frag_start,
+                      uint16_t frags_in_submsg, uint16_t frag_size, uint32_t data_size,
+                      const Octet* payload, uint32_t payload_len, const Timestamp& source_ts,
+                      CacheChange& out_change, const InlineQos* inline_qos = nullptr) noexcept;
+
+    /**
+     * @brief Lists the fragments of a partial sample that have not arrived, for a NACK_FRAG.
+     *
+     * @param[in]  writer_guid Writer of the sample.
+     * @param[in]  writer_sn   Sequence number of the sample.
+     * @param[in]  last_known  Highest fragment number the writer has sent
+     *   (HEARTBEAT_FRAG lastFragmentNum); later fragments are not listed.
+     * @param[out] out         The missing fragment numbers.
+     * @return true when this assembler holds the sample; false otherwise,
+     *   and `out` is untouched.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.12, §8.3.7.4
+     */
+    bool missing_fragments(const Guid& writer_guid, const SequenceNumber& writer_sn,
+                           uint32_t last_known, FragmentNumberSet& out) const noexcept;
+
+    /// @brief Drops the partial sample (writer_guid, writer_sn), returning its slot and buffer.
+    void discard(const Guid& writer_guid, const SequenceNumber& writer_sn) noexcept;
+
+    /**
+     * @brief Drops every partial sample from `writer_guid` whose SN is in [first, end).
      *
      * A GAP's contiguous run may span thousands of sequence numbers, so the
      * slots are scanned instead of the range.
@@ -428,134 +501,67 @@ public:
      * @param[in] first       First irrelevant sequence number.
      * @param[in] end         One past the last irrelevant sequence number.
      */
-    void discard_range(const Guid&           writer_guid,
-                       const SequenceNumber& first,
-                       const SequenceNumber& end) noexcept
-    {
-        for (uint8_t i = 0; i < MaxSamples; ++i) {
-            if (slots_[i].is_active() && slots_[i].writerGuid == writer_guid &&
-                !(slots_[i].sequenceNumber < first) && slots_[i].sequenceNumber < end)
-                slots_[i].clear();
-        }
-    }
+    void discard_range(const Guid& writer_guid, const SequenceNumber& first,
+                       const SequenceNumber& end) noexcept;
 
-    // ----------------------------------------------------------
-    // discard_writer()
-    //
-    // Remove all assembly slots for a given writer.
-    // Called from StatefulReader::matched_writer_remove().
-    // ----------------------------------------------------------
-    void discard_writer(const Guid& writer_guid) noexcept {
-        for (uint8_t i = 0; i < MaxSamples; ++i) {
-            if (slots_[i].is_active() &&
-                slots_[i].writerGuid == writer_guid)
-                slots_[i].clear();
-        }
-    }
+    /// @brief Drops every partial sample from `writer_guid`; called when the writer unmatches.
+    void discard_writer(const Guid& writer_guid) noexcept;
 
-    /// Diagnostic: number of active assembly slots.
-    uint8_t active_count() const noexcept {
-        uint8_t n = 0;
-        for (uint8_t i = 0; i < MaxSamples; ++i) {
-            if (slots_[i].is_active()) ++n;
-        }
-        return n;
-    }
+    /// @brief Slots this assembler holds.
+    uint16_t active_count() const noexcept;
 
 private:
+    /// @brief This assembler's slot for (wg, sn), or null.
+    AssemblySlot* find_slot(const Guid& wg, const SequenceNumber& sn) const noexcept;
 
-    FragmentedChange slots_[MaxSamples];
+    /**
+     * @brief Chooses the slot a new sample from `wg` goes into, emptying it if it was in use.
+     *
+     * Applies the rule in the class comment: a free slot below the limit,
+     * else this assembler's slot for the same writer, else its oldest slot,
+     * else none.
+     *
+     * @param[in] wg Writer of the new sample.
+     * @return An empty slot, or null when the pool is full and this
+     *   assembler holds no slot to replace.
+     */
+    AssemblySlot* claim_slot(const Guid& wg) noexcept;
 
-    FragmentedChange* find_slot(const Guid&           wg,
-                                const SequenceNumber& sn) noexcept {
-        for (uint8_t i = 0; i < MaxSamples; ++i) {
-            if (slots_[i].is_active() &&
-                slots_[i].writerGuid    == wg &&
-                slots_[i].sequenceNumber == sn)
-                return &slots_[i];
-        }
-        return nullptr;
-    }
+    /**
+     * @brief Takes a slot for a new sample and gives it a buffer that holds the whole sample.
+     *
+     * @return The slot, ready for fragments; null when no slot is available
+     *   or no buffer-pool block holds `data_size` octets.
+     */
+    FragmentedChange* alloc_slot(const Guid& wg, const SequenceNumber& sn, uint16_t frag_size,
+                                 uint32_t data_size, uint32_t total_frags) noexcept;
 
-    const FragmentedChange* find_slot(const Guid&           wg,
-                                      const SequenceNumber& sn) const noexcept {
-        for (uint8_t i = 0; i < MaxSamples; ++i) {
-            if (slots_[i].is_active() &&
-                slots_[i].writerGuid    == wg &&
-                slots_[i].sequenceNumber == sn)
-                return &slots_[i];
-        }
-        return nullptr;
-    }
-
-    // ----------------------------------------------------------
-    // alloc_slot()
-    //
-    // Find a free slot, or apply KEEP_LAST(1) eviction:
-    //   - If the same writer has an older in-progress slot, evict it.
-    //   - Otherwise evict the globally oldest active slot.
-    //
-    // §8.3.3.1, p. 68 KEEP_LAST(1) eviction policy.
-    // ----------------------------------------------------------
-    FragmentedChange* alloc_slot(const Guid&           wg,
-                                 const SequenceNumber& sn,
-                                 uint16_t              frag_size,
-                                 uint32_t              data_size,
-                                 uint32_t              total_frags) noexcept
-    {
-        // Prefer an empty slot.
-        FragmentedChange* candidate = nullptr;
-        for (uint8_t i = 0; i < MaxSamples; ++i) {
-            if (!slots_[i].is_active()) { candidate = &slots_[i]; break; }
-        }
-
-        // KEEP_LAST(1): evict same writer's older SN.
-        if (!candidate) {
-            for (uint8_t i = 0; i < MaxSamples; ++i) {
-                if (slots_[i].writerGuid == wg) {
-                    slots_[i].clear();
-                    candidate = &slots_[i];
-                    break;
-                }
-            }
-        }
-
-        // Last resort: evict globally oldest slot.
-        if (!candidate) {
-            FragmentedChange* oldest = nullptr;
-            for (uint8_t i = 0; i < MaxSamples; ++i) {
-                if (!oldest ||
-                    slots_[i].sequenceNumber < oldest->sequenceNumber)
-                    oldest = &slots_[i];
-            }
-            if (oldest) { oldest->clear(); candidate = oldest; }
-        }
-
-        if (!candidate) return nullptr;
-
-        // Allocate a pool buffer that holds the whole sample. A sample larger
-        // than the largest pool class cannot be reassembled and is refused
-        // here rather than delivered short.
-        BufRef buf = buf_alloc(data_size);
-        if (!buf.valid() || buf.capacity() < data_size) {
-            RTPS_LOG_W("frag", "no pool block for a %lu-octet fragmented sample",
-                       (unsigned long)data_size);
-            return nullptr;
-        }
-
-        candidate->writerGuid     = wg;
-        candidate->sequenceNumber = sn;
-        candidate->fragmentSize   = frag_size;
-        candidate->dataSize       = data_size;
-        candidate->totalFragments = total_frags;
-        candidate->inlineQos      = {};
-        candidate->buffer         = static_cast<BufRef&&>(buf);
-        memset(candidate->receivedBitmap, 0, sizeof(candidate->receivedBitmap));
-        return candidate;
-    }
+    FragmentAssemblyPool& pool_;
+    uint16_t limit_;
 };
 
-/// Default alias — one slot per matched writer.
-using DefaultFragmentAssembler = FragmentAssembler<RTPS_MAX_ASSEMBLY_SLOTS>;
+namespace detail {
+/// @brief The private pool of a BoundedFragmentAssembler, as a base class so
+/// it is constructed before the assembler that points into it.
+template <uint16_t N>
+struct PrivateAssemblyPool {
+    FragmentAssemblyPoolStorage<N> assembly_pool;
+};
+}  // namespace detail
+
+/**
+ * @brief A FragmentAssembler with a private pool of N slots, all its own.
+ *
+ * For reassembly outside a reader, such as the fragment spec tests and the
+ * fuzz harness, where one assembler has every slot to itself.
+ *
+ * @tparam N Slots, 1 to 65,535.
+ */
+template <uint16_t N>
+class BoundedFragmentAssembler final : private detail::PrivateAssemblyPool<N>,
+                                       public FragmentAssembler {
+public:
+    BoundedFragmentAssembler() noexcept : FragmentAssembler(this->assembly_pool, N) {}
+};
 
 } // namespace rtps

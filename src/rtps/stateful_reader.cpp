@@ -48,6 +48,7 @@ ChangeKind change_kind_of(const ParsedData& msg) noexcept
 
 StatefulReader::StatefulReader(const Guid& guid, ReliabilityKind reliability, ITransport& transport,
                                WriterProxyPool& pool, uint8_t min_writers, uint8_t max_writers,
+                               FragmentAssemblyPool& assembly_pool, uint16_t assembly_limit,
                                OnChangeAvailable on_change_avail, void* user_data,
                                uint32_t hb_response_ms) noexcept
     : guid_(guid),
@@ -56,6 +57,7 @@ StatefulReader::StatefulReader(const Guid& guid, ReliabilityKind reliability, IT
       on_change_avail_(on_change_avail),
       user_data_(user_data),
       pool_(pool),
+      assembler_(assembly_pool, assembly_limit),
       hb_response_ms_(hb_response_ms) {
     writers_.floor = min_writers;
     writers_.cap = max_writers;

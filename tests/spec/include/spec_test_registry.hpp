@@ -28,6 +28,7 @@ void register_all_builder_tests(std::vector<TestCase>& tests);
 void append_fragment_tests_8_3_3_1(std::vector<TestCase>& tests);
 void append_fragment_tests_8_4_12(std::vector<TestCase>& tests);
 void append_fragment_tests_8_4_14(std::vector<TestCase>& tests);
+void append_fragment_tests_8_4_14_shared_pool(std::vector<TestCase>& tests);
 
 void register_all_fragment_assembler_tests(std::vector<TestCase>& tests);
 

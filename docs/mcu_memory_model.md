@@ -38,30 +38,33 @@ firmware capacity:
 
 | | `rtps_chatter` (RTPS core, direct) | `rclc_chatter` (rclc over `rmw_rosette`) |
 | --- | ---: | ---: |
-| Flash (`.text`) | 157,124 B | 237,796 B |
-| Static RAM (`.bss`) | **74,124 B** | **123,720 B** |
-| RTPS participant (all tables below) | 36,000 | 68,232 |
-|   writer slots | 4 × 2,016 | 11 × 2,016 |
-|   reader slots | 4 × 1,984 | 10 × 1,984 |
-|   `EndpointMatchTable` | 9,376 | 14,816 |
-|   SEDP writer + reader | 4,624 + 3,976 | 5,360 + 3,976 |
-|   SPDP reader (peer table) | 1,388 | 1,388 |
-| Buffer pool (`rtps::g_buf_pool`) | 32,228 | 42,464 |
+| Flash (`.text`) | 204,488 B | 285,236 B |
+| Static RAM (`.bss`) | **62,836 B** | **101,416 B** |
+| RTPS participant (all tables below) | 28,824 | 56,992 |
+|   writer slots | 4 × 1,048 | 11 × 1,048 |
+|   reader slots | 4 × 76 | 10 × 76 |
+|   `ReaderProxy` / `WriterProxy` pools | 2,640 + 2,128 | 7,232 + 5,296 |
+|   assembly pool (6 slots) | 824 | 824 |
+|   `EndpointMatchTable` | 9,760 | 15,616 |
+|   SEDP writer + reader | 4,048 + 2,632 | 4,784 + 2,632 |
+|   SPDP reader (peer table) | 1,532 | 7,516 |
+| Buffer pool (`rtps::g_buf_pool`) | 26,988 | 34,080 |
 | Receive buffer (one datagram) | 1,472 | (inside the rmw context) |
-| rmw entity pools (context, publishers, subscriptions, ...) | – | ~6 KB beyond the participant |
+| rmw entity pools (context, publishers, subscriptions, ...) | – | ~8 KB beyond the participant |
 | USB stdio, Pico SDK, board network | ~5 KB | ~5 KB |
 
 Two observations drive most tuning:
 
-1. **Endpoint slots dominate the participant.** In `rclc_chatter`, 42 KB of
-   the 68 KB participant is writer and reader slots, sized for the firmware
-   defaults of 4 publishers, 4 subscriptions, 4 services, and 2 clients. The
-   example uses one publisher and one subscription.
-2. **The buffer pool is the second-largest item**, and its small-block counts
-   scale with the number of local endpoints.
+1. **Declared capacity drives the participant.** Writer slots, both proxy
+   pools, and the match records all scale with the number of local
+   endpoints, and in `rclc_chatter` they are sized for the firmware defaults
+   of 4 publishers, 4 subscriptions, 4 services, and 2 clients. The example
+   uses one publisher and one subscription.
+2. **The buffer pool is the largest single item**, and its small-block
+   counts scale with the number of local endpoints.
 
 Declaring what the firmware actually creates fixes both at once (see
-[Worked example](#worked-example-rclc_chatter-at-half-the-ram)).
+[Worked example](#worked-example-rclc_chatter-sized-to-what-it-creates)).
 
 ## Object model
 
@@ -75,13 +78,16 @@ RTPSParticipant ─────────────────────�
 ├── EndpointMatchTable            local endpoints with full names; remote
 │                                 endpoints as 16-byte records; match pairs
 ├── writer_storage_[RTPS_MAX_USER_WRITERS]   each slot holds one
-│       StatefulWriterStorage<Depth, MaxReaders>
-│         ├── HistoryCache of Depth CacheChanges ─► BufRef into the pool
-│         └── MaxReaders × ReaderProxy
-└── reader_storage_[RTPS_MAX_USER_READERS]   each slot holds one
-        BoundedStatefulReader<RTPS_MAX_MATCHED_WRITERS>
-          ├── MaxWriters × WriterProxy
-          └── FragmentAssembler ─────────────► BufRef into the pool
+│       SharedPoolStatefulWriter<Depth>
+│         └── HistoryCache of Depth CacheChanges ─► BufRef into the pool
+├── reader_storage_[RTPS_MAX_USER_READERS]   each slot holds one
+│       SharedPoolStatefulReader (a FragmentAssembler view, no slots)
+├── reader_proxies_   RTPS_READER_PROXY_POOL × ReaderProxy, bound by the
+│                     user writers as remote readers match
+├── writer_proxies_   RTPS_WRITER_PROXY_POOL × WriterProxy, bound by the
+│                     user readers as remote writers match
+└── assembly_slots_   RTPS_ASSEMBLY_SLOTS × AssemblySlot, each a fragmented
+                      sample in reassembly ─► BufRef into the pool
 
 rtps::g_buf_pool   five size classes of reference-counted blocks; every
                    payload in the system lives in one of these blocks
@@ -95,38 +101,63 @@ rmw_rosette        Pool<T, N> per entity kind (context, node, publisher,
 ### Endpoints are placement-constructed into fixed slots
 
 `RTPSParticipant::create_writer<Depth>()` placement-constructs a
-`StatefulWriterStorage<Depth, MaxReaders>` into a free byte slot and returns a
+`SharedPoolStatefulWriter<Depth>` into a free byte slot and returns a
 `StatefulWriter*`; `delete_writer()` runs its destructor, which releases every
 payload its history holds, and frees the slot. Readers work the same way with
 `create_reader()` and `delete_reader()`. Nothing is ever allocated.
 
-`StatefulWriterStorage<D, R>` is a template only over *storage*: all writer
+`SharedPoolStatefulWriter<D>` is a template only over *storage*: all writer
 logic is compiled once in `src/rtps/stateful_writer.cpp` and works on the
-history and proxy arrays the storage hands it. A writer of depth 1 and one of
+history the storage hands it and the proxies it binds from the pool. A writer of depth 1 and one of
 depth 8 differ in layout, never in code, so adding depths costs RAM, not
 flash.
 
 **Every writer slot is the same size**: `RTPS_PARTICIPANT_MAX_WRITER_BYTES`,
-which defaults to `sizeof(StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>)`
-(1,680 B at 8 matched readers). A table of uniform slots means any slot can
-hold a writer of any depth, so writers can be created and destroyed in any
-order without fragmenting the table. The cost is that a depth-1 writer
-(984 B) still occupies a 1,680 B slot.
+which defaults to `sizeof(SharedPoolStatefulWriter<8>)` (1,048 B). A table of
+uniform slots means any slot can hold a writer of any depth, so writers can
+be created and destroyed in any order without fragmenting the table. The cost
+is that a depth-1 writer (352 B) still occupies a 1,048 B slot.
+
+### Per-match state lives in shared pools
+
+A writer's `ReaderProxy`s, a reader's `WriterProxy`s, and a reader's partial
+fragmented samples are not stored in the endpoint. They come from three
+participant-wide pools, so RAM follows the matches the firmware has at once
+rather than endpoints × the most matches any one endpoint could have:
+
+- **Proxies.** Each endpoint slot has `RTPS_MIN_MATCHES_PER_ENDPOINT`
+  proxies reserved from the start (its floor), and borrows unreserved ones up
+  to its cap (`RTPS_MAX_MATCHED_READERS` / `_WRITERS`) as it matches. A match
+  the pool or the cap refuses waits, up to `RTPS_MAX_WAITING_MATCHES` at once,
+  and binds oldest first as proxies free; a pair turned away beyond that is
+  found again from the stored endpoints once room frees.
+- **Assembly slots.** A fragmented sample takes one slot and one pool block
+  until its last fragment arrives. The default `RTPS_ASSEMBLY_SLOTS` is the
+  number of blocks that can hold such a sample (the datagram and largest
+  classes), because a slot without a block assembles nothing. A reader holds
+  at most `RTPS_ASSEMBLY_SLOTS_PER_READER` (by default all but one) and
+  replaces only its own partial samples, so a burst on one topic never
+  discards another topic's.
+
+The SEDP builtin endpoints keep private pools, so discovery never waits on
+user traffic. The rules, and why they are what they are, are in
+[`docs/design/shared_proxy_pools.md`](design/shared_proxy_pools.md).
 
 ### Per-object costs
 
 Measured `sizeof` on Cortex-M (the RP2040 and RP2350 lay structures out
-identically) at the firmware defaults
-(`RTPS_MAX_MATCHED_READERS = RTPS_MAX_MATCHED_WRITERS = 8`):
+identically) at the firmware defaults:
 
 | Object | Size | Scales with |
 | --- | ---: | --- |
 | `CacheChange` (one history entry) | 100 B | writer depth |
-| `ReaderProxy` (one matched remote reader) | 80 B | `RTPS_MAX_MATCHED_READERS` per writer |
-| `WriterProxy` (one matched remote writer) | 64 B | `RTPS_MAX_MATCHED_WRITERS` per reader |
-| `StatefulWriterStorage<1, 8>` / `<4, 8>` / `<8, 8>` | 984 / 1,280 / 1,680 B | depth × 100 + readers × 80 + ~240 |
-| Writer slot | 1,680 B | `RTPS_PARTICIPANT_MAX_WRITER_BYTES` |
-| Reader slot (`BoundedStatefulReader<8>`) | 1,600 B | 8 × `WriterProxy` + an 8-slot `FragmentAssembler` (1,024 B) |
+| `ReaderProxy` (one matched remote reader) and its pool link | 80 + 2 B | `RTPS_READER_PROXY_POOL` |
+| `WriterProxy` (one matched remote writer) and its pool link | 64 + 2 B | `RTPS_WRITER_PROXY_POOL` |
+| `SharedPoolStatefulWriter<1>` / `<4>` / `<8>` | 352 / 648 / 1,048 B | depth × 100 + ~250 |
+| Writer slot | 1,048 B | `RTPS_PARTICIPANT_MAX_WRITER_BYTES` |
+| Reader slot (`SharedPoolStatefulReader`) | 76 B | `RTPS_MAX_USER_READERS` |
+| `AssemblySlot` (one fragmented sample in reassembly) | 136 B | `RTPS_ASSEMBLY_SLOTS` |
+| SEDP builtin reader (`BoundedStatefulReader<8>`: private proxies and 5 assembly slots) | 1,312 B | `RTPS_MAX_PEERS` |
 | `PeerEntry` (one known remote participant: identity, lease, one locator) | 68 B | `RTPS_MAX_KNOWN_PEERS` |
 | Active slot (`DiscoveredParticipant`: both ranked locator lists) | 120 B | `RTPS_MAX_PEERS` |
 | Remote origin (GUID prefix + locator list index) | 16 B | `RTPS_MAX_REMOTE_ORIGINS` (= peers) |
@@ -207,7 +238,7 @@ Who holds blocks at any moment:
 | --- | --- | --- |
 | Writer history | up to depth samples per writer | every matched reliable reader acknowledges, or depth is exceeded |
 | SEDP writers | one announcement per local endpoint, plus one disposal | the endpoint is deleted |
-| Fragment reassembly | one per sample being reassembled | the last fragment arrives, or the writer is unmatched |
+| Fragment reassembly | one per sample being reassembled, at most `RTPS_ASSEMBLY_SLOTS` | the last fragment arrives, the reader replaces the sample with a newer one, or the writer is unmatched |
 | `ChangeRing` (rmw) | up to the entity's KEEP_LAST depth | `rmw_take()`, or replaced by a newer sample |
 | Message builder | one while a datagram is built | the datagram is sent |
 
@@ -234,6 +265,9 @@ only signals the driver's wake event.
 | Buffer pool exhausted | publish returns an error; a received DATA is not recorded, so a reliable writer repairs it later |
 | `ChangeRing` full | the oldest unread sample is released (KEEP_LAST semantics) |
 | Remote endpoint table full | displacement rule above; an unmatched announcement is dropped |
+| Proxy pool empty, or an endpoint at its cap | the match waits (it still counts as matched for discovery but not in `rmw_*_count_matched_*`) and binds oldest first when a proxy frees (`endpoint match waits for a proxy`) |
+| `RTPS_MAX_WAITING_MATCHES` matches waiting | a further match is not recorded (`waiting matches full`); once a match dissolves or a waiter binds, the next `tick()` rescans the stored endpoints and finds it again |
+| Assembly pool full, and the reader holds no slot | the fragmented sample is refused; a reliable writer repairs it once a slot frees |
 | Peer table full | a new participant is dropped (logged as `peer table full`) until an entry frees by lease expiry or disposal |
 
 ## Knobs
@@ -246,20 +280,31 @@ derives every RTPS table and pool size from them, and
 `rmw_rosette/include/rmw_rosette/capacity.hpp` `static_assert`s the
 relationships, so an inconsistent set fails to compile.
 
-| Knob | Firmware default | What it sizes | Approximate cost per unit |
+The cost per unit of the entity counts is the growth in `.bss` when one is
+added to the worked example's declared `rclc_chatter` (1 publisher,
+1 subscription) on the RP2350. It includes the entity's share of the proxy
+pools and match records at the default cap of 8, and the small pool blocks
+and local endpoint record that follow the larger of the writer and reader
+counts, which is why a publisher costs more than a subscription there.
+
+| Knob | Firmware default | What it sizes | Cost per unit |
 | --- | ---: | --- | --- |
-| `RMW_ROSETTE_MAX_PUBLISHERS` | 4 | writer slot, local endpoint and match records, SEDP history, publisher handle | ≈ 2.6 KB, plus 1.25 KB of small pool blocks when writers outnumber readers |
-| `RMW_ROSETTE_MAX_SUBSCRIPTIONS` | 4 | reader slot, records, SEDP history, subscription handle with its `ChangeRing` | ≈ 3.3 KB, plus 1.25 KB of pool blocks when readers outnumber writers |
-| `RMW_ROSETTE_MAX_SERVICES` | 4 | one writer **and** one reader, with their records and handle | ≈ 6.2 KB |
-| `RMW_ROSETTE_MAX_CLIENTS` | 2 | one writer and one reader, with their records and handle | ≈ 6.2 KB |
+| `RMW_ROSETTE_MAX_PUBLISHERS` | 4 | writer slot, 8 reader proxies, local endpoint and match records, SEDP history, publisher handle | 3,388 B |
+| `RMW_ROSETTE_MAX_SUBSCRIPTIONS` | 4 | reader slot, 8 writer proxies, match records, subscription handle with its `ChangeRing` | 936 B |
+| `RMW_ROSETTE_MAX_SERVICES` | 4 | one writer **and** one reader, with their proxies, records, and handle | 4,068 B |
+| `RMW_ROSETTE_MAX_CLIENTS` | 2 | one writer and one reader, with their proxies, records, and handle | 4,068 B |
 | `RMW_ROSETTE_MAX_NODES` | 1 | node pool; multiplies the per-node entities below | |
-| `RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE` | 0 | 6 for `rclc_parameter_server`, 0 without | 6 services per node (≈ 37 KB) |
+| `RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE` | 0 | 6 for `rclc_parameter_server`, 0 without | 6 services per node (≈ 24 KB) |
 | `RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE` | 0 | `/rosout`, `/parameter_events` | 0 when rcl logging is off, as in the firmware C stack |
 | `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` | 8 | active peers: active slot, SEDP reader and writer proxies, remote origins | ≈ 420 B |
 | `RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` | 96 | known-peer records, active or parked (`PeerEntry`) | 68 B |
 | `RMW_ROSETTE_MAX_REMOTE_ENDPOINTS` | 64 | remote writer and reader records | 32 B (16 B in each table) |
-| `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS` | 8 | readers per writer, writers per reader, match records, reassembly slots | 80 B per writer slot + 192 B per reader slot, plus a 36 B match record for each |
+| `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS` | 8 | cap: the most remote readers one writer serves, or remote writers one reader hears; sizes the proxy pools when they are left empty | through the pools |
+| `RMW_ROSETTE_MATCHED_READERS` | empty: (writers − 1) × cap + remote participants | the `ReaderProxy` pool, shared by every writer | 82 B, plus a 36 B match record |
+| `RMW_ROSETTE_MATCHED_WRITERS` | empty: readers × cap | the `WriterProxy` pool, shared by every reader | 66 B, plus a 36 B match record |
+| `RMW_ROSETTE_MIN_MATCHED_ENDPOINTS` | 1 | floor: proxies reserved for every endpoint slot, so its first matches never wait | raises the pools' minimum size |
 | `RMW_ROSETTE_MATCH_WAITERS` | 8 (`MAX_MATCHED_ENDPOINTS`) | matches waiting for a proxy at once, oldest bound first | 36 B (one match record) |
+| `RMW_ROSETTE_ASSEMBLY_SLOTS` | empty: the datagram and large block counts (6) | fragmented samples in reassembly at once, across all readers | 136 B |
 | `RMW_ROSETTE_MAX_PENDING_CHANGES` | 10 | `ChangeRing` depth ceiling per subscription, service, and client | 72 B per entry per entity, plus the blocks unread entries pin |
 | `RMW_ROSETTE_MAX_DATAGRAM_SIZE` | 1472 | receive buffer, datagram pool class, DATA_FRAG threshold | the datagram class × 4 blocks |
 | `RMW_ROSETTE_MAX_SAMPLE_SIZE` | 4096 | largest pool class: the biggest message sent or received | × `RMW_ROSETTE_LARGE_BUFFERS` |
@@ -332,14 +377,16 @@ translation unit must see the same values (the one-definition rule).
 | --- | --- | --- |
 | `RTPS_MAX_USER_WRITERS`, `RTPS_MAX_USER_READERS` | `participant.hpp` | slot counts |
 | `RTPS_PARTICIPANT_MAX_WRITER_BYTES` | `participant.hpp` | slot size; lowering it below `StatefulWriterStorage<8, R>` saves ~700 B per slot but makes `create_writer<8>()` fail to compile, and `rmw_rosette` instantiates depths 1, 4, and 8 (`kSupportedWriterDepths` in `qos.hpp`) |
-| `RTPS_MAX_MATCHED_READERS`, `RTPS_MAX_MATCHED_WRITERS` | `stateful_writer.hpp`, `types.hpp` | proxies per endpoint |
-| `RTPS_MAX_ASSEMBLY_SLOTS` | `fragment_assembler.hpp` | samples reassembled at once per reader (defaults to matched writers) |
+| `RTPS_MAX_MATCHED_READERS`, `RTPS_MAX_MATCHED_WRITERS` | `stateful_writer.hpp`, `types.hpp` | cap: proxies per endpoint |
+| `RTPS_READER_PROXY_POOL`, `RTPS_WRITER_PROXY_POOL`, `RTPS_MIN_MATCHES_PER_ENDPOINT` | `participant.hpp`, `proxy_pool.hpp` | shared proxy pools and the floor reserved per endpoint slot; a `static_assert` proves the pools hold every floor |
+| `RTPS_MAX_WAITING_MATCHES` | `endpoint_match_table.hpp` | matches waiting for a proxy; `RTPS_MAX_MATCH_RECORDS` must cover both pools plus these |
+| `RTPS_ASSEMBLY_SLOTS`, `RTPS_ASSEMBLY_SLOTS_PER_READER` | `fragment_assembler.hpp` | shared reassembly slots (default: datagram and largest class block counts) and the most one reader holds (default: all but one) |
 | `RTPS_MAX_PEERS`, `RTPS_MAX_PEER_LOCATORS` | `types.hpp`, `spdp.hpp` | peer table |
 | `RTPS_MAX_DISCOVERED_WRITERS/_READERS`, `RTPS_MAX_REMOTE_ORIGINS`, `RTPS_MAX_REMOTE_LOCATOR_LISTS`, `RTPS_MAX_MATCH_RECORDS` | `endpoint_match_table.hpp` | remote records, endpoint locator lists, and match pairs |
 | `RTPS_MAX_TOPIC_NAME_LEN` | `endpoint_match_table.hpp` | 128; ROS 2 service topics embed the node name, so shorter limits refuse real names |
 | `RTPS_POOL_CLASS<n>_SIZE/_COUNT` | `buf_pool.hpp` | buffer pool layout |
 
-## Worked example: `rclc_chatter` at half the RAM
+## Worked example: `rclc_chatter` sized to what it creates
 
 `rclc_chatter` creates one publisher, one subscription, and one timer. Telling
 the build so:
@@ -354,14 +401,17 @@ cmake --build build-hw/pico2-lean --target rclc_chatter
 
 | | Default capacity | Declared capacity | Saved |
 | --- | ---: | ---: | ---: |
-| `.bss` total | 123,720 B | **59,228 B** | 64,492 B |
-| rmw context (participant, transport, rx buffer) | 70,424 | 21,496 | 48,928 |
-| buffer pool | 42,464 | 30,620 | 11,844 |
-| subscription + publisher pools | 4,992 | 1,272 | 3,720 |
-| `.text` | 237,796 | 235,860 | 1,936 |
+| `.bss` total | 101,416 B | **63,980 B** | 37,436 B |
+| rmw context (participant, transport, rx buffer) | 59,160 | 24,880 | 34,280 |
+| buffer pool | 34,080 | 31,668 | 2,412 |
+| subscription + publisher pools | 4,976 | 1,256 | 3,720 |
+| `.text` | 285,236 | 279,108 | 6,128 |
 
 The participant now has two writer slots (the publisher and
-`ros_discovery_info`) and one reader slot. Nothing about the protocol changed.
+`ros_discovery_info`), one reader slot, and proxy pools sized for them (16
+reader proxies, 8 writer proxies). The SPDP peer table, 7.5 KB for 96 known
+participants, is the largest part left; it is sized by the network, not the
+firmware. Nothing about the protocol changed.
 
 ## Sizing a new firmware
 
@@ -382,17 +432,28 @@ The participant now has two writer slots (the publisher and
    `rmw_count_publishers()` see more of the graph.
 3. **Match fan-out.** `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS` is the most remote
    readers any one of your writers serves, or remote writers any one of your
-   readers hears.
-4. **Largest message.** `RMW_ROSETTE_MAX_SAMPLE_SIZE` is the largest
+   readers hears. Left alone, the proxy pools hold every endpoint at that cap
+   at once, which serves every match but pays for the worst case. To pay for
+   the matches you have, list the endpoints that need more than one match at
+   once (a status topic many nodes read, a service several clients call) and
+   set `RMW_ROSETTE_MATCHED_READERS` to one floor per writer, plus one per
+   active peer for `ros_discovery_info`, plus those endpoints' extra; likewise
+   `RMW_ROSETTE_MATCHED_WRITERS` for readers. A match beyond the pool waits
+   and is served when another leaves; the build rejects a pool smaller than
+   its floors.
+4. **Fragmented samples.** `RMW_ROSETTE_ASSEMBLY_SLOTS` defaults to the blocks
+   that can hold a large sample, which is the most that can ever reassemble
+   at once; it need not be set unless you want fewer.
+5. **Largest message.** `RMW_ROSETTE_MAX_SAMPLE_SIZE` is the largest
    serialized message in either direction (CDR size, including the 4-octet
    encapsulation header). `RMW_ROSETTE_LARGE_BUFFERS` is how many such
    messages can be in flight at once: writer histories awaiting
    acknowledgment, reassembly, and unread subscription entries.
-5. **Link.** Keep `RMW_ROSETTE_MAX_DATAGRAM_SIZE` at 1472 on WIZnet hardware
+6. **Link.** Keep `RMW_ROSETTE_MAX_DATAGRAM_SIZE` at 1472 on WIZnet hardware
    UDP, which cannot reassemble IP fragments.
-6. **Depth.** Ask for the QoS depth you mean. A depth-10 subscription (the
+7. **Depth.** Ask for the QoS depth you mean. A depth-10 subscription (the
    `rclc` default) pins up to ten samples; depth 1 pins one.
-7. **Build and read the numbers** (below). Then run the firmware against the
+8. **Build and read the numbers** (below). Then run the firmware against the
    real network and watch for creation failures and pool errors.
 
 ## Measuring
@@ -437,8 +498,9 @@ prints them at shutdown.
 | --- | --- |
 | No heap in the stack | Bounded, visible RAM; failures at boot; no fragmentation over long uptimes. The same discipline as MISRA C:2012 Rule 21.3 and the JPL/NASA "Power of Ten" rule 3. |
 | Capacity from a few application limits, derived in one CMake module | An application states what it creates; the derived tables cannot be sized inconsistently, and `capacity.hpp` asserts it. |
-| Templates lay out storage; logic compiles once | `StatefulWriterStorage<D, R>` and `HistoryCacheStorage<N>` hold arrays; `StatefulWriter`, `HistoryCache`, and `ReaderProxy` are plain classes in `.cpp` files. Depth is a RAM decision that costs no flash (the approach of LLVM's `SmallVector` / `SmallVectorImpl`). |
+| Templates lay out storage; logic compiles once | `SharedPoolStatefulWriter<D>`, `HistoryCacheStorage<N>`, `ProxyPoolStorage<P, N>`, and `FragmentAssemblyPoolStorage<N>` hold arrays; `StatefulWriter`, `HistoryCache`, `ProxyPool`, and `FragmentAssembler` are plain classes in `.cpp` files. Depth is a RAM decision that costs no flash (the approach of LLVM's `SmallVector` / `SmallVectorImpl`). |
 | Uniform writer slots | Any slot takes any depth, so creation and deletion order never fragment the table. |
+| Per-match state in shared pools, with floors | RAM follows the matches a firmware has at once, not endpoints × cap; a floor per slot means an endpoint's first match never depends on what others borrowed, and a refused match waits instead of being dropped. A shared buffer with per-queue guarantees, as in shared-memory packet switches (Choudhury and Hahne, 1998). |
 | Contiguous samples, fragmented only on the wire | Serialization, repair, and reassembly work on one span; the largest pool class is reserved so small traffic cannot starve large samples. |
 | Reference-counted blocks | Zero-copy from serialization to the wire and from reassembly to `rmw_take()`. |
 | Remote endpoints as keyed 16-byte records with displacement | A board on a network of dozens of participants records only what it matches; a matched record is never displaced, so matching never loses a pair it reported. |

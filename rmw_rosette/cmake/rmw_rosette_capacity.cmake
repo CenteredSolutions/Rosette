@@ -69,6 +69,8 @@ set(RMW_ROSETTE_MAX_PENDING_CHANGES 10 CACHE STRING
     "Deepest KEEP_LAST history a subscription, service, or client keeps between takes; deeper requests and KEEP_ALL run at this depth (10 holds rmw_qos_profile_default whole)")
 set(RMW_ROSETTE_LARGE_BUFFERS 48 CACHE STRING
     "Blocks of RMW_ROSETTE_MAX_SAMPLE_SIZE (and, in the host pool profile, of 16 KiB): samples held in writer histories, reassembly, and take rings")
+set(RMW_ROSETTE_ASSEMBLY_SLOTS "" CACHE STRING
+    "Fragmented samples in reassembly at once across all subscriptions, services, and clients; empty: one per block of the two largest buffer-pool classes, the blocks a reassembled sample can occupy")
 
 math(EXPR _rr_publishers
      "${RMW_ROSETTE_MAX_PUBLISHERS} + ${RMW_ROSETTE_MAX_NODES} * ${RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE}")
@@ -225,11 +227,23 @@ _rr_clamp_count(_rr_pool2 ${_rr_pool2})
 _rr_clamp_count(_rr_pool3 ${_rr_pool3})
 _rr_clamp_count(_rr_pool4 ${RMW_ROSETTE_LARGE_BUFFERS})
 
+# Assembly slots (rosette/rtps/fragment_assembler.hpp): a slot holds the
+# block its fragmented sample assembles in, so slots beyond the blocks of the
+# two largest classes would never hold a sample.
+if(RMW_ROSETTE_ASSEMBLY_SLOTS STREQUAL "")
+  math(EXPR _rr_assembly_slots "${_rr_pool3} + ${_rr_pool4}")
+else()
+  set(_rr_assembly_slots ${RMW_ROSETTE_ASSEMBLY_SLOTS})
+endif()
+if(_rr_assembly_slots LESS 1 OR _rr_assembly_slots GREATER 65535)
+  message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_ASSEMBLY_SLOTS (${_rr_assembly_slots}) must be 1 to 65535")
+endif()
+
 message(STATUS "rmw_rosette capacity: ${_rr_publishers} publishers, "
                "${RMW_ROSETTE_MAX_SUBSCRIPTIONS} subscriptions, ${_rr_services} services, "
                "${RMW_ROSETTE_MAX_CLIENTS} clients -> ${_rr_rtps_writers} RTPS writers, "
                "${_rr_rtps_readers} RTPS readers, ${_rr_reader_proxies} reader proxies, "
-               "${_rr_writer_proxies} writer proxies")
+               "${_rr_writer_proxies} writer proxies, ${_rr_assembly_slots} assembly slots")
 
 #[[
 Applies the capacity model to a target as compile definitions.
@@ -275,5 +289,6 @@ function(rmw_rosette_apply_capacity target)
     RTPS_POOL_CLASS3_COUNT=${_rr_pool3}u
     RTPS_POOL_CLASS4_SIZE=${RMW_ROSETTE_MAX_SAMPLE_SIZE}u
     RTPS_POOL_CLASS4_COUNT=${_rr_pool4}u
+    RTPS_ASSEMBLY_SLOTS=${_rr_assembly_slots}u
   )
 endfunction()

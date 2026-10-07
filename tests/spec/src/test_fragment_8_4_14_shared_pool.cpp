@@ -1,0 +1,131 @@
+/**
+ * @file test_fragment_8_4_14_shared_pool.cpp
+ * @brief Readers sharing one fragment assembly pool (§8.4.14, §8.3.3.1).
+ *
+ * RTPSParticipant's user readers reassemble in one FragmentAssemblyPool.
+ * These cases hold the pool's rules: a reader replaces only its own partial
+ * samples, never holds more than its limit, is refused when the pool is full
+ * and it holds nothing to replace, and returns its slots when destroyed.
+ */
+
+#include "spec_test_common.hpp"
+
+#include "rosette/rtps/fragment_assembler.hpp"
+
+#include <vector>
+
+namespace spec_test {
+
+#define CHECK(COND, MSG)  \
+    do {                  \
+        if (!(COND)) {    \
+            err = (MSG);  \
+            return false; \
+        }                 \
+    } while (0)
+
+namespace {
+
+constexpr uint16_t kFragSize = 300u;
+constexpr uint32_t kSampleSize = 600u;  // two fragments
+const Octet kFrag[kFragSize] = {};
+
+Guid writer_guid(Octet id) {
+    Guid g{};
+    g.prefix.value[0] = 0x5Au;
+    g.prefix.value[1] = id;
+    g.entityId = make_entity(0x00u, 0x00u, id, 0x03u);
+    return g;
+}
+
+/// Sends fragment `frag` (1 or 2) of the two-fragment sample `sn` from `writer`.
+bool send_fragment(FragmentAssembler& a, const Guid& writer, int64_t sn, uint32_t frag,
+                   CacheChange& out) {
+    return a.on_data_frag(writer, SequenceNumber::from_int64(sn), frag, 1u, kFragSize, kSampleSize,
+                          kFrag, kFragSize, TIME_ZERO, out);
+}
+
+bool holds(const FragmentAssembler& a, const Guid& writer, int64_t sn) {
+    FragmentNumberSet missing{};
+    return a.missing_fragments(writer, SequenceNumber::from_int64(sn), UINT32_MAX, missing);
+}
+
+}  // namespace
+
+// A reader at its limit replaces its own sample from the same writer first,
+// then its own oldest, and never another reader's.
+static bool tc_fas_8_4_14_009(std::string& err) {
+    FragmentAssemblyPoolStorage<3> pool;
+    FragmentAssembler motion(pool, 2u);
+    FragmentAssembler map(pool, 2u);
+    const Guid cmd = writer_guid(1u);
+    const Guid a = writer_guid(2u);
+    const Guid b = writer_guid(3u);
+    const Guid c = writer_guid(4u);
+    CacheChange out{};
+
+    CHECK(!send_fragment(motion, cmd, 1, 1u, out), "the motion command is partial");
+    CHECK(!send_fragment(map, a, 1, 1u, out) && !send_fragment(map, b, 1, 1u, out),
+          "the map reader takes the other two slots");
+    CHECK(pool.active_count() == 3u, "the pool is full");
+
+    CHECK(!send_fragment(map, c, 1, 1u, out), "a third map writer starts a sample");
+    CHECK(map.active_count() == 2u, "the map reader never holds more than its limit");
+    CHECK(!holds(map, a, 1) && holds(map, b, 1) && holds(map, c, 1),
+          "the map reader replaces its own oldest sample");
+    CHECK(holds(motion, cmd, 1), "another reader's partial sample is never replaced");
+
+    CHECK(!send_fragment(map, c, 2, 1u, out), "writer c's next sample starts");
+    CHECK(holds(map, b, 1) && !holds(map, c, 1) && holds(map, c, 2),
+          "a newer sample from the same writer replaces that writer's, not the oldest");
+
+    CHECK(send_fragment(motion, cmd, 1, 2u, out), "the motion command completes");
+    CHECK(out.payload.valid() && out.payload.size == kSampleSize, "with its whole payload");
+    out.clear();
+
+    CHECK(!send_fragment(map, writer_guid(5u), 1, 1u, out), "a fourth map writer starts a sample");
+    CHECK(map.active_count() == 2u && pool.active_count() == 2u,
+          "a reader at its limit replaces its own sample even with a slot free");
+    return true;
+}
+
+// A reader that holds no slot is refused while the pool is full, and a
+// destroyed reader returns its slots so the refused one can assemble.
+static bool tc_fas_8_4_14_010(std::string& err) {
+    FragmentAssemblyPoolStorage<2> pool;
+    FragmentAssembler quiet(pool, 2u);
+    const Guid writer = writer_guid(7u);
+    CacheChange out{};
+    {
+        FragmentAssembler busy(pool, 2u);
+        CHECK(!send_fragment(busy, writer_guid(8u), 1, 1u, out)
+                  && !send_fragment(busy, writer_guid(9u), 1, 1u, out),
+              "the busy reader fills the pool");
+        CHECK(!send_fragment(quiet, writer, 1, 1u, out), "the pool is full");
+        CHECK(quiet.active_count() == 0u && pool.active_count() == 2u,
+              "a refused sample takes no slot and evicts nothing");
+        CHECK(!send_fragment(quiet, writer, 1, 2u, out),
+              "a refused sample cannot complete from its remaining fragments");
+    }
+
+    CHECK(pool.active_count() == 0u, "a destroyed reader returns its slots");
+    CHECK(!send_fragment(quiet, writer, 1, 1u, out) && send_fragment(quiet, writer, 1, 2u, out),
+          "the resent sample assembles once a slot is free");
+    out.clear();
+    return true;
+}
+
+void append_fragment_tests_8_4_14_shared_pool(std::vector<TestCase>& tests) {
+    tests.push_back(
+        {"TC-FAS-8.4.14-009",
+         "§8.4.14/§8.3.3.1: a reader sharing the assembly pool replaces only its own partial "
+         "samples, the same writer's first, then its oldest, and never holds more than its limit.",
+         tc_fas_8_4_14_009});
+    tests.push_back(
+        {"TC-FAS-8.4.14-010",
+         "§8.4.14: with the assembly pool full, a reader holding no slot is refused without "
+         "evicting another reader's sample, and assembles once a reader returns its slots.",
+         tc_fas_8_4_14_010});
+}
+
+}  // namespace spec_test
