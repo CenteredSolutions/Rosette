@@ -28,6 +28,22 @@ if(NOT _rp2_sdk_initialized)
   set_property(GLOBAL PROPERTY ROSETTE_RP2_SDK_INITIALIZED TRUE)
 endif()
 
+# Optimization level for the optimized configurations. Code executes in place
+# from QSPI flash through the XIP cache, so the smaller instruction footprint
+# of -Os raises the cache hit rate and usually outweighs the extra instructions
+# -O3 would save; it also keeps the image small enough for the flash region.
+# CMake's GNU default for Release and RelWithDebInfo is -O3 or -O2, so the
+# level is rewritten here, once, for every target in this directory tree.
+set(ROSETTE_MCU_OPT_LEVEL "s" CACHE STRING
+  "Compiler -O level for Release and RelWithDebInfo builds on the rp2 chip (s, 2, 3)")
+set_property(CACHE ROSETTE_MCU_OPT_LEVEL PROPERTY STRINGS s 2 3)
+foreach(_rp2_lang C CXX)
+  foreach(_rp2_config RELEASE RELWITHDEBINFO)
+    string(REGEX REPLACE "-O[0-3sg]" "-O${ROSETTE_MCU_OPT_LEVEL}"
+      CMAKE_${_rp2_lang}_FLAGS_${_rp2_config} "${CMAKE_${_rp2_lang}_FLAGS_${_rp2_config}}")
+  endforeach()
+endforeach()
+
 target_sources(rosette_platform PRIVATE
   ${ROSETTE_PORT_DIR}/chip_rp2.cpp
   ${ROSETTE_PORT_DIR}/rp2_flash.c
