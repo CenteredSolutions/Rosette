@@ -239,8 +239,19 @@ set(_rosette_micro_ros_bootstrap_script
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated/micro_ros")
 
 set(ROSETTE_MICRO_ROS_TOOLCHAIN_SYSTEM_NAME "Generic")
+# The stack is built as Release. CMake's GNU default for Release is -O3, which
+# grows code that executes in place from flash, so a microcontroller stack
+# takes the board's optimization level (ROSETTE_MCU_OPT_LEVEL, default -Os,
+# shared with the chip port) and a host stack keeps the CMake default.
+if(DEFINED ROSETTE_MCU_OPT_LEVEL)
+    set(_rosette_micro_ros_opt_level "${ROSETTE_MCU_OPT_LEVEL}")
+else()
+    set(_rosette_micro_ros_opt_level "s")
+endif()
+set(ROSETTE_MICRO_ROS_RELEASE_FLAGS "-O${_rosette_micro_ros_opt_level} -DNDEBUG")
 if(ROSETTE_PROCESSOR STREQUAL "HOST")
     set(ROSETTE_MICRO_ROS_TOOLCHAIN_SYSTEM_NAME "${CMAKE_SYSTEM_NAME}")
+    set(ROSETTE_MICRO_ROS_RELEASE_FLAGS "-O3 -DNDEBUG")
 endif()
 
 set(ROSETTE_MICRO_ROS_SETUP_SOURCE_DIR "${_rosette_micro_ros_setup_source_dir}")
