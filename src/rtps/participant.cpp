@@ -707,19 +707,15 @@ bool RTPSParticipant::peer_default_locators(const GuidPrefix& prefix, const Loca
                                             uint8_t& count) const noexcept {
     // Only an active peer has endpoints in the match table, and its slot
     // holds the default list.
-    bool found = false;
-    spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
-        const DiscoveredParticipant* data = spdp_reader_.active_data(peer);
-        if (peer.guidPrefix != prefix || data == nullptr) {
-            return;
-        }
+    const PeerEntry* peer = spdp_reader_.find_peer(prefix);
+    const DiscoveredParticipant* data = peer ? spdp_reader_.active_data(*peer) : nullptr;
+    if (data == nullptr) {
+        return false;
+    }
 
-        locators = data->defaultUnicastLocatorList;
-        count = data->defaultUnicastLocatorCount;
-        found = true;
-    });
-
-    return found;
+    locators = data->defaultUnicastLocatorList;
+    count = data->defaultUnicastLocatorCount;
+    return true;
 }
 
 void RTPSParticipant::resolve_endpoint_locators(const GuidPrefix& remote_prefix,
@@ -739,14 +735,8 @@ void RTPSParticipant::resolve_endpoint_locators(const GuidPrefix& remote_prefix,
 }
 
 VendorId RTPSParticipant::peer_vendor_id(const GuidPrefix& remote_prefix) const noexcept {
-    VendorId vendor = VENDORID_UNKNOWN;
-    spdp_reader_.for_each_peer([&](const PeerEntry& peer) noexcept {
-        if (peer.guidPrefix == remote_prefix) {
-            vendor = peer.vendorId;
-        }
-    });
-
-    return vendor;
+    const PeerEntry* peer = spdp_reader_.find_peer(remote_prefix);
+    return peer ? peer->vendorId : VENDORID_UNKNOWN;
 }
 
 void RTPSParticipant::on_endpoint_unmatch(const Guid& writer_guid,

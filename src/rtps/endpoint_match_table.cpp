@@ -7,6 +7,7 @@
 #include "endpoint_match_table.hpp"
 
 #include "log.hpp"
+#include "rosette/support/fnv1a.hpp"
 
 namespace rtps {
 
@@ -14,14 +15,11 @@ const LocalSubnets EndpointMatchTable::kNoSubnets{};
 
 uint32_t name_key(const char* name) noexcept
 {
-    constexpr uint32_t kOffsetBasis = 0x811C9DC5u;
-    constexpr uint32_t kPrime       = 0x01000193u;
-    uint32_t h = kOffsetBasis;
-    for (; name && *name; ++name) {
-        h ^= static_cast<uint8_t>(*name);
-        h *= kPrime;
+    if (name == nullptr) {
+        return rosette::support::kFnv1a32OffsetBasis;
     }
-    return h;
+
+    return rosette::support::fnv1a32(reinterpret_cast<const uint8_t*>(name), strlen(name));
 }
 
 // ------------------------------------------------------------
@@ -733,36 +731,42 @@ void EndpointMatchTable::unmatch_if_relocated(RemoteEndpoint* table, uint32_t n,
     dissolve(guid, is_writer);
 }
 
+void EndpointMatchTable::remove_endpoint(const Guid& guid, bool is_writer) noexcept
+{
+    if (guid == GUID_UNKNOWN) {
+        return;
+    }
+
+    dissolve(guid, is_writer);
+
+    LocalEndpoint* locals = is_writer ? local_writers_ : local_readers_;
+    RemoteEndpoint* remotes = is_writer ? remote_writers_ : remote_readers_;
+    const uint32_t remote_count = is_writer ? RTPS_MAX_DISCOVERED_WRITERS
+                                            : RTPS_MAX_DISCOVERED_READERS;
+    bool forgotten = false;
+    if (LocalEndpoint* local = find(locals, RTPS_MAX_LOCAL_ENDPOINTS, guid)) {
+        *local = LocalEndpoint{};
+        forgotten = true;
+    }
+
+    if (RemoteEndpoint* remote = find_remote(remotes, remote_count, guid)) {
+        clear_remote(*remote);
+        forgotten = true;
+    }
+
+    if (forgotten) {
+        changed();
+    }
+}
+
 void EndpointMatchTable::remove_writer(const Guid& writer_guid) noexcept
 {
-    if (writer_guid == GUID_UNKNOWN) return;
-    dissolve(writer_guid, /*is_writer=*/true);
-    bool forgotten = false;
-    if (LocalEndpoint* w = find(local_writers_, RTPS_MAX_LOCAL_ENDPOINTS, writer_guid)) {
-        *w = LocalEndpoint{};
-        forgotten = true;
-    }
-    if (RemoteEndpoint* w = find_remote(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, writer_guid)) {
-        clear_remote(*w);
-        forgotten = true;
-    }
-    if (forgotten) changed();
+    remove_endpoint(writer_guid, /*is_writer=*/true);
 }
 
 void EndpointMatchTable::remove_reader(const Guid& reader_guid) noexcept
 {
-    if (reader_guid == GUID_UNKNOWN) return;
-    dissolve(reader_guid, /*is_writer=*/false);
-    bool forgotten = false;
-    if (LocalEndpoint* r = find(local_readers_, RTPS_MAX_LOCAL_ENDPOINTS, reader_guid)) {
-        *r = LocalEndpoint{};
-        forgotten = true;
-    }
-    if (RemoteEndpoint* r = find_remote(remote_readers_, RTPS_MAX_DISCOVERED_READERS, reader_guid)) {
-        clear_remote(*r);
-        forgotten = true;
-    }
-    if (forgotten) changed();
+    remove_endpoint(reader_guid, /*is_writer=*/false);
 }
 
 bool EndpointMatchTable::has_match_with(const GuidPrefix& prefix,

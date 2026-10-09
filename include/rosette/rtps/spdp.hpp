@@ -762,6 +762,10 @@ public:
 
     /// @brief The live record of `prefix`, or null.
     PeerEntry* find_peer(const GuidPrefix& prefix) noexcept {
+        return const_cast<PeerEntry*>(static_cast<const SpdpReader*>(this)->find_peer(prefix));
+    }
+
+    const PeerEntry* find_peer(const GuidPrefix& prefix) const noexcept {
         for (uint16_t i = 0; i < RTPS_MAX_KNOWN_PEERS; ++i) {
             if (peers_[i].alive && peers_[i].guidPrefix == prefix) {
                 return &peers_[i];

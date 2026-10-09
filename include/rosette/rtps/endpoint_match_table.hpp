@@ -1005,6 +1005,9 @@ private:
     /// Reports every recorded pair involving `guid` as dissolved and forgets it.
     void dissolve(const Guid& guid, bool is_writer) noexcept;
 
+    /// Dissolves the pairs of a local or remote writer or reader and forgets its records.
+    void remove_endpoint(const Guid& guid, bool is_writer) noexcept;
+
     /**
      * @brief Unmatches a stored remote endpoint that re-announced different locators.
      *
