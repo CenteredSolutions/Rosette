@@ -267,7 +267,7 @@ void StatefulWriter::matched_reader_remove(const Guid& reader_guid) noexcept {
         drop_replies_to_departed(reader_guid.prefix);
     }
 
-    if (p) {
+    if (p || releaseRepliesOnDelivery_) {
         release_finished_changes();
     }
 }
