@@ -443,11 +443,11 @@ public:
         participant_defaults_ = defaults;
     }
 
-    /// @brief Sets the GUID prefix that marks an endpoint as local.
-    /// Asks the owner whether a waiting pair could bind now; without it, a
-    /// waiting pair never binds again and a new pair never waits behind one.
+    /// @brief Sets the owner's test for whether a waiting pair could bind now.
+    /// Without it, a waiting pair never binds again and a new pair never waits behind one.
     void set_may_match(MayMatch may_match) noexcept { may_match_ = may_match; }
 
+    /// @brief Sets the GUID prefix that marks an endpoint as local.
     void set_local_prefix(const GuidPrefix& prefix) noexcept {
         local_prefix_ = prefix;
         has_local_prefix_ = true;

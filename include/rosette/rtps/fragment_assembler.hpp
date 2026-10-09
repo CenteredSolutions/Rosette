@@ -301,8 +301,10 @@ struct AssemblySlot {
     /// Assembler that holds the slot; meaningful only while `change` is active.
     const FragmentAssembler* owner = nullptr;
     /// Pool allocation count when the slot was taken; orders an owner's
-    /// samples by age, so the oldest is replaced first.
-    uint16_t stamp = 0;
+    /// samples by age, so the oldest is replaced first. It is 64 bits wide so
+    /// it never wraps and a plain comparison orders any two slots, however
+    /// long the older partial sample has been held.
+    uint64_t stamp = 0;
 };
 
 /**
@@ -340,7 +342,7 @@ private:
 
     AssemblySlot* slots_;
     uint16_t capacity_;
-    uint16_t next_stamp_ = 0;
+    uint64_t next_stamp_ = 0;
 };
 
 namespace detail {

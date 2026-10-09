@@ -9,11 +9,6 @@ namespace rtps {
 
 namespace {
 
-/// @brief True when stamp `a` was issued before `b`, across the 16-bit wrap.
-bool stamped_before(uint16_t a, uint16_t b) noexcept {
-    return static_cast<int16_t>(static_cast<uint16_t>(a - b)) < 0;
-}
-
 /// @brief Octets of fragment `frag_num` (1-based) of a sample; the last may be shorter (§9.4.5.4).
 uint32_t fragment_length(uint32_t frag_num, uint16_t frag_size, uint32_t data_size,
                          uint32_t total_frags) noexcept {
@@ -205,7 +200,7 @@ AssemblySlot* FragmentAssembler::select_slot(const Guid& wg, const SequenceNumbe
             same_writer = &slot;
         }
 
-        if (oldest == nullptr || stamped_before(slot.stamp, oldest->stamp)) {
+        if (oldest == nullptr || slot.stamp < oldest->stamp) {
             oldest = &slot;
         }
     }

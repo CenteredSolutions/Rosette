@@ -208,6 +208,33 @@ static bool tc_fas_8_4_14_014(std::string& err) {
     return true;
 }
 
+// The oldest partial sample is the one replaced however many samples were
+// assembled after it, including more than half the range of a 16-bit stamp.
+static bool tc_fas_8_4_14_015(std::string& err) {
+    constexpr int64_t kChurn = 40000;
+    FragmentAssemblyPoolStorage<3> pool;
+    FragmentAssembler reader(pool, 2u);
+    const Guid stale = writer_guid(10u);
+    const Guid busy = writer_guid(11u);
+    const Guid late = writer_guid(12u);
+    CacheChange out{};
+
+    CHECK(!send_fragment(reader, stale, 1, 1u, out), "the stale writer's sample is partial");
+    for (int64_t sn = 1; sn <= kChurn; ++sn) {
+        CHECK(!send_fragment(reader, busy, sn, 1u, out), "a busy sample starts");
+        CHECK(send_fragment(reader, busy, sn, 2u, out), "and completes");
+        out.clear();
+    }
+
+    CHECK(!send_fragment(reader, busy, kChurn + 1, 1u, out), "the busy writer holds a partial");
+    CHECK(reader.active_count() == 2u, "the reader is at its limit");
+
+    CHECK(!send_fragment(reader, late, 1, 1u, out), "a third writer starts a sample");
+    CHECK(!holds(reader, stale, 1) && holds(reader, busy, kChurn + 1) && holds(reader, late, 1),
+          "the oldest partial sample is the one replaced");
+    return true;
+}
+
 void append_fragment_tests_8_4_14_shared_pool(std::vector<TestCase>& tests) {
     tests.push_back(
         {"TC-FAS-8.4.14-009",
@@ -239,6 +266,11 @@ void append_fragment_tests_8_4_14_shared_pool(std::vector<TestCase>& tests) {
          "§8.3.3.1: a reader holds one partial sample per writer even with slots to spare; a "
          "newer sample replaces the older and a delayed older fragment is refused.",
          tc_fas_8_4_14_014});
+    tests.push_back(
+        {"TC-FAS-8.4.14-015",
+         "§8.4.14: a reader at its limit replaces its oldest partial sample, however many "
+         "samples were assembled after it.",
+         tc_fas_8_4_14_015});
 }
 
 }  // namespace spec_test
