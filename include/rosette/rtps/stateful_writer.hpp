@@ -389,22 +389,26 @@ public:
                             bool           expects_inline_qos = false) noexcept;
 
     /**
-     * @brief Unmatches a remote reader; unknown GUIDs are ignored.
+     * @brief Unmatches a remote reader; a GUID that is neither bound nor waiting changes nothing
+     *   on a writer that is not a service reply writer.
      *
      * The reader is done with every change from then on, so changes it alone
      * held are released (release_finished_changes()). A service reply writer
      * (release_replies_on_delivery()) also drops the replies to a requester
-     * whose last matched reader this was: no reader of that participant is
-     * left to receive or acknowledge them, and kept, they would be replayed
-     * to every later client and pin their blocks until KEEP_LAST evicts them.
+     * whose last reader, bound or waiting for a proxy, this was: no reader of
+     * that participant is left to receive or acknowledge them, and kept, they
+     * would be replayed to every later client and pin their blocks until
+     * KEEP_LAST evicts them. The owner calls this for a waiting reader too,
+     * after it has removed the reader from the waiting query
+     * (set_waiting_reader_query()).
      *
      * @param[in] reader_guid The remote reader's GUID.
      *
      * Verification:
      * - Correct means: the proxy is cleared and returned to the pool; a reply naming a request
      * writer of the reader's participant leaves the history once no reader of that participant is
-     * matched, and stays while one still is.
-     * - Covered by: TC-SWR-8.4.7-003, TC-SWR-8.4.7-009.
+     * matched or waiting, and stays while one still is.
+     * - Covered by: TC-SWR-8.4.7-003, TC-SWR-8.4.7-009, TC-SWR-8.4.7-011.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_remove), §8.4.7.1;

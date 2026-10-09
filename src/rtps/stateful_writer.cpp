@@ -256,13 +256,18 @@ void StatefulWriter::matched_reader_remove(const Guid& reader_guid) noexcept {
             fragRepair_ = FragmentRepair{};
         }
 
-        const GuidPrefix requester = p->remoteReaderGuid.prefix;
         p->clear();
         (void)pool_.release(readers_, pool_.index_of(*p));
-        if (releaseRepliesOnDelivery_) {
-            drop_replies_to_departed(requester);
-        }
+    }
 
+    // A reader that was still waiting for a proxy holds none, yet replies
+    // were kept for it (reply_delivered()), so its requester's cleanup runs
+    // whether or not a proxy was bound.
+    if (releaseRepliesOnDelivery_) {
+        drop_replies_to_departed(reader_guid.prefix);
+    }
+
+    if (p) {
         release_finished_changes();
     }
 }
