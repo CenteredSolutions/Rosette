@@ -335,7 +335,7 @@ static_assert(RTPS_MAX_REMOTE_ORIGINS >= 1 && RTPS_MAX_REMOTE_ORIGINS < 255,
 /// defaults. No stack this one interoperates with announces such locators by
 /// default, so a few cover endpoints configured with locators of their own.
 #ifndef RTPS_MAX_REMOTE_LOCATOR_LISTS
-#define RTPS_MAX_REMOTE_LOCATOR_LISTS 4
+#  define RTPS_MAX_REMOTE_LOCATOR_LISTS 4
 #endif
 static_assert(RTPS_MAX_REMOTE_LOCATOR_LISTS >= 1 && RTPS_MAX_REMOTE_LOCATOR_LISTS < 255,
               "RTPS_MAX_REMOTE_LOCATOR_LISTS must fit a one-octet index below the none value 0xFF");
