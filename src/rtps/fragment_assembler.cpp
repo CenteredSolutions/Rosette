@@ -201,9 +201,7 @@ AssemblySlot* FragmentAssembler::select_slot(const Guid& wg, const SequenceNumbe
         }
 
         ++held;
-        if (slot.change.writerGuid == wg
-            && (same_writer == nullptr
-                || slot.change.sequenceNumber < same_writer->change.sequenceNumber)) {
+        if (slot.change.writerGuid == wg) {
             same_writer = &slot;
         }
 
@@ -212,26 +210,29 @@ AssemblySlot* FragmentAssembler::select_slot(const Guid& wg, const SequenceNumbe
         }
     }
 
+    // KEEP_LAST(1) per writer (§8.3.3.1) comes first, whatever room is left:
+    // a reader holds one partial sample per writer. A newer sample replaces
+    // it; a delayed fragment of an older one is refused, so it never evicts
+    // the newer sample or starts beside it.
+    if (same_writer != nullptr) {
+        if (!(same_writer->change.sequenceNumber < sn)) {
+            RTPS_LOG_D("frag", "fragment of an older sample than the one in assembly, refused");
+            return nullptr;
+        }
+
+        return same_writer;
+    }
+
     if (free_slot != nullptr && held < limit_) {
         return free_slot;
     }
 
-    // KEEP_LAST(1) per writer (§8.3.3.1): a newer sample from the same writer
-    // replaces its partial one, and a delayed fragment of an older sample is
-    // refused rather than evicting the newer one. Otherwise this reader's
-    // oldest slot goes.
-    if (same_writer != nullptr && !(same_writer->change.sequenceNumber < sn)) {
-        RTPS_LOG_D("frag", "fragment of an older sample than the one in assembly, refused");
-        return nullptr;
-    }
-
-    AssemblySlot* victim = same_writer != nullptr ? same_writer : oldest;
-    if (victim == nullptr) {
+    if (oldest == nullptr) {
         RTPS_LOG_D("frag", "assembly pool full (%u slots), fragmented sample refused",
                    (unsigned)pool_.capacity_);
     }
 
-    return victim;
+    return oldest;
 }
 
 FragmentedChange* FragmentAssembler::alloc_slot(const Guid& wg, const SequenceNumber& sn,

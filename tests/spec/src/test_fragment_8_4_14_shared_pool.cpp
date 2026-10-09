@@ -184,6 +184,30 @@ static bool tc_fas_8_4_14_013(std::string& err) {
     return true;
 }
 
+// With slots to spare, a reader still keeps one partial sample per writer: a
+// newer sample replaces the older, a delayed older fragment is refused, and
+// other writers keep their own slots.
+static bool tc_fas_8_4_14_014(std::string& err) {
+    FragmentAssemblyPoolStorage<4> pool;
+    FragmentAssembler a(pool, 4u);
+    const Guid first = writer_guid(14u);
+    const Guid second = writer_guid(15u);
+    CacheChange out{};
+
+    CHECK(!send_fragment(a, first, 5, 1u, out) && !send_fragment(a, second, 1, 1u, out),
+          "two writers each start a sample");
+    CHECK(!send_fragment(a, first, 6, 1u, out), "the first writer's newer sample starts");
+    CHECK(
+        a.active_count() == 2u && !holds(a, first, 5) && holds(a, first, 6) && holds(a, second, 1),
+        "it replaced that writer's older sample and left the other writer's alone");
+
+    CHECK(!send_fragment(a, first, 5, 2u, out) && !send_fragment(a, first, 5, 1u, out),
+          "the delayed fragments of sample 5 do not complete it");
+    CHECK(a.active_count() == 2u && !holds(a, first, 5) && holds(a, first, 6),
+          "sample 5 is refused and does not start beside sample 6");
+    return true;
+}
+
 void append_fragment_tests_8_4_14_shared_pool(std::vector<TestCase>& tests) {
     tests.push_back(
         {"TC-FAS-8.4.14-009",
@@ -210,6 +234,11 @@ void append_fragment_tests_8_4_14_shared_pool(std::vector<TestCase>& tests) {
          "§8.4.14: a first DATA_FRAG that cannot store a fragment (no fragments, a number past "
          "the last, a short payload) takes no slot and evicts no other sample.",
          tc_fas_8_4_14_013});
+    tests.push_back(
+        {"TC-FAS-8.4.14-014",
+         "§8.3.3.1: a reader holds one partial sample per writer even with slots to spare; a "
+         "newer sample replaces the older and a delayed older fragment is refused.",
+         tc_fas_8_4_14_014});
 }
 
 }  // namespace spec_test

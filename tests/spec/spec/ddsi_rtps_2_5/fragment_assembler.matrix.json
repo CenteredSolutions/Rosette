@@ -108,9 +108,9 @@
       "section": "8.3.3.1",
       "page": 68,
       "normativity": "implementation-behavior",
-      "statement": "A fragment of a sample older than the same writer's sample in assembly is refused; a newer sample replaces the older.",
+      "statement": "A fragment of a sample older than the same writer's sample in assembly is refused; a newer sample replaces the older, even when slots are free.",
       "status": "implemented",
-      "test_ids": ["TC-FAS-8.4.14-012"]
+      "test_ids": ["TC-FAS-8.4.14-012", "TC-FAS-8.4.14-014"]
     }
   ]
 }

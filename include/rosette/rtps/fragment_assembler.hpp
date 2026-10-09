@@ -32,9 +32,12 @@
  *    RTPS_ASSEMBLY_SLOTS_PER_READER; the SEDP builtin readers and
  *    standalone readers (BoundedStatefulReader) have private pools.
  *  - Each slot assembles one in-flight fragmented sample and is tagged with
- *    the reader that holds it. A reader replaces only its own samples: its
- *    sample from the same writer first (KEEP_LAST(1) per writer, §8.3.3.1,
- *    p. 68), then its oldest. A reader holding no slot when the pool is full
+ *    the reader that holds it. A reader holds one partial sample per writer
+ *    (KEEP_LAST(1), §8.3.3.1, p. 68): a newer sample from a writer replaces
+ *    its older one, and a delayed older one is refused. Only when a sample
+ *    comes from a writer the reader holds no slot for and the reader is at
+ *    its limit does the reader replace its oldest slot. It replaces only its
+ *    own samples. A reader holding no slot when the pool is full
  *    is refused, and a reliable writer repairs the sample (§8.4.12).
  *  - The received-fragment set uses a full 256-bit bitmap (kWords = 8
  *    words of 32 bits each) matching the SequenceNumberSet wire format
@@ -519,17 +522,22 @@ private:
     /**
      * @brief Chooses the slot a new sample (`wg`, `sn`) goes into, without emptying it.
      *
-     * Applies the rule in the class comment: a free slot below the limit,
-     * else this assembler's slot for the same writer if its sample is older
-     * than `sn`, else (when the writer has none) its oldest slot. A fragment
-     * of a sample no newer than the one in assembly from the same writer is
-     * refused, so a delayed fragment never evicts a newer sample.
+     * Applies the rule in the class comment: this assembler's slot for the
+     * same writer if its sample is older than `sn`, else a free slot below
+     * the limit, else this assembler's oldest slot. A fragment of a sample no
+     * newer than the one in assembly from the same writer is refused, so a
+     * delayed fragment never evicts a newer sample or starts beside it.
      *
      * @param[in] wg Writer of the new sample.
      * @param[in] sn Sequence number of the new sample.
      * @return A free slot, or the active slot the caller may replace; null
      *   when the pool is full and this assembler holds no slot to replace,
      *   or the sample is older than the writer's one in assembly.
+     *
+     * Verification:
+     * - Correct means: after any sequence of calls this assembler holds at most one slot per
+     *   writer, and it is the one with the newest sample seen for that writer.
+     * - Covered by: TC-FAS-8.3.3.1-001, TC-FAS-8.4.14-012, TC-FAS-8.4.14-014.
      */
     AssemblySlot* select_slot(const Guid& wg, const SequenceNumber& sn) noexcept;
 
