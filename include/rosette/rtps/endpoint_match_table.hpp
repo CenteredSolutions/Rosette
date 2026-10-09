@@ -98,8 +98,8 @@
  * ---------------
  * The owner binds a proxy from a fixed pool for every local half of a pair
  * (rtps/proxy_pool.hpp), and a pool can refuse. A refused pair keeps its
- * record, marked waiting, with the ticket it drew from a 16-bit counter when
- * it was reported. It counts as a match for everything the table decides
+ * record, marked waiting, with the ticket it drew from a counter when it
+ * was reported. It counts as a match for everything the table decides
  * (has_match_with(), displacement, dissolving), so a later unmatch still
  * pairs with its report. When a proxy frees, the owner calls
  * match_oldest_waiting(), which reports again the waiting pair with the
@@ -551,7 +551,7 @@ public:
      * calls again while calls succeed.
      *
      * Among waiting records for which the owner's MayMatch holds, the one with the
-     * oldest ticket (compared modulo 2^16) is described from the stored
+     * oldest ticket is described from the stored
      * endpoints exactly as report() first described it and passed to
      * on_match; its waiting mark follows what on_match returns. Records whose
      * endpoint cannot bind yet are skipped, so a full endpoint does not hold
@@ -719,6 +719,9 @@ private:
     };
 
     static constexpr uint32_t kMaxMatches = RTPS_MAX_MATCH_RECORDS;
+
+    /// Ticket count at which report() renumbers the waiting records; well below the 16-bit range.
+    static constexpr uint16_t kRenumberTicketsAt = 0x4000u;
 
     bool is_local(const Guid& g) const noexcept {
         return has_local_prefix_ && g.prefix == local_prefix_;
@@ -978,6 +981,25 @@ private:
 
     /// @brief The waiting record with the oldest ticket MayMatch accepts, or null.
     MatchRecord* oldest_bindable() noexcept;
+
+    /**
+     * @brief Gives the waiting records the tickets 0 to k-1 in their current order.
+     *
+     * Tickets order the waiting pairs by when they were reported, and the
+     * counter that issues them is 16 bits wide. report() renumbers once the
+     * counter reaches kRenumberTicketsAt, so it never wraps and a pair that
+     * waits for any length of time still compares older than every pair
+     * reported after it.
+     *
+     * Verification:
+     * - Correct means: the relative order of the waiting records is unchanged, their tickets are
+     *   0 to k-1, and the next ticket is k.
+     * - Covered by: TC-PART-8.4.1.4-007.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.5.1 (endpoint matching)
+     */
+    void renumber_waiting_tickets() noexcept;
     /// Reports every recorded pair involving `guid` as dissolved and forgets it.
     void dissolve(const Guid& guid, bool is_writer) noexcept;
 
@@ -1035,6 +1057,7 @@ private:
     OnChange   on_change_;
     void*      user_data_;
     GuidPrefix local_prefix_ = {};
+    /// Next ticket to issue; below kRenumberTicketsAt after every report().
     uint16_t next_ticket_ = 0u;
     /// A pair found no record since the last complete rescan.
     bool turned_away_ = false;

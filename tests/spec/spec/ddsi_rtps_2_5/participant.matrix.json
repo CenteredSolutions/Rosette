@@ -164,7 +164,7 @@
       "normativity": "implementation-behavior",
       "statement": "A match whose proxy the pool or the endpoint's cap refuses is kept waiting, not dropped, and keeps its peer in a match. After a proxy frees, each tick binds one waiting match, the oldest by the order the matches were reported among those that can bind; the bound endpoint starts it as a newly matched one, replaying TRANSIENT_LOCAL history, a service reply to that client included. At most RTPS_MAX_WAITING_MATCHES matches wait at once; a match that would wait beyond them is not recorded, while a match that can bind is always recorded. A match turned away for want of a record or a waiting place is found again from the stored endpoints once room frees, one bind per tick.",
       "status": "implemented",
-      "test_ids": ["TC-PART-8.4.1.4-001", "TC-PART-8.4.1.4-002", "TC-PART-8.4.1.4-003", "TC-PART-8.4.1.4-004", "TC-PART-8.4.1.4-005", "TC-PART-8.4.1.4-006"]
+      "test_ids": ["TC-PART-8.4.1.4-001", "TC-PART-8.4.1.4-002", "TC-PART-8.4.1.4-003", "TC-PART-8.4.1.4-004", "TC-PART-8.4.1.4-005", "TC-PART-8.4.1.4-006", "TC-PART-8.4.1.4-007"]
     }
   ]
 }

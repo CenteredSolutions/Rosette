@@ -341,6 +341,42 @@ bool tc_part_8_4_1_4_006(std::string& err) {
     return true;
 }
 
+// TC-PART-8.4.1.4-007: a pair that waits while far more than half the ticket
+// range of later pairs are reported and dissolved still binds before a pair
+// reported after them.
+bool tc_part_8_4_1_4_007(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup");
+    const GuidPrefix peer = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    CHECK(add_peer(p, peer, 7411u), "the peer is accepted");
+
+    StatefulWriter* w = create_capped_writer(p, 1u);
+    CHECK(w != nullptr, "a writer capped at one reader is created");
+
+    const Guid a = remote_reader(peer, 1u);
+    const Guid b = remote_reader(peer, 2u);
+    const Guid churn = remote_reader(peer, 9u);
+    announce_reader(p, a);
+    announce_reader(p, b);
+    CHECK(w->matched_reader_lookup(a) != nullptr, "the first reader binds; b waits");
+
+    // Each round records one waiting pair and dissolves it, drawing a ticket.
+    constexpr uint32_t kRounds = 40000u;  // past half of, and across, the 16-bit range
+    for (uint32_t i = 0; i < kRounds; ++i) {
+        announce_reader(p, churn);
+        p.match_table().remove_reader(churn);
+    }
+
+    const Guid late = remote_reader(peer, 3u);
+    announce_reader(p, late);
+    p.match_table().remove_reader(a);
+    p.tick(200u);
+    CHECK(w->matched_reader_lookup(b) != nullptr && w->matched_reader_lookup(late) == nullptr,
+          "b, which waited through the churn, binds before the pair reported after it");
+    return true;
+}
+
 }  // namespace
 
 void append_participant_waiting_match_tests(std::vector<TestCase>& tests) {
@@ -372,6 +408,10 @@ void append_participant_waiting_match_tests(std::vector<TestCase>& tests) {
                      "§8.4.1.4: when room frees for several turned-away pairs at once, each "
                      "rescan binds one of them.",
                      tc_part_8_4_1_4_006});
+    tests.push_back({"TC-PART-8.4.1.4-007",
+                     "§8.4.1.4/§8.5.5.1: a waiting pair stays older than every pair reported "
+                     "after it, however many pairs are reported and dissolved while it waits.",
+                     tc_part_8_4_1_4_007});
 }
 
 }  // namespace spec_test

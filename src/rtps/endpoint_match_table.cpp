@@ -490,6 +490,10 @@ bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
         return false;
     }
 
+    if (next_ticket_ >= kRenumberTicketsAt) {
+        renumber_waiting_tickets();
+    }
+
     free_slot->writer_guid = writer.guid;
     free_slot->reader_guid = reader.guid;
     free_slot->ticket = next_ticket_++;
@@ -623,6 +627,32 @@ bool EndpointMatchTable::describe(const MatchRecord& m, MatchedEndpoint& writer,
     return topic != nullptr;
 }
 
+void EndpointMatchTable::renumber_waiting_tickets() noexcept {
+    // Visits the waiting records in ascending ticket order. A record's new
+    // ticket (its rank) never exceeds its old one, so a record already
+    // renumbered is never above `last_old` and is not visited twice.
+    uint32_t rank = 0u;
+    int32_t last_old = -1;
+    while (true) {
+        MatchRecord* next = nullptr;
+        for (MatchRecord& m : matches_) {
+            if (m.active() && m.waiting && static_cast<int32_t>(m.ticket) > last_old
+                && (next == nullptr || m.ticket < next->ticket)) {
+                next = &m;
+            }
+        }
+
+        if (next == nullptr) {
+            break;
+        }
+
+        last_old = next->ticket;
+        next->ticket = static_cast<uint16_t>(rank++);
+    }
+
+    next_ticket_ = static_cast<uint16_t>(rank);
+}
+
 EndpointMatchTable::MatchRecord* EndpointMatchTable::oldest_bindable() noexcept {
     if (may_match_ == nullptr) {
         return nullptr;
@@ -634,9 +664,8 @@ EndpointMatchTable::MatchRecord* EndpointMatchTable::oldest_bindable() noexcept 
             continue;
         }
 
-        // Tickets wrap; a ticket is older when it lies less than half the
-        // counter's range behind the other.
-        const bool older = oldest == nullptr || static_cast<int16_t>(m.ticket - oldest->ticket) < 0;
+        // Tickets never wrap (renumber_waiting_tickets()), so order is numeric.
+        const bool older = oldest == nullptr || m.ticket < oldest->ticket;
         if (older && may_match_(m.writer_guid, m.reader_guid, user_data_)) {
             oldest = &m;
         }
