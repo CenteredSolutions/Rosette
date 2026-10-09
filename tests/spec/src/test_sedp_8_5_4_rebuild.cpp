@@ -65,8 +65,8 @@ Guid make_guid(Octet p0, const EntityId& eid) {
 DiscoveredWriterData make_writer(const Guid& g) {
     DiscoveredWriterData wd{};
     wd.writerGuid = g;
-    wd.topicName.assign("rt/mach/robot_0a1b2c3d/motion/move/_action/feedback");
-    wd.typeName.assign("controller_msgs::action::dds_::Move_FeedbackMessage_");
+    wd.topicName.assign("rt/machine/arm_0a1b2c3d/follow_joint_trajectory/_action/feedback");
+    wd.typeName.assign("control_msgs::action::dds_::FollowJointTrajectory_FeedbackMessage_");
     wd.reliabilityKind = ReliabilityKind::RELIABLE;
     wd.durabilityKind = DurabilityKind::VOLATILE;
     wd.unicastLocatorCount = 1u;
@@ -77,8 +77,8 @@ DiscoveredWriterData make_writer(const Guid& g) {
 DiscoveredReaderData make_reader(const Guid& g) {
     DiscoveredReaderData rd{};
     rd.readerGuid = g;
-    rd.topicName.assign("rq/mach/robot_0a1b2c3d/motion/move/_action/send_goalRequest");
-    rd.typeName.assign("controller_msgs::action::dds_::Move_SendGoal_Request_");
+    rd.topicName.assign("rq/machine/arm_0a1b2c3d/follow_joint_trajectory/_action/send_goalRequest");
+    rd.typeName.assign("control_msgs::action::dds_::FollowJointTrajectory_SendGoal_Request_");
     rd.reliabilityKind = ReliabilityKind::RELIABLE;
     rd.durabilityKind = DurabilityKind::VOLATILE;
     rd.unicastLocatorCount = 1u;
