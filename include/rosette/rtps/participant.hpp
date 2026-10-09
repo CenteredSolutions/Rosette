@@ -597,7 +597,6 @@ public:
                               TopicKind       topic_kind) noexcept;
 
 private:
-
     /// @brief StatefulWriter::WaitingReaderQuery answered from the match table.
     static bool has_waiting_reader(void* self, const Guid& writer,
                                    const GuidPrefix& requester) noexcept {

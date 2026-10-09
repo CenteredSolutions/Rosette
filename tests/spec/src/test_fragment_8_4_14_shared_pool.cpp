@@ -132,9 +132,9 @@ static bool tc_fas_8_4_14_011(std::string& err) {
           "a different dataSize is refused");
 
     FragmentNumberSet missing{};
-    CHECK(a.missing_fragments(writer, SequenceNumber::from_int64(1), 2u, missing)
-              && !missing.empty(),
-          "the refused fragments marked nothing received");
+    CHECK(
+        a.missing_fragments(writer, SequenceNumber::from_int64(1), 2u, missing) && !missing.empty(),
+        "the refused fragments marked nothing received");
     CHECK(send_fragment(a, writer, 1, 2u, out) && out.payload.size == kSampleSize,
           "the consistent fragment completes the sample");
     out.clear();
@@ -150,7 +150,8 @@ static bool tc_fas_8_4_14_012(std::string& err) {
     CacheChange out{};
 
     CHECK(!send_fragment(a, writer, 5, 1u, out), "sample 5 starts");
-    CHECK(!send_fragment(a, writer, 4, 1u, out), "a delayed fragment of sample 4 does not complete");
+    CHECK(!send_fragment(a, writer, 4, 1u, out),
+          "a delayed fragment of sample 4 does not complete");
     CHECK(holds(a, writer, 5) && !holds(a, writer, 4),
           "sample 4 is refused and sample 5 keeps its slot");
     CHECK(!send_fragment(a, writer, 6, 1u, out) && holds(a, writer, 6) && !holds(a, writer, 5),

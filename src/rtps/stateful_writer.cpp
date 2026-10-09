@@ -967,7 +967,7 @@ bool StatefulWriter::reply_delivered(const CacheChange& reply, bool reliable) co
 
 bool StatefulWriter::requester_has_waiting_reader(const GuidPrefix& requester) const noexcept {
     return waitingReaderQuery_.fn != nullptr
-        && waitingReaderQuery_.fn(waitingReaderQuery_.context, guid_, requester);
+           && waitingReaderQuery_.fn(waitingReaderQuery_.context, guid_, requester);
 }
 
 }  // namespace rtps

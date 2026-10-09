@@ -1132,6 +1132,7 @@ private:
         RematchListener fn = nullptr;
         void* context = nullptr;
     } rematchListener_;
+
     /// Asks whether a participant has a reader not yet bound (set_waiting_reader_query()).
     struct {
         WaitingReaderQuery fn = nullptr;
