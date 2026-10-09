@@ -158,6 +158,31 @@ static bool tc_fas_8_4_14_012(std::string& err) {
     return true;
 }
 
+// A first DATA_FRAG that cannot store a fragment takes no slot, so it never
+// evicts the partial sample a full pool holds.
+static bool tc_fas_8_4_14_013(std::string& err) {
+    FragmentAssemblyPoolStorage<1> pool;
+    FragmentAssembler a(pool, 1u);
+    const Guid held = writer_guid(12u);
+    const Guid other = writer_guid(13u);
+    const SequenceNumber sn = SequenceNumber::from_int64(1);
+    CacheChange out{};
+
+    CHECK(!send_fragment(a, held, 1, 1u, out), "the held sample starts");
+    CHECK(!a.on_data_frag(other, sn, 1u, 0u, kFragSize, kSampleSize, kFrag, kFragSize, TIME_ZERO,
+                          out),
+          "a submessage of no fragments is refused");
+    CHECK(!a.on_data_frag(other, sn, 3u, 1u, kFragSize, kSampleSize, kFrag, kFragSize, TIME_ZERO,
+                          out),
+          "a fragment number past the last is refused");
+    CHECK(!a.on_data_frag(other, sn, 1u, 1u, kFragSize, kSampleSize, kFrag, kFragSize - 1u,
+                          TIME_ZERO, out),
+          "a payload shorter than its fragment is refused");
+    CHECK(holds(a, held, 1) && !holds(a, other, 1) && pool.active_count() == 1u,
+          "none of them took a slot or evicted the held sample");
+    return true;
+}
+
 void append_fragment_tests_8_4_14_shared_pool(std::vector<TestCase>& tests) {
     tests.push_back(
         {"TC-FAS-8.4.14-009",
@@ -179,6 +204,11 @@ void append_fragment_tests_8_4_14_shared_pool(std::vector<TestCase>& tests) {
          "§8.3.3.1: KEEP_LAST(1) per writer: a fragment of an older sample never evicts the "
          "newer partial sample, and a newer sample replaces the older.",
          tc_fas_8_4_14_012});
+    tests.push_back(
+        {"TC-FAS-8.4.14-013",
+         "§8.4.14: a first DATA_FRAG that cannot store a fragment (no fragments, a number past "
+         "the last, a short payload) takes no slot and evicts no other sample.",
+         tc_fas_8_4_14_013});
 }
 
 }  // namespace spec_test

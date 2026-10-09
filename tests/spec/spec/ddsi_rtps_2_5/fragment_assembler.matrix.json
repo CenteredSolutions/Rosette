@@ -99,9 +99,9 @@
       "section": "9.4.5.4",
       "page": 208,
       "normativity": "implementation-behavior",
-      "statement": "A DATA_FRAG whose fragmentSize or dataSize differs from the sample already in assembly is refused without altering the assembly.",
+      "statement": "A DATA_FRAG whose fragmentSize or dataSize differs from the sample already in assembly is refused without altering the assembly, and a first DATA_FRAG that cannot store a fragment takes no slot.",
       "status": "implemented",
-      "test_ids": ["TC-FAS-8.4.14-011"]
+      "test_ids": ["TC-FAS-8.4.14-011", "TC-FAS-8.4.14-013"]
     },
     {
       "id": "REQ-FAS-8.3.3.1-OLDER-SAMPLE-REFUSED",

@@ -14,6 +14,13 @@ bool stamped_before(uint16_t a, uint16_t b) noexcept {
     return static_cast<int16_t>(static_cast<uint16_t>(a - b)) < 0;
 }
 
+/// @brief Octets of fragment `frag_num` (1-based) of a sample; the last may be shorter (§9.4.5.4).
+uint32_t fragment_length(uint32_t frag_num, uint16_t frag_size, uint32_t data_size,
+                         uint32_t total_frags) noexcept {
+    const uint32_t offset = (frag_num - 1u) * static_cast<uint32_t>(frag_size);
+    return frag_num == total_frags ? data_size - offset : static_cast<uint32_t>(frag_size);
+}
+
 }  // namespace
 
 uint16_t FragmentAssemblyPool::active_count() const noexcept {
@@ -63,6 +70,13 @@ bool FragmentAssembler::on_data_frag(const Guid& writer_guid, const SequenceNumb
     }
 
     if (slot == nullptr) {
+        // A slot, and the sample it may replace, are spent only on a
+        // submessage whose first fragment can be stored.
+        if (frags_in_submsg == 0u || frag_start > total_frags
+            || fragment_length(frag_start, frag_size, data_size, total_frags) > payload_len) {
+            return false;
+        }
+
         slot = alloc_slot(writer_guid, writer_sn, frag_size, data_size, total_frags);
         if (slot == nullptr) {
             return false;
@@ -77,8 +91,7 @@ bool FragmentAssembler::on_data_frag(const Guid& writer_guid, const SequenceNumb
 
         // The last fragment may be shorter than frag_size (§9.4.5.4).
         const uint32_t frag_byte_offset = (frag_num - 1u) * static_cast<uint32_t>(frag_size);
-        const uint32_t frag_byte_len = (frag_num == total_frags) ? (data_size - frag_byte_offset)
-                                                                 : static_cast<uint32_t>(frag_size);
+        const uint32_t frag_byte_len = fragment_length(frag_num, frag_size, data_size, total_frags);
         const uint32_t src_off = i * static_cast<uint32_t>(frag_size);
         if (src_off + frag_byte_len > payload_len) {
             break;
