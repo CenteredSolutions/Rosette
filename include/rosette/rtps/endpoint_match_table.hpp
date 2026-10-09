@@ -491,6 +491,27 @@ public:
     void remove_reader(const Guid& reader_guid) noexcept;
 
     /**
+     * @brief Whether a reader of participant `reader_prefix` waits to match local writer `writer_guid`.
+     *
+     * A waiting pair is compatible but holds no proxy yet, so the writer
+     * cannot see its reader among its matched proxies. A writer that must
+     * know whether a participant still expects its samples asks here.
+     *
+     * @param[in] writer_guid   GUID of the local writer.
+     * @param[in] reader_prefix GUID prefix of the remote participant.
+     * @return `true` when a waiting record pairs the writer with a reader of that participant.
+     *
+     * Verification:
+     * - Correct means: true exactly while a record of the writer with such a reader is marked
+     *   waiting; false once it binds or is dissolved.
+     * - Covered by: TC-SWR-8.4.7-010.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4 (endpoint matching)
+     */
+    bool has_waiting_reader(const Guid& writer_guid, const GuidPrefix& reader_prefix) const noexcept;
+
+    /**
      * @brief Forgets every endpoint of a departed participant (§8.5.3.2).
      *
      * @param[in] gone_prefix GUID prefix of the participant whose lease

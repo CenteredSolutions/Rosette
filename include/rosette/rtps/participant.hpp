@@ -299,6 +299,7 @@ public:
             W(writer_guid, cfg.reliability, cfg.durability, transport_, reader_proxies_, floor, cap,
               cfg.nackDelayMs, cfg.hbPeriodMs);
         w->release_replies_on_delivery(cfg.releaseRepliesOnDelivery);
+        w->set_waiting_reader_query(&RTPSParticipant::has_waiting_reader, this);
 
         writers_[slot] = w;
         writer_alive_[slot] = true;
@@ -596,6 +597,13 @@ public:
                               TopicKind       topic_kind) noexcept;
 
 private:
+
+    /// @brief StatefulWriter::WaitingReaderQuery answered from the match table.
+    static bool has_waiting_reader(void* self, const Guid& writer,
+                                   const GuidPrefix& requester) noexcept {
+        return static_cast<RTPSParticipant*>(self)->match_table_.has_waiting_reader(writer,
+                                                                                    requester);
+    }
 
     /// Next entityKey handed out by assign_entity_id().
     uint32_t next_entity_key_ = 1u;

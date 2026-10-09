@@ -52,8 +52,16 @@ bool FragmentAssembler::on_data_frag(const Guid& writer_guid, const SequenceNumb
         return false;
     }
 
+    // Later fragments of a sample in assembly must repeat the geometry its
+    // first fragment fixed (§9.4.5.4); otherwise they would be copied at
+    // offsets the slot's buffer was not laid out for.
     AssemblySlot* found = find_slot(writer_guid, writer_sn);
     FragmentedChange* slot = found != nullptr ? &found->change : nullptr;
+    if (slot != nullptr && (slot->fragmentSize != frag_size || slot->dataSize != data_size)) {
+        RTPS_LOG_W("frag", "DATA_FRAG disagrees with the sample in assembly, ignored");
+        return false;
+    }
+
     if (slot == nullptr) {
         slot = alloc_slot(writer_guid, writer_sn, frag_size, data_size, total_frags);
         if (slot == nullptr) {
@@ -160,7 +168,7 @@ AssemblySlot* FragmentAssembler::find_slot(const Guid& wg,
     return nullptr;
 }
 
-AssemblySlot* FragmentAssembler::claim_slot(const Guid& wg) noexcept {
+AssemblySlot* FragmentAssembler::select_slot(const Guid& wg, const SequenceNumber& sn) noexcept {
     AssemblySlot* free_slot = nullptr;
     AssemblySlot* same_writer = nullptr;
     AssemblySlot* oldest = nullptr;
@@ -180,7 +188,9 @@ AssemblySlot* FragmentAssembler::claim_slot(const Guid& wg) noexcept {
         }
 
         ++held;
-        if (same_writer == nullptr && slot.change.writerGuid == wg) {
+        if (slot.change.writerGuid == wg
+            && (same_writer == nullptr
+                || slot.change.sequenceNumber < same_writer->change.sequenceNumber)) {
             same_writer = &slot;
         }
 
@@ -193,45 +203,58 @@ AssemblySlot* FragmentAssembler::claim_slot(const Guid& wg) noexcept {
         return free_slot;
     }
 
-    // KEEP_LAST(1) per writer (§8.3.3.1): a newer sample from the same
-    // writer replaces the partial one; otherwise this reader's oldest goes.
+    // KEEP_LAST(1) per writer (§8.3.3.1): a newer sample from the same writer
+    // replaces its partial one, and a delayed fragment of an older sample is
+    // refused rather than evicting the newer one. Otherwise this reader's
+    // oldest slot goes.
+    if (same_writer != nullptr && !(same_writer->change.sequenceNumber < sn)) {
+        RTPS_LOG_D("frag", "fragment of an older sample than the one in assembly, refused");
+        return nullptr;
+    }
+
     AssemblySlot* victim = same_writer != nullptr ? same_writer : oldest;
     if (victim == nullptr) {
         RTPS_LOG_D("frag", "assembly pool full (%u slots), fragmented sample refused",
                    (unsigned)pool_.capacity_);
-        return nullptr;
     }
 
-    victim->change.clear();
     return victim;
 }
 
 FragmentedChange* FragmentAssembler::alloc_slot(const Guid& wg, const SequenceNumber& sn,
                                                 uint16_t frag_size, uint32_t data_size,
                                                 uint32_t total_frags) noexcept {
-    AssemblySlot* slot = claim_slot(wg);
+    AssemblySlot* slot = select_slot(wg, sn);
     if (slot == nullptr) {
         return nullptr;
     }
 
+    // The buffer is taken before a victim is emptied, so a refusal leaves the
+    // victim's partial sample intact. A victim whose own buffer is large
+    // enough lends it to the replacement when the pool has no other block.
     // A sample larger than the largest pool class cannot be reassembled and
-    // is refused here rather than delivered short.
+    // is refused rather than delivered short.
     BufRef buf = buf_alloc(data_size);
     if (!buf.valid() || buf.capacity() < data_size) {
-        RTPS_LOG_W("frag", "no pool block for a %lu-octet fragmented sample",
-                   (unsigned long)data_size);
-        return nullptr;
+        buf.reset();
+        FragmentedChange& victim = slot->change;
+        if (!victim.is_active() || !victim.buffer.valid() || victim.buffer.capacity() < data_size) {
+            RTPS_LOG_W("frag", "no pool block for a %lu-octet fragmented sample",
+                       (unsigned long)data_size);
+            return nullptr;
+        }
+
+        buf = static_cast<BufRef&&>(victim.buffer);
     }
 
     FragmentedChange& change = slot->change;
+    change.clear();
     change.writerGuid = wg;
     change.sequenceNumber = sn;
     change.fragmentSize = frag_size;
     change.dataSize = data_size;
     change.totalFragments = total_frags;
-    change.inlineQos = {};
     change.buffer = static_cast<BufRef&&>(buf);
-    memset(change.receivedBitmap, 0, sizeof(change.receivedBitmap));
     slot->owner = this;
     slot->stamp = pool_.next_stamp_++;
     return &change;

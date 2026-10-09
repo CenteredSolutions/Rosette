@@ -93,6 +93,24 @@
       "statement": "Readers sharing one assembly pool each replace only their own partial samples (the same writer's first, then their oldest), never hold more than their limit, are refused without evicting another reader's sample when the pool is full, and return their slots when destroyed.",
       "status": "implemented",
       "test_ids": ["TC-FAS-8.4.14-009", "TC-FAS-8.4.14-010"]
+    },
+    {
+      "id": "REQ-FAS-9.4.5.4-GEOMETRY",
+      "section": "9.4.5.4",
+      "page": 208,
+      "normativity": "implementation-behavior",
+      "statement": "A DATA_FRAG whose fragmentSize or dataSize differs from the sample already in assembly is refused without altering the assembly.",
+      "status": "implemented",
+      "test_ids": ["TC-FAS-8.4.14-011"]
+    },
+    {
+      "id": "REQ-FAS-8.3.3.1-OLDER-SAMPLE-REFUSED",
+      "section": "8.3.3.1",
+      "page": 68,
+      "normativity": "implementation-behavior",
+      "statement": "A fragment of a sample older than the same writer's sample in assembly is refused; a newer sample replaces the older.",
+      "status": "implemented",
+      "test_ids": ["TC-FAS-8.4.14-012"]
     }
   ]
 }

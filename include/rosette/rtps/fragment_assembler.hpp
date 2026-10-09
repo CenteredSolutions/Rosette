@@ -455,8 +455,10 @@ public:
      * @param[in]  inline_qos       This fragment's inline QoS, or null when it carried none.
      * @return true when the sample is complete and `out_change` holds it;
      *   false while fragments are outstanding, and when the fields are
-     *   invalid, the sample has more than 256 fragments, no slot is
-     *   available, or no buffer-pool block holds the sample.
+     *   invalid, the sample has more than 256 fragments, `frag_size` or
+     *   `data_size` differs from the sample already in assembly, the sample
+     *   is older than the same writer's in assembly, no slot is available,
+     *   or no buffer-pool block holds the sample.
      *
      * Verification:
      * - Correct means: a sample completes exactly once, with its fragments
@@ -515,20 +517,27 @@ private:
     AssemblySlot* find_slot(const Guid& wg, const SequenceNumber& sn) const noexcept;
 
     /**
-     * @brief Chooses the slot a new sample from `wg` goes into, emptying it if it was in use.
+     * @brief Chooses the slot a new sample (`wg`, `sn`) goes into, without emptying it.
      *
      * Applies the rule in the class comment: a free slot below the limit,
-     * else this assembler's slot for the same writer, else its oldest slot,
-     * else none.
+     * else this assembler's slot for the same writer if its sample is older
+     * than `sn`, else (when the writer has none) its oldest slot. A fragment
+     * of a sample no newer than the one in assembly from the same writer is
+     * refused, so a delayed fragment never evicts a newer sample.
      *
      * @param[in] wg Writer of the new sample.
-     * @return An empty slot, or null when the pool is full and this
-     *   assembler holds no slot to replace.
+     * @param[in] sn Sequence number of the new sample.
+     * @return A free slot, or the active slot the caller may replace; null
+     *   when the pool is full and this assembler holds no slot to replace,
+     *   or the sample is older than the writer's one in assembly.
      */
-    AssemblySlot* claim_slot(const Guid& wg) noexcept;
+    AssemblySlot* select_slot(const Guid& wg, const SequenceNumber& sn) noexcept;
 
     /**
      * @brief Takes a slot for a new sample and gives it a buffer that holds the whole sample.
+     *
+     * The buffer is obtained before any replaced sample is dropped, so a
+     * refusal leaves the existing assembly intact.
      *
      * @return The slot, ready for fragments; null when no slot is available
      *   or no buffer-pool block holds `data_size` octets.

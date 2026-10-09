@@ -274,6 +274,10 @@ void StatefulWriter::drop_replies_to_departed(const GuidPrefix& requester) noexc
         }
     }
 
+    if (requester_has_waiting_reader(requester)) {
+        return;
+    }
+
     writer_cache_.for_each_change([&](CacheChange& c) noexcept {
         if (c.inlineQos.hasRelatedSampleIdentity
             && c.inlineQos.relatedSampleIdentity.writerGuid.prefix == requester) {
@@ -951,7 +955,14 @@ bool StatefulWriter::reply_delivered(const CacheChange& reply, bool reliable) co
         requester_matched = true;
     }
 
-    return requester_matched;
+    // A reader still waiting for a proxy will bind and need the reply, and the
+    // matched readers' acknowledgments say nothing about it.
+    return requester_matched && !requester_has_waiting_reader(requester);
+}
+
+bool StatefulWriter::requester_has_waiting_reader(const GuidPrefix& requester) const noexcept {
+    return waitingReaderQuery_.fn != nullptr
+        && waitingReaderQuery_.fn(waitingReaderQuery_.context, guid_, requester);
 }
 
 }  // namespace rtps

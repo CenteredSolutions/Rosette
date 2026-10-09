@@ -115,6 +115,49 @@ static bool tc_fas_8_4_14_010(std::string& err) {
     return true;
 }
 
+// A DATA_FRAG that restates the sample's fragmentSize or dataSize differently
+// from the one in assembly is refused and leaves the assembly untouched.
+static bool tc_fas_8_4_14_011(std::string& err) {
+    FragmentAssemblyPoolStorage<2> pool;
+    FragmentAssembler a(pool, 2u);
+    const Guid writer = writer_guid(10u);
+    CacheChange out{};
+
+    CHECK(!send_fragment(a, writer, 1, 1u, out), "the first fragment starts the sample");
+    CHECK(!a.on_data_frag(writer, SequenceNumber::from_int64(1), 2u, 1u, kFragSize / 2u,
+                          kSampleSize, kFrag, kFragSize / 2u, TIME_ZERO, out),
+          "a different fragmentSize is refused");
+    CHECK(!a.on_data_frag(writer, SequenceNumber::from_int64(1), 2u, 1u, kFragSize,
+                          kSampleSize + kFragSize, kFrag, kFragSize, TIME_ZERO, out),
+          "a different dataSize is refused");
+
+    FragmentNumberSet missing{};
+    CHECK(a.missing_fragments(writer, SequenceNumber::from_int64(1), 2u, missing)
+              && !missing.empty(),
+          "the refused fragments marked nothing received");
+    CHECK(send_fragment(a, writer, 1, 2u, out) && out.payload.size == kSampleSize,
+          "the consistent fragment completes the sample");
+    out.clear();
+    return true;
+}
+
+// A fragment of a sample older than the writer's one in assembly is refused,
+// and the newer partial sample stays.
+static bool tc_fas_8_4_14_012(std::string& err) {
+    FragmentAssemblyPoolStorage<2> pool;
+    FragmentAssembler a(pool, 1u);
+    const Guid writer = writer_guid(11u);
+    CacheChange out{};
+
+    CHECK(!send_fragment(a, writer, 5, 1u, out), "sample 5 starts");
+    CHECK(!send_fragment(a, writer, 4, 1u, out), "a delayed fragment of sample 4 does not complete");
+    CHECK(holds(a, writer, 5) && !holds(a, writer, 4),
+          "sample 4 is refused and sample 5 keeps its slot");
+    CHECK(!send_fragment(a, writer, 6, 1u, out) && holds(a, writer, 6) && !holds(a, writer, 5),
+          "a newer sample 6 still replaces sample 5");
+    return true;
+}
+
 void append_fragment_tests_8_4_14_shared_pool(std::vector<TestCase>& tests) {
     tests.push_back(
         {"TC-FAS-8.4.14-009",
@@ -126,6 +169,16 @@ void append_fragment_tests_8_4_14_shared_pool(std::vector<TestCase>& tests) {
          "§8.4.14: with the assembly pool full, a reader holding no slot is refused without "
          "evicting another reader's sample, and assembles once a reader returns its slots.",
          tc_fas_8_4_14_010});
+    tests.push_back(
+        {"TC-FAS-8.4.14-011",
+         "§9.4.5.4: a DATA_FRAG whose fragmentSize or dataSize differs from the sample in "
+         "assembly is refused and leaves the assembly untouched.",
+         tc_fas_8_4_14_011});
+    tests.push_back(
+        {"TC-FAS-8.4.14-012",
+         "§8.3.3.1: KEEP_LAST(1) per writer: a fragment of an older sample never evicts the "
+         "newer partial sample, and a newer sample replaces the older.",
+         tc_fas_8_4_14_012});
 }
 
 }  // namespace spec_test

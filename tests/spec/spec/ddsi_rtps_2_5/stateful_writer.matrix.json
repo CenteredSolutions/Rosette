@@ -173,9 +173,9 @@
       "id": "REQ-SWR-8.4.7-RELEASE-REPLIES",
       "section": "8.4.7.1",
       "normativity": "may",
-      "statement": "A service reply writer (TRANSIENT_LOCAL) removes a reply once every matched reader sharing the GUID prefix of the request writer named in its related sample identity has acknowledged it, independent of other readers; a reply whose requester has not matched yet stays and is delivered when that reader matches; a reply whose requester's last matched reader unmatches is removed.",
+      "statement": "A service reply writer (TRANSIENT_LOCAL) removes a reply once every matched reader sharing the GUID prefix of the request writer named in its related sample identity has acknowledged it, independent of other readers; a reply whose requester has not matched yet stays and is delivered when that reader matches; a reply whose requester's last matched reader unmatches is removed; none of these releases a reply while a reader of the requester waits for a proxy.",
       "status": "implemented",
-      "test_ids": ["TC-SWR-8.4.7-007", "TC-SWR-8.4.7-008", "TC-SWR-8.4.7-009"]
+      "test_ids": ["TC-SWR-8.4.7-007", "TC-SWR-8.4.7-008", "TC-SWR-8.4.7-009", "TC-SWR-8.4.7-010"]
     },
     {
       "id": "REQ-SWR-8.3.7.5-NACKFRAG-REPAIR",

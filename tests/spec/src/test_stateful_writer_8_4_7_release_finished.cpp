@@ -344,6 +344,53 @@ static bool tc_swr_8_4_7_009(std::string& err) {
     return true;
 }
 
+namespace {
+
+/// Stand-in for the participant's match table: one participant has a reader waiting to bind.
+struct WaitingReaders {
+    GuidPrefix requester{};
+    bool waiting = false;
+
+    static bool query(void* self, const Guid&, const GuidPrefix& requester) noexcept {
+        const auto* w = static_cast<const WaitingReaders*>(self);
+        return w->waiting && w->requester == requester;
+    }
+};
+
+}  // namespace
+
+// DDS-RPC 1.0 §7.8.2: a reply stays while another reader of its requester
+// waits for a proxy, although the requester's bound reader acknowledged it,
+// and goes once the waiting reader has bound and acknowledged it too.
+static bool tc_swr_8_4_7_010(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer = make_guid(0x71u, make_entity(1u, 2u, 3u, 0x02u));
+    const Guid bound = make_guid(0x82u, make_entity(4u, 5u, 6u, 0x07u));
+    const Guid late = make_guid(0x82u, make_entity(4u, 5u, 7u, 0x07u));
+    const Guid request_writer = make_guid(0x82u, make_entity(7u, 8u, 9u, 0x03u));
+    StatefulWriterStorage<4, 3> w(writer, ReliabilityKind::RELIABLE,
+                                  DurabilityKind::TRANSIENT_LOCAL, tx, 5u, 1000u);
+    WaitingReaders waiting{request_writer.prefix, true};
+    w.release_replies_on_delivery(true);
+    w.set_waiting_reader_query(&WaitingReaders::query, &waiting);
+    CHECK(w.matched_reader_add(bound, &kLocA, 1u, false), "match the bound reader");
+    CHECK(w.write_async(ChangeKind::ALIVE, kPayload, 4u, reply_to(request_writer)), "reply");
+
+    deliver(w, bound, acknack(bound, writer, 2, {}, 1));
+    CHECK(holds(w, 1), "the bound reader's acknowledgement leaves the reply for the waiting one");
+
+    w.matched_reader_remove(bound);
+    CHECK(holds(w, 1), "the requester's last bound reader unmatching leaves it too");
+
+    waiting.waiting = false;
+    tx.unicast_msgs.clear();
+    CHECK(w.matched_reader_add(late, &kLocA, 1u, false), "the waiting reader binds");
+    CHECK(!tx.unicast_msgs.empty(), "the kept reply is replayed to it");
+    deliver(w, late, acknack(late, writer, 2, {}, 1));
+    CHECK(!holds(w, 1), "and its acknowledgement releases the reply");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.7-003",
                      "§8.4.7.1/§8.7.2.2.1: a RELIABLE VOLATILE writer releases a change, and its "
@@ -374,6 +421,10 @@ void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& 
                      "DDS-RPC §7.8.2/§8.4.1.4: a reply is dropped when its requester's last reader "
                      "unmatches, and is not replayed to the next client.",
                      tc_swr_8_4_7_009});
+    tests.push_back({"TC-SWR-8.4.7-010",
+                     "DDS-RPC §7.8.2/§8.7.2.2: a reply stays while a reader of its requester waits "
+                     "for a proxy, and is replayed to it when it binds.",
+                     tc_swr_8_4_7_010});
 }
 
 }  // namespace spec_test

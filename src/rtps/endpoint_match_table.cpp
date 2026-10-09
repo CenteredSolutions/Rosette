@@ -645,6 +645,18 @@ EndpointMatchTable::MatchRecord* EndpointMatchTable::oldest_bindable() noexcept 
     return oldest;
 }
 
+bool EndpointMatchTable::has_waiting_reader(const Guid& writer_guid,
+                                            const GuidPrefix& reader_prefix) const noexcept {
+    for (const MatchRecord& m : matches_) {
+        if (m.active() && m.waiting && m.writer_guid == writer_guid
+            && m.reader_guid.prefix == reader_prefix) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool EndpointMatchTable::match_oldest_waiting() noexcept {
     MatchRecord* oldest = oldest_bindable();
     MatchedEndpoint writer{};

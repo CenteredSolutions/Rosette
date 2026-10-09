@@ -522,6 +522,42 @@ public:
     }
 
     /**
+     * @brief Callback asking whether a participant has a reader waiting to match this writer.
+     *
+     * @param[in] context   The pointer given to set_waiting_reader_query().
+     * @param[in] writer    GUID of the asking writer.
+     * @param[in] requester GUID prefix of the remote participant.
+     * @return `true` when a reader of `requester` is compatible with this writer but holds no
+     *   proxy yet.
+     */
+    using WaitingReaderQuery = bool (*)(void* context, const Guid& writer,
+                                        const GuidPrefix& requester) noexcept;
+
+    /**
+     * @brief Installs the query a service reply writer uses to see readers that have not bound.
+     *
+     * A reader waiting for a proxy is absent from matched(). A reply for a
+     * requester with such a reader must stay in the history, even when the
+     * requester's bound readers have acknowledged it, so that it is replayed
+     * once the waiting reader binds.
+     *
+     * @param[in] query   Query, or null for none.
+     * @param[in] context Passed back to `query`; must outlive the writer.
+     *
+     * Verification:
+     * - Correct means: a reply is neither released by delivery nor dropped on unmatch while the
+     *   query reports a waiting reader of its requester.
+     * - Covered by: TC-SWR-8.4.7-010.
+     *
+     * References:
+     * - OMG DDS-RPC 1.0 §7.8.2 (related sample identity)
+     */
+    void set_waiting_reader_query(WaitingReaderQuery query, void* context) noexcept {
+        waitingReaderQuery_.fn = query;
+        waitingReaderQuery_.context = context;
+    }
+
+    /**
      * @brief Processes a NACK_FRAG: the named fragments are resent after nackResponseDelay.
      *
      * A reader that has part of a fragmented change asks for the rest with
@@ -1058,11 +1094,14 @@ private:
     void release_finished_changes() noexcept;
 
     /// @brief Drops the replies to `requester` when none of its readers is
-    ///   matched any more (see matched_reader_remove()).
+    ///   matched or waiting any more (see matched_reader_remove()).
     void drop_replies_to_departed(const GuidPrefix& requester) noexcept;
 
+    /// @brief True when the owner reports a reader of `requester` waiting to bind.
+    bool requester_has_waiting_reader(const GuidPrefix& requester) const noexcept;
+
     /// @brief True when `reply` names a requester whose matched readers are
-    ///   all done with it, and at least one of them is matched.
+    ///   all done with it, at least one of them is matched, and none waits to bind.
     bool reply_delivered(const CacheChange& reply, bool reliable) const noexcept;
 
     Guid            guid_;
@@ -1089,6 +1128,11 @@ private:
         RematchListener fn = nullptr;
         void* context = nullptr;
     } rematchListener_;
+    /// Asks whether a participant has a reader not yet bound (set_waiting_reader_query()).
+    struct {
+        WaitingReaderQuery fn = nullptr;
+        void* context = nullptr;
+    } waitingReaderQuery_;
     PayloadBuilder payloadBuilder_ = nullptr;  ///< Builds payloads of on-demand changes.
     void* payloadBuilderUser_ = nullptr;
     MessageBuilder builder_;
