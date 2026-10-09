@@ -419,6 +419,34 @@ static bool tc_swr_8_4_7_011(std::string& err) {
     return true;
 }
 
+// DDS-RPC 1.0 §7.8.2: a reply that only a waiting reader kept is released when
+// that reader dissolves, if the requester's bound reader has acknowledged it.
+static bool tc_swr_8_4_7_012(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer = make_guid(0x73u, make_entity(1u, 2u, 3u, 0x02u));
+    const Guid bound = make_guid(0x84u, make_entity(4u, 5u, 6u, 0x07u));
+    const Guid late = make_guid(0x84u, make_entity(4u, 5u, 7u, 0x07u));
+    const Guid request_writer = make_guid(0x84u, make_entity(7u, 8u, 9u, 0x03u));
+    StatefulWriterStorage<4, 3> w(writer, ReliabilityKind::RELIABLE,
+                                  DurabilityKind::TRANSIENT_LOCAL, tx, 5u, 1000u);
+    WaitingReaders waiting{request_writer.prefix, true};
+    w.release_replies_on_delivery(true);
+    w.set_waiting_reader_query(&WaitingReaders::query, &waiting);
+    CHECK(w.matched_reader_add(bound, &kLocA, 1u, false), "match the bound reader");
+    CHECK(w.write_async(ChangeKind::ALIVE, kPayload, 4u, reply_to(request_writer)), "reply");
+    const BufBlock* reply_block =
+        w.cache().get_change(SequenceNumber::from_int64(1))->payload.block;
+
+    deliver(w, bound, acknack(bound, writer, 2, {}, 1));
+    CHECK(holds(w, 1), "the waiting reader keeps the acknowledged reply");
+
+    waiting.waiting = false;  // The waiting pair dissolves before the owner unmatches it.
+    w.matched_reader_remove(late);
+    CHECK(!holds(w, 1), "its unmatch releases the reply the bound reader acknowledged");
+    CHECK(reply_block->refcount.load() == 0, "and returns its block to the pool");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.7-003",
                      "§8.4.7.1/§8.7.2.2.1: a RELIABLE VOLATILE writer releases a change, and its "
@@ -457,6 +485,10 @@ void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& 
                      "DDS-RPC §7.8.2/§8.4.1.4: the unmatch of a requester's last reader drops "
                      "its replies even when that reader never bound a proxy.",
                      tc_swr_8_4_7_011});
+    tests.push_back({"TC-SWR-8.4.7-012",
+                     "DDS-RPC §7.8.2/§8.7.2.2: a reply kept only by a waiting reader is released "
+                     "when that reader dissolves and the bound readers have acknowledged it.",
+                     tc_swr_8_4_7_012});
 }
 
 }  // namespace spec_test
