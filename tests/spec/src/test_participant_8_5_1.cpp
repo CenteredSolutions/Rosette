@@ -67,7 +67,7 @@ static bool tc_part_8_5_1_002(std::string& err) {
     rcfg.reliability = ReliabilityKind::RELIABLE;
     rcfg.durability = DurabilityKind::VOLATILE;
 
-    auto* local_writer = p.create_writer<1, 2>(wcfg);
+    auto* local_writer = p.create_writer<1>(wcfg);
     auto* local_reader = p.create_reader(rcfg, nullptr, nullptr);
     CHECK(local_writer != nullptr, "create_writer should succeed");
     CHECK(local_reader != nullptr, "create_reader should succeed");
@@ -311,7 +311,7 @@ static bool tc_part_8_3_4_002(std::string& err) {
     wcfg.durability = DurabilityKind::VOLATILE;
     wcfg.nackDelayMs = 0u;
     wcfg.hbPeriodMs = 100000u;
-    auto* w = p.create_writer<2, 2>(wcfg);
+    auto* w = p.create_writer<2>(wcfg);
     CHECK(w != nullptr, "create_writer should succeed");
 
     const Guid remote_reader = make_guid(0xA1u, 0xA2u, 0xA3u, make_entity(0x44u, 0x55u, 0x66u, 0xC7u));
@@ -898,6 +898,74 @@ static bool tc_part_8_5_1_010(std::string& err) {
     return true;
 }
 
+// TC-PART-8.5.1-011: user endpoints bind from the participant's proxy
+// pools. Every slot's floor is reserved from construction, a floor above it
+// is reserved at creation and returned at deletion, a floor the pool cannot
+// hold refuses the endpoint, and a SEDP match takes its proxy from the pool.
+static bool tc_part_8_5_1_011(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    const ProxyPool& readers = p.reader_proxy_pool();
+    const ProxyPool& writers = p.writer_proxy_pool();
+    CHECK(readers.capacity() == RTPS_READER_PROXY_POOL
+              && readers.reserved() == RTPS_MAX_USER_WRITERS * RTPS_MIN_MATCHES_PER_ENDPOINT,
+          "every writer slot's floor is reserved from construction");
+    CHECK(writers.reserved() == RTPS_MAX_USER_READERS * RTPS_MIN_MATCHES_PER_ENDPOINT,
+          "every reader slot's floor is reserved from construction");
+
+    WriterConfig wcfg{};
+    wcfg.topicName.assign("pool_topic");
+    wcfg.typeName.assign("pkg::msg::PoolType");
+    wcfg.minMatchedReaders = 3u;
+    auto* w = p.create_writer<1>(wcfg);
+    CHECK(w != nullptr && w->min_matched_readers() == 3u, "a writer with floor 3 is created");
+    CHECK(readers.reserved() == RTPS_MAX_USER_WRITERS * RTPS_MIN_MATCHES_PER_ENDPOINT + 2u,
+          "the floor above the slot's is reserved at creation");
+
+    WriterConfig greedy = wcfg;
+    greedy.topicName.assign("greedy_topic");
+    greedy.minMatchedReaders = 255u;
+    CHECK(p.create_writer<1>(greedy) == nullptr, "a floor the pool cannot hold is refused");
+    CHECK(readers.reserved() == RTPS_MAX_USER_WRITERS * RTPS_MIN_MATCHES_PER_ENDPOINT + 2u,
+          "a refused writer reserves nothing");
+
+    // On a topic of its own, so it does not match the local writer.
+    ReaderConfig rcfg{};
+    rcfg.topicName.assign("other_topic");
+    rcfg.typeName.assign("pkg::msg::PoolType");
+    auto* r = p.create_reader(rcfg, nullptr, nullptr);
+    CHECK(r != nullptr && r->max_matched_writers() == RTPS_MAX_MATCHED_WRITERS,
+          "a reader takes the default cap");
+
+    const GuidPrefix remote_prefix = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    std::vector<Octet> spdp_payload{};
+    CHECK(build_spdp_payload(remote_prefix, 30u, make_udpv4_locator(0xC0A80170u, 7410u),
+                             spdp_payload),
+          "SPDP payload build failed");
+    CHECK(p.spdp_reader().on_data(remote_prefix, spdp_payload.data(),
+                                  static_cast<uint32_t>(spdp_payload.size()), 100u),
+          "the peer is accepted");
+
+    DiscoveredReaderData rd{};
+    rd.readerGuid = Guid{remote_prefix, make_entity(0x31u, 0x32u, 0x33u, 0xC7u)};
+    rd.topicName.assign("pool_topic");
+    rd.typeName.assign("pkg::msg::PoolType");
+    rd.reliabilityKind = ReliabilityKind::RELIABLE;
+    p.match_table().add_reader(rd);
+    CHECK(w->matched_reader_count() == 1u && readers.free_count() == RTPS_READER_PROXY_POOL - 1u,
+          "the SEDP match binds a proxy from the participant's pool");
+
+    CHECK(p.delete_writer(w), "the writer is deleted");
+    CHECK(readers.free_count() == RTPS_READER_PROXY_POOL
+              && readers.reserved() == RTPS_MAX_USER_WRITERS * RTPS_MIN_MATCHES_PER_ENDPOINT,
+          "deleting the writer returns its proxies and its floor above the slot's");
+    CHECK(p.delete_reader(r), "the reader is deleted");
+    CHECK(writers.free_count() == RTPS_WRITER_PROXY_POOL
+              && writers.reserved() == RTPS_MAX_USER_READERS * RTPS_MIN_MATCHES_PER_ENDPOINT,
+          "deleting the reader leaves its slot's floor reserved");
+    return true;
+}
+
 void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-001",
                      "§8.5.1/§8.5.3.3: participant announce path is gated on configured local locators and sends SPDP DATA to the well-known multicast locator.",
@@ -944,6 +1012,11 @@ void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-009",
                      "§8.5.3/§8.5.4: the graph observer fires when a peer is discovered or expires and when an endpoint is recorded or forgotten, not for a repeated identical announcement.",
                      tc_part_8_5_1_009});
+    tests.push_back({"TC-PART-8.5.1-011",
+                     "§8.4.1.1/§8.4.7.1: user endpoints bind from the participant's proxy pools; "
+                     "every slot's floor is reserved from construction, a larger floor at "
+                     "creation (or the endpoint is refused), and deletion returns both.",
+                     tc_part_8_5_1_011});
 }
 
 } // namespace spec_test

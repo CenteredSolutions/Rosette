@@ -112,3 +112,15 @@ static_assert(RTPS_MAX_LOCAL_ENDPOINTS >= rmw_rosette::kRtpsWriterCapacity &&
               RTPS_MAX_LOCAL_ENDPOINTS >= rmw_rosette::kRtpsReaderCapacity,
               "RTPS_MAX_LOCAL_ENDPOINTS cannot announce every local endpoint through SEDP");
 #endif
+#ifdef RTPS_READER_PROXY_POOL
+// The participant reserves every writer slot's floor when it is created, and
+// the ros_discovery_info writer, created right after it, reserves the rest of
+// its floor of one proxy per active peer (RosDiscoveryInfoWriter::create()).
+static_assert(
+    RTPS_MAX_PEERS <= 255 && RTPS_MAX_PEERS >= RTPS_MIN_MATCHES_PER_ENDPOINT,
+    "the ros_discovery_info writer's floor, RTPS_MAX_PEERS, must fit an endpoint's floor");
+static_assert(RTPS_READER_PROXY_POOL
+                  >= (RTPS_MAX_USER_WRITERS - 1) * RTPS_MIN_MATCHES_PER_ENDPOINT + RTPS_MAX_PEERS,
+              "RTPS_READER_PROXY_POOL cannot hold every writer's floor and one ros_discovery_info "
+              "proxy per active peer");
+#endif

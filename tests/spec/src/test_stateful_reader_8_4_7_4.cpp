@@ -177,6 +177,52 @@ static bool tc_srr_8_4_7_4_005(std::string& err) {
     return true;
 }
 
+// TC-SRR-8.4.7.4-006: readers sharing a WriterProxy pool bind by its
+// admission rule; a refused match sends no ACKNACK and leaves no proxy; an
+// unmatch or a destroyed reader returns proxies to the pool.
+bool tc_srr_8_4_7_4_006(std::string& err) {
+    CaptureTransport tx{};
+    ProxyPoolStorage<WriterProxy, 3> pool;
+    FragmentAssemblyPoolStorage<2> assembly;
+    CHECK(pool.reserve(2u), "two floors of 1 must fit a pool of 3");
+
+    const Guid busy_guid = make_guid(0x01u, 0x02u, 0x03u, make_entity(0u, 0u, 1u, 0x04u));
+    const Guid quiet_guid = make_guid(0x01u, 0x02u, 0x03u, make_entity(0u, 0u, 2u, 0x04u));
+    const Locator loc = make_udpv4_locator(0xC0A80160u, 7411u);
+    Guid writers[4]{};
+    for (Octet i = 0u; i < 4u; ++i) {
+        writers[i] = make_guid(0x50u, 0x51u, i, make_entity(8u, 8u, i, 0x02u));
+    }
+
+    SharedPoolStatefulReader quiet(quiet_guid, ReliabilityKind::RELIABLE, tx, pool, 1u, 3u,
+                                   assembly, 1u);
+    {
+        SharedPoolStatefulReader busy(busy_guid, ReliabilityKind::RELIABLE, tx, pool, 1u, 3u,
+                                      assembly, 1u);
+        CHECK(busy.matched_writer_add(writers[0], &loc, 1u), "busy binds its floor");
+        CHECK(busy.matched_writer_add(writers[1], &loc, 1u), "busy borrows the unpromised proxy");
+        tx.sent.clear();
+        CHECK(!busy.matched_writer_add(writers[2], &loc, 1u),
+              "busy must not take the proxy promised to quiet's floor");
+        CHECK(tx.sent.empty(), "a refused match sends no preemptive ACKNACK");
+        CHECK(busy.matched_writer_lookup(writers[2]) == nullptr, "a refused match has no proxy");
+        CHECK(quiet.matched_writer_add(writers[3], &loc, 1u), "quiet binds its floor");
+
+        busy.matched_writer_remove(writers[0]);
+        CHECK(busy.matched_writer_count() == 1u && pool.free_count() == 1u,
+              "an unmatch returns the proxy to the pool");
+        CHECK(busy.matched_writer_add(writers[2], &loc, 1u), "busy rebinds within its floor");
+        CHECK(busy.matched_writer_lookup(writers[3]) == nullptr, "busy never sees quiet's writer");
+    }
+
+    CHECK(pool.free_count() == 2u && pool.reserved() == 1u,
+          "a destroyed reader returns every proxy, and its floor stays promised to its slot");
+    CHECK(quiet.matched_writer_add(writers[0], &loc, 1u), "quiet borrows what busy returned");
+    CHECK(quiet.matched_writer_count() == 2u && quiet.max_matched_writers() == 3u,
+          "quiet reports its bound writers and its cap");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.7.4-001",
                      "§8.4.7.4: matched_writer_add creates one WriterProxy for a newly matched writer, and matched_writer_remove removes it from the matched set.",
@@ -199,6 +245,11 @@ void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
          "§8.3.7.1/§8.4.7.4: a reader that rematches a writer counts its ACKNACKs on from the "
          "highest count it sent before, so a writer that remembers it accepts them.",
          tc_srr_8_4_7_4_005});
+    tests.push_back(
+        {"TC-SRR-8.4.7.4-006",
+         "§8.4.7.1/§8.4.7.4: readers sharing a WriterProxy pool bind by its admission rule; a "
+         "refused match sends no ACKNACK; an unmatch or a destroyed reader returns proxies.",
+         tc_srr_8_4_7_4_006});
 }
 
 } // namespace spec_test

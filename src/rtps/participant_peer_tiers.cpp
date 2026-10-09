@@ -66,15 +66,15 @@ bool RTPSParticipant::admit_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
 }
 
 void RTPSParticipant::activate_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
-    RTPS_LOG_I("participant", "peer active %02x%02x%02x%02x%02x%02x%s", peer.guidPrefix.value[0],
-               peer.guidPrefix.value[1], peer.guidPrefix.value[2], peer.guidPrefix.value[3],
-               peer.guidPrefix.value[4], peer.guidPrefix.value[5],
-               peer.parked ? " (was parked)" : "");
     const DiscoveredParticipant* data = spdp_reader_.activate(peer);
     if (data == nullptr) {
         return;
     }
 
+    RTPS_LOG_I("participant", "peer active %02x%02x%02x%02x%02x%02x%s", peer.guidPrefix.value[0],
+               peer.guidPrefix.value[1], peer.guidPrefix.value[2], peer.guidPrefix.value[3],
+               peer.guidPrefix.value[4], peer.guidPrefix.value[5],
+               peer.parked ? " (was parked)" : "");
     peer.parked = false;
     peer.owed = false;
     peer.lastSedpMs = now_ms;

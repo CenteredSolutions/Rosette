@@ -28,6 +28,7 @@ void register_all_builder_tests(std::vector<TestCase>& tests);
 void append_fragment_tests_8_3_3_1(std::vector<TestCase>& tests);
 void append_fragment_tests_8_4_12(std::vector<TestCase>& tests);
 void append_fragment_tests_8_4_14(std::vector<TestCase>& tests);
+void append_fragment_tests_8_4_14_shared_pool(std::vector<TestCase>& tests);
 
 void register_all_fragment_assembler_tests(std::vector<TestCase>& tests);
 
@@ -64,6 +65,7 @@ void append_stateful_writer_tests_8_4_9_announcing(std::vector<TestCase>& tests)
 void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_4_fragment_repair(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_15_piggyback_heartbeat(std::vector<TestCase>& tests);
+void append_proxy_pool_tests(std::vector<TestCase>& tests);
 
 void register_all_stateful_writer_tests(std::vector<TestCase>& tests);
 
@@ -77,6 +79,7 @@ void append_stateful_reader_tests_8_4_12_nack_frag_on_heartbeat(std::vector<Test
 void register_all_stateful_reader_tests(std::vector<TestCase>& tests);
 
 void append_participant_tests_8_5_1(std::vector<TestCase>& tests);
+void append_participant_waiting_match_tests(std::vector<TestCase>& tests);
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests);
 
 void register_all_participant_tests(std::vector<TestCase>& tests);

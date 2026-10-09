@@ -107,14 +107,13 @@ struct MatchObs {
     Guid last_r = GUID_UNKNOWN;
 };
 
-static void on_match(const MatchedEndpoint& writer,
-                     const MatchedEndpoint& reader,
-                     const TopicName&,
+static bool on_match(const MatchedEndpoint& writer, const MatchedEndpoint& reader, const TopicName&,
                      void* user) noexcept {
     auto* o = static_cast<MatchObs*>(user);
     o->calls++;
     o->last_w = writer.guid;
     o->last_r = reader.guid;
+    return true;
 }
 
 static bool build_publication_payload(const DiscoveredWriterData& wd, std::vector<Octet>& out) {
@@ -446,6 +445,7 @@ static bool tc_sedp_8_5_4_009(std::string& err) {
     EndpointMatchTable table(
         [](const MatchedEndpoint&, const MatchedEndpoint&, const TopicName&, void* u) noexcept {
             static_cast<UnmatchObs*>(u)->matches++;
+            return true;
         },
         [](const Guid&, const Guid&, void* u) noexcept {
             static_cast<UnmatchObs*>(u)->unmatches++;

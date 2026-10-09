@@ -60,12 +60,13 @@ bool lookup_defaults_of_any(const GuidPrefix&, const Locator*& locators, uint8_t
     return true;
 }
 
-void on_match(const MatchedEndpoint& w, const MatchedEndpoint&, const TopicName&,
+bool on_match(const MatchedEndpoint& w, const MatchedEndpoint&, const TopicName&,
               void* user) noexcept {
     auto* f = static_cast<Fixture*>(user);
     f->matches++;
     f->reported_count = w.locatorCount;
     f->reported_first = w.locatorCount > 0u ? w.locators[0] : LOCATOR_INVALID;
+    return true;
 }
 
 void on_unmatch(const Guid&, const Guid&, void* user) noexcept {
@@ -211,10 +212,11 @@ struct ReaderLocators {
     Locator by_prefix[256] = {};
 };
 
-void record_reader(const MatchedEndpoint&, const MatchedEndpoint& r, const TopicName&,
+bool record_reader(const MatchedEndpoint&, const MatchedEndpoint& r, const TopicName&,
                    void* user) noexcept {
     auto* seen = static_cast<ReaderLocators*>(user);
     seen->by_prefix[r.guid.prefix.value[0]] = r.locatorCount > 0u ? r.locators[0] : LOCATOR_INVALID;
+    return true;
 }
 
 }  // namespace

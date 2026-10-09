@@ -356,7 +356,7 @@ static bool tc_swr_8_4_14_001(std::string& err) {
 
     CHECK(tx.sent.size() > 1u, "a sample over the limit must be split into several datagrams");
     struct Collect {
-        FragmentAssembler<1> assembler{};
+        BoundedFragmentAssembler<1> assembler{};
         CacheChange complete{};
         int fragments = 0;
         bool done = false;

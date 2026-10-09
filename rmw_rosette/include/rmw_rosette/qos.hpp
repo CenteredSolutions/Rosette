@@ -90,7 +90,7 @@ inline rtps::DurabilityKind to_rtps_durability(rmw_qos_durability_policy_t polic
 ///
 /// Capped at 8, not higher: RTPSParticipant's writer storage table sizes
 /// each slot to fit its default RTPS_PARTICIPANT_MAX_WRITER_BYTES, which
-/// is itself sized for StatefulWriter<8, RTPS_MAX_MATCHED_READERS> (see
+/// is itself sized for SharedPoolStatefulWriter<8> (see
 /// participant.hpp) — create_writer<16>() would trip that class's
 /// static_assert unless a board config raises the byte budget to match.
 /// Going past 8 is a real option, just not a default one.
@@ -134,7 +134,7 @@ inline uint8_t select_writer_depth(const rmw_qos_profile_t& qos) noexcept {
  *
  * Dispatches select_writer_depth()'s result to the matching
  * `create_writer<D>()`; each case lays out a
- * `StatefulWriterStorage<D, RTPS_MAX_MATCHED_READERS>`, and all of them run
+ * `SharedPoolStatefulWriter<D>`, and all of them run
  * the same compiled writer. A new entry in kSupportedWriterDepths needs a
  * matching case added here.
  *

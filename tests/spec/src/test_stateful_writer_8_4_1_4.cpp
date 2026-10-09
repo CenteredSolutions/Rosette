@@ -214,6 +214,57 @@ static bool tc_swr_8_4_1_4_008(std::string& err) {
     return true;
 }
 
+// TC-SWR-8.4.1.4-009: writers sharing a ReaderProxy pool bind by its
+// admission rule: a busy writer borrows what a quiet one is not promised, the
+// quiet one still gets its floor, an unmatch frees a proxy for either, a
+// write reaches exactly the bound readers, and a destroyed writer returns
+// every proxy.
+bool tc_swr_8_4_1_4_009(std::string& err) {
+    CaptureTransport tx{};
+    ProxyPoolStorage<ReaderProxy, 3> pool;
+    CHECK(pool.reserve(2u), "two floors of 1 must fit a pool of 3");
+
+    const Guid busy_guid = make_guid(0x01u, 0x02u, 0x03u, make_entity(0u, 0u, 1u, 0x03u));
+    const Guid quiet_guid = make_guid(0x01u, 0x02u, 0x03u, make_entity(0u, 0u, 2u, 0x03u));
+    const Locator loc = make_udpv4_locator(0xC0A80150u, 7411u);
+    Guid readers[4]{};
+    for (Octet i = 0u; i < 4u; ++i) {
+        readers[i] = make_guid(0x40u, 0x41u, i, make_entity(9u, 9u, i, 0xC7u));
+    }
+
+    SharedPoolStatefulWriter<1> quiet(quiet_guid, ReliabilityKind::BEST_EFFORT,
+                                      DurabilityKind::VOLATILE, tx, pool, 1u, 3u);
+    {
+        SharedPoolStatefulWriter<1> busy(busy_guid, ReliabilityKind::BEST_EFFORT,
+                                         DurabilityKind::VOLATILE, tx, pool, 1u, 3u);
+        CHECK(busy.matched_reader_add(readers[0], &loc, 1u), "busy binds its floor");
+        CHECK(busy.matched_reader_add(readers[1], &loc, 1u), "busy borrows the unpromised proxy");
+        CHECK(!busy.matched_reader_add(readers[2], &loc, 1u),
+              "busy must not take the proxy promised to quiet's floor");
+        CHECK(busy.matched_reader_count() == 2u, "a refused match is not counted");
+        CHECK(quiet.matched_reader_add(readers[3], &loc, 1u), "quiet binds its floor");
+
+        busy.matched_reader_remove(readers[0]);
+        CHECK(busy.matched_reader_count() == 1u && pool.free_count() == 1u,
+              "an unmatch returns the proxy to the pool");
+        CHECK(busy.matched_reader_add(readers[2], &loc, 1u), "busy rebinds within its floor");
+
+        const Octet data[4] = {1u, 2u, 3u, 4u};
+        tx.unicast_msgs.clear();
+        CHECK(busy.write_async(ChangeKind::ALIVE, data, 4u), "busy writes");
+        CHECK(tx.unicast_msgs.size() == 2u, "the DATA goes to exactly busy's two bound readers");
+        CHECK(busy.matched_reader_lookup(readers[1]) != nullptr
+                  && busy.matched_reader_lookup(readers[2]) != nullptr
+                  && busy.matched_reader_lookup(readers[3]) == nullptr,
+              "busy looks up its own readers and not quiet's");
+    }
+
+    CHECK(pool.free_count() == 2u && pool.reserved() == 1u,
+          "a destroyed writer returns every proxy, and its floor stays promised to its slot");
+    CHECK(quiet.matched_reader_add(readers[0], &loc, 1u), "quiet borrows what busy returned");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_1_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.1.4-001",
                      "§8.4.1.4/§8.3.3: add_change assigns monotonically increasing sequence numbers and respects KEEP_LAST cache eviction.",
@@ -229,6 +280,12 @@ void append_stateful_writer_tests_8_4_1_4(std::vector<TestCase>& tests) {
          "§8.7.2.2/§8.4.15.4: a RELIABLE TRANSIENT_LOCAL writer replays its cache to a newly "
          "matched reader with a non-final HEARTBEAT on the newest change spanning the cache.",
          tc_swr_8_4_1_4_008});
+    tests.push_back(
+        {"TC-SWR-8.4.1.4-009",
+         "§8.4.1.1/§8.4.1.4: writers sharing a ReaderProxy pool bind by its admission rule, an "
+         "unmatch or a destroyed writer returns proxies to it, and a write reaches exactly the "
+         "bound readers.",
+         tc_swr_8_4_1_4_009});
 }
 
 } // namespace spec_test

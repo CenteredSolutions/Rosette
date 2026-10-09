@@ -2,9 +2,10 @@
  * @file stateful_writer.cpp
  * @brief StatefulWriter behavior (§8.4.1–§8.4.9), compiled once for every depth.
  *
- * See rtps/stateful_writer.hpp. The writer's storage (history and proxies)
- * belongs to StatefulWriterStorage<Depth, MaxReaders>; this file sees it only
- * through the references and counts bound at construction.
+ * See rtps/stateful_writer.hpp. The writer's history belongs to
+ * SharedPoolStatefulWriter<Depth> or StatefulWriterStorage<Depth, MaxReaders>,
+ * and its proxies to a ReaderProxyPool; this file sees them only through the
+ * references bound at construction and the writer's list of bound proxies.
  */
 
 #include "rosette/rtps/stateful_writer.hpp"
@@ -25,7 +26,7 @@ constexpr uint16_t kEncapsulationSize = 4u;
 
 StatefulWriter::StatefulWriter(const Guid& guid, ReliabilityKind reliability,
                                DurabilityKind durability, ITransport& transport,
-                               HistoryCache& history, ReaderProxy* proxies,
+                               HistoryCache& history, ReaderProxyPool& pool, uint8_t min_readers,
                                uint8_t max_readers, uint32_t nack_delay_ms,
                                uint32_t hb_period_ms) noexcept
     : guid_(guid),
@@ -33,10 +34,20 @@ StatefulWriter::StatefulWriter(const Guid& guid, ReliabilityKind reliability,
       durability_(durability),
       transport_(transport),
       writer_cache_(history),
-      proxies_(proxies),
-      max_readers_(max_readers),
+      pool_(pool),
       nack_delay_ms_(nack_delay_ms),
-      hb_period_ms_(hb_period_ms) {}
+      hb_period_ms_(hb_period_ms) {
+    readers_.floor = min_readers;
+    readers_.cap = max_readers;
+}
+
+StatefulWriter::~StatefulWriter() noexcept {
+    while (readers_.head != kNoProxy) {
+        const ProxyIndex index = readers_.head;
+        pool_[index].clear();
+        (void)pool_.release(readers_, index);
+    }
+}
 
 CacheChange* StatefulWriter::new_change(ChangeKind kind, BufRef& out_payload,
                                         size_t payload_size) noexcept {
@@ -204,13 +215,19 @@ bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* seriali
 
 bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* unicast_locators,
                                         uint8_t locator_count, bool expects_inline_qos) noexcept {
-    if (find_proxy(reader_guid)) return false;
-    ReaderProxy* slot = find_free_slot();
-    if (!slot) {
-        RTPS_LOG_W("writer", "reader proxy table full (max=%d)", max_readers_);
+    if (find_proxy(reader_guid)) {
         return false;
     }
 
+    const ProxyIndex index = pool_.bind(readers_);
+    if (index == kNoProxy) {
+        RTPS_LOG_W("writer", "no reader proxy (matched=%u cap=%u pool free=%u reserved=%u)",
+                   (unsigned)readers_.count, (unsigned)readers_.cap, (unsigned)pool_.free_count(),
+                   (unsigned)pool_.reserved());
+        return false;
+    }
+
+    ReaderProxy* slot = &pool_[index];
     slot->init(reader_guid, unicast_locators, locator_count, expects_inline_qos,
                first_relevant_for_new_reader());
 
@@ -239,21 +256,31 @@ void StatefulWriter::matched_reader_remove(const Guid& reader_guid) noexcept {
             fragRepair_ = FragmentRepair{};
         }
 
-        const GuidPrefix requester = p->remoteReaderGuid.prefix;
         p->clear();
-        if (releaseRepliesOnDelivery_) {
-            drop_replies_to_departed(requester);
-        }
+        (void)pool_.release(readers_, pool_.index_of(*p));
+    }
 
+    // A reader that was still waiting for a proxy holds none, yet replies
+    // were kept for it (reply_delivered()), so its requester's cleanup runs
+    // whether or not a proxy was bound.
+    if (releaseRepliesOnDelivery_) {
+        drop_replies_to_departed(reader_guid.prefix);
+    }
+
+    if (p || releaseRepliesOnDelivery_) {
         release_finished_changes();
     }
 }
 
 void StatefulWriter::drop_replies_to_departed(const GuidPrefix& requester) noexcept {
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        if (proxies_[i].is_matched() && proxies_[i].remoteReaderGuid.prefix == requester) {
+    for (const ReaderProxy& proxy : matched()) {
+        if (proxy.remoteReaderGuid.prefix == requester) {
             return;
         }
+    }
+
+    if (requester_has_waiting_reader(requester)) {
+        return;
     }
 
     writer_cache_.for_each_change([&](CacheChange& c) noexcept {
@@ -294,9 +321,7 @@ void StatefulWriter::send_heartbeat(bool final_flag, const Guid directed_to) noe
     ++heartbeatCount_;
     RTPS_LOG_D("writer", "HEARTBEAT count=%lu final=%d", (unsigned long)heartbeatCount_,
                (int)final_flag);
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        ReaderProxy& proxy = proxies_[i];
-        if (!proxy.is_matched()) continue;
+    for (ReaderProxy& proxy : matched()) {
         if (directed_to != GUID_UNKNOWN && proxy.remoteReaderGuid != directed_to) continue;
         const Locator& dest = proxy.best_locator();
         if (dest == LOCATOR_INVALID) continue;
@@ -432,9 +457,7 @@ void StatefulWriter::record_fragment_repair(const ReaderProxy& proxy, const Sequ
 
 void StatefulWriter::tick(uint32_t now_ms) noexcept {
     // Phase 1: repair what readers NACKed, once nackResponseDelay has passed.
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        ReaderProxy& proxy = proxies_[i];
-        if (!proxy.is_matched()) continue;
+    for (ReaderProxy& proxy : matched()) {
         if (!proxy.nack_delay_elapsed(now_ms, nack_delay_ms_)) continue;
 
         bool any_sent = false;
@@ -478,11 +501,16 @@ void StatefulWriter::tick(uint32_t now_ms) noexcept {
         lastHbSentMs_ = now_ms;
         writesSinceHb_ = 0u;
         ++heartbeatCount_;
-        for (uint8_t i = 0; i < max_readers_; ++i) {
-            ReaderProxy& proxy = proxies_[i];
-            if (!proxy.is_matched() || !proxy.is_announcing(writer_cache_)) continue;
+        for (ReaderProxy& proxy : matched()) {
+            if (!proxy.is_announcing(writer_cache_)) {
+                continue;
+            }
+
             const Locator& dest = proxy.best_locator();
-            if (dest == LOCATOR_INVALID) continue;
+            if (dest == LOCATOR_INVALID) {
+                continue;
+            }
+
             send_heartbeat_to(entity_id::UNKNOWN, dest, /*final=*/false);
         }
     }
@@ -505,10 +533,8 @@ bool StatefulWriter::acknowledged_by_participant(const GuidPrefix& prefix) const
         return true;
     }
 
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        const ReaderProxy& proxy = proxies_[i];
-        if (proxy.is_matched() && proxy.remoteReaderGuid.prefix == prefix
-            && proxy.highestAckedSN < lsn) {
+    for (const ReaderProxy& proxy : matched()) {
+        if (proxy.remoteReaderGuid.prefix == prefix && proxy.highestAckedSN < lsn) {
             return false;
         }
     }
@@ -519,9 +545,7 @@ bool StatefulWriter::acknowledged_by_participant(const GuidPrefix& prefix) const
 uint32_t StatefulWriter::ms_until_next_timer(uint32_t now_ms) const noexcept {
     uint32_t next = UINT32_MAX;
     bool any_announcing = false;
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        const ReaderProxy& proxy = proxies_[i];
-        if (!proxy.is_matched()) continue;
+    for (const ReaderProxy& proxy : matched()) {
         if (proxy.is_announcing(writer_cache_)) any_announcing = true;
         if (proxy.nackPending) {
             const uint32_t elapsed = now_ms - proxy.nackPendingSinceMs;
@@ -535,14 +559,6 @@ uint32_t StatefulWriter::ms_until_next_timer(uint32_t now_ms) const noexcept {
         if (left < next) next = left;
     }
     return next;
-}
-
-uint8_t StatefulWriter::matched_reader_count() const noexcept {
-    uint8_t n = 0;
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        if (proxies_[i].is_matched()) ++n;
-    }
-    return n;
 }
 
 void StatefulWriter::send_gap(const ReaderProxy& proxy, const SequenceNumberSet& irrelevant) noexcept {
@@ -593,16 +609,12 @@ void StatefulWriter::rematch_reader(ReaderProxy& proxy) noexcept {
 }
 
 ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        if (proxies_[i].is_matched() && proxies_[i].remoteReaderGuid == g) return &proxies_[i];
+    for (ReaderProxy& proxy : matched()) {
+        if (proxy.remoteReaderGuid == g) {
+            return &proxy;
+        }
     }
-    return nullptr;
-}
 
-ReaderProxy* StatefulWriter::find_free_slot() noexcept {
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        if (!proxies_[i].is_matched()) return &proxies_[i];
-    }
     return nullptr;
 }
 
@@ -845,9 +857,7 @@ void StatefulWriter::send_unsent_changes(bool with_heartbeat) noexcept {
     }
 
     const SequenceNumber newest = writer_cache_.get_seq_num_max();
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        ReaderProxy& proxy = proxies_[i];
-        if (!proxy.is_matched()) continue;
+    for (ReaderProxy& proxy : matched()) {
         while (true) {
             const SequenceNumber sn = proxy.next_unsent_change(writer_cache_);
             if (sn == SEQUENCENUMBER_UNKNOWN) break;
@@ -893,9 +903,12 @@ void StatefulWriter::encode_heartbeat(Octet* out, const EntityId& reader_id) con
 }
 
 bool StatefulWriter::all_readers_acked(const SequenceNumber& sn) const noexcept {
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        if (proxies_[i].is_matched() && proxies_[i].highestAckedSN < sn) return false;
+    for (const ReaderProxy& proxy : matched()) {
+        if (proxy.highestAckedSN < sn) {
+            return false;
+        }
     }
+
     return true;
 }
 
@@ -916,8 +929,8 @@ void StatefulWriter::release_finished_changes() noexcept {
             return;
         }
 
-        for (uint8_t i = 0; i < max_readers_; ++i) {
-            if (proxies_[i].is_matched() && !proxies_[i].is_done_with(c.sequenceNumber, reliable)) {
+        for (const ReaderProxy& proxy : matched()) {
+            if (!proxy.is_done_with(c.sequenceNumber, reliable)) {
                 return;
             }
         }
@@ -934,10 +947,9 @@ bool StatefulWriter::reply_delivered(const CacheChange& reply, bool reliable) co
     // The requester's reply reader shares the GUID prefix of the request
     // writer the reply names: both belong to the client's participant.
     const GuidPrefix& requester = reply.inlineQos.relatedSampleIdentity.writerGuid.prefix;
-    bool matched = false;
-    for (uint8_t i = 0; i < max_readers_; ++i) {
-        const ReaderProxy& proxy = proxies_[i];
-        if (!proxy.is_matched() || proxy.remoteReaderGuid.prefix != requester) {
+    bool requester_matched = false;
+    for (const ReaderProxy& proxy : matched()) {
+        if (proxy.remoteReaderGuid.prefix != requester) {
             continue;
         }
 
@@ -945,10 +957,17 @@ bool StatefulWriter::reply_delivered(const CacheChange& reply, bool reliable) co
             return false;
         }
 
-        matched = true;
+        requester_matched = true;
     }
 
-    return matched;
+    // A reader still waiting for a proxy will bind and need the reply, and the
+    // matched readers' acknowledgments say nothing about it.
+    return requester_matched && !requester_has_waiting_reader(requester);
+}
+
+bool StatefulWriter::requester_has_waiting_reader(const GuidPrefix& requester) const noexcept {
+    return waitingReaderQuery_.fn != nullptr
+           && waitingReaderQuery_.fn(waitingReaderQuery_.context, guid_, requester);
 }
 
 }  // namespace rtps

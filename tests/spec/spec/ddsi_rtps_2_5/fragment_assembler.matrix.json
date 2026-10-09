@@ -84,6 +84,33 @@
       "statement": "KEEP_LAST(1) policy evicts older in-flight sample state for the same writer when a newer sequence number arrives.",
       "status": "implemented",
       "test_ids": ["TC-FAS-8.3.3.1-001"]
+    },
+    {
+      "id": "REQ-FAS-8.4.14-SHARED-POOL-OWNERSHIP",
+      "section": "8.4.14",
+      "page": 156,
+      "normativity": "implementation-behavior",
+      "statement": "Readers sharing one assembly pool each replace only their own partial samples (the same writer's first, then their oldest), never hold more than their limit, are refused without evicting another reader's sample when the pool is full, and return their slots when destroyed.",
+      "status": "implemented",
+      "test_ids": ["TC-FAS-8.4.14-009", "TC-FAS-8.4.14-010", "TC-FAS-8.4.14-015"]
+    },
+    {
+      "id": "REQ-FAS-9.4.5.4-GEOMETRY",
+      "section": "9.4.5.4",
+      "page": 208,
+      "normativity": "implementation-behavior",
+      "statement": "A DATA_FRAG whose fragmentSize or dataSize differs from the sample already in assembly is refused without altering the assembly, and a first DATA_FRAG that cannot store a fragment takes no slot.",
+      "status": "implemented",
+      "test_ids": ["TC-FAS-8.4.14-011", "TC-FAS-8.4.14-013"]
+    },
+    {
+      "id": "REQ-FAS-8.3.3.1-OLDER-SAMPLE-REFUSED",
+      "section": "8.3.3.1",
+      "page": 68,
+      "normativity": "implementation-behavior",
+      "statement": "A fragment of a sample older than the same writer's sample in assembly is refused; a newer sample replaces the older, even when slots are free.",
+      "status": "implemented",
+      "test_ids": ["TC-FAS-8.4.14-012", "TC-FAS-8.4.14-014"]
     }
   ]
 }

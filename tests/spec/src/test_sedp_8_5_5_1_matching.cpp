@@ -15,12 +15,11 @@ struct Obs {
     int unmatch_calls = 0;
 };
 
-static void on_match(const MatchedEndpoint&,
-                     const MatchedEndpoint&,
-                     const TopicName&,
+static bool on_match(const MatchedEndpoint&, const MatchedEndpoint&, const TopicName&,
                      void* user) noexcept {
     auto* o = static_cast<Obs*>(user);
     o->match_calls++;
+    return true;
 }
 
 static void on_unmatch(const Guid&,
@@ -173,6 +172,7 @@ static bool tc_sedp_8_5_5_1_005(std::string& err) {
             o->reader_locators = r.locatorCount;
             o->first_locator = r.locatorCount ? r.locators[0] : LOCATOR_INVALID;
             o->topic = topic;
+            return true;
         },
         nullptr, &obs);
     const Guid local_writer = make_guid(0x01u, 0x02u, 0x03u, make_entity(1u, 1u, 1u, 0x03u));
@@ -275,6 +275,7 @@ static bool tc_sedp_8_5_5_1_008(std::string& err) {
             auto* o = static_cast<DisplaceObs*>(u);
             o->match_calls++;
             o->last_remote = w.guid.prefix.value[0] == 0x10u ? r.guid : w.guid;
+            return true;
         },
         [](const Guid&, const Guid&, void* u) noexcept {
             static_cast<DisplaceObs*>(u)->unmatch_calls++;
@@ -379,6 +380,7 @@ static bool tc_sedp_8_5_5_1_010(std::string& err) {
             o->last_r = r.guid;
             o->reader_locators = r.locatorCount;
             o->first_locator = r.locatorCount ? r.locators[0] : LOCATOR_INVALID;
+            return true;
         },
         nullptr, &obs);
     const Guid local_writer = make_guid(0xA1u, 0xA2u, 0xA3u, make_entity(1u, 1u, 1u, 0x03u));
@@ -463,6 +465,7 @@ static bool tc_sedp_8_5_5_1_012(std::string& err) {
             auto* o = static_cast<RelocObs*>(u);
             o->matches++;
             o->reader_locators = r.locators;
+            return true;
         },
         [](const Guid&, const Guid&, void* u) noexcept { static_cast<RelocObs*>(u)->unmatches++; },
         &obs);
@@ -523,6 +526,7 @@ static bool tc_sedp_8_5_5_1_013(std::string& err) {
             o->count = w.locatorCount;
             o->first = w.locatorCount > 0u ? w.locators[0] : LOCATOR_INVALID;
             o->second = w.locatorCount > 1u ? w.locators[1] : LOCATOR_INVALID;
+            return true;
         },
         nullptr, &obs);
     LocalSubnets subnets{};

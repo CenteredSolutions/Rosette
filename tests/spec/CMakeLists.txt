@@ -108,7 +108,9 @@ add_executable(fragment_assembler_spec_tests
     src/test_fragment_8_3_3_1.cpp
     src/test_fragment_8_4_12.cpp
     src/test_fragment_8_4_14.cpp
+    src/test_fragment_8_4_14_shared_pool.cpp
     ../../src/rtps/buf_pool.cpp
+    ../../src/rtps/fragment_assembler.cpp
 )
 
 target_include_directories(fragment_assembler_spec_tests PRIVATE
@@ -180,11 +182,13 @@ set(SEDP_SPEC_TEST_SOURCES
     ../../src/rtps/endpoint_match_table.cpp
     ../../src/rtps/locator_ranking.cpp
     ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/sn_window.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
 )
@@ -223,6 +227,7 @@ add_executable(history_cache_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/buf_pool.cpp
 )
 
@@ -252,7 +257,10 @@ add_executable(stateful_writer_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
     src/test_stateful_writer_8_4_1_1_locator_reference.cpp
+    ../../src/rtps/fragment_assembler.cpp
+    src/test_proxy_pool_admission.cpp
     src/test_stateful_writer_8_4_1_4.cpp
     src/test_stateful_writer_8_4_1_4_rematch.cpp
     src/test_stateful_writer_8_4_2_2.cpp
@@ -296,10 +304,12 @@ add_executable(stateful_reader_spec_tests
     src/test_stateful_reader_8_4_10_4_locator_reference.cpp
     src/test_stateful_reader_8_4_12_nack_frag_on_heartbeat.cpp
     ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/sn_window.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
@@ -330,13 +340,16 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     src/spec_participant_test_registry.cpp
     src/test_participant_platform_stub.cpp
     src/test_participant_8_5_1.cpp
+    src/test_participant_waiting_matches.cpp
     ../../src/rtps/participant.cpp
     ../../src/rtps/participant_peer_tiers.cpp
     ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/sn_window.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/spdp.cpp
     ../../src/rtps/spdp_peer_records.cpp
@@ -354,8 +367,12 @@ target_include_directories(participant_spec_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
 )
 
+# Three waiting matches: TC-PART-8.4.1.4-001 queues three readers, and
+# TC-PART-8.4.1.4-004 reaches the limit within the default remote endpoint
+# table.
 target_compile_definitions(participant_spec_tests PRIVATE
     RTPS_LOG_LEVEL=0
+    RTPS_MAX_WAITING_MATCHES=3
 )
 
 set(PARTICIPANT_PASSED_JSON
@@ -373,6 +390,7 @@ target_include_directories(participant_spec_tests_rebuild PRIVATE
 )
 target_compile_definitions(participant_spec_tests_rebuild PRIVATE
     RTPS_LOG_LEVEL=0
+    RTPS_MAX_WAITING_MATCHES=3
     RTPS_SEDP_REBUILD_ANNOUNCEMENTS=1
 )
 add_test(
@@ -385,7 +403,8 @@ add_test(
 set(PARTICIPANT_TIER_SPEC_TEST_SOURCES ${PARTICIPANT_SPEC_TEST_SOURCES})
 list(REMOVE_ITEM PARTICIPANT_TIER_SPEC_TEST_SOURCES
     src/spec_participant_test_registry.cpp
-    src/test_participant_8_5_1.cpp)
+    src/test_participant_8_5_1.cpp
+    src/test_participant_waiting_matches.cpp)
 list(APPEND PARTICIPANT_TIER_SPEC_TEST_SOURCES
     src/spec_participant_tier_test_registry.cpp
     src/test_participant_8_5_3_peer_tiers.cpp)
@@ -515,6 +534,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
     add_executable(fragment_assembler_fuzz_replay
         fuzz/replay_fragment_corpus.cpp
         ../../src/rtps/buf_pool.cpp
+        ../../src/rtps/fragment_assembler.cpp
     )
     target_include_directories(fragment_assembler_fuzz_replay PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../..
@@ -546,9 +566,11 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         ../../src/rtps/history_cache.cpp
         ../../src/rtps/reader_proxy.cpp
         ../../src/rtps/stateful_writer.cpp
+        ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
         ../../src/rtps/buf_pool.cpp
     )
     target_include_directories(sedp_fuzz_replay PRIVATE
@@ -678,6 +700,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         add_executable(fragment_assembler_fuzz
             fuzz/fuzz_fragment_assembler.cpp
             ../../src/rtps/buf_pool.cpp
+            ../../src/rtps/fragment_assembler.cpp
         )
         target_include_directories(fragment_assembler_fuzz PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/../..
@@ -725,9 +748,11 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         ../../src/rtps/history_cache.cpp
         ../../src/rtps/reader_proxy.cpp
         ../../src/rtps/stateful_writer.cpp
+        ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
             ../../src/rtps/buf_pool.cpp
         )
         target_include_directories(sedp_fuzz PRIVATE
@@ -770,7 +795,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
 endif()
 
 # Every spec and fuzz target runs on the platform port.
-foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_spec_tests_rebuild participant_tier_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
+foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests sedp_spec_tests_rebuild history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_spec_tests_rebuild participant_tier_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
     if(TARGET ${_t})
         rosette_spec_use_platform(${_t})
     endif()

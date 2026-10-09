@@ -4,9 +4,9 @@
  *
  * Writers
  * -------
- * create_writer() is a function template over the writer's storage:
+ * create_writer() is a function template over the writer's history depth:
  *
- *   template<uint8_t CacheDepth = 1, uint8_t MaxReaders = RTPS_MAX_MATCHED_READERS>
+ *   template<uint8_t CacheDepth = 1>
  *   StatefulWriter* create_writer(const WriterConfig&);
  *
  * so each writer carries its own history depth:
@@ -14,9 +14,9 @@
  *   auto* w1 = participant.create_writer<1>(cfg);  // KEEP_LAST(1)
  *   auto* w8 = participant.create_writer<8>(cfg);  // KEEP_LAST(8)
  *
- * It constructs a StatefulWriterStorage<CacheDepth, MaxReaders>; the depth
- * changes the writer's data layout only, and every writer runs the one
- * compiled StatefulWriter. The participant keeps its writers in one table of
+ * It constructs a SharedPoolStatefulWriter<CacheDepth>; the depth changes the
+ * writer's data layout only, and every writer runs the one compiled
+ * StatefulWriter. The participant keeps its writers in one table of
  * StatefulWriter* and routes ACKNACK, NACK_FRAG, ticks, and matching to
  * them; the application writes through the StatefulWriter* returned.
  *
@@ -24,8 +24,34 @@
  * -------------
  * Writer slots are opaque byte arrays (aligned storage) constructed via
  * placement-new, each RTPS_PARTICIPANT_MAX_WRITER_BYTES long. A
- * StatefulWriterStorage<D,R> that does not fit a slot fails a static_assert
- * at compile time.
+ * SharedPoolStatefulWriter<D> that does not fit a slot fails a static_assert
+ * at compile time. Reader slots each hold one SharedPoolStatefulReader.
+ *
+ * Matched-endpoint proxies
+ * ------------------------
+ * The proxies of the user endpoints' matches live in two participant-wide
+ * pools (proxy_pool.hpp): RTPS_READER_PROXY_POOL ReaderProxies for the user
+ * writers and RTPS_WRITER_PROXY_POOL WriterProxies for the user readers. An
+ * endpoint binds a proxy when it matches and returns it when it unmatches.
+ * Every endpoint slot has RTPS_MIN_MATCHES_PER_ENDPOINT proxies reserved
+ * from the start, created or not, so an endpoint's first matches never
+ * depend on the order endpoints are created in or on what other endpoints
+ * have borrowed; a static_assert proves the pools hold those floors. An
+ * endpoint above its floor borrows unreserved proxies up to its cap
+ * (RTPS_MAX_MATCHED_READERS / RTPS_MAX_MATCHED_WRITERS, or the config's own).
+ * The SEDP builtin endpoints keep private pools of RTPS_MAX_PEERS proxies,
+ * so discovery never waits for a proxy a user endpoint holds.
+ *
+ * Fragment reassembly
+ * -------------------
+ * The user readers reassemble fragmented samples in one participant-wide
+ * pool of RTPS_ASSEMBLY_SLOTS slots (fragment_assembler.hpp), each reader
+ * holding at most RTPS_ASSEMBLY_SLOTS_PER_READER. A slot holds the
+ * buffer-pool block its sample assembles in, so the pool is sized by the
+ * blocks that can hold a sample, not by readers × matches. A reader replaces
+ * only its own partial samples, so a burst on one topic never discards
+ * another topic's. The SEDP builtin readers keep private pools. Design:
+ * docs/design/shared_proxy_pools.md.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -113,12 +139,40 @@ GuidPrefix make_participant_guid_prefix(uint8_t participant_id) noexcept;
 #endif
 
 /// Maximum byte size of one writer slot in the participant's storage table.
-/// Must be >= sizeof(StatefulWriterStorage<D,R>) for all D and R you intend to use.
-/// Default covers StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>.
+/// Must be >= sizeof(SharedPoolStatefulWriter<D>) for every depth D you intend to use.
+/// Default covers SharedPoolStatefulWriter<8>.
 #ifndef RTPS_PARTICIPANT_MAX_WRITER_BYTES
-#  define RTPS_PARTICIPANT_MAX_WRITER_BYTES \
-       (sizeof(StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>))
+#  define RTPS_PARTICIPANT_MAX_WRITER_BYTES (sizeof(SharedPoolStatefulWriter<8>))
 #endif
+
+/// ReaderProxies shared by the user writers: remote readers matched across
+/// all of them at once. The default is the per-writer cap for every slot.
+#ifndef RTPS_READER_PROXY_POOL
+#  define RTPS_READER_PROXY_POOL (RTPS_MAX_USER_WRITERS * RTPS_MAX_MATCHED_READERS)
+#endif
+
+/// WriterProxies shared by the user readers: remote writers matched across
+/// all of them at once. The default is the per-reader cap for every slot.
+#ifndef RTPS_WRITER_PROXY_POOL
+#  define RTPS_WRITER_PROXY_POOL (RTPS_MAX_USER_READERS * RTPS_MAX_MATCHED_WRITERS)
+#endif
+
+static_assert(
+    RTPS_READER_PROXY_POOL >= RTPS_MAX_USER_WRITERS * RTPS_MIN_MATCHES_PER_ENDPOINT,
+    "RTPS_READER_PROXY_POOL cannot hold RTPS_MIN_MATCHES_PER_ENDPOINT for every writer slot");
+static_assert(
+    RTPS_WRITER_PROXY_POOL >= RTPS_MAX_USER_READERS * RTPS_MIN_MATCHES_PER_ENDPOINT,
+    "RTPS_WRITER_PROXY_POOL cannot hold RTPS_MIN_MATCHES_PER_ENDPOINT for every reader slot");
+static_assert(RTPS_MIN_MATCHES_PER_ENDPOINT <= RTPS_MAX_MATCHED_READERS
+                  && RTPS_MIN_MATCHES_PER_ENDPOINT <= RTPS_MAX_MATCHED_WRITERS,
+              "an endpoint's floor cannot exceed its cap");
+// Every bound match holds at least one proxy, and at most
+// RTPS_MAX_WAITING_MATCHES others wait, so this many records always leave
+// one for a match that binds (see Waiting matches in endpoint_match_table.hpp).
+static_assert(RTPS_MAX_MATCH_RECORDS
+                  >= RTPS_READER_PROXY_POOL + RTPS_WRITER_PROXY_POOL + RTPS_MAX_WAITING_MATCHES,
+              "RTPS_MAX_MATCH_RECORDS cannot hold a record for every proxy in both pools and "
+              "RTPS_MAX_WAITING_MATCHES waiting matches");
 
 // ============================================================
 // WriterConfig / ReaderConfig
@@ -136,6 +190,12 @@ struct WriterConfig {
     /// A service reply writer: drop each reply once its requester has it
     /// (StatefulWriter::release_replies_on_delivery()).
     bool            releaseRepliesOnDelivery = false;
+    /// Readers always granted a proxy (the floor); raised to
+    /// RTPS_MIN_MATCHES_PER_ENDPOINT when lower. The part above that is
+    /// reserved in the pool when the writer is created.
+    uint8_t minMatchedReaders = RTPS_MIN_MATCHES_PER_ENDPOINT;
+    /// Most readers matched at once (the cap); raised to the floor when lower.
+    uint8_t maxMatchedReaders = RTPS_MAX_MATCHED_READERS;
 };
 
 struct ReaderConfig {
@@ -146,6 +206,10 @@ struct ReaderConfig {
     DurabilityKind  durability  = DurabilityKind::VOLATILE;
     TopicKind       topicKind   = TopicKind::NO_KEY;
     uint32_t        hbResponseMs= RTPS_HEARTBEAT_RESPONSE_DELAY_MS;
+    /// Writers always granted a proxy (the floor), as WriterConfig::minMatchedReaders.
+    uint8_t minMatchedWriters = RTPS_MIN_MATCHES_PER_ENDPOINT;
+    /// Most writers matched at once (the cap); raised to the floor when lower.
+    uint8_t maxMatchedWriters = RTPS_MAX_MATCHED_WRITERS;
 };
 
 // ============================================================
@@ -166,33 +230,53 @@ public:
     /**
      * @brief Creates a writer with a KEEP_LAST(CacheDepth) history in a free writer slot.
      *
-     * Constructs a StatefulWriterStorage<CacheDepth, MaxReaders> in the
+     * Constructs a SharedPoolStatefulWriter<CacheDepth> in the
      * participant's writer storage, assigns its entity ID, and registers the
-     * endpoint so SEDP announces it (§8.5.4).
+     * endpoint so SEDP announces it (§8.5.4). The writer binds its reader
+     * proxies from the participant's ReaderProxy pool, with the floor and
+     * cap `cfg` names; the slot's RTPS_MIN_MATCHES_PER_ENDPOINT is already
+     * reserved, and any floor above it is reserved here.
      *
      * @tparam CacheDepth KEEP_LAST depth of the writer's history (§8.3.3).
-     * @tparam MaxReaders Most readers matched at once.
-     * @param[in] cfg Topic, type, QoS, and timing of the writer.
+     * @param[in] cfg Topic, type, QoS, timing, floor and cap of the writer.
      * @return The writer, owned by the participant until delete_writer();
-     *   null when the slot table is full or a name exceeds the name limit.
+     *   null when the slot table is full, a name exceeds the name limit, or
+     *   the pool cannot reserve a floor above RTPS_MIN_MATCHES_PER_ENDPOINT.
      *
      * Verification:
-     * - Covered by: TC-PART-8.5.1-* (tests/spec/src/test_participant_8_5_1.cpp).
+     * - Correct means: the writer is announced through SEDP, binds proxies
+     *   by ProxyPool admission with its floor reserved, and its slot and
+     *   reservation are reused after delete_writer().
+     * - Covered by: TC-PART-8.5.1-* (tests/spec/src/test_participant_8_5_1.cpp),
+     *   TC-PART-8.5.1-011.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.5.1 (the participant creates its endpoints)
+     * - OMG DDSI-RTPS 2.5 §8.5.1 (the participant creates its endpoints),
+     *   §8.4.1.1 (ReaderProxy)
+     *
+     * Example:
+     * @code{.cpp}
+     * rtps::WriterConfig cfg{};
+     * cfg.topicName.assign("rt/chatter");
+     * cfg.typeName.assign("std_msgs::msg::dds_::String_");
+     * rtps::StatefulWriter* writer = participant.create_writer<4>(cfg);
+     * if (writer == nullptr) {
+     *     return;  // slot table full, or a floor the pool cannot reserve
+     * }
+     * writer->write_async(rtps::ChangeKind::ALIVE, cdr, cdr_size);
+     * participant.delete_writer(writer);
+     * @endcode
+     * Full program: examples/rtps_chatter/main.cpp
      */
-    template<uint8_t CacheDepth = 1,
-             uint8_t MaxReaders = RTPS_MAX_MATCHED_READERS>
-    StatefulWriter* create_writer(const WriterConfig& cfg) noexcept
-    {
-        using W = StatefulWriterStorage<CacheDepth, MaxReaders>;
+    template <uint8_t CacheDepth = 1>
+    StatefulWriter* create_writer(const WriterConfig& cfg) noexcept {
+        using W = SharedPoolStatefulWriter<CacheDepth>;
 
         static_assert(sizeof(W) <= RTPS_PARTICIPANT_MAX_WRITER_BYTES,
-            "StatefulWriterStorage<D,R> exceeds RTPS_PARTICIPANT_MAX_WRITER_BYTES. "
-            "Increase RTPS_PARTICIPANT_MAX_WRITER_BYTES in your config.");
-        static_assert(alignof(W) <= alignof(StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>),
-            "writer storage is aligned for StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>");
+                      "SharedPoolStatefulWriter<D> exceeds RTPS_PARTICIPANT_MAX_WRITER_BYTES. "
+                      "Increase RTPS_PARTICIPANT_MAX_WRITER_BYTES in your config.");
+        static_assert(alignof(W) <= alignof(SharedPoolStatefulWriter<8>),
+                      "writer storage is aligned for SharedPoolStatefulWriter<8>");
 
         if (!endpoint_names_fit(cfg.topicName, cfg.typeName)) return nullptr;
 
@@ -200,14 +284,22 @@ public:
         int slot = find_free_writer_slot();
         if (slot < 0) return nullptr;
 
+        uint8_t floor = 0u;
+        uint8_t cap = 0u;
+        if (!reserve_endpoint_floor(reader_proxies_, cfg.minMatchedReaders, cfg.maxMatchedReaders,
+                                    floor, cap)) {
+            return nullptr;
+        }
+
         const Guid writer_guid{ participant_guid_.prefix,
                                 assign_entity_id(cfg.entityId, true, cfg.topicKind) };
 
         // Placement-new into the pre-allocated, correctly aligned storage.
-        W* w = new (writer_storage_[slot]) W(
-            writer_guid, cfg.reliability, cfg.durability,
-            transport_, cfg.nackDelayMs, cfg.hbPeriodMs);
+        W* w = new (writer_storage_[slot])
+            W(writer_guid, cfg.reliability, cfg.durability, transport_, reader_proxies_, floor, cap,
+              cfg.nackDelayMs, cfg.hbPeriodMs);
         w->release_replies_on_delivery(cfg.releaseRepliesOnDelivery);
+        w->set_waiting_reader_query(&RTPSParticipant::has_waiting_reader, this);
 
         writers_[slot] = w;
         writer_alive_[slot] = true;
@@ -218,14 +310,28 @@ public:
         return w;
     }
 
-    // ----------------------------------------------------------
-    // create_reader()
-    //
-    // Every user reader is a DefaultStatefulReader: it matches up to
-    // RTPS_MAX_MATCHED_WRITERS writers and has no history-depth parameter.
-    //
-    // @returns Typed pointer, or nullptr if the slot table is full.
-    // ----------------------------------------------------------
+    /**
+     * @brief Creates a reader in a free reader slot.
+     *
+     * Every user reader is a SharedPoolStatefulReader: it binds its writer
+     * proxies from the participant's WriterProxy pool, with the floor and
+     * cap `cfg` names (by default RTPS_MIN_MATCHES_PER_ENDPOINT and
+     * RTPS_MAX_MATCHED_WRITERS), and has no history-depth parameter.
+     *
+     * @param[in] cfg             Topic, type, QoS, floor and cap of the reader.
+     * @param[in] on_change_avail Callback for each delivered change; null discards.
+     * @param[in] user_data       Forwarded to on_change_avail.
+     * @return The reader, owned by the participant until delete_reader();
+     *   null when the slot table is full, a name exceeds the name limit, or
+     *   the pool cannot reserve a floor above RTPS_MIN_MATCHES_PER_ENDPOINT.
+     *
+     * Verification:
+     * - Correct means: as for create_writer(), with the WriterProxy pool.
+     * - Covered by: TC-PART-8.5.1-005, TC-PART-8.5.1-011.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.1, §8.4.7.1 (WriterProxy)
+     */
     StatefulReader* create_reader(const ReaderConfig&               cfg,
                                   StatefulReader::OnChangeAvailable on_change_avail = nullptr,
                                   void*                             user_data       = nullptr) noexcept;
@@ -254,9 +360,38 @@ public:
     // ----------------------------------------------------------
     ParseResult parse_received(const Octet* buf, uint32_t len) noexcept;
 
-    // ----------------------------------------------------------
-    // tick() — drives SPDP, lease expiry, writer/reader maintenance.
-    // ----------------------------------------------------------
+    /**
+     * @brief Runs the participant's timed work: SPDP, lease expiry, waiting
+     *   matches, and every endpoint's heartbeats and repairs.
+     *
+     * The driver calls this whenever ms_until_next_timer() has elapsed or a
+     * datagram was handled. Nothing runs until the participant has an
+     * address.
+     *
+     * After a user endpoint's proxy frees (an unmatch or a deleted
+     * endpoint), each tick binds at most one waiting match, the oldest the
+     * pools can now serve (EndpointMatchTable::match_oldest_waiting()), and
+     * keeps doing so on later ticks until none can bind. On a tick that binds
+     * no waiting match, a pair turned away earlier for want of a record or a
+     * waiting place is found again once room has freed
+     * (EndpointMatchTable::rescan_unrecorded()), again binding at most one.
+     * A tick therefore replays at most one TRANSIENT_LOCAL history for such
+     * a match.
+     *
+     * @param[in] now_ms Current platform::monotonic_ms().
+     *
+     * Verification:
+     * - Correct means: no timer runs late by more than the driver's wake-up
+     *   latency, and a waiting match binds within one tick per match ahead
+     *   of it once a proxy is free for it; a turned-away pair is recorded
+     *   on the first tick after room frees that binds no waiting match.
+     * - Covered by: TC-PART-8.5.1-006, TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-002,
+     *   TC-PART-8.4.1.4-005.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (lease), §8.4.1.4 (matched_reader_add),
+     *   §8.4.7.4 (matched_writer_add)
+     */
     void tick(uint32_t now_ms) noexcept;
 
     // ----------------------------------------------------------
@@ -264,9 +399,10 @@ public:
     //
     // How long tick() can be deferred: the soonest of the SPDP
     // announcement, any peer lease expiry, and every builtin and user
-    // writer's and reader's pending timer. A driver that sleeps between
-    // ticks waits no longer than this, so no heartbeat, repair, or lease
-    // expiry is late.
+    // writer's and reader's pending timer, or now while a freed proxy may
+    // let a waiting match bind or a rescan is due. A driver that sleeps between ticks waits no
+    // longer than this, so no heartbeat, repair, lease expiry, or waiting
+    // match is late.
     //
     // Verification: TC-PART-8.5.1-006.
     //
@@ -430,6 +566,15 @@ public:
     SpdpReader&       spdp_reader()            noexcept { return spdp_reader_; }
     EndpointMatchTable& match_table()          noexcept { return match_table_; }
 
+    /// @brief The ReaderProxy pool the user writers bind from.
+    const ProxyPool& reader_proxy_pool() const noexcept { return reader_proxies_; }
+
+    /// @brief The WriterProxy pool the user readers bind from.
+    const ProxyPool& writer_proxy_pool() const noexcept { return writer_proxies_; }
+
+    /// @brief The slots the user readers reassemble fragmented samples in.
+    const FragmentAssemblyPool& assembly_pool() const noexcept { return assembly_slots_; }
+
     // ----------------------------------------------------------
     // assign_entity_id()
     //
@@ -452,6 +597,12 @@ public:
                               TopicKind       topic_kind) noexcept;
 
 private:
+    /// @brief StatefulWriter::WaitingReaderQuery answered from the match table.
+    static bool has_waiting_reader(void* self, const Guid& writer,
+                                   const GuidPrefix& requester) noexcept {
+        return static_cast<RTPSParticipant*>(self)->match_table_.has_waiting_reader(writer,
+                                                                                    requester);
+    }
 
     /// Next entityKey handed out by assign_entity_id().
     uint32_t next_entity_key_ = 1u;
@@ -459,10 +610,36 @@ private:
     // ── Discovery callbacks ───────────────────────────────────
     static void on_spdp_new_peer    (const PeerEntry&, void*) noexcept;
     static void on_spdp_peer_removed(const PeerEntry&, void*) noexcept;
-    static void on_endpoint_match   (const MatchedEndpoint&,
-                                     const MatchedEndpoint&,
-                                     const TopicName&,
-                                     void*) noexcept;
+    /**
+     * @brief Binds a proxy for every local half of a matched pair.
+     *
+     * The match table's OnMatch: called once when a pair is reported and
+     * again for a waiting pair from match_oldest_waiting(). A half that
+     * already holds its proxy is left alone, so offering a pair again binds
+     * only the half that waited.
+     *
+     * @param[in] writer The pair's writer, with the locators it announced.
+     * @param[in] reader The pair's reader, with the locators it announced.
+     * @param[in] topic  The local endpoint's topic name, for the log.
+     * @param[in] self   The participant.
+     * @return `true` when every local half holds its proxy; `false` when a
+     *   pool or an endpoint's cap refused one, and the pair waits.
+     *
+     * Verification:
+     * - Correct means: a half is bound at most once; a refused half leaves
+     *   the pool unchanged.
+     * - Covered by: TC-PART-8.5.1-011, TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-003.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.4.7.4 (matched_writer_add)
+     */
+    static bool on_endpoint_match(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
+                                  const TopicName& topic, void* self) noexcept;
+
+    /// @brief The match table's MayMatch: whether every local half of the pair
+    /// that holds no proxy yet could bind one now.
+    static bool may_bind_pair(const Guid& writer_guid, const Guid& reader_guid,
+                              void* self) noexcept;
     static void on_endpoint_unmatch (const Guid&, const Guid&, void*) noexcept;
     static void on_endpoints_changed(void*) noexcept;
 
@@ -600,6 +777,36 @@ private:
     int find_free_writer_slot() const noexcept;
 
     /**
+     * @brief Settles a new endpoint's floor and cap and reserves the floor above its slot's.
+     *
+     * Every endpoint slot has RTPS_MIN_MATCHES_PER_ENDPOINT proxies reserved
+     * from construction, so only a floor above that needs a reservation now.
+     * A requested floor below it is raised to it, and a cap below the floor
+     * (or 0) is raised to the floor.
+     *
+     * @param[in,out] pool          The pool the endpoint will bind from.
+     * @param[in]     requested_min The config's floor.
+     * @param[in]     requested_max The config's cap.
+     * @param[out]    floor         The endpoint's floor.
+     * @param[out]    cap           The endpoint's cap.
+     * @return `false`, with nothing reserved, when the pool has too few
+     *   unpromised proxies for the floor above the slot's.
+     *
+     * Verification:
+     * - Correct means: after every create and delete, the pool's reserved
+     *   count equals the unused floors of all slots, empty ones counting
+     *   RTPS_MIN_MATCHES_PER_ENDPOINT.
+     * - Covered by: TC-PART-8.5.1-011.
+     */
+    static bool reserve_endpoint_floor(ProxyPool& pool, uint8_t requested_min,
+                                       uint8_t requested_max, uint8_t& floor,
+                                       uint8_t& cap) noexcept;
+
+    /// @brief Returns a deleted endpoint's floor above its slot's to the pool
+    ///   (the reverse of reserve_endpoint_floor()).
+    static void release_endpoint_floor(ProxyPool& pool, uint8_t floor) noexcept;
+
+    /**
      * @brief True when a local endpoint's names were stored whole.
      *
      * An endpoint announced under a truncated name would be matched by
@@ -701,12 +908,14 @@ private:
                                    Deliver&& deliver) noexcept;
 
     /// @brief The user reader in slot `i`; valid only while reader_alive_[i].
-    DefaultStatefulReader* user_reader(int i) noexcept {
-        return reinterpret_cast<DefaultStatefulReader*>(reader_storage_[i]);
+    SharedPoolStatefulReader* user_reader(int i) noexcept {
+        return reinterpret_cast<SharedPoolStatefulReader*>(reader_storage_[i]);
     }
-    const DefaultStatefulReader* user_reader(int i) const noexcept {
-        return reinterpret_cast<const DefaultStatefulReader*>(reader_storage_[i]);
+
+    const SharedPoolStatefulReader* user_reader(int i) const noexcept {
+        return reinterpret_cast<const SharedPoolStatefulReader*>(reader_storage_[i]);
     }
+
     void register_writer_endpoint(const Guid& guid, const WriterConfig& cfg) noexcept;
     /**
      * @brief Announces one address as a metatraffic and a default unicast locator.
@@ -745,26 +954,40 @@ private:
     SedpWriter         sedp_writer_;
     SedpReader         sedp_reader_;
 
+    // Proxies of the user endpoints' matches, bound and released as remote
+    // endpoints match and unmatch. Declared before the endpoint storage
+    // that binds from them.
+    ProxyPoolStorage<ReaderProxy, RTPS_READER_PROXY_POOL> reader_proxies_;
+    ProxyPoolStorage<WriterProxy, RTPS_WRITER_PROXY_POOL> writer_proxies_;
+
+    // Assembly slots of the user readers' fragmented samples; declared
+    // before the reader storage, whose readers return their slots on
+    // destruction.
+    FragmentAssemblyPoolStorage<RTPS_ASSEMBLY_SLOTS> assembly_slots_;
+
     // Writer storage: opaque byte arrays, each holding one
-    // StatefulWriterStorage<D, R> of any depth; writers_ points at the
+    // SharedPoolStatefulWriter<D> of any depth; writers_ points at the
     // StatefulWriter inside each live one.
-    alignas(alignof(StatefulWriterStorage<8, RTPS_MAX_MATCHED_READERS>))
-    Octet writer_storage_[RTPS_MAX_USER_WRITERS]
-                         [RTPS_PARTICIPANT_MAX_WRITER_BYTES];
+    alignas(alignof(SharedPoolStatefulWriter<8>)) Octet
+        writer_storage_[RTPS_MAX_USER_WRITERS][RTPS_PARTICIPANT_MAX_WRITER_BYTES];
 
     StatefulWriter* writers_[RTPS_MAX_USER_WRITERS]      = {};
     bool            writer_alive_[RTPS_MAX_USER_WRITERS] = {};
 
-    // Reader storage: one DefaultStatefulReader per slot, placement-new'd
+    // Reader storage: one SharedPoolStatefulReader per slot, placement-new'd
     // by create_reader().
-    alignas(DefaultStatefulReader)
-    Octet reader_storage_[RTPS_MAX_USER_READERS][sizeof(DefaultStatefulReader)];
+    alignas(SharedPoolStatefulReader) Octet
+        reader_storage_[RTPS_MAX_USER_READERS][sizeof(SharedPoolStatefulReader)];
     bool  reader_alive_[RTPS_MAX_USER_READERS] = {};
 
     ParseOps parse_ops_;
 
     OnGraphChange on_graph_change_   = nullptr;
     void*         graph_change_user_ = nullptr;
+
+    /// A user endpoint's proxy freed since the last tick that bound no
+    /// waiting match, so one may bind now.
+    bool rebind_due_ = false;
 };
 
 } // namespace rtps

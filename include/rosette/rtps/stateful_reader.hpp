@@ -21,17 +21,24 @@
  *
  * Proxy storage
  * -------------
- * StatefulReader runs over a caller-provided WriterProxy array, so one
- * compiled reader serves readers of every capacity: user readers match at
- * most RTPS_MAX_MATCHED_WRITERS writers, while the SEDP builtin readers match
- * one announcer per remote participant (RTPS_MAX_PEERS). Declare a reader as
- * BoundedStatefulReader<N>, which owns the array; pass it around as
- * StatefulReader.
+ * StatefulReader binds its WriterProxies from a WriterProxyPool
+ * (proxy_pool.hpp) when writers match and returns them when they unmatch,
+ * keeping the bound ones on a list, so one compiled reader serves readers of
+ * every capacity and every pass visits only matched writers. A participant's
+ * user readers are SharedPoolStatefulReader, all binding from the
+ * participant's pool, each with a floor of RTPS_MIN_MATCHES_PER_ENDPOINT and
+ * a cap of RTPS_MAX_MATCHED_WRITERS. The SEDP builtin readers, which match
+ * one announcer per active peer and must never wait for a proxy, are
+ * BoundedStatefulReader<RTPS_MAX_PEERS>, each with a private pool. Pass
+ * either around as StatefulReader.
  *
  * Fragment reassembly
  * -------------------
- * DATA_FRAG submessages go to a DefaultFragmentAssembler (§8.4.14). A
- * completed sample is accepted exactly as a DATA would be. A missing
+ * DATA_FRAG submessages go to the reader's FragmentAssembler (§8.4.14),
+ * whose slots come from a FragmentAssemblyPool: a participant's user readers
+ * share one, and a BoundedStatefulReader has a private one with a slot per
+ * writer it matches, up to RTPS_ASSEMBLY_SLOTS_PER_READER. A completed sample is accepted
+ * exactly as a DATA would be. A missing
  * fragment is requested with a NACK_FRAG built from the assembler's missing
  * fragments, in answer to a HEARTBEAT_FRAG or, for a sample the writer's
  * HEARTBEAT shows as missing, alongside the ACKNACK (send_acknack()).
@@ -55,17 +62,20 @@
 
 #pragma once
 
-#include "types.hpp"
-#include "history_cache.hpp"
-#include "writer_proxy.hpp"
 #include "fragment_assembler.hpp"
+#include "history_cache.hpp"
 #include "message_builder.hpp"
 #include "message_parser.hpp"
-
+#include "proxy_pool.hpp"
+#include "types.hpp"
+#include "writer_proxy.hpp"
 
 namespace rtps {
 
 struct ITransport;
+
+/// The pool a reader takes its writer proxies from.
+using WriterProxyPool = TypedProxyPool<WriterProxy>;
 
 // ============================================================
 // StatefulReader
@@ -117,7 +127,10 @@ public:
      *   PID_VENDOR_ID); selects the preemptive ACKNACK's form. Unknown for a
      *   local writer.
      * @return `true` when a proxy was added; `false` when the writer is
-     *   already matched or the proxy table is full.
+     *   already matched or the pool refuses a proxy (the reader is at its
+     *   cap, or above its floor with every free proxy promised to other
+     *   floors; ProxyPool::bind()). RTPSParticipant keeps a refused match
+     *   waiting and calls this again once may_add_writer() holds.
      *
      * Verification:
      * - Correct means: one proxy per matched writer; a RELIABLE reader sends
@@ -127,7 +140,8 @@ public:
      *   remembers this reader from an earlier match accepts it; a
      *   BEST_EFFORT reader and a rejected duplicate send none.
      * - Covered by: TC-SRR-8.4.7.4-001, TC-SRR-8.4.7.4-002,
-     *   TC-SRR-8.4.7.4-003, TC-SRR-8.4.7.4-004, TC-SRR-8.4.10-004.
+     *   TC-SRR-8.4.7.4-003, TC-SRR-8.4.7.4-004, TC-SRR-8.4.7.4-006,
+     *   TC-SRR-8.4.10-004.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.7.4 (matched_writer_add), §8.3.7.1 (ACKNACK
@@ -143,8 +157,9 @@ public:
     // "Removes the WriterProxy from the set of matched writers."
     //  — §8.4.7.4, p. 141
     //
-    // Also discards any in-progress fragment assembly for this writer
-    // by calling assembler_.discard_writer(), returning pool buffers.
+    // Returns the writer's proxy to the proxy pool, and discards any
+    // in-progress fragment assembly for this writer by calling
+    // assembler_.discard_writer(), returning buffer-pool blocks.
     // ----------------------------------------------------------
     void matched_writer_remove(const Guid& writer_guid) noexcept;
 
@@ -308,7 +323,11 @@ public:
         user_data_       = ud;
     }
 
-    uint8_t matched_writer_count() const noexcept;
+    /// @brief Number of matched writers (§8.4.7.1 matched_writers).
+    uint8_t matched_writer_count() const noexcept { return writers_.count; }
+
+    /// @brief Writers this reader is always granted proxies for (its floor).
+    uint8_t min_matched_writers() const noexcept { return writers_.floor; }
 
     // ----------------------------------------------------------
     // ms_until_next_timer()
@@ -321,25 +340,34 @@ public:
     // ----------------------------------------------------------
     uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept;
 
-    /// @brief Most writers this reader can match at once.
-    uint8_t max_matched_writers() const noexcept { return proxy_capacity_; }
+    /// @brief Most writers this reader can match at once (its cap).
+    uint8_t max_matched_writers() const noexcept { return writers_.cap; }
+
+    /// @brief Whether matched_writer_add() of a new writer would now get a
+    /// proxy: below the cap, and below the floor or with an unpromised one free.
+    bool may_add_writer() const noexcept { return pool_.may_bind(writers_); }
 
 protected:
-
     /**
-     * @brief Creates a reader over caller-provided WriterProxy storage.
+     * @brief Creates a reader that binds its WriterProxies from `pool`.
      *
-     * Only BoundedStatefulReader constructs a StatefulReader, passing the
-     * array it owns; code that uses a reader holds a StatefulReader& or *.
+     * Only BoundedStatefulReader and SharedPoolStatefulReader construct a
+     * StatefulReader; code that uses a reader holds a StatefulReader& or *.
      *
      * @param[in] guid            This reader's GUID (§8.2.4).
      * @param[in] reliability     RELIABLE or BEST_EFFORT (§8.3.3).
      * @param[in] transport       Transport for ACKNACK and NACK_FRAG; must
      *   outlive the reader.
-     * @param[in] proxies         Storage for one WriterProxy per matched
-     *   writer. It must outlive the reader and is not accessed during
-     *   construction, so it may be a member of a derived class.
-     * @param[in] proxy_capacity  Number of entries in `proxies` (1-255).
+     * @param[in] pool            The pool the reader binds writer proxies
+     *   from. Its owner has reserved `min_writers` proxies in it for this
+     *   reader (ProxyPool::reserve()); it outlives the reader and is not
+     *   accessed during construction.
+     * @param[in] min_writers     The reader's floor: matches always granted.
+     * @param[in] max_writers     The reader's cap, at least `min_writers` and 1.
+     * @param[in] assembly_pool   Slots the reader reassembles fragmented
+     *   samples in, possibly shared with other readers; outlives the reader.
+     * @param[in] assembly_limit  Most slots of `assembly_pool` the reader
+     *   holds at once, 1 to its capacity.
      * @param[in] on_change_avail Callback fired on each new complete change;
      *   null discards delivered changes.
      * @param[in] user_data       Forwarded to on_change_avail.
@@ -347,25 +375,29 @@ protected:
      *   (§8.4.7.1); 0 answers a HEARTBEAT immediately.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.4.7.1 (StatefulReader attributes)
+     * - OMG DDSI-RTPS 2.5 §8.4.7.1 (StatefulReader attributes), §8.4.14
      */
-    StatefulReader(const Guid&       guid,
-                   ReliabilityKind   reliability,
-                   ITransport&       transport,
-                   WriterProxy*      proxies,
-                   uint8_t           proxy_capacity,
-                   OnChangeAvailable on_change_avail,
-                   void*             user_data,
-                   uint32_t          hb_response_ms) noexcept;
+    StatefulReader(const Guid& guid, ReliabilityKind reliability, ITransport& transport,
+                   WriterProxyPool& pool, uint8_t min_writers, uint8_t max_writers,
+                   FragmentAssemblyPool& assembly_pool, uint16_t assembly_limit,
+                   OnChangeAvailable on_change_avail, void* user_data,
+                   uint32_t hb_response_ms) noexcept;
 
-    ~StatefulReader() noexcept = default;
+    /// @brief Returns every bound proxy to the pool.
+    ~StatefulReader() noexcept;
 
 private:
 
     WriterProxy* find_proxy(const Guid& guid) noexcept;
     WriterProxy* find_proxy_by_sender(const GuidPrefix& prefix,
                                       const EntityId&   writer_eid) noexcept;
-    WriterProxy* find_free_slot() noexcept;
+
+    /// @brief The proxies of the matched writers, in match order.
+    WriterProxyPool::Range<WriterProxy> matched() noexcept { return pool_.bound(writers_); }
+
+    WriterProxyPool::Range<const WriterProxy> matched() const noexcept {
+        return static_cast<const WriterProxyPool&>(pool_).bound(writers_);
+    }
 
     /**
      * @brief True when repairs must be requested one change at a time.
@@ -506,12 +538,12 @@ private:
     OnChangeAvailable on_change_avail_ = nullptr;
     void*             user_data_       = nullptr;
 
-    WriterProxy*       proxies_;          ///< Owned by the BoundedStatefulReader.
-    uint8_t            proxy_capacity_;
+    WriterProxyPool& pool_;
+    ProxyList writers_;  ///< Bound proxies, floor and cap.
 
-    /// Fragment reassembler — §8.4.14, p. 156.
-    /// One slot per matched writer; 256-fragment bitmap; pool-backed.
-    DefaultFragmentAssembler assembler_;
+    /// Fragment reassembler — §8.4.14, p. 156. Its slots come from the
+    /// assembly pool the reader was constructed with.
+    FragmentAssembler assembler_;
 
     uint32_t       hb_response_ms_;
     MessageBuilder builder_;
@@ -524,17 +556,41 @@ private:
     int32_t acknack_count_floor_ = 0;
 };
 
+namespace detail {
+/// @brief The private pools of a BoundedStatefulReader, writer proxies and
+/// assembly slots, as a base class so they are constructed before the
+/// StatefulReader base that points into them.
+template <uint8_t kMaxWriters>
+struct BoundedReaderSlots {
+    /// One partial sample per writer the reader matches (KEEP_LAST(1) per
+    /// writer), and no more than a participant's user reader may hold.
+    static constexpr uint16_t kAssemblySlots =
+        kMaxWriters < RTPS_ASSEMBLY_SLOTS_PER_READER ? kMaxWriters : RTPS_ASSEMBLY_SLOTS_PER_READER;
+
+    ProxyPoolStorage<WriterProxy, kMaxWriters> proxies;
+    FragmentAssemblyPoolStorage<kAssemblySlots> assembly;
+
+    /// Promises the whole private pool to its one reader, whose floor is kMaxWriters.
+    BoundedReaderSlots() noexcept { (void)proxies.reserve(kMaxWriters); }
+};
+}  // namespace detail
+
 /**
- * @brief A StatefulReader that owns storage for `kMaxWriters` WriterProxies.
+ * @brief A StatefulReader with a private pool of `kMaxWriters` WriterProxies.
  *
- * The protocol logic lives once in StatefulReader (stateful_reader.cpp);
- * this template only adds the array, so readers of different capacities
- * share all code and differ only in size.
+ * Its capacity is its own and always available: floor and cap are both
+ * kMaxWriters, and it reassembles fragmented samples in a private pool of
+ * one slot per writer, up to RTPS_ASSEMBLY_SLOTS_PER_READER, as many as a
+ * participant's user reader may hold. The SEDP builtin readers are of this
+ * kind. The protocol
+ * logic lives once in StatefulReader (stateful_reader.cpp); this template
+ * only adds the pool, so readers of different capacities share all code.
  *
  * @tparam kMaxWriters Most writers matched at once (1-255).
  */
 template <uint8_t kMaxWriters>
-class BoundedStatefulReader final : public StatefulReader {
+class BoundedStatefulReader final : private detail::BoundedReaderSlots<kMaxWriters>,
+                                    public StatefulReader {
     static_assert(kMaxWriters >= 1u, "a reader must be able to match a writer");
 
 public:
@@ -542,25 +598,68 @@ public:
      * @brief Creates a reader with no matched writers.
      *
      * The parameters are those of StatefulReader's constructor, less the
-     * proxy storage this class provides.
+     * proxy pool this class provides.
      */
-    BoundedStatefulReader(const Guid&       guid,
-                          ReliabilityKind   reliability,
-                          ITransport&       transport,
-                          OnChangeAvailable on_change_avail = nullptr,
-                          void*             user_data       = nullptr,
-                          uint32_t          hb_response_ms  =
-                              RTPS_HEARTBEAT_RESPONSE_DELAY_MS) noexcept
-        : StatefulReader(guid, reliability, transport, proxy_storage_, kMaxWriters,
-                         on_change_avail, user_data, hb_response_ms)
-    {}
-
-private:
-    // Constructed after the base, which only records its address.
-    WriterProxy proxy_storage_[kMaxWriters];
+    BoundedStatefulReader(const Guid& guid, ReliabilityKind reliability, ITransport& transport,
+                          OnChangeAvailable on_change_avail = nullptr, void* user_data = nullptr,
+                          uint32_t hb_response_ms = RTPS_HEARTBEAT_RESPONSE_DELAY_MS) noexcept
+        : StatefulReader(guid, reliability, transport, this->proxies, kMaxWriters, kMaxWriters,
+                         this->assembly, detail::BoundedReaderSlots<kMaxWriters>::kAssemblySlots,
+                         on_change_avail, user_data, hb_response_ms) {}
 };
 
-/// Reader for user topics: up to RTPS_MAX_MATCHED_WRITERS matched writers.
+/// A standalone reader for user topics: up to RTPS_MAX_MATCHED_WRITERS matched writers.
 using DefaultStatefulReader = BoundedStatefulReader<RTPS_MAX_MATCHED_WRITERS>;
+
+/**
+ * @brief A StatefulReader whose WriterProxies and assembly slots come from
+ *   pools its owner shares among readers.
+ *
+ * RTPSParticipant creates its user readers as these, all binding from the
+ * participant's WriterProxy pool and reassembling in its assembly pool, so
+ * per-match storage scales with the matches the participant has at once
+ * rather than with readers × cap.
+ *
+ * Example:
+ * @code{.cpp}
+ * rtps::ProxyPoolStorage<rtps::WriterProxy, 16> pool;
+ * rtps::FragmentAssemblyPoolStorage<6> assembly;
+ * (void)pool.reserve(1);                 // this reader's floor
+ * rtps::SharedPoolStatefulReader reader(guid, rtps::ReliabilityKind::RELIABLE, transport,
+ *                                       pool, 1, 8, assembly, 5, on_change, &app);
+ * if (reader.matched_writer_add(writer_guid, &locator, 1u, rtps::VENDORID_UNKNOWN)) {
+ *     // DATA from that writer now reaches on_change.
+ * }
+ * @endcode
+ * Full program: tests/spec/src/test_stateful_reader_8_4_7_4.cpp (TC-SRR-8.4.7.4-006)
+ */
+class SharedPoolStatefulReader final : public StatefulReader {
+public:
+    /**
+     * @brief Creates a reader with no matched writers.
+     *
+     * @param[in] guid            This reader's GUID (§8.2.4).
+     * @param[in] reliability     RELIABLE or BEST_EFFORT (§8.3.3).
+     * @param[in] transport       Transport for ACKNACK and NACK_FRAG; outlives the reader.
+     * @param[in] pool            Pool shared with other readers; the caller
+     *   has reserved `min_writers` proxies in it for this reader, and it
+     *   outlives the reader.
+     * @param[in] min_writers     Floor: matches always granted.
+     * @param[in] max_writers     Cap: most matches at once, at least `min_writers` and 1.
+     * @param[in] assembly_pool   Assembly slots shared with other readers; outlives the reader.
+     * @param[in] assembly_limit  Most of those slots this reader holds at once.
+     * @param[in] on_change_avail Callback fired on each new complete change; null discards.
+     * @param[in] user_data       Forwarded to on_change_avail.
+     * @param[in] hb_response_ms  heartbeatResponseDelay in milliseconds (§8.4.7.1).
+     */
+    SharedPoolStatefulReader(const Guid& guid, ReliabilityKind reliability, ITransport& transport,
+                             WriterProxyPool& pool, uint8_t min_writers, uint8_t max_writers,
+                             FragmentAssemblyPool& assembly_pool, uint16_t assembly_limit,
+                             OnChangeAvailable on_change_avail = nullptr, void* user_data = nullptr,
+                             uint32_t hb_response_ms = RTPS_HEARTBEAT_RESPONSE_DELAY_MS) noexcept
+        : StatefulReader(guid, reliability, transport, pool, min_writers, max_writers,
+                         assembly_pool, assembly_limit, on_change_avail, user_data,
+                         hb_response_ms) {}
+};
 
 } // namespace rtps

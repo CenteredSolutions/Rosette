@@ -8,7 +8,9 @@
  * receive buffer holds fewer than all of them the same fragments are lost on
  * every retry. So the reader answers the HEARTBEAT with a NACK_FRAG naming
  * only the missing fragments, alongside an ACKNACK that leaves the change
- * out, as Fast DDS's reader does.
+ * out, as Fast DDS's reader does. A change the reader holds no fragments of,
+ * including one refused because a shared assembly pool was full, is
+ * requested whole.
  */
 
 #include "spec_test_common.hpp"
@@ -177,6 +179,56 @@ static bool tc_srr_8_4_12_003(std::string& err) {
     return true;
 }
 
+// §8.4.12, §8.4.14: a reader that shares a full assembly pool and holds no
+// slot of it is refused a fragmented change; the change stays MISSING, is
+// requested whole, and assembles when the writer resends it after a slot
+// frees.
+static bool tc_srr_8_4_12_004(std::string& err) {
+    CaptureTransport tx{};
+    ProxyPoolStorage<WriterProxy, 2> proxies;
+    FragmentAssemblyPoolStorage<1> assembly;
+    CHECK(proxies.reserve(2u), "one floor for each reader");
+    int delivered = 0;
+    const auto count = [](const CacheChange&, void* n) noexcept {
+        ++*static_cast<int*>(n);
+    };
+    const Guid busy_guid = make_guid(0x71u, make_entity(1u, 2u, 3u, 0x04u));
+    const Guid quiet_guid = make_guid(0x72u, make_entity(1u, 2u, 4u, 0x04u));
+    const Guid busy_writer = make_guid(0x81u, make_entity(4u, 5u, 6u, 0x03u));
+    const Guid quiet_writer = make_guid(0x82u, make_entity(4u, 5u, 7u, 0x03u));
+    SharedPoolStatefulReader busy(busy_guid, ReliabilityKind::RELIABLE, tx, proxies, 1u, 1u,
+                                  assembly, 1u);
+    SharedPoolStatefulReader quiet(quiet_guid, ReliabilityKind::RELIABLE, tx, proxies, 1u, 1u,
+                                   assembly, 1u, count, &delivered);
+    CHECK(busy.matched_writer_add(busy_writer, &kLoc, 1u)
+              && quiet.matched_writer_add(quiet_writer, &kLoc, 1u),
+          "each reader matches its writer");
+
+    deliver_fragment(busy, busy_guid, busy_writer, 1, 1u);
+    for (uint32_t frag = 1u; frag <= 3u; ++frag) {
+        deliver_fragment(quiet, quiet_guid, quiet_writer, 1, frag);
+    }
+
+    CHECK(delivered == 0, "the refused change is not delivered");
+    tx.unicast_msgs.clear();
+    heartbeat(quiet, quiet_guid, quiet_writer, 1);
+    CHECK(tx.unicast_msgs.size() == 1u, "the HEARTBEAT is answered");
+    const Reply reply = inspect(tx.unicast_msgs[0]);
+    CHECK(reply.parsed && reply.acknacks == 1 && reply.acknack.readerSNState.test(0u)
+              && reply.nack_frags.empty(),
+          "the refused change is requested whole, with no NACK_FRAG");
+
+    deliver_fragment(busy, busy_guid, busy_writer, 1, 2u);
+    deliver_fragment(busy, busy_guid, busy_writer, 1, 3u);
+    for (uint32_t frag = 1u; frag <= 3u; ++frag) {
+        deliver_fragment(quiet, quiet_guid, quiet_writer, 1, frag);
+    }
+
+    CHECK(delivered == 1, "the resent change assembles once the busy reader's sample completes");
+    CHECK(assembly.active_count() == 0u, "the shared slot is free again");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_12_nack_frag_on_heartbeat(std::vector<TestCase>& tests) {
     tests.push_back(
         {"TC-SRR-8.4.12-002",
@@ -187,6 +239,11 @@ void append_stateful_reader_tests_8_4_12_nack_frag_on_heartbeat(std::vector<Test
                      "§8.4.12/§8.3.7.1: a change with no fragment received stays in the ACKNACK "
                      "bitmap; a partly received one is left out and requested by NACK_FRAG.",
                      tc_srr_8_4_12_003});
+    tests.push_back({"TC-SRR-8.4.12-004",
+                     "§8.4.12/§8.4.14: a reader refused a fragmented change by a full shared "
+                     "assembly pool requests it whole and assembles the resent change once a "
+                     "slot frees.",
+                     tc_srr_8_4_12_004});
 }
 
 }  // namespace spec_test

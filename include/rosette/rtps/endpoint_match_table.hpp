@@ -88,11 +88,44 @@
  * Callbacks
  * ---------
  * on_match(writer, reader, topic): a compatible pair was found; the owner
- *   (RTPSParticipant) adds the matching proxies.
+ *   (RTPSParticipant) adds the matching proxies and returns whether it could.
  * on_unmatch(writer_guid, reader_guid): a reported pair was dissolved.
  * on_change(): the set of known endpoints changed (one was recorded, its
  *   topic or type changed, or it was forgotten); the owner tells graph
  *   observers to re-query.
+ *
+ * Waiting matches
+ * ---------------
+ * The owner binds a proxy from a fixed pool for every local half of a pair
+ * (rtps/proxy_pool.hpp), and a pool can refuse. A refused pair keeps its
+ * record, marked waiting, with the ticket it drew from a counter when it
+ * was reported. It counts as a match for everything the table decides
+ * (has_match_with(), displacement, dissolving), so a later unmatch still
+ * pairs with its report. When a proxy frees, the owner calls
+ * match_oldest_waiting(), which reports again the waiting pair with the
+ * oldest ticket among those the owner says may now bind (set_may_match()).
+ * A pair reported while an older waiting pair may bind waits behind it
+ * rather than take the freed proxy first, so pairs bind in the order they
+ * were reported.
+ *
+ * At most RTPS_MAX_WAITING_MATCHES records wait at once. A pair that would
+ * wait beyond them is not recorded, and the owner binds no proxy for it, so
+ * a topic many peers read cannot take the records that pairs which bind at
+ * once need: an owner that sizes the table to its proxy pools plus
+ * RTPS_MAX_WAITING_MATCHES always has a record for a pair that binds.
+ *
+ * Rescan
+ * ------
+ * A pair is derived, not announced: it exists because a stored local and a
+ * stored remote endpoint are compatible. A pair turned away (waiting
+ * matches full, or no free record) loses only its record; both endpoints
+ * stay stored, and SEDP announces an endpoint again only when it changes.
+ * So the table remembers only that some pair was turned away, and once a
+ * record frees or a waiting pair binds, rescan_unrecorded() matches the
+ * stored endpoints again and reports every compatible pair without a
+ * record. A remote endpoint in no record is one that displacement may
+ * clear for a newcomer (see Capacity); a pair whose endpoint was cleared is
+ * found again only when that endpoint is announced again.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -302,16 +335,26 @@ static_assert(RTPS_MAX_REMOTE_ORIGINS >= 1 && RTPS_MAX_REMOTE_ORIGINS < 255,
 /// defaults. No stack this one interoperates with announces such locators by
 /// default, so a few cover endpoints configured with locators of their own.
 #ifndef RTPS_MAX_REMOTE_LOCATOR_LISTS
-#define RTPS_MAX_REMOTE_LOCATOR_LISTS 4
+#  define RTPS_MAX_REMOTE_LOCATOR_LISTS 4
 #endif
 static_assert(RTPS_MAX_REMOTE_LOCATOR_LISTS >= 1 && RTPS_MAX_REMOTE_LOCATOR_LISTS < 255,
               "RTPS_MAX_REMOTE_LOCATOR_LISTS must fit a one-octet index below the none value 0xFF");
+// Pairs that wait for a proxy at once (see Waiting matches in the file
+// comment). A pair that would wait beyond this many is not recorded.
+#ifndef RTPS_MAX_WAITING_MATCHES
+#  define RTPS_MAX_WAITING_MATCHES 8
+#endif
 // Writer-reader pairs tracked at once. Only pairs that involve a local
 // endpoint are tracked, so this scales with local endpoints times their
-// matched peers rather than with the whole graph.
+// matched peers rather than with the whole graph. A participant needs one
+// record per proxy in its pools plus RTPS_MAX_WAITING_MATCHES, and checks
+// that it has them (rtps/participant.hpp).
 #ifndef RTPS_MAX_MATCH_RECORDS
-#  define RTPS_MAX_MATCH_RECORDS (RTPS_MAX_DISCOVERED_WRITERS * RTPS_MAX_DISCOVERED_READERS)
+#  define RTPS_MAX_MATCH_RECORDS \
+      (RTPS_MAX_DISCOVERED_WRITERS * RTPS_MAX_DISCOVERED_READERS + RTPS_MAX_WAITING_MATCHES)
 #endif
+static_assert(RTPS_MAX_WAITING_MATCHES < RTPS_MAX_MATCH_RECORDS,
+              "RTPS_MAX_WAITING_MATCHES leaves no record for a pair that binds");
 
 /// One side of a matched pair, as on_match reports it.
 struct MatchedEndpoint {
@@ -337,13 +380,17 @@ struct MatchedEndpoint {
  */
 class EndpointMatchTable {
 public:
+    /// A writer-reader pair became compatible, or a waiting pair is offered
+    /// again. `topic` is the topic name of the pair's local endpoint. Returns
+    /// `true` when every local endpoint of the pair holds a proxy for its
+    /// partner, `false` when the pair waits for one.
+    using OnMatch = bool (*)(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
+                             const TopicName& topic, void* user_data) noexcept;
 
-    /// A writer-reader pair became compatible. `topic` is the topic name of
-    /// the pair's local endpoint.
-    using OnMatch   = void (*)(const MatchedEndpoint& writer,
-                               const MatchedEndpoint& reader,
-                               const TopicName&       topic,
-                               void*                  user_data) noexcept;
+    /// Whether the owner could now bind every local half of the waiting pair
+    /// (`writer_guid`, `reader_guid`) that holds no proxy yet.
+    using MayMatch = bool (*)(const Guid& writer_guid, const Guid& reader_guid,
+                              void* user_data) noexcept;
 
     /// A previously reported pair was dissolved.
     using OnUnmatch = void (*)(const Guid& writer_guid,
@@ -396,6 +443,10 @@ public:
         participant_defaults_ = defaults;
     }
 
+    /// @brief Sets the owner's test for whether a waiting pair could bind now.
+    /// Without it, a waiting pair never binds again and a new pair never waits behind one.
+    void set_may_match(MayMatch may_match) noexcept { may_match_ = may_match; }
+
     /// @brief Sets the GUID prefix that marks an endpoint as local.
     void set_local_prefix(const GuidPrefix& prefix) noexcept {
         local_prefix_ = prefix;
@@ -440,6 +491,29 @@ public:
     void remove_reader(const Guid& reader_guid) noexcept;
 
     /**
+     * @brief Whether a reader of participant `reader_prefix` waits to match local writer
+     * `writer_guid`.
+     *
+     * A waiting pair is compatible but holds no proxy yet, so the writer
+     * cannot see its reader among its matched proxies. A writer that must
+     * know whether a participant still expects its samples asks here.
+     *
+     * @param[in] writer_guid   GUID of the local writer.
+     * @param[in] reader_prefix GUID prefix of the remote participant.
+     * @return `true` when a waiting record pairs the writer with a reader of that participant.
+     *
+     * Verification:
+     * - Correct means: true exactly while a record of the writer with such a reader is marked
+     *   waiting; false once it binds or is dissolved.
+     * - Covered by: TC-SWR-8.4.7-010.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4 (endpoint matching)
+     */
+    bool has_waiting_reader(const Guid& writer_guid,
+                            const GuidPrefix& reader_prefix) const noexcept;
+
+    /**
      * @brief Forgets every endpoint of a departed participant (§8.5.3.2).
      *
      * @param[in] gone_prefix GUID prefix of the participant whose lease
@@ -468,6 +542,70 @@ public:
      * - Covered by: TC-PART-8.5.3-012.
      */
     bool has_match_with(const GuidPrefix& prefix, const Guid& except_local) const noexcept;
+
+    /**
+     * @brief Reports again the oldest waiting pair the owner may now bind.
+     *
+     * A pair whose proxy a pool refused waits in its record (see Waiting
+     * matches in the file comment). The owner calls this after a proxy
+     * frees; it binds at most one pair per call, so the work a single call
+     * does, one TRANSIENT_LOCAL replay at most, stays bounded, and the owner
+     * calls again while calls succeed.
+     *
+     * Among waiting records for which the owner's MayMatch holds, the one with the
+     * oldest ticket is described from the stored
+     * endpoints exactly as report() first described it and passed to
+     * on_match; its waiting mark follows what on_match returns. Records whose
+     * endpoint cannot bind yet are skipped, so a full endpoint does not hold
+     * up a pair of another endpoint.
+     *
+     * @return `true` when a waiting pair bound, so another may bind too;
+     *   `false` when no waiting pair could.
+     *
+     * Verification:
+     * - Correct means: the bound pair is the oldest waiting one MayMatch
+     *   accepts; at most one pair binds per call; a pair that binds again
+     *   is reported to on_match with the same locators and topic as when
+     *   first reported, and is never reported twice while bound.
+     * - Covered by: TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-002, TC-PART-8.4.1.4-003.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.4.7.4 (matched_writer_add)
+     */
+    bool match_oldest_waiting() noexcept;
+
+    /// @brief Whether a pair was turned away and a record or waiting place has
+    /// freed since, so rescan_unrecorded() may now record it.
+    bool rescan_due() const noexcept { return turned_away_ && room_freed_; }
+
+    /**
+     * @brief Reports again the compatible pairs that have no record.
+     *
+     * A pair turned away by a full record table or full waiting matches has
+     * no record, and nothing announces it again (see Rescan in the file
+     * comment). The owner calls this when rescan_due(); it walks every local
+     * endpoint against the stored endpoints of the other kind and reports
+     * each compatible pair through report(), which records it, binds it, or
+     * turns it away again under the usual rules.
+     *
+     * The walk stops after the first pair that binds, so one call replays at
+     * most one TRANSIENT_LOCAL history, and the rescan stays due so the next
+     * call resumes; pairs already recorded cost one record scan each. A walk
+     * that binds nothing ends the rescan until a pair is turned away and room
+     * frees again. Cost: O(local × stored endpoints × match records).
+     *
+     * Verification:
+     * - Correct means: after room frees, every compatible pair without a
+     *   record is reported once per walk; a pair reported again keeps the
+     *   order rules of report() (it queues behind older waiting pairs); a
+     *   call binds at most one pair; with nothing turned away, no walk runs.
+     * - Covered by: TC-PART-8.4.1.4-005.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.5.1 (matching discovered endpoints),
+     *   §8.4.1.4 (matched_reader_add), §8.4.7.4 (matched_writer_add)
+     */
+    void rescan_unrecorded() noexcept;
 
     /**
      * @brief Counts the known writers or readers on one topic.
@@ -575,10 +713,17 @@ private:
     struct MatchRecord {
         Guid writer_guid = GUID_UNKNOWN;
         Guid reader_guid = GUID_UNKNOWN;
+        /// Drawn from next_ticket_ when the pair was reported; orders waiting pairs.
+        uint16_t ticket = 0u;
+        /// The owner could not bind a proxy for some local half of the pair.
+        bool waiting = false;
         bool active() const noexcept { return writer_guid != GUID_UNKNOWN; }
     };
 
     static constexpr uint32_t kMaxMatches = RTPS_MAX_MATCH_RECORDS;
+
+    /// Ticket count at which report() renumbers the waiting records; well below the 16-bit range.
+    static constexpr uint16_t kRenumberTicketsAt = 0x4000u;
 
     bool is_local(const Guid& g) const noexcept {
         return has_local_prefix_ && g.prefix == local_prefix_;
@@ -788,11 +933,80 @@ private:
      */
     RemoteEndpoint* displace_unmatched(RemoteEndpoint* table, uint32_t n, bool is_writer) noexcept;
 
-    /// Reports the pair unless it was reported before or no record is free.
-    void report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
+    /**
+     * @brief Records a compatible pair and asks the owner to bind it.
+     *
+     * Every match the table finds passes through here once. A pair that
+     * would bind ahead of an older waiting pair that may bind, or that the
+     * owner's MayMatch says cannot bind, is to wait; it is recorded waiting
+     * without calling on_match when the waiting records are below
+     * RTPS_MAX_WAITING_MATCHES, and not recorded at all otherwise. A pair
+     * that may bind is recorded and passed to on_match, and waits only if
+     * on_match refuses it after all; an owner whose MayMatch answers from the
+     * same admission rule as on_match never does.
+     *
+     * @param[in] writer The pair's writer, as on_match describes it.
+     * @param[in] reader The pair's reader, as on_match describes it.
+     * @param[in] topic  The topic name of the pair's local endpoint.
+     * @return `true` when a pair not recorded before was recorded and bound;
+     *   `false` when it was recorded already, waits, or was turned away. A
+     *   pair turned away marks a rescan (rescan_unrecorded()).
+     *
+     * Verification:
+     * - Correct means: a pair is recorded at most once; a pair the table
+     *   does not record holds no proxy, so it is never unmatched; no more
+     *   than RTPS_MAX_WAITING_MATCHES records wait at once, while a pair that
+     *   may bind is recorded whenever a record is free.
+     * - Covered by: TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-004, TC-PART-8.4.1.4-005.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.5.1 (matching discovered endpoints),
+     *   §8.4.1.4 (matched_reader_add), §8.4.7.4 (matched_writer_add)
+     */
+    bool report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
                 const TopicName& topic) noexcept;
+
+    /// @brief Reports every pair of local writer `w` with a stored reader;
+    /// with `stop_at_bind`, returns `true` at the first pair that binds.
+    bool report_writer_pairs(const LocalEndpoint& w, bool stop_at_bind) noexcept;
+
+    /// @brief Reports every pair of local reader `r` with a stored writer;
+    /// with `stop_at_bind`, returns `true` at the first pair that binds.
+    bool report_reader_pairs(const LocalEndpoint& r, bool stop_at_bind) noexcept;
+
+    /// @brief Describes a recorded pair as report() described it; false when
+    /// either endpoint is no longer stored, which no active record allows:
+    /// every path that forgets an endpoint dissolves its pairs first, and
+    /// displacement spares an endpoint in any record, waiting or not.
+    bool describe(const MatchRecord& m, MatchedEndpoint& writer, MatchedEndpoint& reader,
+                  const TopicName*& topic) noexcept;
+
+    /// @brief The waiting record with the oldest ticket MayMatch accepts, or null.
+    MatchRecord* oldest_bindable() noexcept;
+
+    /**
+     * @brief Gives the waiting records the tickets 0 to k-1 in their current order.
+     *
+     * Tickets order the waiting pairs by when they were reported, and the
+     * counter that issues them is 16 bits wide. report() renumbers once the
+     * counter reaches kRenumberTicketsAt, so it never wraps and a pair that
+     * waits for any length of time still compares older than every pair
+     * reported after it.
+     *
+     * Verification:
+     * - Correct means: the relative order of the waiting records is unchanged, their tickets are
+     *   0 to k-1, and the next ticket is k.
+     * - Covered by: TC-PART-8.4.1.4-007.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.5.1 (endpoint matching)
+     */
+    void renumber_waiting_tickets() noexcept;
     /// Reports every recorded pair involving `guid` as dissolved and forgets it.
     void dissolve(const Guid& guid, bool is_writer) noexcept;
+
+    /// Dissolves the pairs of a local or remote writer or reader and forgets its records.
+    void remove_endpoint(const Guid& guid, bool is_writer) noexcept;
 
     /**
      * @brief Unmatches a stored remote endpoint that re-announced different locators.
@@ -842,11 +1056,18 @@ private:
 
     const LocalSubnets* subnets_ = &kNoSubnets;
     ParticipantDefaults participant_defaults_ = nullptr;
+    MayMatch may_match_ = nullptr;
     OnMatch    on_match_;
     OnUnmatch  on_unmatch_;
     OnChange   on_change_;
     void*      user_data_;
     GuidPrefix local_prefix_ = {};
+    /// Next ticket to issue; below kRenumberTicketsAt after every report().
+    uint16_t next_ticket_ = 0u;
+    /// A pair found no record since the last complete rescan.
+    bool turned_away_ = false;
+    /// A record was dissolved or a waiting pair bound since the last complete rescan.
+    bool room_freed_ = false;
     bool       has_local_prefix_ = false;
 };
 

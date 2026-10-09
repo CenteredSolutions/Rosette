@@ -173,9 +173,9 @@
       "id": "REQ-SWR-8.4.7-RELEASE-REPLIES",
       "section": "8.4.7.1",
       "normativity": "may",
-      "statement": "A service reply writer (TRANSIENT_LOCAL) removes a reply once every matched reader sharing the GUID prefix of the request writer named in its related sample identity has acknowledged it, independent of other readers; a reply whose requester has not matched yet stays and is delivered when that reader matches; a reply whose requester's last matched reader unmatches is removed.",
+      "statement": "A service reply writer (TRANSIENT_LOCAL) removes a reply once every matched reader sharing the GUID prefix of the request writer named in its related sample identity has acknowledged it, independent of other readers; a reply whose requester has not matched yet stays and is delivered when that reader matches; a reply whose requester's last matched reader unmatches is removed; none of these releases a reply while a reader of the requester waits for a proxy.",
       "status": "implemented",
-      "test_ids": ["TC-SWR-8.4.7-007", "TC-SWR-8.4.7-008", "TC-SWR-8.4.7-009"]
+      "test_ids": ["TC-SWR-8.4.7-007", "TC-SWR-8.4.7-008", "TC-SWR-8.4.7-009", "TC-SWR-8.4.7-010", "TC-SWR-8.4.7-011", "TC-SWR-8.4.7-012"]
     },
     {
       "id": "REQ-SWR-8.3.7.5-NACKFRAG-REPAIR",
@@ -193,6 +193,33 @@
       "statement": "A StatefulWriter sends to a matched reader at its unicastLocatorList; the ReaderProxy refers to the owning record's entry and sends to its current value, never to an emptied entry.",
       "status": "implemented",
       "test_ids": ["TC-SWR-8.4.1.1-001"]
+    },
+    {
+      "id": "REQ-POOL-8.4.1.1-SHARED-PROXY-ADMISSION",
+      "section": "8.4.1.1",
+      "page": 103,
+      "normativity": "implementation-behavior",
+      "statement": "Matched-endpoint proxies come from a fixed pool shared by a participant's endpoints. An endpoint below its floor always binds a proxy; at or above it, an endpoint binds only a proxy no floor is promised; no endpoint exceeds its cap; free >= reserved holds after every bind and release.",
+      "status": "implemented",
+      "test_ids": ["TC-POOL-8.4.1.1-001", "TC-POOL-8.4.1.1-002", "TC-POOL-8.4.1.1-003", "TC-POOL-8.4.1.1-005"]
+    },
+    {
+      "id": "REQ-POOL-8.4.1.4-BIND-ORDER-AND-REUSE",
+      "section": "8.4.1.4",
+      "page": 108,
+      "normativity": "implementation-behavior",
+      "statement": "An endpoint's bound proxies are iterated in the order they matched and are shared with no other endpoint; a released proxy is free for any endpoint.",
+      "status": "implemented",
+      "test_ids": ["TC-POOL-8.4.1.1-004"]
+    },
+    {
+      "id": "REQ-SWR-8.4.1.4-SHARED-POOL-MATCH",
+      "section": "8.4.1.4",
+      "page": 108,
+      "normativity": "implementation-behavior",
+      "statement": "A writer binds each matched reader's ReaderProxy from a pool it may share with other writers: matched_reader_add() succeeds exactly when the pool's admission grants a proxy, matched_reader_remove() and the writer's destruction return its proxies, and a write reaches exactly the bound readers.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.4-009"]
     }
   ]
 }

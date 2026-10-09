@@ -7,6 +7,7 @@
 #include "endpoint_match_table.hpp"
 
 #include "log.hpp"
+#include "rosette/support/fnv1a.hpp"
 
 namespace rtps {
 
@@ -14,14 +15,11 @@ const LocalSubnets EndpointMatchTable::kNoSubnets{};
 
 uint32_t name_key(const char* name) noexcept
 {
-    constexpr uint32_t kOffsetBasis = 0x811C9DC5u;
-    constexpr uint32_t kPrime       = 0x01000193u;
-    uint32_t h = kOffsetBasis;
-    for (; name && *name; ++name) {
-        h ^= static_cast<uint8_t>(*name);
-        h *= kPrime;
+    if (name == nullptr) {
+        return rosette::support::kFnv1a32OffsetBasis;
     }
-    return h;
+
+    return rosette::support::fnv1a32(reinterpret_cast<const uint8_t*>(name), strlen(name));
 }
 
 // ------------------------------------------------------------
@@ -341,18 +339,7 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
         *w = LocalEndpoint{wd.writerGuid, wd.topicName, wd.typeName, topic_key, type_key,
                            wd.reliabilityKind, wd.durabilityKind, false};
         if (is_change) changed();
-        const MatchedEndpoint writer{w->guid, nullptr, 0u, false};
-        for (const LocalEndpoint& r : local_readers_) {
-            if (!r.valid() || r.topicName != w->topicName || r.typeName != w->typeName) continue;
-            if (!qos_compatible(w->reliability, w->durability, r.reliability, r.durability)) continue;
-            report(writer, MatchedEndpoint{r.guid, nullptr, 0u, r.expectsInlineQos}, w->topicName);
-        }
-        for (const RemoteEndpoint& r : remote_readers_) {
-            if (!r.valid() || r.topicKey != topic_key || r.typeKey != type_key) continue;
-            if (!qos_compatible(w->reliability, w->durability,
-                                r.reliability_kind(), r.durability_kind())) continue;
-            report(writer, matched(r), w->topicName);
-        }
+        (void)report_writer_pairs(*w, /*stop_at_bind=*/false);
         return;
     }
 
@@ -418,18 +405,7 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
         *r = LocalEndpoint{rd.readerGuid, rd.topicName, rd.typeName, topic_key, type_key,
                            rd.reliabilityKind, rd.durabilityKind, rd.expectsInlineQos};
         if (is_change) changed();
-        const MatchedEndpoint reader{r->guid, nullptr, 0u, r->expectsInlineQos};
-        for (const LocalEndpoint& w : local_writers_) {
-            if (!w.valid() || w.topicName != r->topicName || w.typeName != r->typeName) continue;
-            if (!qos_compatible(w.reliability, w.durability, r->reliability, r->durability)) continue;
-            report(MatchedEndpoint{w.guid, nullptr, 0u, false}, reader, r->topicName);
-        }
-        for (const RemoteEndpoint& w : remote_writers_) {
-            if (!w.valid() || w.topicKey != topic_key || w.typeKey != type_key) continue;
-            if (!qos_compatible(w.reliability_kind(), w.durability_kind(),
-                                r->reliability, r->durability)) continue;
-            report(matched(w), reader, r->topicName);
-        }
+        (void)report_reader_pairs(*r, /*stop_at_bind=*/false);
         return;
     }
 
@@ -471,24 +447,255 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
     }
 }
 
-void EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
-                                const TopicName& topic) noexcept
-{
+bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
+                                const TopicName& topic) noexcept {
     MatchRecord* free_slot = nullptr;
+    uint32_t waiting = 0u;
     for (MatchRecord& m : matches_) {
-        if (m.writer_guid == writer.guid && m.reader_guid == reader.guid) return;
-        if (!free_slot && !m.active()) free_slot = &m;
+        if (m.writer_guid == writer.guid && m.reader_guid == reader.guid) {
+            return false;
+        }
+
+        if (!free_slot && !m.active()) {
+            free_slot = &m;
+        }
+
+        if (m.active() && m.waiting) {
+            ++waiting;
+        }
     }
+
     // Without a free record the pair is not reported, so every reported
     // match has a matching unmatch.
     if (!free_slot) {
         RTPS_LOG_W("match", "match record table full (RTPS_MAX_MATCH_RECORDS=%lu)",
                    (unsigned long)kMaxMatches);
-        return;
+        turned_away_ = true;
+        return false;
     }
+
+    // A proxy freed since the last rebind belongs to the oldest waiting pair
+    // that can take it, not to a pair reported after it. MayMatch tells
+    // before anything binds whether the pair would wait, so a pair turned
+    // away at the waiting limit holds no proxy and needs no unmatch.
+    const bool may_bind =
+        oldest_bindable() == nullptr
+        && (may_match_ == nullptr || may_match_(writer.guid, reader.guid, user_data_));
+    if (!may_bind && waiting >= RTPS_MAX_WAITING_MATCHES) {
+        RTPS_LOG_W("match", "waiting matches full (RTPS_MAX_WAITING_MATCHES=%lu): topic=%s",
+                   (unsigned long)RTPS_MAX_WAITING_MATCHES, topic.str);
+        turned_away_ = true;
+        return false;
+    }
+
+    if (next_ticket_ >= kRenumberTicketsAt) {
+        renumber_waiting_tickets();
+    }
+
     free_slot->writer_guid = writer.guid;
     free_slot->reader_guid = reader.guid;
-    if (on_match_) on_match_(writer, reader, topic, user_data_);
+    free_slot->ticket = next_ticket_++;
+    free_slot->waiting = !may_bind || (on_match_ && !on_match_(writer, reader, topic, user_data_));
+    return !free_slot->waiting;
+}
+
+bool EndpointMatchTable::report_writer_pairs(const LocalEndpoint& w, bool stop_at_bind) noexcept {
+    const MatchedEndpoint writer{w.guid, nullptr, 0u, false};
+    for (const LocalEndpoint& r : local_readers_) {
+        if (!r.valid() || r.topicName != w.topicName || r.typeName != w.typeName
+            || !qos_compatible(w.reliability, w.durability, r.reliability, r.durability)) {
+            continue;
+        }
+
+        const MatchedEndpoint reader{r.guid, nullptr, 0u, r.expectsInlineQos};
+        if (report(writer, reader, w.topicName) && stop_at_bind) {
+            return true;
+        }
+    }
+
+    for (const RemoteEndpoint& r : remote_readers_) {
+        if (!r.valid() || r.topicKey != w.topicKey || r.typeKey != w.typeKey
+            || !qos_compatible(w.reliability, w.durability, r.reliability_kind(),
+                               r.durability_kind())) {
+            continue;
+        }
+
+        if (report(writer, matched(r), w.topicName) && stop_at_bind) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool EndpointMatchTable::report_reader_pairs(const LocalEndpoint& r, bool stop_at_bind) noexcept {
+    const MatchedEndpoint reader{r.guid, nullptr, 0u, r.expectsInlineQos};
+    for (const LocalEndpoint& w : local_writers_) {
+        if (!w.valid() || w.topicName != r.topicName || w.typeName != r.typeName
+            || !qos_compatible(w.reliability, w.durability, r.reliability, r.durability)) {
+            continue;
+        }
+
+        if (report(MatchedEndpoint{w.guid, nullptr, 0u, false}, reader, r.topicName)
+            && stop_at_bind) {
+            return true;
+        }
+    }
+
+    for (const RemoteEndpoint& w : remote_writers_) {
+        if (!w.valid() || w.topicKey != r.topicKey || w.typeKey != r.typeKey
+            || !qos_compatible(w.reliability_kind(), w.durability_kind(), r.reliability,
+                               r.durability)) {
+            continue;
+        }
+
+        if (report(matched(w), reader, r.topicName) && stop_at_bind) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void EndpointMatchTable::rescan_unrecorded() noexcept {
+    // Reports below set turned_away_ again for every pair that still finds
+    // no room.
+    turned_away_ = false;
+    bool bound = false;
+    for (const LocalEndpoint& w : local_writers_) {
+        if (!bound && w.valid()) {
+            bound = report_writer_pairs(w, /*stop_at_bind=*/true);
+        }
+    }
+
+    for (const LocalEndpoint& r : local_readers_) {
+        if (!bound && r.valid()) {
+            bound = report_reader_pairs(r, /*stop_at_bind=*/true);
+        }
+    }
+
+    // A walk cut short by a bind may have left pairs it did not reach; it
+    // stays due and resumes on the next call.
+    if (bound) {
+        turned_away_ = true;
+    } else {
+        room_freed_ = false;
+    }
+}
+
+bool EndpointMatchTable::describe(const MatchRecord& m, MatchedEndpoint& writer,
+                                  MatchedEndpoint& reader, const TopicName*& topic) noexcept {
+    topic = nullptr;
+    if (is_local(m.writer_guid)) {
+        const LocalEndpoint* w = find(local_writers_, RTPS_MAX_LOCAL_ENDPOINTS, m.writer_guid);
+        if (w == nullptr) {
+            return false;
+        }
+
+        writer = MatchedEndpoint{w->guid, nullptr, 0u, false};
+        topic = &w->topicName;
+    } else {
+        const RemoteEndpoint* w =
+            find_remote(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, m.writer_guid);
+        if (w == nullptr || !w->valid()) {
+            return false;
+        }
+
+        writer = matched(*w);
+    }
+
+    if (is_local(m.reader_guid)) {
+        const LocalEndpoint* r = find(local_readers_, RTPS_MAX_LOCAL_ENDPOINTS, m.reader_guid);
+        if (r == nullptr) {
+            return false;
+        }
+
+        reader = MatchedEndpoint{r->guid, nullptr, 0u, r->expectsInlineQos};
+        topic = &r->topicName;
+    } else {
+        const RemoteEndpoint* r =
+            find_remote(remote_readers_, RTPS_MAX_DISCOVERED_READERS, m.reader_guid);
+        if (r == nullptr || !r->valid()) {
+            return false;
+        }
+
+        reader = matched(*r);
+    }
+
+    return topic != nullptr;
+}
+
+void EndpointMatchTable::renumber_waiting_tickets() noexcept {
+    // Visits the waiting records in ascending ticket order. A record's new
+    // ticket (its rank) never exceeds its old one, so a record already
+    // renumbered is never above `last_old` and is not visited twice.
+    uint32_t rank = 0u;
+    int32_t last_old = -1;
+    while (true) {
+        MatchRecord* next = nullptr;
+        for (MatchRecord& m : matches_) {
+            if (m.active() && m.waiting && static_cast<int32_t>(m.ticket) > last_old
+                && (next == nullptr || m.ticket < next->ticket)) {
+                next = &m;
+            }
+        }
+
+        if (next == nullptr) {
+            break;
+        }
+
+        last_old = next->ticket;
+        next->ticket = static_cast<uint16_t>(rank++);
+    }
+
+    next_ticket_ = static_cast<uint16_t>(rank);
+}
+
+EndpointMatchTable::MatchRecord* EndpointMatchTable::oldest_bindable() noexcept {
+    if (may_match_ == nullptr) {
+        return nullptr;
+    }
+
+    MatchRecord* oldest = nullptr;
+    for (MatchRecord& m : matches_) {
+        if (!m.active() || !m.waiting) {
+            continue;
+        }
+
+        // Tickets never wrap (renumber_waiting_tickets()), so order is numeric.
+        const bool older = oldest == nullptr || m.ticket < oldest->ticket;
+        if (older && may_match_(m.writer_guid, m.reader_guid, user_data_)) {
+            oldest = &m;
+        }
+    }
+
+    return oldest;
+}
+
+bool EndpointMatchTable::has_waiting_reader(const Guid& writer_guid,
+                                            const GuidPrefix& reader_prefix) const noexcept {
+    for (const MatchRecord& m : matches_) {
+        if (m.active() && m.waiting && m.writer_guid == writer_guid
+            && m.reader_guid.prefix == reader_prefix) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool EndpointMatchTable::match_oldest_waiting() noexcept {
+    MatchRecord* oldest = oldest_bindable();
+    MatchedEndpoint writer{};
+    MatchedEndpoint reader{};
+    const TopicName* topic = nullptr;
+    if (oldest == nullptr || on_match_ == nullptr || !describe(*oldest, writer, reader, topic)) {
+        return false;
+    }
+
+    oldest->waiting = !on_match_(writer, reader, *topic, user_data_);
+    room_freed_ = room_freed_ || !oldest->waiting;
+    return !oldest->waiting;
 }
 
 // ------------------------------------------------------------
@@ -502,6 +709,7 @@ void EndpointMatchTable::dissolve(const Guid& guid, bool is_writer) noexcept
         if ((is_writer ? m.writer_guid : m.reader_guid) != guid) continue;
         const MatchRecord gone = m;
         m = MatchRecord{};
+        room_freed_ = true;
         if (on_unmatch_) on_unmatch_(gone.writer_guid, gone.reader_guid, user_data_);
     }
 }
@@ -523,36 +731,42 @@ void EndpointMatchTable::unmatch_if_relocated(RemoteEndpoint* table, uint32_t n,
     dissolve(guid, is_writer);
 }
 
+void EndpointMatchTable::remove_endpoint(const Guid& guid, bool is_writer) noexcept
+{
+    if (guid == GUID_UNKNOWN) {
+        return;
+    }
+
+    dissolve(guid, is_writer);
+
+    LocalEndpoint* locals = is_writer ? local_writers_ : local_readers_;
+    RemoteEndpoint* remotes = is_writer ? remote_writers_ : remote_readers_;
+    const uint32_t remote_count = is_writer ? RTPS_MAX_DISCOVERED_WRITERS
+                                            : RTPS_MAX_DISCOVERED_READERS;
+    bool forgotten = false;
+    if (LocalEndpoint* local = find(locals, RTPS_MAX_LOCAL_ENDPOINTS, guid)) {
+        *local = LocalEndpoint{};
+        forgotten = true;
+    }
+
+    if (RemoteEndpoint* remote = find_remote(remotes, remote_count, guid)) {
+        clear_remote(*remote);
+        forgotten = true;
+    }
+
+    if (forgotten) {
+        changed();
+    }
+}
+
 void EndpointMatchTable::remove_writer(const Guid& writer_guid) noexcept
 {
-    if (writer_guid == GUID_UNKNOWN) return;
-    dissolve(writer_guid, /*is_writer=*/true);
-    bool forgotten = false;
-    if (LocalEndpoint* w = find(local_writers_, RTPS_MAX_LOCAL_ENDPOINTS, writer_guid)) {
-        *w = LocalEndpoint{};
-        forgotten = true;
-    }
-    if (RemoteEndpoint* w = find_remote(remote_writers_, RTPS_MAX_DISCOVERED_WRITERS, writer_guid)) {
-        clear_remote(*w);
-        forgotten = true;
-    }
-    if (forgotten) changed();
+    remove_endpoint(writer_guid, /*is_writer=*/true);
 }
 
 void EndpointMatchTable::remove_reader(const Guid& reader_guid) noexcept
 {
-    if (reader_guid == GUID_UNKNOWN) return;
-    dissolve(reader_guid, /*is_writer=*/false);
-    bool forgotten = false;
-    if (LocalEndpoint* r = find(local_readers_, RTPS_MAX_LOCAL_ENDPOINTS, reader_guid)) {
-        *r = LocalEndpoint{};
-        forgotten = true;
-    }
-    if (RemoteEndpoint* r = find_remote(remote_readers_, RTPS_MAX_DISCOVERED_READERS, reader_guid)) {
-        clear_remote(*r);
-        forgotten = true;
-    }
-    if (forgotten) changed();
+    remove_endpoint(reader_guid, /*is_writer=*/false);
 }
 
 bool EndpointMatchTable::has_match_with(const GuidPrefix& prefix,

@@ -8,22 +8,25 @@
  * A writer keeps KEEP_LAST(depth) changes (§8.3.3) and one ReaderProxy per
  * matched reader (§8.4.1.1). A proxy records a reader's progress as
  * sequence-number bounds over the history (reader_proxy.hpp), so its size
- * does not depend on the depth: a writer costs depth × CacheChange plus
- * readers × ReaderProxy. All of that storage is fixed-size and chosen at
- * build time.
+ * does not depend on the depth. The proxies come from a ProxyPool
+ * (proxy_pool.hpp): the writer binds one when a reader matches and returns
+ * it when the reader unmatches, and keeps the bound ones on a list, so every
+ * pass over its readers visits only the matched ones. All of that storage is
+ * fixed-size and chosen at build time.
  *
  * One compiled writer, storage by template
  * ----------------------------------------
  * StatefulWriter is a plain class: every operation lives once in
  * src/rtps/stateful_writer.cpp and works on storage it is handed (a
- * HistoryCache and an array of ReaderProxy).
- * StatefulWriterStorage<Depth, MaxReaders> owns exactly that storage and
- * derives from StatefulWriter, so writers of different depths differ only in
- * their data layout, never in their code:
+ * HistoryCache and a ReaderProxyPool). Two templates own that storage and
+ * derive from StatefulWriter, so writers differ only in their data layout,
+ * never in their code:
  *
- *   StatefulWriterStorage<>     — KEEP_LAST(1), RTPS_MAX_MATCHED_READERS readers
- *   StatefulWriterStorage<4>    — KEEP_LAST(4)
- *   StatefulWriterStorage<8,4>  — KEEP_LAST(8), 4 readers
+ *   SharedPoolStatefulWriter<8>   — KEEP_LAST(8), proxies from a pool its
+ *                                   owner shares among writers (a
+ *                                   participant's user writers)
+ *   StatefulWriterStorage<4, 8>   — KEEP_LAST(4), a private pool of 8
+ *                                   proxies (the SEDP builtin writers)
  *
  * Everything outside the object that owns a writer uses StatefulWriter& or
  * StatefulWriter*: RTPSParticipant keeps its writers of every depth in one
@@ -80,12 +83,13 @@
 
 #pragma once
 
-#include "types.hpp"
 #include "history_cache.hpp"
-#include "reader_proxy.hpp"
 #include "message_builder.hpp"
 #include "message_parser.hpp"
+#include "proxy_pool.hpp"
+#include "reader_proxy.hpp"
 #include "transport.hpp"
+#include "types.hpp"
 
 namespace rtps {
 
@@ -93,9 +97,13 @@ namespace rtps {
 // Configuration defaults
 // ============================================================
 
+/// Most readers one user writer matches at once (its cap in the pool).
 #ifndef RTPS_MAX_MATCHED_READERS
 #  define RTPS_MAX_MATCHED_READERS 8
 #endif
+
+/// The pool a writer takes its reader proxies from.
+using ReaderProxyPool = TypedProxyPool<ReaderProxy>;
 
 // ============================================================
 // StatefulWriter
@@ -109,8 +117,9 @@ namespace rtps {
  * what readers NACK (after nackResponseDelay), GAPs what they may not have,
  * and HEARTBEATs readers that still owe it an acknowledgment.
  *
- * Construct one through StatefulWriterStorage<Depth, MaxReaders>, which owns
- * the storage this class operates on. Not copyable or movable.
+ * Construct one through SharedPoolStatefulWriter<Depth> or
+ * StatefulWriterStorage<Depth, MaxReaders>, which own the storage this class
+ * operates on. Not copyable or movable.
  *
  * Thread safety: not thread-safe; the caller holds the participant lock
  * (ParticipantDriver::mutex()) for every call.
@@ -120,10 +129,10 @@ public:
     StatefulWriter(const StatefulWriter&)            = delete;
     StatefulWriter& operator=(const StatefulWriter&) = delete;
 
-    /// @brief Destroys the writer and its storage, releasing every payload
-    /// reference its history holds. Virtual, so a writer is destroyed
-    /// correctly through StatefulWriter*.
-    virtual ~StatefulWriter() noexcept = default;
+    /// @brief Destroys the writer, returning its proxies to their pool and
+    /// releasing every payload reference its history holds. Virtual, so a
+    /// writer is destroyed correctly through StatefulWriter*.
+    virtual ~StatefulWriter() noexcept;
 
     /**
      * @brief Stages a new change and allocates a pool buffer for its payload.
@@ -344,6 +353,11 @@ public:
      * it (ReaderProxy::init()), so the reader's traffic follows the owning
      * record when it takes a new address.
      *
+     * The proxy is bound from the writer's pool (ProxyPool::bind()): always
+     * while the writer has fewer matches than its floor, and above it only
+     * while the pool has a proxy no other writer's floor is promised, up to
+     * the writer's cap.
+     *
      * @param[in] reader_guid        The remote reader's GUID.
      * @param[in] unicast_locators   Its unicast locators, owned by a record
      *   that stays valid until the reader is unmatched (the SPDP peer record
@@ -351,16 +365,19 @@ public:
      *   `locator_count` is 0.
      * @param[in] locator_count      Number of locators.
      * @param[in] expects_inline_qos Its expectsInlineQos.
-     * @return `false` when the reader is already matched or every proxy slot
-     *   is in use.
+     * @return `false` when the reader is already matched or the pool refuses
+     *   a proxy (the writer is at its cap, or above its floor with every
+     *   free proxy promised to other floors). RTPSParticipant keeps a refused
+     *   match waiting and calls this again once may_add_reader() holds.
      *
      * Verification:
      * - Correct means: the new reader is sent every cached change of a
      *   TRANSIENT_LOCAL writer, and a reliable writer's newest one arrives
      *   with a non-final HEARTBEAT spanning the cache; a best-effort writer
-     *   sends no HEARTBEAT.
-     * - Covered by: , TC-SWR-8.4.1.1-001, TC-SWR-8.4.1.4-002, TC-SWR-8.4.1.4-003,
-     *   TC-SWR-8.4.1.4-008.
+     *   sends no HEARTBEAT; writers sharing a pool are refused exactly as
+     *   ProxyPool admission decides.
+     * - Covered by: TC-SWR-8.4.1.1-001, TC-SWR-8.4.1.4-002, TC-SWR-8.4.1.4-003,
+     *   TC-SWR-8.4.1.4-008, TC-SWR-8.4.1.4-009.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.4.1.1, §8.7.2.2,
@@ -372,22 +389,26 @@ public:
                             bool           expects_inline_qos = false) noexcept;
 
     /**
-     * @brief Unmatches a remote reader; unknown GUIDs are ignored.
+     * @brief Unmatches a remote reader; a GUID that is neither bound nor waiting changes nothing
+     *   on a writer that is not a service reply writer.
      *
      * The reader is done with every change from then on, so changes it alone
      * held are released (release_finished_changes()). A service reply writer
      * (release_replies_on_delivery()) also drops the replies to a requester
-     * whose last matched reader this was: no reader of that participant is
-     * left to receive or acknowledge them, and kept, they would be replayed
-     * to every later client and pin their blocks until KEEP_LAST evicts them.
+     * whose last reader, bound or waiting for a proxy, this was: no reader of
+     * that participant is left to receive or acknowledge them, and kept, they
+     * would be replayed to every later client and pin their blocks until
+     * KEEP_LAST evicts them. The owner calls this for a waiting reader too,
+     * after it has removed the reader from the waiting query
+     * (set_waiting_reader_query()).
      *
      * @param[in] reader_guid The remote reader's GUID.
      *
      * Verification:
-     * - Correct means: the proxy is cleared; a reply naming a request writer
-     *   of the reader's participant leaves the history once no reader of
-     *   that participant is matched, and stays while one still is.
-     * - Covered by: TC-SWR-8.4.7-003, TC-SWR-8.4.7-009.
+     * - Correct means: the proxy is cleared and returned to the pool; a reply naming a request
+     * writer of the reader's participant leaves the history once no reader of that participant is
+     * matched or waiting, and stays while one still is.
+     * - Covered by: TC-SWR-8.4.7-003, TC-SWR-8.4.7-009, TC-SWR-8.4.7-011.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_remove), §8.4.7.1;
@@ -502,6 +523,42 @@ public:
     void set_rematch_listener(RematchListener listener, void* context) noexcept {
         rematchListener_.fn = listener;
         rematchListener_.context = context;
+    }
+
+    /**
+     * @brief Callback asking whether a participant has a reader waiting to match this writer.
+     *
+     * @param[in] context   The pointer given to set_waiting_reader_query().
+     * @param[in] writer    GUID of the asking writer.
+     * @param[in] requester GUID prefix of the remote participant.
+     * @return `true` when a reader of `requester` is compatible with this writer but holds no
+     *   proxy yet.
+     */
+    using WaitingReaderQuery = bool (*)(void* context, const Guid& writer,
+                                        const GuidPrefix& requester) noexcept;
+
+    /**
+     * @brief Installs the query a service reply writer uses to see readers that have not bound.
+     *
+     * A reader waiting for a proxy is absent from matched(). A reply for a
+     * requester with such a reader must stay in the history, even when the
+     * requester's bound readers have acknowledged it, so that it is replayed
+     * once the waiting reader binds.
+     *
+     * @param[in] query   Query, or null for none.
+     * @param[in] context Passed back to `query`; must outlive the writer.
+     *
+     * Verification:
+     * - Correct means: a reply is neither released by delivery nor dropped on unmatch while the
+     *   query reports a waiting reader of its requester.
+     * - Covered by: TC-SWR-8.4.7-010.
+     *
+     * References:
+     * - OMG DDS-RPC 1.0 §7.8.2 (related sample identity)
+     */
+    void set_waiting_reader_query(WaitingReaderQuery query, void* context) noexcept {
+        waitingReaderQuery_.fn = query;
+        waitingReaderQuery_.context = context;
     }
 
     /**
@@ -660,7 +717,17 @@ public:
     uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept;
 
     /// @brief Number of matched readers (§8.4.7.1 matched_readers).
-    uint8_t matched_reader_count() const noexcept;
+    uint8_t matched_reader_count() const noexcept { return readers_.count; }
+
+    /// @brief Readers this writer is always granted proxies for (its floor).
+    uint8_t min_matched_readers() const noexcept { return readers_.floor; }
+
+    /// @brief Most readers this writer matches at once (its cap).
+    uint8_t max_matched_readers() const noexcept { return readers_.cap; }
+
+    /// @brief Whether matched_reader_add() of a new reader would now get a
+    /// proxy: below the cap, and below the floor or with an unpromised one free.
+    bool may_add_reader() const noexcept { return pool_.may_bind(readers_); }
 
 protected:
     /**
@@ -675,14 +742,18 @@ protected:
      * @param[in] durability    VOLATILE or TRANSIENT_LOCAL (§8.3.3).
      * @param[in] transport     Transport the writer sends on; outlives the writer.
      * @param[in] history       The writer's history; its capacity is the KEEP_LAST depth.
-     * @param[in] proxies       `max_readers` proxies.
-     * @param[in] max_readers   Number of proxies, at least 1.
+     * @param[in] pool          The pool the writer binds reader proxies from.
+     *   Its owner has reserved `min_readers` proxies for this writer
+     *   (ProxyPool::reserve()); it outlives the writer.
+     * @param[in] min_readers   The writer's floor: matches always granted.
+     * @param[in] max_readers   The writer's cap, at least `min_readers` and 1.
      * @param[in] nack_delay_ms nackResponseDelay (§8.4.1.1).
      * @param[in] hb_period_ms  heartbeatPeriod (§8.4.1.1).
      */
     StatefulWriter(const Guid& guid, ReliabilityKind reliability, DurabilityKind durability,
-                   ITransport& transport, HistoryCache& history, ReaderProxy* proxies,
-                   uint8_t max_readers, uint32_t nack_delay_ms, uint32_t hb_period_ms) noexcept;
+                   ITransport& transport, HistoryCache& history, ReaderProxyPool& pool,
+                   uint8_t min_readers, uint8_t max_readers, uint32_t nack_delay_ms,
+                   uint32_t hb_period_ms) noexcept;
 
 private:
     /**
@@ -765,8 +836,12 @@ private:
     /// @brief The matched proxy for `g`, or null.
     ReaderProxy* find_proxy(const Guid& g) noexcept;
 
-    /// @brief An unmatched proxy slot, or null when all are in use.
-    ReaderProxy* find_free_slot() noexcept;
+    /// @brief The proxies of the matched readers, in match order.
+    ReaderProxyPool::Range<ReaderProxy> matched() noexcept { return pool_.bound(readers_); }
+
+    ReaderProxyPool::Range<const ReaderProxy> matched() const noexcept {
+        return static_cast<const ReaderProxyPool&>(pool_).bound(readers_);
+    }
 
     /**
      * @brief Sends one change to one matched reader, as DATA or DATA_FRAGs,
@@ -1023,11 +1098,14 @@ private:
     void release_finished_changes() noexcept;
 
     /// @brief Drops the replies to `requester` when none of its readers is
-    ///   matched any more (see matched_reader_remove()).
+    ///   matched or waiting any more (see matched_reader_remove()).
     void drop_replies_to_departed(const GuidPrefix& requester) noexcept;
 
+    /// @brief True when the owner reports a reader of `requester` waiting to bind.
+    bool requester_has_waiting_reader(const GuidPrefix& requester) const noexcept;
+
     /// @brief True when `reply` names a requester whose matched readers are
-    ///   all done with it, and at least one of them is matched.
+    ///   all done with it, at least one of them is matched, and none waits to bind.
     bool reply_delivered(const CacheChange& reply, bool reliable) const noexcept;
 
     Guid            guid_;
@@ -1035,9 +1113,9 @@ private:
     DurabilityKind  durability_;
     ITransport&     transport_;
 
-    HistoryCache&   writer_cache_;
-    ReaderProxy*    proxies_;
-    uint8_t         max_readers_;
+    HistoryCache& writer_cache_;
+    ReaderProxyPool& pool_;
+    ProxyList readers_;  ///< Bound proxies, floor and cap.
 
     CacheChange    staging_{};     ///< Staging area for new_change().
     int32_t        heartbeatCount_ = 0;
@@ -1054,6 +1132,12 @@ private:
         RematchListener fn = nullptr;
         void* context = nullptr;
     } rematchListener_;
+
+    /// Asks whether a participant has a reader not yet bound (set_waiting_reader_query()).
+    struct {
+        WaitingReaderQuery fn = nullptr;
+        void* context = nullptr;
+    } waitingReaderQuery_;
     PayloadBuilder payloadBuilder_ = nullptr;  ///< Builds payloads of on-demand changes.
     void* payloadBuilderUser_ = nullptr;
     MessageBuilder builder_;
@@ -1065,15 +1149,21 @@ namespace detail {
 template<uint8_t Depth, uint8_t MaxReaders>
 struct StatefulWriterSlots {
     HistoryCacheStorage<Depth> history;
-    ReaderProxy                proxies[MaxReaders];
+    ProxyPoolStorage<ReaderProxy, MaxReaders> proxies;
+
+    /// Promises the whole private pool to its one writer, whose floor is MaxReaders.
+    StatefulWriterSlots() noexcept { (void)proxies.reserve(MaxReaders); }
 };
 }  // namespace detail
 
 /**
- * @brief A StatefulWriter with storage for a KEEP_LAST(Depth) history and
- *   MaxReaders matched readers.
+ * @brief A StatefulWriter with a KEEP_LAST(Depth) history and a private pool
+ *   of MaxReaders reader proxies.
  *
- * Holds only the storage; every operation is StatefulWriter's.
+ * Its capacity is its own and always available: floor and cap are both
+ * MaxReaders. The SEDP builtin writers, which must never wait for a proxy,
+ * are of this kind. Holds only the storage; every operation is
+ * StatefulWriter's.
  *
  * @tparam Depth      KEEP_LAST depth (§8.3.3), at least 1.
  * @tparam MaxReaders Most readers matched at once, at least 1.
@@ -1098,9 +1188,71 @@ public:
     StatefulWriterStorage(const Guid& guid, ReliabilityKind reliability, DurabilityKind durability,
                           ITransport& transport,
                           uint32_t nack_delay_ms = RTPS_NACK_RESPONSE_DELAY_MS,
-                          uint32_t hb_period_ms  = RTPS_HEARTBEAT_PERIOD_MS) noexcept
+                          uint32_t hb_period_ms = RTPS_HEARTBEAT_PERIOD_MS) noexcept
         : StatefulWriter(guid, reliability, durability, transport, this->history, this->proxies,
-                         MaxReaders, nack_delay_ms, hb_period_ms) {}
+                         MaxReaders, MaxReaders, nack_delay_ms, hb_period_ms) {}
+};
+
+namespace detail {
+/// @brief The history of a SharedPoolStatefulWriter, as a base class so it
+/// is constructed before the StatefulWriter base that points into it.
+template <uint8_t Depth>
+struct SharedPoolWriterSlots {
+    HistoryCacheStorage<Depth> history;
+};
+}  // namespace detail
+
+/**
+ * @brief A StatefulWriter with a KEEP_LAST(Depth) history whose reader
+ *   proxies come from a pool its owner shares among writers.
+ *
+ * RTPSParticipant creates its user writers as these, all binding from the
+ * participant's ReaderProxy pool, so per-match storage scales with the
+ * matches the participant has at once rather than with writers × cap.
+ *
+ * @tparam Depth KEEP_LAST depth (§8.3.3), at least 1.
+ *
+ * Example:
+ * @code{.cpp}
+ * rtps::ProxyPoolStorage<rtps::ReaderProxy, 16> pool;
+ * (void)pool.reserve(1);                 // this writer's floor
+ * rtps::SharedPoolStatefulWriter<8> writer(guid, rtps::ReliabilityKind::RELIABLE,
+ *                                          rtps::DurabilityKind::VOLATILE, transport,
+ *                                          pool, 1, 8);
+ * if (writer.matched_reader_add(reader_guid, &locator, 1u)) {
+ *     writer.write_async(rtps::ChangeKind::ALIVE, data, size);
+ * }
+ * @endcode
+ * Full program: tests/spec/src/test_stateful_writer_8_4_1_4.cpp (TC-SWR-8.4.1.4-009)
+ */
+template <uint8_t Depth>
+class SharedPoolStatefulWriter : private detail::SharedPoolWriterSlots<Depth>,
+                                 public StatefulWriter {
+    static_assert(Depth >= 1, "Depth must be >= 1");
+
+public:
+    /**
+     * @brief Creates a writer with no matched readers and an empty history.
+     *
+     * @param[in] guid          This writer's GUID (§8.2.4).
+     * @param[in] reliability   RELIABLE or BEST_EFFORT (§8.3.3).
+     * @param[in] durability    VOLATILE or TRANSIENT_LOCAL (§8.3.3).
+     * @param[in] transport     Transport the writer sends on; outlives the writer.
+     * @param[in] pool          Pool shared with other writers; the caller has
+     *   reserved `min_readers` proxies in it for this writer, and it outlives
+     *   the writer.
+     * @param[in] min_readers   Floor: matches always granted.
+     * @param[in] max_readers   Cap: most matches at once, at least `min_readers` and 1.
+     * @param[in] nack_delay_ms nackResponseDelay — §8.4.1.1, p. 104.
+     * @param[in] hb_period_ms  heartbeatPeriod — §8.4.1.1, p. 104.
+     */
+    SharedPoolStatefulWriter(const Guid& guid, ReliabilityKind reliability,
+                             DurabilityKind durability, ITransport& transport,
+                             ReaderProxyPool& pool, uint8_t min_readers, uint8_t max_readers,
+                             uint32_t nack_delay_ms = RTPS_NACK_RESPONSE_DELAY_MS,
+                             uint32_t hb_period_ms = RTPS_HEARTBEAT_PERIOD_MS) noexcept
+        : StatefulWriter(guid, reliability, durability, transport, this->history, pool, min_readers,
+                         max_readers, nack_delay_ms, hb_period_ms) {}
 };
 
 } // namespace rtps

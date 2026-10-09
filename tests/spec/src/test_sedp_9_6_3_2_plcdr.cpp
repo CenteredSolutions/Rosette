@@ -19,12 +19,11 @@ struct Obs {
     int match_calls = 0;
 };
 
-static void on_match(const MatchedEndpoint&,
-                     const MatchedEndpoint&,
-                     const TopicName&,
+static bool on_match(const MatchedEndpoint&, const MatchedEndpoint&, const TopicName&,
                      void* user) noexcept {
     auto* o = static_cast<Obs*>(user);
     o->match_calls++;
+    return true;
 }
 
 static Guid make_guid(Octet p0, Octet p1, Octet p2, const EntityId& eid) {
@@ -172,6 +171,7 @@ static bool tc_sedp_9_6_3_2_003(std::string& err) {
             o->calls++;
             o->count = w.locatorCount;
             o->first = w.locatorCount > 0u ? w.locators[0] : LOCATOR_INVALID;
+            return true;
         },
         nullptr, &obs);
     LocalSubnets subnets{};

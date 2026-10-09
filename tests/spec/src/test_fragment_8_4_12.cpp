@@ -16,7 +16,7 @@ static Guid make_writer_guid(Octet p0, Octet p1, Octet p2, Octet kind) {
 }
 
 static bool tc_fas_8_4_12_001(std::string& err) {
-    FragmentAssembler<2> assembler{};
+    BoundedFragmentAssembler<2> assembler{};
     const Guid writer = make_writer_guid(0x91u, 0x92u, 0x93u, 0xC2u);
     const SequenceNumber sn = SequenceNumber::from_int64(77);
     const Timestamp ts{0, 0};
@@ -50,7 +50,7 @@ static bool tc_fas_8_4_12_001(std::string& err) {
 }
 
 static bool tc_fas_8_4_12_002(std::string& err) {
-    FragmentAssembler<2> assembler{};
+    BoundedFragmentAssembler<2> assembler{};
     const Guid writer = make_writer_guid(0xA9u, 0xAAu, 0xABu, 0xC2u);
     const SequenceNumber sn = SequenceNumber::from_int64(88);
 
