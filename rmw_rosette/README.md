@@ -114,6 +114,7 @@ the same relationships.
 | `test/test_introspection_c_codec.cpp` | type resolution, DDS type names, golden bytes, round trips, malformed-input rejection |
 | `test/test_local_node_entities.cpp` | `ParticipantEntitiesInfo` encoding, decoded through `rmw_dds_common`'s own type support; node and endpoint removal |
 | `test/test_guard_condition.cpp` | trigger semantics and cross-thread wakeup of `rmw_wait()` |
+| `test/test_init_options.cpp` | init options own their enclave and security root: copy duplicates them, fini frees them (no leak per `rcl_init()`) |
 | `test/test_pub_sub_loopback.cpp` | publish → wait → take through one participant over UDP |
 | `tests/spec` (`TC-SEDP-*`, `TC-PART-8.5.1-005`, `TC-SPDP-8.5.3-005/006`, `TC-SWR-8.4.3-002`) | endpoint lifecycle, disposals, SPDP numbering, preemptive ACKNACK |
 | `tests/ros2/rmw_serialization_parity.py` | CDR layout and cross-decoding against a live stock RMW |
