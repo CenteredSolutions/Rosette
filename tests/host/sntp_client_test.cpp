@@ -199,6 +199,34 @@ void poll_interval_backs_off() {
           "TC-NET-SNTP-CLI-005 a settled clock backs off to max_poll");
 }
 
+// TC-NET-SNTP-CLI-008: the first frequency measurement after start replaces the estimate, so a
+// tick 35 ppm off UTC (a cheap crystal) is tracked from the second exchange, and the poll
+// interval backs off on the same schedule as a perfect tick instead of falling back to min_poll.
+void first_frequency_measurement_locks() {
+    reset();
+    FakeNtpNetwork server;
+    server.drift_ppm = -35.0;
+    net::SntpClient client(server, config(), FakeNtpNetwork::clock());
+    const net::AddressSnapshot s = snapshot(true, true);
+    client.poll(now_ms(), s);
+    run_for(client, s, 64000u + 500u);
+    check(client.samples() == 2 && client.frequency_ppm() > -35.5 && client.frequency_ppm() < -34.5,
+          "TC-NET-SNTP-CLI-008 the second exchange measures the drift in one step");
+
+    // Once past min_poll, a locked frequency never lets the error reach settled_error_us.
+    bool backed_off = false;
+    bool fell_back = false;
+    const uint32_t span_ms = 64000u * 7u + 1000u + 128000u + 256000u + 512000u + 1024000u * 2u;
+    for (uint32_t t = 0; t < span_ms; t += 100u) {
+        run_for(client, s, 100u);
+        backed_off = backed_off || client.poll_interval_ms() > 64000u;
+        fell_back = fell_back || (backed_off && client.poll_interval_ms() == 64000u);
+    }
+
+    check(!fell_back && client.poll_interval_ms() == 1024000u,
+          "TC-NET-SNTP-CLI-008 a drifting tick backs off to max_poll without falling back");
+}
+
 void kiss_of_death() {
     reset();
     FakeNtpNetwork server;
@@ -223,6 +251,7 @@ int main() {
     filter_rejects_a_delayed_sample();
     frequency_tracks_drift();
     poll_interval_backs_off();
+    first_frequency_measurement_locks();
     kiss_of_death();
     fresh_sample_beats_stale_one();
     return test_summary();

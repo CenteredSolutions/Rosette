@@ -221,18 +221,33 @@ const SntpClient::FilterEntry& SntpClient::select_sample(uint64_t now_us) const 
  * it.
  *
  * The selected sample's offset is carried from its measurement to now at
- * the estimated frequency before it is written. The frequency estimate is
- * updated from the offset change between the previous used sample and this
- * one, weighted by its span over `frequency_averaging_s` and clamped to
- * `max_frequency_ppm`.
+ * the estimated frequency before it is written. The frequency is measured
+ * from the offset change between the previous used sample and this one,
+ * and clamped to `max_frequency_ppm`. The first measurement since start
+ * replaces the estimate outright: the estimate starts at zero, which is no
+ * measurement at all, and averaging it in at `span / frequency_averaging_s`
+ * would leave the clock drifting at most of the tick's error for dozens of
+ * exchanges (about 40 minutes at 64 s polls for a 35 ppm crystal), during
+ * which each long poll overshoots `settled_error_us` and resets the
+ * interval. Every later measurement is weighted by its span over
+ * `frequency_averaging_s`.
  *
  * @param[in] latest The sample just measured.
  * @return The latest sample's offset minus the clock's offset before the
  *   update: how far off the clock was, which paces the polling.
  *
+ * Verification:
+ * - Correct means: the clock's offset is the selected sample's carried
+ *   forward; after the second exchange the estimate equals the measured
+ *   drift; later estimates move toward each measurement by its span's
+ *   weight.
+ * - Covered by: TC-NET-SNTP-CLI-003, TC-NET-SNTP-CLI-004, TC-NET-SNTP-CLI-008.
+ *
  * References:
  * - RFC 5905 §10 (a sample not newer than the last one used is not used),
- *   §11.3 (frequency-lock contribution weighted by the update interval)
+ *   §11.3 (frequency-lock contribution weighted by the update interval),
+ *   Appendix A.5.5.1 (local_clock(): the FREQ state sets the frequency
+ *   directly from the first offset difference)
  */
 int64_t SntpClient::discipline(const FilterEntry& latest) noexcept {
     filter_[filter_next_] = latest;
@@ -252,9 +267,13 @@ int64_t SntpClient::discipline(const FilterEntry& latest) noexcept {
         const double span_s = static_cast<double>(best.at_us - last_used_.at_us) * 1e-6;
         const double measured_ppm =
             static_cast<double>(best.sample.offset_us - last_used_.sample.offset_us) / span_s;
-        const double weight =
-            span_s < config_.frequency_averaging_s ? span_s / config_.frequency_averaging_s : 1.0;
+        double weight = 1.0;
+        if (frequency_measured_ && span_s < config_.frequency_averaging_s) {
+            weight = span_s / config_.frequency_averaging_s;
+        }
+
         frequency_ppm_ += (measured_ppm - frequency_ppm_) * weight;
+        frequency_measured_ = true;
         if (frequency_ppm_ > config_.max_frequency_ppm) {
             frequency_ppm_ = config_.max_frequency_ppm;
         } else if (frequency_ppm_ < -config_.max_frequency_ppm) {

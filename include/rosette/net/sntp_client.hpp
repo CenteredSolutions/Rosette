@@ -43,13 +43,16 @@
  * - Phase: the used sample's offset, carried forward from its measurement
  *   to now at the estimated frequency, is written to WallClock.
  * - Frequency: the drift of the monotonic tick against UTC is measured
- *   between successive used samples and folded into the estimate with a
- *   weight of the measurement's span over `frequency_averaging_s` (at most
- *   1), because timing jitter corrupts a measurement in inverse proportion
- *   to its span: short polls average many measurements, long ones are
- *   trusted almost alone (the FLL half of RFC 5905 §11.3). The estimate is
- *   applied to WallClock on every `poll()`, so the clock stays on UTC
- *   between exchanges.
+ *   between successive used samples. The first measurement since start
+ *   becomes the estimate, as in the FREQ state of RFC 5905's reference
+ *   clock discipline (Appendix A.5.5.1), so a crystal tens of ppm off is
+ *   tracked from the second exchange. Each later one is folded in with a
+ *   weight of its span over `frequency_averaging_s` (at most 1), because
+ *   timing jitter corrupts a measurement in inverse proportion to its span:
+ *   short polls average many measurements, long ones are trusted almost
+ *   alone (the FLL half of RFC 5905 §11.3). The estimate is applied to
+ *   WallClock on every `poll()`, so the clock stays on UTC between
+ *   exchanges.
  * - Poll interval: `min_poll_ms` for the first eight exchanges or while
  *   the clock is off by more than `settled_error_us`, doubling up to
  *   `max_poll_ms` once it holds; `retry_ms` after a failed exchange.
@@ -209,6 +212,7 @@ private:
     uint32_t next_exchange_ms_ = 0u;
     uint32_t poll_interval_ms_ = 0u;
     double frequency_ppm_ = 0.0;
+    bool frequency_measured_ = false;  ///< Whether frequency_ppm_ holds a measurement yet.
     uint64_t frequency_applied_us_ = 0u;
     double frequency_carry_us_ = 0.0;  ///< Correction not yet applied, below one microsecond.
 };
