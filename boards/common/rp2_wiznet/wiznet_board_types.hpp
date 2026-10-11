@@ -87,9 +87,13 @@ using BoardArpResolver = WiznetArpResolver<BoardChip, BoardBus>;
 /**
  * @brief Next hops the board's ARP cache holds (ports/net/wiznet/arp_cache.hpp).
  *
- * `ROSETTE_WIZNET_ARP_CACHE_ENTRIES` (CMake cache variable of the same name);
- * 8 covers a host, an operator console, a gateway, and a handful of participants. 0
- * attaches no resolver, and the chip ARPs whenever a socket's destination changes.
+ * `ROSETTE_WIZNET_ARP_CACHE_ENTRIES` (CMake cache variable of the same name),
+ * which bsp.cmake sets by default to the build's RTPS peer limit plus four:
+ * one host per active peer, plus the NTP, DHCP and TFTP servers and the
+ * gateway. Idle entries stay in the table as `stale`, so a full table is the
+ * usual state and its size, not a timer, decides which next hops keep their
+ * MAC. 0 attaches no resolver, and the chip ARPs whenever a socket's
+ * destination changes. The fallback serves builds that bypass bsp.cmake.
  */
 #if defined(ROSETTE_WIZNET_ARP_CACHE_ENTRIES)
 inline constexpr std::size_t kBoardArpCacheEntries = ROSETTE_WIZNET_ARP_CACHE_ENTRIES;
