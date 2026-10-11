@@ -1,7 +1,8 @@
 /**
  * @file wiznet_arp_cache_test.cpp
  * @brief The ArpCache state machine: first contact, negative caching with
- *        backoff, background refresh, expiry, idle eviction, LRU replacement.
+ *        backoff, background refresh, expiry, stale entries and their
+ *        revalidation, LRU replacement.
  *
  * The cache never touches a chip, so each case drives it with explicit
  * timestamps and plays the chip's part by calling answered() / unanswered()
@@ -110,14 +111,25 @@ void refresh() {
           "ARP-003: a refresh replaces a changed MAC");
 }
 
-// TC-NET-WIZ-ARP-004: an entry nobody sent to since its last answer leaves at its due time.
-void idle_eviction() {
+// TC-NET-WIZ-ARP-004: an entry nobody sent to since its last answer turns stale at its due
+// time, keeps its MAC, and costs no traffic; an unused negative entry leaves the table.
+void idle_entries() {
     wiz::ArpCacheStorage<4> cache;
     (void)lookup(cache, kHost, 0u);
     (void)queries(cache, kHost, 0u);
     cache.answered(kHost, kHostMac, 0u);
     check(idle(cache, 60000u), "ARP-004: an unused entry is not refreshed");
-    check(cache.find(kHost) == nullptr, "ARP-004: an unused entry is evicted when due");
+
+    const Cache::Entry* entry = cache.find(kHost);
+    check(entry != nullptr && entry->state == Cache::State::stale && entry->mac == kHostMac,
+          "ARP-004: an unused resolved entry turns stale and keeps its MAC");
+    check(idle(cache, 3600000u), "ARP-004: a stale entry is never queried on its own");
+
+    (void)lookup(cache, kConsole, 0u);
+    (void)queries(cache, kConsole, 0u);
+    cache.unanswered(kConsole, 0u);
+    check(idle(cache, 1000u) && cache.find(kConsole) == nullptr,
+          "ARP-004: an unused unreachable entry is evicted when due");
 }
 
 // TC-NET-WIZ-ARP-005: unanswered refreshes back off and keep the MAC until expire_ms.
@@ -154,7 +166,8 @@ void refresh_failures() {
     check(lookup(cache, kHost, 242999u) == Lookup::hit, "ARP-005: an answer restarts the expiry");
 }
 
-// TC-NET-WIZ-ARP-008: a MAC expires on lookup alone, even when no refresh could start.
+// TC-NET-WIZ-ARP-008: a MAC whose refreshes could never start turns stale at expire_ms, not
+// unreachable: nothing contradicted it, so the next send still uses it and revalidates.
 void expiry_without_queries() {
     wiz::ArpCachePolicy policy{};
     policy.refresh_ms = 60000u;
@@ -173,9 +186,61 @@ void expiry_without_queries() {
     }
 
     check(lookup(cache, kHost, 89999u) == Lookup::hit, "ARP-008: requeue keeps the MAC");
-    check(lookup(cache, kHost, 90000u) == Lookup::unreachable,
-          "ARP-008: the MAC expires at expire_ms");
-    check(queries(cache, kHost, 90000u), "ARP-008: the expired entry is still queried");
+    Cache::Mac mac{};
+    check(lookup(cache, kHost, 90000u, &mac) == Lookup::hit && mac == kHostMac,
+          "ARP-008: past expire_ms with no unanswered query, the MAC is still used");
+    check(queries(cache, kHost, 90000u), "ARP-008: that send revalidates the entry at once");
+}
+
+// TC-NET-WIZ-ARP-009: a send to a stale entry goes out with its MAC and revalidates it;
+// an answer confirms it, and an unanswered revalidation ends it after expire_ms - refresh_ms.
+void stale_revalidation() {
+    wiz::ArpCachePolicy policy{};
+    policy.refresh_ms = 60000u;
+    policy.expire_ms = 120000u;
+    policy.retry_ms = 1000u;
+    policy.max_retry_ms = 32000u;
+    wiz::ArpCacheStorage<4> cache(policy);
+
+    // An SNTP server polled every 1024 s, with no other traffic to it in between.
+    (void)lookup(cache, kHost, 0u);
+    (void)queries(cache, kHost, 0u);
+    cache.answered(kHost, kHostMac, 0u);
+    check(idle(cache, 60000u), "ARP-009: the server's entry goes stale unused");
+
+    Cache::Mac mac{};
+    check(lookup(cache, kHost, 1024000u, &mac) == Lookup::hit && mac == kHostMac,
+          "ARP-009: the next poll is sent with the stale MAC, not dropped");
+    check(queries(cache, kHost, 1024000u), "ARP-009: that send queries the entry at once");
+    cache.answered(kHost, kNewHostMac, 1024001u);
+    check(lookup(cache, kHost, 1024002u, &mac) == Lookup::hit && mac == kNewHostMac,
+          "ARP-009: the revalidation's answer replaces the MAC");
+
+    // The peer is gone: the revalidation goes unanswered on the refresh backoff.
+    (void)lookup(cache, kConsole, 0u);
+    (void)queries(cache, kConsole, 0u);
+    cache.answered(kConsole, kHostMac, 0u);
+    (void)idle(cache, 60000u);
+    check(lookup(cache, kConsole, 2000000u) == Lookup::hit,
+          "ARP-009: a stale entry is a hit before its revalidation answers");
+    const uint32_t attempts[] = {2000000u, 2001000u, 2003000u, 2007000u, 2015000u, 2031000u};
+    for (uint32_t at : attempts) {
+        check(queries(cache, kConsole, at), "ARP-009: the revalidation is retried on the backoff");
+        cache.unanswered(kConsole, at);
+    }
+
+    check(lookup(cache, kConsole, 2059999u) == Lookup::hit,
+          "ARP-009: the MAC is used for expire_ms - refresh_ms while unanswered");
+    check(lookup(cache, kConsole, 2060000u) == Lookup::unreachable,
+          "ARP-009: an unanswered revalidation makes the entry unreachable");
+
+    wiz::ArpCacheStorage<1> single(policy);
+    (void)lookup(single, kHost, 0u);
+    (void)queries(single, kHost, 0u);
+    single.answered(kHost, kHostMac, 0u);
+    (void)idle(single, 60000u);
+    check(lookup(single, kConsole, 60001u) == Lookup::miss && single.find(kHost) == nullptr,
+          "ARP-009: a full table replaces a stale entry");
 }
 
 // TC-NET-WIZ-ARP-006: a full table replaces its least recently used entry, never one in flight.
@@ -244,9 +309,10 @@ int main() {
     first_contact();
     negative_backoff();
     refresh();
-    idle_eviction();
+    idle_entries();
     refresh_failures();
     expiry_without_queries();
+    stale_revalidation();
     lru_replacement();
     heard_from();
     return test_summary();

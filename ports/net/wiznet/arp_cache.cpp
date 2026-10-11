@@ -40,10 +40,14 @@ ArpCache::Lookup ArpCache::lookup(const Ipv4& ip, uint32_t now_ms, Mac& mac) noe
         entry->due_ms = now_ms;
     }
 
-    expire_if_stale(*entry, now_ms);
+    settle_expired(*entry, now_ms);
     entry->used = true;
     entry->last_use = ++use_counter_;
     switch (entry->state) {
+        case State::stale:
+            revalidate(*entry, now_ms);
+            mac = entry->mac;
+            return Lookup::hit;
         case State::resolved:
             mac = entry->mac;
             return Lookup::hit;
@@ -58,13 +62,21 @@ bool ArpCache::next_query(uint32_t now_ms, Ipv4& ip) noexcept {
     Entry* best = nullptr;
     for (std::size_t i = 0; i < capacity_; ++i) {
         Entry& entry = entries_[i];
-        expire_if_stale(entry, now_ms);
-        if (entry.state == State::empty || entry.in_flight || !due(now_ms, entry.due_ms)) {
+        settle_expired(entry, now_ms);
+        if (entry.state == State::empty || entry.state == State::stale || entry.in_flight
+            || !due(now_ms, entry.due_ms)) {
             continue;
         }
 
+        // Nobody sent to it since its last query: a confirmed MAC is kept for
+        // the next send to revalidate, anything else leaves the table.
         if (!entry.used) {
-            entry = Entry{};
+            if (entry.state == State::resolved) {
+                entry.state = State::stale;
+            } else {
+                entry = Entry{};
+            }
+
             continue;
         }
 
@@ -110,7 +122,7 @@ void ArpCache::unanswered(const Ipv4& ip, uint32_t now_ms) noexcept {
     }
 
     entry->due_ms = now_ms + backoff_ms(entry->failures);
-    expire_if_stale(*entry, now_ms);
+    settle_expired(*entry, now_ms);
 
     // A refresh retry needs no fresh use: the use that made the entry worth
     // refreshing stands until the MAC expires.
@@ -207,18 +219,44 @@ uint32_t ArpCache::backoff_ms(uint8_t failures) const noexcept {
     return wait < policy_.max_retry_ms ? wait : policy_.max_retry_ms;
 }
 
-/// @brief Makes a `resolved` entry whose answer is `expire_ms` old `unreachable`.
-void ArpCache::expire_if_stale(Entry& entry, uint32_t now_ms) const noexcept {
+/**
+ * @brief Settles a `resolved` entry whose answer is `expire_ms` old.
+ *
+ * An unanswered query is evidence against the MAC, so an entry with
+ * failures becomes `unreachable`. Without one, the refreshes were never
+ * started (the socket-less engine stayed busy) and the MAC stands, so the
+ * entry becomes `stale`, to be revalidated by the next send.
+ *
+ * @param[in,out] entry  The entry; unchanged unless `resolved` and expired.
+ * @param[in]     now_ms Monotonic milliseconds.
+ */
+void ArpCache::settle_expired(Entry& entry, uint32_t now_ms) const noexcept {
     if (entry.state != State::resolved || !due(now_ms, entry.expires_ms)) {
         return;
     }
 
-    // An entry starved of refreshes (the engine was busy) still counts one
-    // failure, so its backoff starts at retry_ms.
-    entry.state = State::unreachable;
-    if (entry.failures == 0u) {
-        entry.failures = 1u;
-    }
+    entry.state = entry.failures == 0u ? State::stale : State::unreachable;
+}
+
+/**
+ * @brief Returns a `stale` entry to `resolved`, due for a query now.
+ *
+ * The send that called for it goes out with the MAC meanwhile. The entry
+ * gets `expire_ms - refresh_ms`, the window a failing refresh gets, to
+ * answer before settle_expired() makes it `unreachable`.
+ *
+ * @param[in,out] entry  A `stale` entry.
+ * @param[in]     now_ms Monotonic milliseconds.
+ *
+ * References:
+ * - RFC 4861 §7.3.3 (a packet sent to a STALE entry starts reachability
+ *   confirmation)
+ */
+void ArpCache::revalidate(Entry& entry, uint32_t now_ms) const noexcept {
+    entry.state = State::resolved;
+    entry.failures = 0u;
+    entry.due_ms = now_ms;
+    entry.expires_ms = now_ms + (policy_.expire_ms - policy_.refresh_ms);
 }
 
 /// @brief Ends the entry's query; the next one needs a fresh use.
