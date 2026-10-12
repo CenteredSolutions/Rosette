@@ -63,6 +63,16 @@ void SntpClient::poll(uint32_t now_ms, const AddressSnapshot& snapshot) noexcept
 
     FilterEntry latest{};
     const Exchange result = exchange(server, latest);
+
+    // A request dropped before the wire reached no server: ask the same one again soon, once.
+    const bool quick_retry = result == Exchange::not_sent && !retried_unsent_;
+    retried_unsent_ = quick_retry;
+    if (quick_retry) {
+        next_exchange_ms_ = now_ms + config_.unsent_retry_ms;
+        print_server("not sent yet to", server);
+        return;
+    }
+
     if (result == Exchange::sampled) {
         ++samples_;
         const bool was_synced = synced_;
@@ -84,7 +94,10 @@ void SntpClient::poll(uint32_t now_ms, const AddressSnapshot& snapshot) noexcept
     ++server_index_;
     poll_interval_ms_ = result == Exchange::kiss_of_death ? config_.max_poll_ms : config_.retry_ms;
     next_exchange_ms_ = now_ms + poll_interval_ms_;
-    print_server(result == Exchange::kiss_of_death ? "refused by" : "no reply from", server);
+    print_server(result == Exchange::kiss_of_death ? "refused by"
+                 : result == Exchange::not_sent    ? "not sent to"
+                                                   : "no reply from",
+                 server);
 }
 
 /**
@@ -128,8 +141,9 @@ bool SntpClient::pick_server(const AddressSnapshot& snapshot,
  *
  * @param[in]  server The server.
  * @param[out] entry  The sample and the tick time of T4, when sampled.
- * @return `sampled`, `no_reply` (including a socket that could not be
- *   opened), or `kiss_of_death`.
+ * @return `sampled`; `not_sent` when the socket dropped the request before
+ *   the wire (`would_block`), so no server saw it; `no_reply` (including a
+ *   socket that could not be opened); or `kiss_of_death`.
  *
  * References:
  * - RFC 4330 §5 (request, reply checks); RFC 5905 §8 (T1..T4)
@@ -149,6 +163,10 @@ SntpClient::Exchange SntpClient::exchange(const SocketAddress& server,
     if (socket->send_to(packet.data(), packet.size(), server)
         != static_cast<std::ptrdiff_t>(packet.size())) {
         return Exchange::no_reply;
+    }
+
+    if (socket->last_error() == SocketError::would_block) {
+        return Exchange::not_sent;
     }
 
     const uint64_t deadline_us = t1_us + uint64_t{config_.reply_timeout_ms} * 1000u;
@@ -220,19 +238,22 @@ const SntpClient::FilterEntry& SntpClient::select_sample(uint64_t now_us) const 
  * @brief Adds `latest` to the filter and, when the filter yields a new sample, sets the clock from
  * it.
  *
- * The selected sample's offset is carried from its measurement to now at
- * the estimated frequency before it is written. The frequency estimate is
- * updated from the offset change between the previous used sample and this
- * one, weighted by its span over `frequency_averaging_s` and clamped to
- * `max_frequency_ppm`.
+ * The first used sample sets the clock and anchors the frequency lock
+ * (update_frequency()); every later one updates the frequency first. The
+ * selected sample's offset is then carried from its measurement to now at
+ * the estimated frequency before it is written.
  *
  * @param[in] latest The sample just measured.
  * @return The latest sample's offset minus the clock's offset before the
  *   update: how far off the clock was, which paces the polling.
  *
+ * Verification:
+ * - Correct means: the clock's offset is the selected sample's carried
+ *   forward; a sample not newer than the last one used changes nothing.
+ * - Covered by: TC-NET-SNTP-CLI-001, TC-NET-SNTP-CLI-003, TC-NET-SNTP-CLI-007.
+ *
  * References:
- * - RFC 5905 §10 (a sample not newer than the last one used is not used),
- *   §11.3 (frequency-lock contribution weighted by the update interval)
+ * - RFC 5905 §10 (a sample not newer than the last one used is not used)
  */
 int64_t SntpClient::discipline(const FilterEntry& latest) noexcept {
     filter_[filter_next_] = latest;
@@ -249,17 +270,9 @@ int64_t SntpClient::discipline(const FilterEntry& latest) noexcept {
     }
 
     if (synced_) {
-        const double span_s = static_cast<double>(best.at_us - last_used_.at_us) * 1e-6;
-        const double measured_ppm =
-            static_cast<double>(best.sample.offset_us - last_used_.sample.offset_us) / span_s;
-        const double weight =
-            span_s < config_.frequency_averaging_s ? span_s / config_.frequency_averaging_s : 1.0;
-        frequency_ppm_ += (measured_ppm - frequency_ppm_) * weight;
-        if (frequency_ppm_ > config_.max_frequency_ppm) {
-            frequency_ppm_ = config_.max_frequency_ppm;
-        } else if (frequency_ppm_ < -config_.max_frequency_ppm) {
-            frequency_ppm_ = -config_.max_frequency_ppm;
-        }
+        update_frequency(best);
+    } else {
+        frequency_anchor_ = best;
     }
 
     const double carried_us = frequency_ppm_ * static_cast<double>(now_us - best.at_us) * 1e-6;
@@ -269,6 +282,59 @@ int64_t SntpClient::discipline(const FilterEntry& latest) noexcept {
     last_used_ = best;
     synced_ = true;
     return error_us;
+}
+
+/**
+ * @brief Updates the frequency estimate from a newly used sample.
+ *
+ * A frequency is an offset change over a span, so an error of e in either
+ * sample's offset costs the measurement e / span. Until one measurement
+ * spans `frequency_averaging_s`, the client is locking: each measurement
+ * runs from the first sample used (the anchor) and replaces the estimate,
+ * so the estimate tracks the tick from the second exchange and its error
+ * shrinks as the span grows. A first sample 770 us off, as one taken while
+ * the board is busy starting up can be, costs 12 ppm at 64 s, under 2 ppm
+ * by the end of the `min_poll_ms` exchanges, and 0.75 ppm at 1024 s. Once
+ * the span reaches `frequency_averaging_s` the lock is done, and each
+ * measurement runs from the previous used sample and is folded in with a
+ * weight of its span over `frequency_averaging_s`.
+ *
+ * RFC 5905's reference discipline makes the same long first measurement in
+ * its FREQ state, but leaves the clock uncorrected until it is done (900 s,
+ * 31 ms at 35 ppm); measuring from the anchor at every exchange corrects
+ * the clock all the while.
+ *
+ * @param[in] best The sample being used, newer than the last one used.
+ *
+ * Verification:
+ * - Correct means: while locking, the estimate is the offset change since
+ *   the anchor over the time since it; once a span from the anchor reaches
+ *   `frequency_averaging_s`, estimates move toward each measurement by its
+ *   span's weight; the estimate never exceeds `max_frequency_ppm`.
+ * - Covered by: TC-NET-SNTP-CLI-004, TC-NET-SNTP-CLI-008, TC-NET-SNTP-CLI-009.
+ *
+ * References:
+ * - RFC 5905 §11.3 (frequency-lock contribution weighted by the update
+ *   interval); Appendix A.5.5.1 (local_clock(): the FREQ state measures the
+ *   frequency from the first offset over at least WATCH seconds)
+ */
+void SntpClient::update_frequency(const FilterEntry& best) noexcept {
+    const FilterEntry& from = frequency_locked_ ? last_used_ : frequency_anchor_;
+    const double span_s = static_cast<double>(best.at_us - from.at_us) * 1e-6;
+    const double measured_ppm =
+        static_cast<double>(best.sample.offset_us - from.sample.offset_us) / span_s;
+    double weight = 1.0;
+    if (frequency_locked_ && span_s < config_.frequency_averaging_s) {
+        weight = span_s / config_.frequency_averaging_s;
+    }
+
+    frequency_ppm_ += (measured_ppm - frequency_ppm_) * weight;
+    frequency_locked_ = frequency_locked_ || span_s >= config_.frequency_averaging_s;
+    if (frequency_ppm_ > config_.max_frequency_ppm) {
+        frequency_ppm_ = config_.max_frequency_ppm;
+    } else if (frequency_ppm_ < -config_.max_frequency_ppm) {
+        frequency_ppm_ = -config_.max_frequency_ppm;
+    }
 }
 
 /**

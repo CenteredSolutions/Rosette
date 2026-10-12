@@ -28,8 +28,9 @@ namespace fake {
 
 namespace net = rosette::net;
 
-/// How the server answers the next request.
-enum class NtpBehavior : uint8_t { answer, silent, kiss_rate, stale_then_answer };
+/// How the server answers the next request. `unresolved` is the socket dropping it before the
+/// wire, as a WIZnet socket does while its next hop is resolved: no server sees it.
+enum class NtpBehavior : uint8_t { answer, silent, kiss_rate, stale_then_answer, unresolved };
 
 class FakeNtpNetwork final : public net::SocketProvider {
 public:
@@ -131,6 +132,12 @@ public:
 
     std::ptrdiff_t send_to(const void* data, std::size_t length,
                            const net::SocketAddress& remote) noexcept override {
+        if (network_.behavior == NtpBehavior::unresolved) {
+            error_ = net::SocketError::would_block;
+            return static_cast<std::ptrdiff_t>(length);
+        }
+
+        error_ = net::SocketError::none;
         ++network_.requests;
         network_.last_to = remote;
         const auto* request = static_cast<const uint8_t*>(data);
@@ -149,6 +156,7 @@ public:
                 queue(network_.reply_to(request, arrival, 2u, false), back + 10u);
                 break;
             case NtpBehavior::silent:
+            case NtpBehavior::unresolved:
                 break;
         }
 
@@ -183,7 +191,7 @@ public:
         }
     }
 
-    net::SocketError last_error() const noexcept override { return net::SocketError::none; }
+    net::SocketError last_error() const noexcept override { return error_; }
 
 private:
     struct Datagram {
@@ -202,6 +210,7 @@ private:
     int next_ = 0;
     uint32_t timeout_ms_ = 0u;
     bool open_ = true;
+    net::SocketError error_ = net::SocketError::none;
 };
 
 inline std::unique_ptr<net::Socket> FakeNtpNetwork::open(net::SocketDomain, net::SocketType,

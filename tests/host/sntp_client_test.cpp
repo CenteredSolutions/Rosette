@@ -64,6 +64,26 @@ void run_for(net::SntpClient& client, const net::AddressSnapshot& s, uint32_t ms
     }
 }
 
+/**
+ * @brief Runs a client through its back-off and three max_poll exchanges.
+ *
+ * @return Whether the interval reached max_poll and never returned to
+ *   min_poll once it had left it, which holds only while every exchange's
+ *   error stays under settled_error_us.
+ */
+bool backs_off_without_falling_back(net::SntpClient& client, const net::AddressSnapshot& s) {
+    bool backed_off = false;
+    bool fell_back = false;
+    const uint32_t span_ms = 64000u * 8u + 1000u + 128000u + 256000u + 512000u + 1024000u * 3u;
+    for (uint32_t t = 0; t < span_ms; t += 100u) {
+        run_for(client, s, 100u);
+        backed_off = backed_off || client.poll_interval_ms() > 64000u;
+        fell_back = fell_back || (backed_off && client.poll_interval_ms() == 64000u);
+    }
+
+    return !fell_back && client.poll_interval_ms() == 1024000u;
+}
+
 void first_exchange_sets_the_clock() {
     reset();
     FakeNtpNetwork server;
@@ -199,6 +219,85 @@ void poll_interval_backs_off() {
           "TC-NET-SNTP-CLI-005 a settled clock backs off to max_poll");
 }
 
+// TC-NET-SNTP-CLI-008: the first frequency measurement after start replaces the estimate, so a
+// tick 35 ppm off UTC (a cheap crystal) is tracked from the second exchange, and the poll
+// interval backs off on the same schedule as a perfect tick instead of falling back to min_poll.
+void first_frequency_measurement_locks() {
+    reset();
+    FakeNtpNetwork server;
+    server.drift_ppm = -35.0;
+    net::SntpClient client(server, config(), FakeNtpNetwork::clock());
+    const net::AddressSnapshot s = snapshot(true, true);
+    client.poll(now_ms(), s);
+    run_for(client, s, 64000u + 500u);
+    check(client.samples() == 2 && client.frequency_ppm() > -35.5 && client.frequency_ppm() < -34.5,
+          "TC-NET-SNTP-CLI-008 the second exchange measures the drift in one step");
+
+    check(backs_off_without_falling_back(client, s),
+          "TC-NET-SNTP-CLI-008 a drifting tick backs off to max_poll without falling back");
+}
+
+// TC-NET-SNTP-CLI-009: a first sample whose reply came back late (offset 770 us low, as when the
+// board is busy starting up) costs the frequency estimate that error over the span from it, which
+// grows with every exchange, so the estimate is within 2 ppm by the end of the min_poll exchanges
+// and the poll interval still backs off without falling back.
+void late_first_sample_is_outgrown() {
+    reset();
+    FakeNtpNetwork server;
+    server.drift_ppm = -35.0;
+    server.back_delay_us += 1540u;
+    net::SntpClient client(server, config(), FakeNtpNetwork::clock());
+    const net::AddressSnapshot s = snapshot(true, true);
+    client.poll(now_ms(), s);
+    server.back_delay_us -= 1540u;
+    run_for(client, s, 64000u + 500u);
+    check(client.frequency_ppm() > -24.0 && client.frequency_ppm() < -22.0,
+          "TC-NET-SNTP-CLI-009 over 64 s the late sample costs about 12 ppm");
+
+    run_for(client, s, 64000u * 6u);
+    check(client.samples() == 8 && client.frequency_ppm() > -37.0 && client.frequency_ppm() < -33.0,
+          "TC-NET-SNTP-CLI-009 over the min_poll exchanges its cost falls under 2 ppm");
+
+    check(backs_off_without_falling_back(client, s),
+          "TC-NET-SNTP-CLI-009 the interval backs off to max_poll without falling back");
+}
+
+// TC-NET-SNTP-CLI-010: a request the socket dropped before the wire (would_block, as just after
+// boot while the server's MAC is resolved) is asked of the same server after unsent_retry_ms
+// instead of retry_ms, so the clock is set a second after the network is up; a second drop in a
+// row waits retry_ms, so no server is sent two requests closer than that.
+void unsent_request_is_retried_soon() {
+    reset();
+    FakeNtpNetwork server;
+    server.behavior = NtpBehavior::unresolved;
+    net::SntpClient client(server, config(), FakeNtpNetwork::clock());
+    const net::AddressSnapshot s = snapshot(true, true);
+    client.poll(now_ms(), s);
+    check(!client.synced() && server.requests == 0,
+          "TC-NET-SNTP-CLI-010 a request dropped before the wire reaches no server");
+
+    server.behavior = NtpBehavior::answer;
+    run_for(client, s, 900u);
+    check(server.requests == 0, "TC-NET-SNTP-CLI-010 no retry before unsent_retry_ms");
+    run_for(client, s, 200u);
+    check(client.synced() && server.requests == 1 && server.last_to.ipv4() == kConfigured,
+          "TC-NET-SNTP-CLI-010 the same server is asked after unsent_retry_ms, and answers");
+
+    reset();
+    FakeNtpNetwork silent_path;
+    silent_path.behavior = NtpBehavior::unresolved;
+    net::SntpClient twice(silent_path, config(), FakeNtpNetwork::clock());
+    twice.poll(now_ms(), s);
+    run_for(twice, s, 1100u);
+    silent_path.behavior = NtpBehavior::answer;
+    run_for(twice, s, 15500u);
+    check(!twice.synced() && silent_path.requests == 0,
+          "TC-NET-SNTP-CLI-010 a second drop in a row waits retry_ms");
+    run_for(twice, s, 1000u);
+    check(twice.synced() && silent_path.requests == 1,
+          "TC-NET-SNTP-CLI-010 after retry_ms the next request goes out");
+}
+
 void kiss_of_death() {
     reset();
     FakeNtpNetwork server;
@@ -223,6 +322,9 @@ int main() {
     filter_rejects_a_delayed_sample();
     frequency_tracks_drift();
     poll_interval_backs_off();
+    first_frequency_measurement_locks();
+    late_first_sample_is_outgrown();
+    unsent_request_is_retried_soon();
     kiss_of_death();
     fresh_sample_beats_stale_one();
     return test_summary();

@@ -22,15 +22,47 @@ enum class SocketProtocol : uint8_t {
     udp = 17u,
 };
 
+/**
+ * @brief Why the last call on a Socket failed, or `none` when it succeeded.
+ *
+ * Every Socket call except is_open(), receive_buffer_size(), and
+ * last_error() leaves one of these in last_error(). Each value is the
+ * negated Linux errno a POSIX sockets call reports for the same condition
+ * (EINVAL is 22, so `invalid_argument` is -22), so a code logged as a number
+ * reads like errno. Each backend maps its own failures onto this set; the
+ * meanings below are what a caller may rely on, and each Socket method lists
+ * the codes it sets and what leads to each.
+ *
+ * References:
+ * - POSIX.1-2017 <errno.h>; Linux errno(3) for the numeric values
+ */
 enum class SocketError : int {
+    /// The call succeeded.
     none = 0,
+    /// The arguments or the socket's state rule the call out: an address the backend cannot
+    /// represent, a multicast group not joined or outside 224.0.0.0/4, or a call the backend
+    /// accepts only before bind() made after it.
     invalid_argument = -22,
+    /// The backend or the hardware failed in a way it does not classify: the chip did not open
+    /// or transfer on the socket, the network stack refused a multicast change, or a host call
+    /// failed with an errno this set does not name (EADDRINUSE from bind(), for one).
     io = -5,
+    /// Nothing could be done now, though the same call may succeed later: no datagram is waiting
+    /// and no receive timeout is set, the host's send buffer is full, or send_to() dropped the
+    /// datagram before the wire while its next hop is resolved.
     would_block = -11,
+    /// The socket is not open: it was closed, or the backend has not opened it yet.
     closed = -9,
+    /// recv_from() waited its whole receive timeout and no datagram arrived.
     timed_out = -110,
+    /// The backend cannot do this at all: an address family it does not handle, a second
+    /// multicast group, a membership change after bind() on hardware that fixes membership
+    /// then, or sending or receiving on a hardware socket with no buffer in that direction.
     not_supported = -95,
+    /// The network stack had no buffer for the datagram (ENOBUFS, ENOSPC), or a FreeRTOS+TCP
+    /// socket that already holds its one multicast group was asked to join another.
     no_buffer_space = -105,
+    /// The network stack reports its interface down (ENETDOWN).
     network_down = -100,
 };
 
@@ -132,17 +164,136 @@ make_multicast_membership_v6(const std::array<uint8_t, 16>& group,
     return out;
 }
 
+/**
+ * @brief One UDP socket on whichever network backend the board uses.
+ *
+ * Rosette's RTPS transport and its DHCP and SNTP clients reach the network
+ * only through this interface, so each runs unchanged on POSIX sockets,
+ * FreeRTOS+TCP, and WIZnet hardware sockets. A socket comes from
+ * SocketProvider::open(); multicast membership and receive buffering are set
+ * before bind(), then send_to() and recv_from() move datagrams until close().
+ *
+ * Errors follow the sockets convention: a call that fails returns a negative
+ * value and leaves the reason in last_error(), and a call that succeeds
+ * leaves `none` there, so last_error() describes the most recent call only.
+ * The one success that carries a code is send_to() returning `length` with
+ * `would_block`: the datagram was accepted and dropped before the wire. Each
+ * method lists under Errors the codes it sets and what leads to each; a
+ * backend with no cause for a code never sets it, and a code named for one
+ * backend is set by that backend only.
+ *
+ * Example:
+ * @code{.cpp}
+ * auto socket = provider.open(SocketDomain::ipv4);
+ * if (socket == nullptr || socket->bind(make_socket_address_v4({0u, 0u, 0u, 0u}, 12300u)) != 0) {
+ *     return;
+ * }
+ *
+ * if (socket->send_to(request.data(), request.size(), server) < 0) {
+ *     std::printf("send failed: %s\n", socket_error_string(socket->last_error()));
+ * }
+ *
+ * socket->close();
+ * @endcode
+ * Full program: src/net/sntp_client.cpp (SntpClient::exchange()).
+ */
 class Socket {
 public:
     virtual ~Socket() = default;
 
+    /// @brief Whether the socket can send and receive; false once closed (WIZnet: until bind()).
     virtual bool is_open() const noexcept = 0;
-    /// Joins a multicast group. Call before bind(): some backends (WIZnet)
-    /// latch membership when the socket opens, and hosted backends enable
-    /// port sharing here so several participants can bind the group port.
+
+    /**
+     * @brief Joins the multicast group `membership` names, so its datagrams reach this socket.
+     *
+     * Call before bind(): some backends (WIZnet) latch membership when the
+     * socket opens, and hosted backends enable port sharing here so several
+     * participants can bind the group port. Joining the group the socket
+     * already holds succeeds and changes nothing.
+     *
+     * @param[in] membership Group, interface, and port to join.
+     * @return 0 when the socket holds the group; -1 with last_error() set otherwise.
+     *
+     * Errors:
+     * - `closed`: the socket was closed (POSIX, FreeRTOS+TCP).
+     * - `invalid_argument`: the group is outside 224.0.0.0/4, or the socket is already bound
+     *   (WIZnet); or the kernel rejected the request as EINVAL (POSIX).
+     * - `not_supported`: the backend does not handle the group's address family (WIZnet: any
+     *   but IPv4), or the socket already holds a different group (WIZnet).
+     * - `no_buffer_space`: the socket already holds a different group (FreeRTOS+TCP), or the
+     *   kernel had no memory for the membership (POSIX, ENOBUFS).
+     * - `io`: the network stack refused the join.
+     *
+     * References:
+     * - socket(7) (SO_REUSEADDR, SO_REUSEPORT), ip(7) (IP_ADD_MEMBERSHIP), ipv6(7)
+     */
     virtual int joinMulticastGroup(const SocketMulticastMembership& membership) noexcept = 0;
+
+    /**
+     * @brief Leaves the multicast group `membership` names.
+     *
+     * The counterpart of joinMulticastGroup(), taking the same membership.
+     * Hardware that latches membership when the socket opens (WIZnet) can
+     * leave only before bind(); afterwards the socket keeps the group until
+     * close(). Leaving when the socket holds no group succeeds (WIZnet).
+     *
+     * @param[in] membership The membership given to joinMulticastGroup().
+     * @return 0 when the socket no longer holds the group; -1 with last_error() set otherwise.
+     *
+     * Errors:
+     * - `closed`: the socket was closed (POSIX).
+     * - `invalid_argument`: the socket does not hold `membership` (WIZnet, FreeRTOS+TCP); or
+     *   the kernel rejected the request as EINVAL (POSIX).
+     * - `not_supported`: the socket is already bound (WIZnet), or the backend does not handle
+     *   the group's address family (POSIX).
+     * - `io`: the network stack refused the change.
+     *
+     * References:
+     * - ip(7) (IP_DROP_MEMBERSHIP), ipv6(7) (IPV6_LEAVE_GROUP)
+     */
     virtual int leaveMulticastGroup(const SocketMulticastMembership& membership) noexcept = 0;
+
+    /**
+     * @brief Binds the socket to the local address and port `local`.
+     *
+     * Opens the socket for traffic: on WIZnet this is when the chip opens the
+     * hardware socket, with any multicast group already joined. Port 0 lets
+     * the backend choose a port (WIZnet picks one in the RFC 6335 dynamic
+     * range, since the chip has no allocator of its own).
+     *
+     * @param[in] local Local address (all zeros for any interface) and port.
+     * @return 0 when bound; -1 with last_error() set otherwise.
+     *
+     * Errors:
+     * - `closed`: the socket was closed (POSIX, FreeRTOS+TCP).
+     * - `invalid_argument`: the address cannot be represented (POSIX), or the socket is
+     *   already bound (POSIX, FreeRTOS+TCP).
+     * - `not_supported`: `local` is of another address family than the socket (WIZnet).
+     * - `io`: the chip did not open the socket (WIZnet), or the network stack failed the bind
+     *   for a reason this set does not name, such as the port being in use (EADDRINUSE).
+     *
+     * References:
+     * - POSIX.1-2017 bind(); RFC 6335 §6 (dynamic ports)
+     */
     virtual int bind(const SocketAddress& local) noexcept = 0;
+
+    /**
+     * @brief Sets how long recv_from() waits for a datagram, in milliseconds.
+     *
+     * A timeout of 0 makes recv_from() return at once when nothing is waiting.
+     * Backends that cannot fail here (WIZnet) only remember the value.
+     *
+     * @param[in] timeout_ms Longest wait in recv_from(), in milliseconds; 0 for none.
+     * @return 0 when set; -1 with last_error() set otherwise.
+     *
+     * Errors:
+     * - `closed`: the socket was closed (POSIX, FreeRTOS+TCP).
+     * - `invalid_argument`, `io`: the network stack rejected the option.
+     *
+     * References:
+     * - socket(7) (SO_RCVTIMEO)
+     */
     virtual int set_receive_timeout(uint32_t timeout_ms) noexcept = 0;
 
     /**
@@ -157,12 +308,17 @@ public:
      *
      * Backends whose buffering is not per socket (FreeRTOS+TCP's shared
      * network buffers) or already ample (POSIX) leave this default, which
-     * reports not_supported and changes nothing.
+     * returns not_supported, changes nothing, and leaves last_error() as it
+     * was.
      *
      * @param[in] bytes Receive buffering wanted, in bytes.
      * @return 0 when the request was applied (the grant may be smaller than
-     *   `bytes`); otherwise the negative SocketError: not_supported, or
-     *   invalid_argument after bind() on a backend that cannot resize then.
+     *   `bytes`); otherwise the negative SocketError listed under Errors.
+     *
+     * Errors:
+     * - `not_supported`: the backend's buffering is not per socket (POSIX, FreeRTOS+TCP).
+     * - `invalid_argument`: the socket is already bound (WIZnet).
+     * - `closed`: the socket was closed (WIZnet).
      *
      * Verification:
      * - Correct means: after a 0 return, receive_buffer_size() is the
@@ -181,17 +337,88 @@ public:
 
     /// @brief Receive buffering this socket has, in bytes; 0 when the backend does not say.
     virtual std::size_t receive_buffer_size() const noexcept { return 0u; }
+
+    /**
+     * @brief Sends one datagram to `remote`.
+     *
+     * UDP gives no delivery guarantee, so a datagram the backend accepted but
+     * that never reaches the wire looks to most callers like one lost on it.
+     * A backend that resolves next hops itself (the WIZnet ARP cache) drops a
+     * datagram whose next hop it is still resolving, returns `length` as for
+     * a datagram sent, and sets last_error() to `would_block`; a caller that
+     * paces its sends against a remote's limits (an SNTP client) reads that to
+     * retry soon, since the remote saw nothing. Every other accepted datagram
+     * leaves last_error() at `none`.
+     *
+     * @param[in] data   The payload; read before the call returns.
+     * @param[in] length Payload bytes.
+     * @param[in] remote The destination.
+     * @return `length` when the datagram was accepted (see last_error() for
+     *   one dropped before the wire); 0 with last_error() at `none` when the
+     *   network stack had no buffer to take it (FreeRTOS+TCP); or -1 with
+     *   last_error() set.
+     *
+     * Errors:
+     * - `would_block` with a return of `length`: the datagram was dropped before the wire
+     *   while its next hop is resolved, and no host received it (WIZnet).
+     * - `would_block` with a return of -1: the kernel's send buffer is full (POSIX).
+     * - `closed`: the socket was closed, or (WIZnet) is not yet bound.
+     * - `invalid_argument`: `remote` cannot be represented (POSIX), or the network stack
+     *   rejected the address (FreeRTOS+TCP).
+     * - `not_supported`: `remote` is of another address family than the socket, or the
+     *   hardware socket has no transmit buffer (WIZnet).
+     * - `no_buffer_space`, `network_down`: the network stack had no buffer for the datagram,
+     *   or its interface is down (POSIX).
+     * - `io`: the chip did not take the datagram (WIZnet), or the network stack failed the
+     *   send for a reason this set does not name.
+     *
+     * Verification:
+     * - Correct means: a datagram dropped before the wire returns `length`
+     *   with `would_block`, and a datagram sent returns `length` with `none`.
+     * - Covered by: TC-NET-WIZ-ARP-010 (WIZnet backend).
+     *
+     * References:
+     * - POSIX.1-2017 sendto(); EAGAIN / EWOULDBLOCK
+     */
     virtual std::ptrdiff_t send_to(const void* data,
                                    std::size_t length,
                                    const SocketAddress& remote) noexcept = 0;
-    /// Receives one datagram into `data`. Returns its length, or -1 with
-    /// last_error() set. Backends that can report it return the datagram's
-    /// real length, so a return above `capacity` means it was truncated to
-    /// `capacity` bytes; backends that cannot never return above `capacity`.
+
+    /**
+     * @brief Receives one datagram into `data`, waiting up to the receive timeout.
+     *
+     * With a receive timeout set, the call blocks the calling thread until a
+     * datagram arrives or the timeout passes; with none, it returns at once.
+     *
+     * @param[out] data     Buffer for the payload; holds `capacity` bytes.
+     * @param[in]  capacity Size of `data`, in bytes; a longer datagram is truncated.
+     * @param[out] remote   The sender's address, when not null and a datagram was received.
+     * @return The datagram's length, or -1 with last_error() set. Backends that
+     *   can report it return the datagram's real length, so a return above
+     *   `capacity` means it was truncated to `capacity` bytes; backends that
+     *   cannot never return above `capacity`.
+     *
+     * Errors:
+     * - `would_block`: no datagram is waiting and no receive timeout is set; FreeRTOS+TCP
+     *   also reports a timeout that passed this way.
+     * - `timed_out`: the receive timeout passed and no datagram arrived (POSIX, WIZnet).
+     * - `closed`: the socket was closed, or (WIZnet) is not yet bound.
+     * - `not_supported`: the hardware socket has no receive buffer (WIZnet).
+     * - `invalid_argument`: the network stack rejected the socket (FreeRTOS+TCP).
+     * - `io`: the chip read failed (WIZnet), or the network stack failed the receive for a
+     *   reason this set does not name.
+     *
+     * References:
+     * - POSIX.1-2017 recvfrom(); recv(2) (MSG_TRUNC)
+     */
     virtual std::ptrdiff_t recv_from(void* data,
                                      std::size_t capacity,
                                      SocketAddress* remote) noexcept = 0;
+
+    /// @brief Closes the socket and leaves its multicast group; safe to repeat. Sets `none`.
     virtual void close() noexcept = 0;
+
+    /// @brief Why the most recent call failed, or `none` when it succeeded; see SocketError.
     virtual SocketError last_error() const noexcept = 0;
 
     int join_multicast(const SocketMulticastMembership& membership) noexcept
@@ -273,6 +500,7 @@ protected:
     rosette::platform::Event* receive_event_ = nullptr;
 };
 
+/// @brief The enumerator's name ("would_block"), or "unknown" for a value outside SocketError.
 const char* socket_error_string(SocketError error) noexcept;
 
 }  // namespace rosette::net
