@@ -220,17 +220,10 @@ const SntpClient::FilterEntry& SntpClient::select_sample(uint64_t now_us) const 
  * @brief Adds `latest` to the filter and, when the filter yields a new sample, sets the clock from
  * it.
  *
- * The selected sample's offset is carried from its measurement to now at
- * the estimated frequency before it is written. The frequency is measured
- * from the offset change between the previous used sample and this one,
- * and clamped to `max_frequency_ppm`. The first measurement since start
- * replaces the estimate outright: the estimate starts at zero, which is no
- * measurement at all, and averaging it in at `span / frequency_averaging_s`
- * would leave the clock drifting at most of the tick's error for dozens of
- * exchanges (about 40 minutes at 64 s polls for a 35 ppm crystal), during
- * which each long poll overshoots `settled_error_us` and resets the
- * interval. Every later measurement is weighted by its span over
- * `frequency_averaging_s`.
+ * The first used sample sets the clock and anchors the frequency lock
+ * (update_frequency()); every later one updates the frequency first. The
+ * selected sample's offset is then carried from its measurement to now at
+ * the estimated frequency before it is written.
  *
  * @param[in] latest The sample just measured.
  * @return The latest sample's offset minus the clock's offset before the
@@ -238,16 +231,11 @@ const SntpClient::FilterEntry& SntpClient::select_sample(uint64_t now_us) const 
  *
  * Verification:
  * - Correct means: the clock's offset is the selected sample's carried
- *   forward; after the second exchange the estimate equals the measured
- *   drift; later estimates move toward each measurement by its span's
- *   weight.
- * - Covered by: TC-NET-SNTP-CLI-003, TC-NET-SNTP-CLI-004, TC-NET-SNTP-CLI-008.
+ *   forward; a sample not newer than the last one used changes nothing.
+ * - Covered by: TC-NET-SNTP-CLI-001, TC-NET-SNTP-CLI-003, TC-NET-SNTP-CLI-007.
  *
  * References:
- * - RFC 5905 §10 (a sample not newer than the last one used is not used),
- *   §11.3 (frequency-lock contribution weighted by the update interval),
- *   Appendix A.5.5.1 (local_clock(): the FREQ state sets the frequency
- *   directly from the first offset difference)
+ * - RFC 5905 §10 (a sample not newer than the last one used is not used)
  */
 int64_t SntpClient::discipline(const FilterEntry& latest) noexcept {
     filter_[filter_next_] = latest;
@@ -264,21 +252,9 @@ int64_t SntpClient::discipline(const FilterEntry& latest) noexcept {
     }
 
     if (synced_) {
-        const double span_s = static_cast<double>(best.at_us - last_used_.at_us) * 1e-6;
-        const double measured_ppm =
-            static_cast<double>(best.sample.offset_us - last_used_.sample.offset_us) / span_s;
-        double weight = 1.0;
-        if (frequency_measured_ && span_s < config_.frequency_averaging_s) {
-            weight = span_s / config_.frequency_averaging_s;
-        }
-
-        frequency_ppm_ += (measured_ppm - frequency_ppm_) * weight;
-        frequency_measured_ = true;
-        if (frequency_ppm_ > config_.max_frequency_ppm) {
-            frequency_ppm_ = config_.max_frequency_ppm;
-        } else if (frequency_ppm_ < -config_.max_frequency_ppm) {
-            frequency_ppm_ = -config_.max_frequency_ppm;
-        }
+        update_frequency(best);
+    } else {
+        frequency_anchor_ = best;
     }
 
     const double carried_us = frequency_ppm_ * static_cast<double>(now_us - best.at_us) * 1e-6;
@@ -288,6 +264,59 @@ int64_t SntpClient::discipline(const FilterEntry& latest) noexcept {
     last_used_ = best;
     synced_ = true;
     return error_us;
+}
+
+/**
+ * @brief Updates the frequency estimate from a newly used sample.
+ *
+ * A frequency is an offset change over a span, so an error of e in either
+ * sample's offset costs the measurement e / span. Until one measurement
+ * spans `frequency_averaging_s`, the client is locking: each measurement
+ * runs from the first sample used (the anchor) and replaces the estimate,
+ * so the estimate tracks the tick from the second exchange and its error
+ * shrinks as the span grows. A first sample 770 us off, as one taken while
+ * the board is busy starting up can be, costs 12 ppm at 64 s, under 2 ppm
+ * by the end of the `min_poll_ms` exchanges, and 0.75 ppm at 1024 s. Once
+ * the span reaches `frequency_averaging_s` the lock is done, and each
+ * measurement runs from the previous used sample and is folded in with a
+ * weight of its span over `frequency_averaging_s`.
+ *
+ * RFC 5905's reference discipline makes the same long first measurement in
+ * its FREQ state, but leaves the clock uncorrected until it is done (900 s,
+ * 31 ms at 35 ppm); measuring from the anchor at every exchange corrects
+ * the clock all the while.
+ *
+ * @param[in] best The sample being used, newer than the last one used.
+ *
+ * Verification:
+ * - Correct means: while locking, the estimate is the offset change since
+ *   the anchor over the time since it; once a span from the anchor reaches
+ *   `frequency_averaging_s`, estimates move toward each measurement by its
+ *   span's weight; the estimate never exceeds `max_frequency_ppm`.
+ * - Covered by: TC-NET-SNTP-CLI-004, TC-NET-SNTP-CLI-008, TC-NET-SNTP-CLI-009.
+ *
+ * References:
+ * - RFC 5905 §11.3 (frequency-lock contribution weighted by the update
+ *   interval); Appendix A.5.5.1 (local_clock(): the FREQ state measures the
+ *   frequency from the first offset over at least WATCH seconds)
+ */
+void SntpClient::update_frequency(const FilterEntry& best) noexcept {
+    const FilterEntry& from = frequency_locked_ ? last_used_ : frequency_anchor_;
+    const double span_s = static_cast<double>(best.at_us - from.at_us) * 1e-6;
+    const double measured_ppm =
+        static_cast<double>(best.sample.offset_us - from.sample.offset_us) / span_s;
+    double weight = 1.0;
+    if (frequency_locked_ && span_s < config_.frequency_averaging_s) {
+        weight = span_s / config_.frequency_averaging_s;
+    }
+
+    frequency_ppm_ += (measured_ppm - frequency_ppm_) * weight;
+    frequency_locked_ = frequency_locked_ || span_s >= config_.frequency_averaging_s;
+    if (frequency_ppm_ > config_.max_frequency_ppm) {
+        frequency_ppm_ = config_.max_frequency_ppm;
+    } else if (frequency_ppm_ < -config_.max_frequency_ppm) {
+        frequency_ppm_ = -config_.max_frequency_ppm;
+    }
 }
 
 /**

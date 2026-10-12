@@ -64,6 +64,26 @@ void run_for(net::SntpClient& client, const net::AddressSnapshot& s, uint32_t ms
     }
 }
 
+/**
+ * @brief Runs a client through its back-off and three max_poll exchanges.
+ *
+ * @return Whether the interval reached max_poll and never returned to
+ *   min_poll once it had left it, which holds only while every exchange's
+ *   error stays under settled_error_us.
+ */
+bool backs_off_without_falling_back(net::SntpClient& client, const net::AddressSnapshot& s) {
+    bool backed_off = false;
+    bool fell_back = false;
+    const uint32_t span_ms = 64000u * 8u + 1000u + 128000u + 256000u + 512000u + 1024000u * 3u;
+    for (uint32_t t = 0; t < span_ms; t += 100u) {
+        run_for(client, s, 100u);
+        backed_off = backed_off || client.poll_interval_ms() > 64000u;
+        fell_back = fell_back || (backed_off && client.poll_interval_ms() == 64000u);
+    }
+
+    return !fell_back && client.poll_interval_ms() == 1024000u;
+}
+
 void first_exchange_sets_the_clock() {
     reset();
     FakeNtpNetwork server;
@@ -213,18 +233,33 @@ void first_frequency_measurement_locks() {
     check(client.samples() == 2 && client.frequency_ppm() > -35.5 && client.frequency_ppm() < -34.5,
           "TC-NET-SNTP-CLI-008 the second exchange measures the drift in one step");
 
-    // Once past min_poll, a locked frequency never lets the error reach settled_error_us.
-    bool backed_off = false;
-    bool fell_back = false;
-    const uint32_t span_ms = 64000u * 7u + 1000u + 128000u + 256000u + 512000u + 1024000u * 2u;
-    for (uint32_t t = 0; t < span_ms; t += 100u) {
-        run_for(client, s, 100u);
-        backed_off = backed_off || client.poll_interval_ms() > 64000u;
-        fell_back = fell_back || (backed_off && client.poll_interval_ms() == 64000u);
-    }
-
-    check(!fell_back && client.poll_interval_ms() == 1024000u,
+    check(backs_off_without_falling_back(client, s),
           "TC-NET-SNTP-CLI-008 a drifting tick backs off to max_poll without falling back");
+}
+
+// TC-NET-SNTP-CLI-009: a first sample whose reply came back late (offset 770 us low, as when the
+// board is busy starting up) costs the frequency estimate that error over the span from it, which
+// grows with every exchange, so the estimate is within 2 ppm by the end of the min_poll exchanges
+// and the poll interval still backs off without falling back.
+void late_first_sample_is_outgrown() {
+    reset();
+    FakeNtpNetwork server;
+    server.drift_ppm = -35.0;
+    server.back_delay_us += 1540u;
+    net::SntpClient client(server, config(), FakeNtpNetwork::clock());
+    const net::AddressSnapshot s = snapshot(true, true);
+    client.poll(now_ms(), s);
+    server.back_delay_us -= 1540u;
+    run_for(client, s, 64000u + 500u);
+    check(client.frequency_ppm() > -24.0 && client.frequency_ppm() < -22.0,
+          "TC-NET-SNTP-CLI-009 over 64 s the late sample costs about 12 ppm");
+
+    run_for(client, s, 64000u * 6u);
+    check(client.samples() == 8 && client.frequency_ppm() > -37.0 && client.frequency_ppm() < -33.0,
+          "TC-NET-SNTP-CLI-009 over the min_poll exchanges its cost falls under 2 ppm");
+
+    check(backs_off_without_falling_back(client, s),
+          "TC-NET-SNTP-CLI-009 the interval backs off to max_poll without falling back");
 }
 
 void kiss_of_death() {
@@ -252,6 +287,7 @@ int main() {
     frequency_tracks_drift();
     poll_interval_backs_off();
     first_frequency_measurement_locks();
+    late_first_sample_is_outgrown();
     kiss_of_death();
     fresh_sample_beats_stale_one();
     return test_summary();

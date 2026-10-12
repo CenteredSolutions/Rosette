@@ -42,17 +42,19 @@
  *   used (RFC 5905 §10).
  * - Phase: the used sample's offset, carried forward from its measurement
  *   to now at the estimated frequency, is written to WallClock.
- * - Frequency: the drift of the monotonic tick against UTC is measured
- *   between successive used samples. The first measurement since start
- *   becomes the estimate, as in the FREQ state of RFC 5905's reference
- *   clock discipline (Appendix A.5.5.1), so a crystal tens of ppm off is
- *   tracked from the second exchange. Each later one is folded in with a
- *   weight of its span over `frequency_averaging_s` (at most 1), because
- *   timing jitter corrupts a measurement in inverse proportion to its span:
- *   short polls average many measurements, long ones are trusted almost
- *   alone (the FLL half of RFC 5905 §11.3). The estimate is applied to
- *   WallClock on every `poll()`, so the clock stays on UTC between
- *   exchanges.
+ * - Frequency: the drift of the monotonic tick against UTC is an offset
+ *   change over a span, and timing jitter corrupts it in inverse proportion
+ *   to that span. Until a measurement spans `frequency_averaging_s`, each
+ *   one runs from the first sample used and replaces the estimate (the
+ *   long first measurement of the FREQ state in RFC 5905's reference
+ *   discipline, Appendix A.5.5.1, made at every exchange instead of once),
+ *   so a crystal tens of ppm off is tracked from the second exchange and
+ *   one bad early sample is outgrown as the span lengthens. After that,
+ *   each measurement spans one poll interval and is folded in with a weight
+ *   of its span over `frequency_averaging_s` (at most 1): short polls
+ *   average many measurements, long ones are trusted almost alone (the FLL
+ *   half of RFC 5905 §11.3). The estimate is applied to WallClock on every
+ *   `poll()`, so the clock stays on UTC between exchanges.
  * - Poll interval: `min_poll_ms` for the first eight exchanges or while
  *   the clock is off by more than `settled_error_us`, doubling up to
  *   `max_poll_ms` once it holds; `retry_ms` after a failed exchange.
@@ -193,6 +195,7 @@ private:
     Exchange exchange(const SocketAddress& server, FilterEntry& entry) noexcept;
     const FilterEntry& select_sample(uint64_t now_us) const noexcept;
     int64_t discipline(const FilterEntry& latest) noexcept;
+    void update_frequency(const FilterEntry& best) noexcept;
     void apply_frequency(uint64_t now_us) noexcept;
     void schedule_after_sample(int64_t error_us, uint32_t now_ms) noexcept;
 
@@ -212,7 +215,9 @@ private:
     uint32_t next_exchange_ms_ = 0u;
     uint32_t poll_interval_ms_ = 0u;
     double frequency_ppm_ = 0.0;
-    bool frequency_measured_ = false;  ///< Whether frequency_ppm_ holds a measurement yet.
+    FilterEntry frequency_anchor_{};  ///< The first sample used; frequency is measured from it
+                                      ///< until a span reaches `frequency_averaging_s`.
+    bool frequency_locked_ = false;   ///< Whether a span has reached `frequency_averaging_s`.
     uint64_t frequency_applied_us_ = 0u;
     double frequency_carry_us_ = 0.0;  ///< Correction not yet applied, below one microsecond.
 };
