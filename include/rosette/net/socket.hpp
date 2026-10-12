@@ -181,6 +181,28 @@ public:
 
     /// @brief Receive buffering this socket has, in bytes; 0 when the backend does not say.
     virtual std::size_t receive_buffer_size() const noexcept { return 0u; }
+
+    /**
+     * @brief Sends one datagram to `remote`.
+     *
+     * UDP gives no delivery guarantee, so a datagram the backend accepted but
+     * that never reaches the wire looks to most callers like one lost on it.
+     * A backend that resolves next hops itself (the WIZnet ARP cache) drops a
+     * datagram whose next hop it is still resolving, returns `length` as for
+     * a datagram sent, and sets last_error() to `would_block`; a caller that
+     * paces its sends against a remote's limits (an SNTP client) reads that to
+     * retry soon, since the remote saw nothing. Every other accepted datagram
+     * leaves last_error() at `none`.
+     *
+     * @param[in] data   The payload; read before the call returns.
+     * @param[in] length Payload bytes.
+     * @param[in] remote The destination.
+     * @return `length` when the datagram was accepted (see last_error() for
+     *   one dropped before the wire), or -1 with last_error() set.
+     *
+     * References:
+     * - POSIX.1-2017 sendto(); EAGAIN / EWOULDBLOCK
+     */
     virtual std::ptrdiff_t send_to(const void* data,
                                    std::size_t length,
                                    const SocketAddress& remote) noexcept = 0;

@@ -95,15 +95,19 @@ struct Rig {
     void poll() { arp.poll(fake::now()); }
 };
 
-// TC-NET-WIZ-ARP-010: a first send is dropped and resolved in the background;
-// the next one goes to the cached MAC with no inline ARP.
+// TC-NET-WIZ-ARP-010: a first send is dropped and resolved in the background, reported as
+// accepted with would_block; the next one goes to the cached MAC with no inline ARP.
 template <typename Chip>
 void first_contact(const char* name) {
     Rig<Chip> rig;
     auto socket = rig.open();
-    rig.send(*socket, kHost);
+    const std::ptrdiff_t dropped = socket->send_to(kPayload.data(), kPayload.size(),
+                                                   net::make_socket_address_v4(kHost, 7411u));
     check(rig.chip.sent.empty(),
           tag(name, "ARP-010: an unresolved send is dropped, not sent").c_str());
+    check(dropped == static_cast<std::ptrdiff_t>(kPayload.size())
+              && socket->last_error() == net::SocketError::would_block,
+          tag(name, "ARP-010: the drop returns the length and reports would_block").c_str());
     check(rig.chip.socketless.size() == 1u
               && rig.chip.socketless[0].command == Chip::socketless_command_arp4()
               && rig.chip.socketless[0].target == v(kHost)
@@ -121,6 +125,8 @@ void first_contact(const char* name) {
         Chip::dest_mac_per_socket() ? Chip::command_send() : Chip::command_send_mac();
     check(sent && rig.chip.sent[0].command == expected,
           tag(name, "ARP-010: sent without the chip's ARP (SEND_MAC / DHAM SEND)").c_str());
+    check(socket->last_error() == net::SocketError::none,
+          tag(name, "ARP-010: a send that reached the chip reports no error").c_str());
     check(rig.chip.socketless.size() == 1u, tag(name, "ARP-010: a hit starts no ARP").c_str());
 }
 

@@ -262,6 +262,42 @@ void late_first_sample_is_outgrown() {
           "TC-NET-SNTP-CLI-009 the interval backs off to max_poll without falling back");
 }
 
+// TC-NET-SNTP-CLI-010: a request the socket dropped before the wire (would_block, as just after
+// boot while the server's MAC is resolved) is asked of the same server after unsent_retry_ms
+// instead of retry_ms, so the clock is set a second after the network is up; a second drop in a
+// row waits retry_ms, so no server is sent two requests closer than that.
+void unsent_request_is_retried_soon() {
+    reset();
+    FakeNtpNetwork server;
+    server.behavior = NtpBehavior::unresolved;
+    net::SntpClient client(server, config(), FakeNtpNetwork::clock());
+    const net::AddressSnapshot s = snapshot(true, true);
+    client.poll(now_ms(), s);
+    check(!client.synced() && server.requests == 0,
+          "TC-NET-SNTP-CLI-010 a request dropped before the wire reaches no server");
+
+    server.behavior = NtpBehavior::answer;
+    run_for(client, s, 900u);
+    check(server.requests == 0, "TC-NET-SNTP-CLI-010 no retry before unsent_retry_ms");
+    run_for(client, s, 200u);
+    check(client.synced() && server.requests == 1 && server.last_to.ipv4() == kConfigured,
+          "TC-NET-SNTP-CLI-010 the same server is asked after unsent_retry_ms, and answers");
+
+    reset();
+    FakeNtpNetwork silent_path;
+    silent_path.behavior = NtpBehavior::unresolved;
+    net::SntpClient twice(silent_path, config(), FakeNtpNetwork::clock());
+    twice.poll(now_ms(), s);
+    run_for(twice, s, 1100u);
+    silent_path.behavior = NtpBehavior::answer;
+    run_for(twice, s, 15500u);
+    check(!twice.synced() && silent_path.requests == 0,
+          "TC-NET-SNTP-CLI-010 a second drop in a row waits retry_ms");
+    run_for(twice, s, 1000u);
+    check(twice.synced() && silent_path.requests == 1,
+          "TC-NET-SNTP-CLI-010 after retry_ms the next request goes out");
+}
+
 void kiss_of_death() {
     reset();
     FakeNtpNetwork server;
@@ -288,6 +324,7 @@ int main() {
     poll_interval_backs_off();
     first_frequency_measurement_locks();
     late_first_sample_is_outgrown();
+    unsent_request_is_retried_soon();
     kiss_of_death();
     fresh_sample_beats_stale_one();
     return test_summary();

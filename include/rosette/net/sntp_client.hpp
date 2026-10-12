@@ -57,7 +57,12 @@
  *   `poll()`, so the clock stays on UTC between exchanges.
  * - Poll interval: `min_poll_ms` for the first eight exchanges or while
  *   the clock is off by more than `settled_error_us`, doubling up to
- *   `max_poll_ms` once it holds; `retry_ms` after a failed exchange.
+ *   `max_poll_ms` once it holds; `retry_ms` after a failed exchange. A
+ *   request the socket dropped before the wire (`would_block`, as for a
+ *   next hop still being resolved just after boot) reached no server, so it
+ *   is asked again after `unsent_retry_ms`; a second such drop in a row
+ *   waits `retry_ms` like any failure. A server is thus never sent two
+ *   requests closer than `retry_ms` (RFC 4330 §10's 15 s floor).
  *
  * Concurrency: `poll()` runs on the one thread that owns the network;
  * WallClock itself may be read from any thread.
@@ -98,6 +103,8 @@ struct SntpConfig {
     uint32_t max_poll_ms = 1024000u;
     /// Wait after a failed exchange (RFC 4330 §10 sets 15 s as the floor).
     uint32_t retry_ms = 16000u;
+    /// Wait after a request the socket dropped before the wire; the server saw nothing.
+    uint32_t unsent_retry_ms = 1000u;
     /// Clock error above which polling returns to `min_poll_ms`.
     int64_t settled_error_us = 2000;
     /// Span, in seconds, at which one frequency measurement replaces the estimate outright;
@@ -145,7 +152,9 @@ public:
      * server (none configured and none offered by DHCP), nothing is sent.
      * A due exchange goes to the current server, the configured one first;
      * a failure moves on to the next server and retries after `retry_ms`; a
-     * kiss-o'-death moves on and waits `max_poll_ms`.
+     * kiss-o'-death moves on and waits `max_poll_ms`. A request the socket
+     * dropped before the wire is asked of the same server again after
+     * `unsent_retry_ms`, once; a second drop in a row counts as a failure.
      *
      * @param[in] now_ms   Monotonic time in milliseconds.
      * @param[in] snapshot The network's addresses and DHCP-offered NTP servers.
@@ -158,9 +167,10 @@ public:
      *   within half the round-trip asymmetry; between exchanges the offset
      *   advances at the estimated frequency; exchanges are spaced by the
      *   poll rules above; only the configured and DHCP-offered servers are
-     *   asked, the configured one first.
+     *   asked, the configured one first; no server is sent two requests
+     *   closer than `retry_ms`.
      * - Covered by: tests/host/sntp_client_test.cpp (TC-NET-SNTP-CLI-001 to
-     *   TC-NET-SNTP-CLI-007); tests/net/sntp_live_probe.cpp against a
+     *   TC-NET-SNTP-CLI-010); tests/net/sntp_live_probe.cpp against a
      *   public server.
      *
      * References:
@@ -189,7 +199,7 @@ private:
     };
 
     /// How one exchange ended.
-    enum class Exchange : uint8_t { sampled, no_reply, kiss_of_death };
+    enum class Exchange : uint8_t { sampled, not_sent, no_reply, kiss_of_death };
 
     bool pick_server(const AddressSnapshot& snapshot, SocketAddress& server) const noexcept;
     Exchange exchange(const SocketAddress& server, FilterEntry& entry) noexcept;
@@ -210,6 +220,8 @@ private:
 
     bool synced_ = false;
     bool started_ = false;
+    bool retried_unsent_ =
+        false;  ///< The exchange due now retries a request dropped before the wire.
     uint32_t samples_ = 0u;
     uint8_t server_index_ = 0u;
     uint32_t next_exchange_ms_ = 0u;

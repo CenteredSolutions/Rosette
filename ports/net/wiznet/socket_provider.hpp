@@ -253,8 +253,10 @@ public:
         if (arp_ != nullptr) {
             using Route = typename arp_resolver_type::Route;
             const Route route = arp_->route(peer, mac);
+            // Dropped while the next hop is resolved: to the caller it is a datagram
+            // lost on the wire, and would_block tells one that cares it never left.
             if (route == Route::drop) {
-                last_error_ = SocketError::none;
+                last_error_ = SocketError::would_block;
                 return static_cast<std::ptrdiff_t>(length);
             }
 

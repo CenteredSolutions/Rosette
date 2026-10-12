@@ -63,6 +63,16 @@ void SntpClient::poll(uint32_t now_ms, const AddressSnapshot& snapshot) noexcept
 
     FilterEntry latest{};
     const Exchange result = exchange(server, latest);
+
+    // A request dropped before the wire reached no server: ask the same one again soon, once.
+    const bool quick_retry = result == Exchange::not_sent && !retried_unsent_;
+    retried_unsent_ = quick_retry;
+    if (quick_retry) {
+        next_exchange_ms_ = now_ms + config_.unsent_retry_ms;
+        print_server("not sent yet to", server);
+        return;
+    }
+
     if (result == Exchange::sampled) {
         ++samples_;
         const bool was_synced = synced_;
@@ -84,7 +94,10 @@ void SntpClient::poll(uint32_t now_ms, const AddressSnapshot& snapshot) noexcept
     ++server_index_;
     poll_interval_ms_ = result == Exchange::kiss_of_death ? config_.max_poll_ms : config_.retry_ms;
     next_exchange_ms_ = now_ms + poll_interval_ms_;
-    print_server(result == Exchange::kiss_of_death ? "refused by" : "no reply from", server);
+    print_server(result == Exchange::kiss_of_death ? "refused by"
+                 : result == Exchange::not_sent    ? "not sent to"
+                                                   : "no reply from",
+                 server);
 }
 
 /**
@@ -128,8 +141,9 @@ bool SntpClient::pick_server(const AddressSnapshot& snapshot,
  *
  * @param[in]  server The server.
  * @param[out] entry  The sample and the tick time of T4, when sampled.
- * @return `sampled`, `no_reply` (including a socket that could not be
- *   opened), or `kiss_of_death`.
+ * @return `sampled`; `not_sent` when the socket dropped the request before
+ *   the wire (`would_block`), so no server saw it; `no_reply` (including a
+ *   socket that could not be opened); or `kiss_of_death`.
  *
  * References:
  * - RFC 4330 §5 (request, reply checks); RFC 5905 §8 (T1..T4)
@@ -149,6 +163,10 @@ SntpClient::Exchange SntpClient::exchange(const SocketAddress& server,
     if (socket->send_to(packet.data(), packet.size(), server)
         != static_cast<std::ptrdiff_t>(packet.size())) {
         return Exchange::no_reply;
+    }
+
+    if (socket->last_error() == SocketError::would_block) {
+        return Exchange::not_sent;
     }
 
     const uint64_t deadline_us = t1_us + uint64_t{config_.reply_timeout_ms} * 1000u;
