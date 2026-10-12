@@ -26,10 +26,37 @@ endif()
 
 # Next hops the ARP cache holds (ports/net/wiznet/arp_cache.hpp): IPv4 sends
 # then carry their MAC and the chip never ARPs inline. 0 leaves ARP to the chip.
-set(ROSETTE_WIZNET_ARP_CACHE_ENTRIES "8" CACHE STRING
-  "WIZnet ARP cache entries (0: the chip ARPs on each change of destination)")
-target_compile_definitions(rosette_bsp PUBLIC
-  "ROSETTE_WIZNET_ARP_CACHE_ENTRIES=${ROSETTE_WIZNET_ARP_CACHE_ENTRIES}")
+#
+# Empty (the default) sizes the table from the build's RTPS peer limit: one
+# host per active peer, plus four for the NTP, DHCP and TFTP servers and the
+# gateway, at 28 bytes of .bss an entry. The peer limit is a cache variable
+# that the RTPS consumer declares after this file runs
+# (RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS for rmw_rosette firmware,
+# ROSETTE_RTPS_MAX_PEERS for bare RTPS), so the size is settled at the end of
+# the configure step. A build without RTPS (the micro-ROS agent backend) talks
+# to one agent host and the servers, and gets 4 + 4.
+set(ROSETTE_WIZNET_ARP_CACHE_ENTRIES "" CACHE STRING
+  "WIZnet ARP cache entries (empty: RTPS peer limit + 4; 0: the chip ARPs on each change of destination)")
+
+function(_rosette_rp2_wiznet_size_arp_cache)
+  set(entries "${ROSETTE_WIZNET_ARP_CACHE_ENTRIES}")
+  if(entries STREQUAL "")
+    if(DEFINED RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS)
+      set(peers "${RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS}")
+    elseif(DEFINED ROSETTE_RTPS_MAX_PEERS)
+      set(peers "${ROSETTE_RTPS_MAX_PEERS}")
+    else()
+      set(peers 4)
+    endif()
+
+    math(EXPR entries "${peers} + 4")
+  endif()
+
+  target_compile_definitions(rosette_bsp PUBLIC "ROSETTE_WIZNET_ARP_CACHE_ENTRIES=${entries}")
+  message(STATUS "rp2_wiznet: ARP cache holds ${entries} next hops")
+endfunction()
+
+cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _rosette_rp2_wiznet_size_arp_cache)
 
 # Receive-buffer KiB per hardware socket, one entry per socket; empty keeps the
 # chip's default (see kBoardRxLayoutKib in wiznet_board_types.hpp, which checks
