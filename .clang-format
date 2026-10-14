@@ -20,6 +20,14 @@ ColumnLimit: 100
 BreakBeforeBinaryOperators: NonAssignment
 BreakBeforeTernaryOperators: true
 
+# Consecutive declarations put their names in one column: struct members,
+# wrapped parameter lists, and runs of variables. A comment line between
+# members does not break the run; a blank line does.
+AlignConsecutiveDeclarations:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: true
+
 # Every control-statement body sits on its own line, inside braces.
 InsertBraces: true
 AllowShortIfStatementsOnASingleLine: Never
