@@ -218,7 +218,8 @@ bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* seriali
 }
 
 bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* unicast_locators,
-                                        uint8_t locator_count, bool expects_inline_qos) noexcept {
+                                        uint8_t locator_count, bool expects_inline_qos,
+                                        ReliabilityKind reader_reliability) noexcept {
     if (find_proxy(reader_guid)) {
         return false;
     }
@@ -232,20 +233,23 @@ bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* 
     }
 
     ReaderProxy* slot = &pool_[index];
+    const bool   reader_reliable = reader_reliability == ReliabilityKind::RELIABLE;
     slot->init(reader_guid, unicast_locators, locator_count, expects_inline_qos,
-               first_relevant_for_new_reader());
+               first_relevant_for_new_reader(), reader_reliable);
 
-    RTPS_LOG_I("writer", "reader matched %02x%02x%02x%02x entity=%02x%02x%02x%02x",
+    RTPS_LOG_I("writer", "reader matched %02x%02x%02x%02x entity=%02x%02x%02x%02x%s",
                reader_guid.prefix.value[0], reader_guid.prefix.value[1],
                reader_guid.prefix.value[2], reader_guid.prefix.value[3],
                reader_guid.entityId.entityKey[0], reader_guid.entityId.entityKey[1],
-               reader_guid.entityId.entityKey[2], reader_guid.entityId.entityKind);
+               reader_guid.entityId.entityKey[2], reader_guid.entityId.entityKind,
+               reader_reliable ? "" : " (best-effort)");
 
     // TRANSIENT_LOCAL: push the cached changes now rather than waiting for
     // the next write (§8.7.2.2). A reliable replay piggybacks a HEARTBEAT
     // on its newest change so the reader immediately acknowledges the replay
     // or requests any missing cached changes instead of waiting for the
-    // periodic HEARTBEAT.
+    // periodic HEARTBEAT; send_unsent_changes() leaves it off for readers
+    // served best-effort.
     if (durability_ == DurabilityKind::TRANSIENT_LOCAL) {
         send_unsent_changes(reliability_ == ReliabilityKind::RELIABLE);
     }
@@ -326,9 +330,16 @@ void StatefulWriter::send_heartbeat(bool final_flag, const Guid directed_to) noe
     RTPS_LOG_D("writer", "HEARTBEAT count=%lu final=%d", (unsigned long)heartbeatCount_,
                (int)final_flag);
     for (ReaderProxy& proxy : matched()) {
-        if (directed_to != GUID_UNKNOWN && proxy.remoteReaderGuid != directed_to) continue;
+        if (!serves_reliably(proxy)
+            || (directed_to != GUID_UNKNOWN && proxy.remoteReaderGuid != directed_to)) {
+            continue;
+        }
+
         const Locator& dest = proxy.best_locator();
-        if (dest == LOCATOR_INVALID) continue;
+        if (dest == LOCATOR_INVALID) {
+            continue;
+        }
+
         const EntityId& rid =
             (directed_to != GUID_UNKNOWN) ? proxy.remoteReaderGuid.entityId : entity_id::UNKNOWN;
         send_heartbeat_to(rid, dest, final_flag);
@@ -342,6 +353,13 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
         RTPS_LOG_T("writer", "ACKNACK from unknown reader %02x%02x%02x%02x, ignored",
                    ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
                    ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
+        return;
+    }
+
+    // Best-effort behavior toward this reader has no ACKNACK to act on
+    // (§8.4.9.1); acting on one would hold changes for a reader that is
+    // never repaired.
+    if (!serves_reliably(*proxy)) {
         return;
     }
 
@@ -413,7 +431,7 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
 void StatefulWriter::on_nack_frag(const ParseContext& ctx, const ParsedNackFrag& msg) noexcept {
     Guid sg{ctx.senderGuidPrefix, msg.readerId};
     ReaderProxy* proxy = find_proxy(sg);
-    if (!proxy || msg.count <= proxy->lastNackFragCount) {
+    if (!proxy || !serves_reliably(*proxy) || msg.count <= proxy->lastNackFragCount) {
         return;
     }
 
@@ -500,13 +518,14 @@ void StatefulWriter::tick(uint32_t now_ms) noexcept {
     // ReaderProxy is "announcing" only while it has unacknowledged changes,
     // and only announcing proxies receive the periodic HEARTBEAT. A fully
     // acknowledged reader hears nothing until the next write, so an idle
-    // link stays quiet.
+    // link stays quiet. A reader served best-effort never acknowledges, and
+    // is never announcing (§8.4.9.1).
     if ((now_ms - lastHbSentMs_) >= hb_period_ms_) {
         lastHbSentMs_ = now_ms;
         writesSinceHb_ = 0u;
         ++heartbeatCount_;
         for (ReaderProxy& proxy : matched()) {
-            if (!proxy.is_announcing(writer_cache_)) {
+            if (!serves_reliably(proxy) || !proxy.is_announcing(writer_cache_)) {
                 continue;
             }
 
@@ -538,7 +557,8 @@ bool StatefulWriter::acknowledged_by_participant(const GuidPrefix& prefix) const
     }
 
     for (const ReaderProxy& proxy : matched()) {
-        if (proxy.remoteReaderGuid.prefix == prefix && proxy.highestAckedSN < lsn) {
+        if (serves_reliably(proxy) && proxy.remoteReaderGuid.prefix == prefix
+            && proxy.highestAckedSN < lsn) {
             return false;
         }
     }
@@ -550,7 +570,10 @@ uint32_t StatefulWriter::ms_until_next_timer(uint32_t now_ms) const noexcept {
     uint32_t next = UINT32_MAX;
     bool any_announcing = false;
     for (const ReaderProxy& proxy : matched()) {
-        if (proxy.is_announcing(writer_cache_)) any_announcing = true;
+        if (serves_reliably(proxy) && proxy.is_announcing(writer_cache_)) {
+            any_announcing = true;
+        }
+
         if (proxy.nackPending) {
             const uint32_t elapsed = now_ms - proxy.nackPendingSinceMs;
             const uint32_t left = elapsed >= nack_delay_ms_ ? 0u : nack_delay_ms_ - elapsed;
@@ -866,7 +889,8 @@ void StatefulWriter::send_unsent_changes(bool with_heartbeat) noexcept {
             const SequenceNumber sn = proxy.next_unsent_change(writer_cache_);
             if (sn == SEQUENCENUMBER_UNKNOWN) break;
             proxy.mark_sent(sn);
-            send_data_to(*writer_cache_.get_change(sn), proxy, with_heartbeat && sn == newest);
+            send_data_to(*writer_cache_.get_change(sn), proxy,
+                         with_heartbeat && sn == newest && serves_reliably(proxy));
         }
     }
 
@@ -919,8 +943,8 @@ void StatefulWriter::note_eviction() noexcept {
         return;
     }
 
-    const bool undelivered = releaseRepliesOnDelivery_ ? !reply_delivered(*oldest, true)
-                                                       : !all_readers_done_with(oldest_sn, true);
+    const bool undelivered = releaseRepliesOnDelivery_ ? !reply_delivered(*oldest)
+                                                       : !all_readers_done_with(oldest_sn);
     if (!undelivered) {
         return;
     }
@@ -942,7 +966,7 @@ void StatefulWriter::note_eviction() noexcept {
 
 bool StatefulWriter::all_readers_acked(const SequenceNumber& sn) const noexcept {
     for (const ReaderProxy& proxy : matched()) {
-        if (proxy.highestAckedSN < sn) {
+        if (serves_reliably(proxy) && proxy.highestAckedSN < sn) {
             return false;
         }
     }
@@ -950,9 +974,9 @@ bool StatefulWriter::all_readers_acked(const SequenceNumber& sn) const noexcept 
     return true;
 }
 
-bool StatefulWriter::all_readers_done_with(const SequenceNumber& sn, bool reliable) const noexcept {
+bool StatefulWriter::all_readers_done_with(const SequenceNumber& sn) const noexcept {
     for (const ReaderProxy& proxy : matched()) {
-        if (!proxy.is_done_with(sn, reliable)) {
+        if (!proxy.is_done_with(sn, serves_reliably(proxy))) {
             return false;
         }
     }
@@ -966,9 +990,8 @@ void StatefulWriter::release_finished_changes() noexcept {
         return;
     }
 
-    const bool reliable = reliability_ == ReliabilityKind::RELIABLE;
     writer_cache_.for_each_change([&](CacheChange& c) noexcept {
-        if (releaseRepliesOnDelivery_ && reply_delivered(c, reliable)) {
+        if (releaseRepliesOnDelivery_ && reply_delivered(c)) {
             c.clear();
             return;
         }
@@ -977,13 +1000,13 @@ void StatefulWriter::release_finished_changes() noexcept {
             return;
         }
 
-        if (all_readers_done_with(c.sequenceNumber, reliable)) {
+        if (all_readers_done_with(c.sequenceNumber)) {
             c.clear();
         }
     });
 }
 
-bool StatefulWriter::reply_delivered(const CacheChange& reply, bool reliable) const noexcept {
+bool StatefulWriter::reply_delivered(const CacheChange& reply) const noexcept {
     if (!reply.inlineQos.hasRelatedSampleIdentity) {
         return false;
     }
@@ -997,7 +1020,7 @@ bool StatefulWriter::reply_delivered(const CacheChange& reply, bool reliable) co
             continue;
         }
 
-        if (!proxy.is_done_with(reply.sequenceNumber, reliable)) {
+        if (!proxy.is_done_with(reply.sequenceNumber, serves_reliably(proxy))) {
             return false;
         }
 

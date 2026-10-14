@@ -409,6 +409,9 @@ struct MatchedEndpoint {
     const Locator* locators         = nullptr;
     uint8_t        locatorCount     = 0;
     bool           expectsInlineQos = false;   ///< Readers only.
+    /// The endpoint's announced RELIABILITY kind. A writer serves each reader
+    /// by the weaker of the two kinds (StatefulWriter::matched_reader_add()).
+    ReliabilityKind reliability = ReliabilityKind::BEST_EFFORT;
 };
 
 /**
@@ -907,11 +910,19 @@ private:
     MatchedEndpoint matched(const RemoteEndpoint& r) const noexcept {
         const RemoteOrigin& o = origins_[r.origin];
         if (o.list == kNoList) {
-            return MatchedEndpoint{guid_of(r), nullptr, 0u, r.expectsInlineQos};
+            return MatchedEndpoint{guid_of(r), nullptr, 0u, r.expectsInlineQos,
+                                   r.reliability_kind()};
         }
 
         const RemoteLocatorList& l = lists_[o.list];
-        return MatchedEndpoint{guid_of(r), l.locators, l.count, r.expectsInlineQos};
+        return MatchedEndpoint{guid_of(r), l.locators, l.count, r.expectsInlineQos,
+                               r.reliability_kind()};
+    }
+
+    /// @brief A stored local endpoint as on_match reports it; it is reached
+    /// at its participant's own locators, so it carries none.
+    static MatchedEndpoint matched(const LocalEndpoint& l) noexcept {
+        return MatchedEndpoint{l.guid, nullptr, 0u, l.expectsInlineQos, l.reliability_kind()};
     }
 
     /**

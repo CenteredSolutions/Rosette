@@ -655,7 +655,8 @@ bool RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
             const Locator* locs = reader.locators;
             uint8_t count = reader.locatorCount;
             p->resolve_endpoint_locators(reader.guid.prefix, locs, count);
-            bound = iw->matched_reader_add(reader.guid, locs, count, reader.expectsInlineQos);
+            bound = iw->matched_reader_add(reader.guid, locs, count, reader.expectsInlineQos,
+                                           reader.reliability);
         }
     }
 

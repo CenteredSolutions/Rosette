@@ -324,7 +324,7 @@ struct ProxyPoolSlots {
  * rtps::ProxyList list{rtps::kNoProxy, 0, 1, 8};
  * const rtps::ProxyIndex i = pool.bind(list);
  * if (i != rtps::kNoProxy) {
- *     pool[i].init(reader_guid, locators, 1, false, first_sn);
+ *     pool[i].init(reader_guid, locators, 1, false, first_sn, true);
  *     // ... later, on unmatch:
  *     pool[i].clear();
  *     pool.release(list, i);

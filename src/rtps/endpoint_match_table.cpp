@@ -549,7 +549,7 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
             continue;
         }
 
-        report(matched(*w), MatchedEndpoint{r.guid, nullptr, 0u, r.expectsInlineQos}, topic_of(r));
+        report(matched(*w), matched(r), topic_of(r));
     }
 }
 
@@ -630,7 +630,7 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
             continue;
         }
 
-        report(MatchedEndpoint{w.guid, nullptr, 0u, false}, matched(*r), topic_of(w));
+        report(matched(w), matched(*r), topic_of(w));
     }
 }
 
@@ -687,7 +687,7 @@ bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
 }
 
 bool EndpointMatchTable::report_writer_pairs(const LocalEndpoint& w, bool stop_at_bind) noexcept {
-    const MatchedEndpoint writer{w.guid, nullptr, 0u, false};
+    const MatchedEndpoint writer = matched(w);
     for (const LocalEndpoint& r : local_readers_) {
         if (!r.valid() || !same_names(r, w)
             || !qos_compatible(w.reliability_kind(), w.durability_kind(), r.reliability_kind(),
@@ -695,7 +695,7 @@ bool EndpointMatchTable::report_writer_pairs(const LocalEndpoint& w, bool stop_a
             continue;
         }
 
-        const MatchedEndpoint reader{r.guid, nullptr, 0u, r.expectsInlineQos};
+        const MatchedEndpoint reader = matched(r);
         if (report(writer, reader, topic_of(w)) && stop_at_bind) {
             return true;
         }
@@ -717,7 +717,7 @@ bool EndpointMatchTable::report_writer_pairs(const LocalEndpoint& w, bool stop_a
 }
 
 bool EndpointMatchTable::report_reader_pairs(const LocalEndpoint& r, bool stop_at_bind) noexcept {
-    const MatchedEndpoint reader{r.guid, nullptr, 0u, r.expectsInlineQos};
+    const MatchedEndpoint reader = matched(r);
     for (const LocalEndpoint& w : local_writers_) {
         if (!w.valid() || !same_names(w, r)
             || !qos_compatible(w.reliability_kind(), w.durability_kind(), r.reliability_kind(),
@@ -725,8 +725,7 @@ bool EndpointMatchTable::report_reader_pairs(const LocalEndpoint& r, bool stop_a
             continue;
         }
 
-        if (report(MatchedEndpoint{w.guid, nullptr, 0u, false}, reader, topic_of(r))
-            && stop_at_bind) {
+        if (report(matched(w), reader, topic_of(r)) && stop_at_bind) {
             return true;
         }
     }
@@ -781,7 +780,7 @@ bool EndpointMatchTable::describe(const MatchRecord& m, MatchedEndpoint& writer,
             return false;
         }
 
-        writer = MatchedEndpoint{w->guid, nullptr, 0u, false};
+        writer = matched(*w);
         topic = topic_of(*w);
     } else {
         const RemoteEndpoint* w =
@@ -799,7 +798,7 @@ bool EndpointMatchTable::describe(const MatchRecord& m, MatchedEndpoint& writer,
             return false;
         }
 
-        reader = MatchedEndpoint{r->guid, nullptr, 0u, r->expectsInlineQos};
+        reader = matched(*r);
         topic = topic_of(*r);
     } else {
         const RemoteEndpoint* r =

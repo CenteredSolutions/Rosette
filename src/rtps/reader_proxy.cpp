@@ -12,13 +12,14 @@
 
 namespace rtps {
 
-void ReaderProxy::init(const Guid& reader_guid, const Locator* unicast_locs,
-                       uint8_t unicast_count, bool expects_inline_qos,
-                       const SequenceNumber& first_relevant_sn) noexcept {
+void ReaderProxy::init(const Guid& reader_guid, const Locator* unicast_locs, uint8_t unicast_count,
+                       bool expects_inline_qos, const SequenceNumber& first_relevant_sn,
+                       bool reliable) noexcept {
     clear();
     remoteReaderGuid = reader_guid;
     expectsInlineQos = expects_inline_qos;
     isActive         = true;
+    isReliable = reliable;
     unicastLocator = preferred_unicast_locator(unicast_locs, unicast_count);
     firstRelevantSN_ = first_relevant_sn;
     highestSentSN_ = first_relevant_sn - 1;
@@ -41,6 +42,7 @@ void ReaderProxy::clear() noexcept {
     expectsInlineQos    = false;
     isActive            = false;
     unicastLocator = nullptr;
+    isReliable = true;
     highestAckedSN      = SEQUENCENUMBER_ZERO;
     lastAcknackCount    = 0;
     lastNackFragCount   = 0;
