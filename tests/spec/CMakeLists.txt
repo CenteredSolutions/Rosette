@@ -271,6 +271,7 @@ add_executable(stateful_writer_spec_tests
     src/test_stateful_writer_8_4_9_announcing.cpp
     src/test_stateful_writer_8_4_15_piggyback_heartbeat.cpp
     src/test_stateful_writer_8_4_7_release_finished.cpp
+    src/test_stateful_writer_8_4_7_undelivered_eviction.cpp
     src/test_stateful_writer_8_4_4_fragment_repair.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
@@ -342,6 +343,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     src/test_participant_platform_stub.cpp
     src/test_participant_8_5_1.cpp
     src/test_participant_waiting_matches.cpp
+    src/test_participant_writer_evictions.cpp
     ../../src/rtps/participant.cpp
     ../../src/rtps/participant_peer_tiers.cpp
     ../../src/rtps/stateful_reader.cpp
@@ -435,6 +437,45 @@ target_compile_definitions(local_name_limit_spec_tests PRIVATE
 add_test(
     NAME local_name_limit_spec_conformance
     COMMAND local_name_limit_spec_tests
+)
+
+# Two deep and two shallow writer slots, so a test can fill each class: every
+# other spec program keeps the default of deep slots only.
+add_executable(writer_slot_class_spec_tests
+    src/test_participant_writer_slot_classes.cpp
+    src/spec_test_common.cpp
+    src/test_participant_platform_stub.cpp
+    ../../src/rtps/participant.cpp
+    ../../src/rtps/participant_peer_tiers.cpp
+    ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/fragment_assembler.cpp
+    ../../src/rtps/sn_window.cpp
+    ../../src/rtps/history_cache.cpp
+    ../../src/rtps/reader_proxy.cpp
+    ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
+    ../../src/rtps/writer_proxy.cpp
+    ../../src/rtps/spdp.cpp
+    ../../src/rtps/spdp_peer_records.cpp
+    ../../src/rtps/sedp.cpp
+    ../../src/rtps/endpoint_match_table.cpp
+    ../../src/rtps/locator_ranking.cpp
+    ../../src/rtps/message_parser.cpp
+    ../../src/rtps/buf_pool.cpp
+)
+target_include_directories(writer_slot_class_spec_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+)
+target_compile_definitions(writer_slot_class_spec_tests PRIVATE
+    RTPS_LOG_LEVEL=0
+    RTPS_MAX_USER_WRITERS=4
+    RTPS_MAX_SHALLOW_WRITERS=2
+    RTPS_SHALLOW_WRITER_DEPTH=2
+)
+add_test(
+    NAME writer_slot_class_spec_conformance
+    COMMAND writer_slot_class_spec_tests
 )
 
 # The peer-tier tests need an active tier smaller than the network: two
@@ -834,7 +875,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
 endif()
 
 # Every spec and fuzz target runs on the platform port.
-foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests sedp_spec_tests_rebuild history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_spec_tests_rebuild participant_tier_spec_tests local_name_limit_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
+foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests sedp_spec_tests_rebuild history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_spec_tests_rebuild participant_tier_spec_tests local_name_limit_spec_tests writer_slot_class_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
     if(TARGET ${_t})
         rosette_spec_use_platform(${_t})
     endif()

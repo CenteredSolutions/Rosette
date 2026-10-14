@@ -23,9 +23,22 @@
  * Storage model
  * -------------
  * Writer slots are opaque byte arrays (aligned storage) constructed via
- * placement-new, each RTPS_PARTICIPANT_MAX_WRITER_BYTES long. A
- * SharedPoolStatefulWriter<D> that does not fit a slot fails a static_assert
- * at compile time. Reader slots each hold one SharedPoolStatefulReader.
+ * placement-new, in two classes. A deep slot is
+ * RTPS_PARTICIPANT_MAX_WRITER_BYTES long and holds a writer of any depth; a
+ * SharedPoolStatefulWriter<D> that does not fit one fails a static_assert at
+ * compile time. A shallow slot holds a SharedPoolStatefulWriter of at most
+ * RTPS_SHALLOW_WRITER_DEPTH, and costs only that writer's size: a history
+ * slot is about 100 octets on a 32-bit target, so a depth-4 writer takes
+ * 656 octets where a depth-8 slot takes 1,056.
+ *
+ * Of the RTPS_MAX_USER_WRITERS slots, RTPS_MAX_SHALLOW_WRITERS are shallow.
+ * A writer that fits a shallow slot takes a free one first and a deep slot
+ * only when every shallow slot is taken; a deeper writer takes a deep slot.
+ * So any set of writers in which the deeper ones fit the deep slots and all
+ * of them fit the table can be created, in any order. A board that knows its
+ * writers sizes the classes to them (rmw_rosette gives every service reply
+ * writer a shallow slot); by default every slot is deep. Reader slots each
+ * hold one SharedPoolStatefulReader.
  *
  * Matched-endpoint proxies
  * ------------------------
@@ -138,12 +151,37 @@ GuidPrefix make_participant_guid_prefix(uint8_t participant_id) noexcept;
 #define RTPS_SEDP_REBUILD_ANNOUNCEMENTS 0
 #endif
 
-/// Maximum byte size of one writer slot in the participant's storage table.
+/// Byte size of one deep writer slot in the participant's storage table.
 /// Must be >= sizeof(SharedPoolStatefulWriter<D>) for every depth D you intend to use.
 /// Default covers SharedPoolStatefulWriter<8>.
 #ifndef RTPS_PARTICIPANT_MAX_WRITER_BYTES
 #  define RTPS_PARTICIPANT_MAX_WRITER_BYTES (sizeof(SharedPoolStatefulWriter<8>))
 #endif
+
+/// Writer slots, out of RTPS_MAX_USER_WRITERS, sized for a writer of at most
+/// RTPS_SHALLOW_WRITER_DEPTH rather than for any writer ("Storage model"
+/// above). The default makes every slot deep.
+#ifndef RTPS_MAX_SHALLOW_WRITERS
+#  define RTPS_MAX_SHALLOW_WRITERS 0
+#endif
+
+/// Deepest history a shallow writer slot holds. A board that sets
+/// RTPS_MAX_SHALLOW_WRITERS states it too, since only the board knows which
+/// writers it sized the slots for (rmw_rosette sets both, for its service
+/// reply writers). With no shallow slots it sizes nothing, and defaults to 1.
+#if RTPS_MAX_SHALLOW_WRITERS > 0 && !defined(RTPS_SHALLOW_WRITER_DEPTH)
+static_assert(RTPS_MAX_SHALLOW_WRITERS == 0,
+              "RTPS_MAX_SHALLOW_WRITERS is set: set RTPS_SHALLOW_WRITER_DEPTH to the deepest "
+              "history its writers keep");
+#endif
+#ifndef RTPS_SHALLOW_WRITER_DEPTH
+#  define RTPS_SHALLOW_WRITER_DEPTH 1
+#endif
+
+static_assert(RTPS_MAX_SHALLOW_WRITERS <= RTPS_MAX_USER_WRITERS,
+              "RTPS_MAX_SHALLOW_WRITERS counts slots out of RTPS_MAX_USER_WRITERS");
+static_assert(RTPS_SHALLOW_WRITER_DEPTH >= 1 && RTPS_SHALLOW_WRITER_DEPTH <= 255,
+              "RTPS_SHALLOW_WRITER_DEPTH must be a writer depth, 1 to 255");
 
 /// ReaderProxies shared by the user writers: remote readers matched across
 /// all of them at once. The default is the per-writer cap for every slot.
@@ -178,6 +216,29 @@ static_assert(RTPS_MAX_LOCAL_WRITERS >= RTPS_MAX_USER_WRITERS,
               "RTPS_MAX_LOCAL_WRITERS cannot record every user writer");
 static_assert(RTPS_MAX_LOCAL_READERS >= RTPS_MAX_USER_READERS,
               "RTPS_MAX_LOCAL_READERS cannot record every user reader");
+
+/**
+ * @brief Aligned storage for @p Count writer slots of @p Bytes octets each.
+ *
+ * The participant keeps one per writer slot class ("Storage model" above).
+ *
+ * @tparam Count Slots in the class; 0 takes no storage.
+ * @tparam Bytes Octets in one slot.
+ */
+template <uint32_t Count, size_t Bytes>
+struct WriterSlotStorage {
+    /// @brief The first octet of slot @p i, which must be below Count.
+    Octet* slot(uint32_t i) noexcept { return slots[i]; }
+
+    alignas(alignof(SharedPoolStatefulWriter<8>)) Octet slots[Count][Bytes];
+};
+
+/// @brief An empty writer slot class.
+template <size_t Bytes>
+struct WriterSlotStorage<0u, Bytes> {
+    /// @brief Never called: an empty class has no slot to name.
+    Octet* slot(uint32_t) noexcept { return nullptr; }
+};
 
 // ============================================================
 // WriterConfig / ReaderConfig
@@ -237,7 +298,8 @@ public:
      *
      * Constructs a SharedPoolStatefulWriter<CacheDepth> in the
      * participant's writer storage, assigns its entity ID, and registers the
-     * endpoint so SEDP announces it (§8.5.4). The writer binds its reader
+     * endpoint so SEDP announces it (§8.5.4). A writer that fits a shallow
+     * slot takes a free one before a deep slot ("Storage model" above). The writer binds its reader
      * proxies from the participant's ReaderProxy pool, with the floor and
      * cap `cfg` names; the slot's RTPS_MIN_MATCHES_PER_ENDPOINT is already
      * reserved, and any floor above it is reserved here.
@@ -245,15 +307,17 @@ public:
      * @tparam CacheDepth KEEP_LAST depth of the writer's history (§8.3.3).
      * @param[in] cfg Topic, type, QoS, timing, floor and cap of the writer.
      * @return The writer, owned by the participant until delete_writer();
-     *   null when the slot table is full, a name exceeds the name limit, or
-     *   the pool cannot reserve a floor above RTPS_MIN_MATCHES_PER_ENDPOINT.
+     *   null when no slot that holds the writer is free, a name exceeds the
+     *   name limit, or the pool cannot reserve a floor above
+     *   RTPS_MIN_MATCHES_PER_ENDPOINT.
      *
      * Verification:
      * - Correct means: the writer is announced through SEDP, binds proxies
-     *   by ProxyPool admission with its floor reserved, and its slot and
-     *   reservation are reused after delete_writer().
+     *   by ProxyPool admission with its floor reserved, takes a shallow slot
+     *   whenever it fits a free one and never a slot too small for it, and
+     *   its slot and reservation are reused after delete_writer().
      * - Covered by: TC-PART-8.5.1-* (tests/spec/src/test_participant_8_5_1.cpp),
-     *   TC-PART-8.5.1-011.
+     *   TC-PART-8.5.1-011, TC-PART-8.5.1-013.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.1 (the participant creates its endpoints),
@@ -276,8 +340,10 @@ public:
     template <uint8_t CacheDepth = 1>
     StatefulWriter* create_writer(const WriterConfig& cfg) noexcept {
         using W = SharedPoolStatefulWriter<CacheDepth>;
+        constexpr bool fits_deep = sizeof(W) <= RTPS_PARTICIPANT_MAX_WRITER_BYTES;
+        constexpr bool fits_shallow = kShallowWriterSlots > 0u && sizeof(W) <= kShallowWriterBytes;
 
-        static_assert(sizeof(W) <= RTPS_PARTICIPANT_MAX_WRITER_BYTES,
+        static_assert(fits_deep || fits_shallow,
                       "SharedPoolStatefulWriter<D> exceeds RTPS_PARTICIPANT_MAX_WRITER_BYTES. "
                       "Increase RTPS_PARTICIPANT_MAX_WRITER_BYTES in your config.");
         static_assert(alignof(W) <= alignof(SharedPoolStatefulWriter<8>),
@@ -287,9 +353,10 @@ public:
             return nullptr;
         }
 
-        // Find a free slot.
-        int slot = find_free_writer_slot();
-        if (slot < 0) return nullptr;
+        const int slot = find_free_writer_slot(fits_shallow, fits_deep);
+        if (slot < 0) {
+            return nullptr;
+        }
 
         uint8_t floor = 0u;
         uint8_t cap = 0u;
@@ -302,7 +369,7 @@ public:
                                 assign_entity_id(cfg.entityId, true, cfg.topicKind) };
 
         // Placement-new into the pre-allocated, correctly aligned storage.
-        W* w = new (writer_storage_[slot])
+        W* w = new (writer_slot_storage(slot))
             W(writer_guid, cfg.reliability, cfg.durability, transport_, reader_proxies_, floor, cap,
               cfg.nackDelayMs, cfg.hbPeriodMs);
         w->release_replies_on_delivery(cfg.releaseRepliesOnDelivery);
@@ -582,6 +649,44 @@ public:
     /// @brief The slots the user readers reassemble fragmented samples in.
     const FragmentAssemblyPool& assembly_pool() const noexcept { return assembly_slots_; }
 
+    /**
+     * @brief Free writer slots of one class.
+     *
+     * A board checks with it that its writers landed in the classes it sized
+     * for them: a shallow-sized writer in a deep slot means the shallow slots
+     * ran out ("Storage model" above).
+     *
+     * @param[in] shallow True for the shallow slots, false for the deep ones.
+     * @return Slots of that class no writer holds.
+     *
+     * Verification:
+     * - Correct means: creating a writer lowers the count of the class it
+     *   took, and deleting it raises that count again.
+     * - Covered by: TC-PART-8.5.1-013.
+     */
+    uint32_t free_writer_slots(bool shallow) const noexcept;
+
+    /**
+     * @brief Changes the user writers' histories evicted before their readers had them.
+     *
+     * The sum of StatefulWriter::evicted_unacknowledged() over every user
+     * writer this participant has had, deleted ones included, so a board can
+     * read one number for the whole session: for an rmw_rosette board, a
+     * count above zero with no publisher of latest values is a service reply
+     * lost to too shallow a reply history (RMW_ROSETTE_REPLY_DEPTH).
+     *
+     * @return Evictions counted since the participant was created; wraps at 2^32.
+     *
+     * Verification:
+     * - Correct means: equals the live writers' counts plus those of the
+     *   writers deleted, so deleting a writer never lowers it.
+     * - Covered by: TC-PART-8.5.1-014.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.3.1 (KEEP_LAST)
+     */
+    uint32_t evicted_unacknowledged() const noexcept;
+
     // ----------------------------------------------------------
     // assign_entity_id()
     //
@@ -781,7 +886,30 @@ private:
     static void dispatch_gap           (const ParseContext&, const ParsedGap&) noexcept;
 
     // ── Internal helpers ─────────────────────────────────────
-    int find_free_writer_slot() const noexcept;
+    /// Deep writer slots: indices 0 to kDeepWriterSlots - 1 of writers_.
+    static constexpr uint32_t kDeepWriterSlots = RTPS_MAX_USER_WRITERS - RTPS_MAX_SHALLOW_WRITERS;
+    /// Shallow writer slots: the indices after the deep ones.
+    static constexpr uint32_t kShallowWriterSlots = RTPS_MAX_SHALLOW_WRITERS;
+    /// Size of one shallow slot.
+    static constexpr size_t   kShallowWriterBytes =
+        sizeof(SharedPoolStatefulWriter<RTPS_SHALLOW_WRITER_DEPTH>);
+
+    /**
+     * @brief The index of a free writer slot that holds a writer of the given fit.
+     *
+     * @param[in] fits_shallow The writer fits a shallow slot.
+     * @param[in] fits_deep    The writer fits a deep slot.
+     * @return A free shallow slot when the writer fits one and one is free,
+     *   else a free deep slot when it fits one, else -1.
+     *
+     * Verification:
+     * - Correct means: as create_writer().
+     * - Covered by: TC-PART-8.5.1-013.
+     */
+    int find_free_writer_slot(bool fits_shallow, bool fits_deep) const noexcept;
+
+    /// @brief The storage of writer slot @p slot, of the class its index names.
+    Octet* writer_slot_storage(int slot) noexcept;
 
     /**
      * @brief Settles a new endpoint's floor and cap and reserves the floor above its slot's.
@@ -980,12 +1108,13 @@ private:
     FragmentAssemblyPoolStorage<RTPS_ASSEMBLY_SLOTS> assembly_slots_;
 
     // Writer storage: opaque byte arrays, each holding one
-    // SharedPoolStatefulWriter<D> of any depth; writers_ points at the
-    // StatefulWriter inside each live one.
-    alignas(alignof(SharedPoolStatefulWriter<8>)) Octet
-        writer_storage_[RTPS_MAX_USER_WRITERS][RTPS_PARTICIPANT_MAX_WRITER_BYTES];
+    // SharedPoolStatefulWriter<D>; writers_ points at the StatefulWriter
+    // inside each live one. A class with no slots takes no storage.
+    WriterSlotStorage<kDeepWriterSlots, RTPS_PARTICIPANT_MAX_WRITER_BYTES> deep_writer_storage_;
+    WriterSlotStorage<kShallowWriterSlots, kShallowWriterBytes>            shallow_writer_storage_;
 
     StatefulWriter* writers_[RTPS_MAX_USER_WRITERS]      = {};
+    uint32_t        evicted_by_deleted_writers_ = 0u;  ///< See evicted_unacknowledged().
     bool            writer_alive_[RTPS_MAX_USER_WRITERS] = {};
 
     // Reader storage: one SharedPoolStatefulReader per slot, placement-new'd

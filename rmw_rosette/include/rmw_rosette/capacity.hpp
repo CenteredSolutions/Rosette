@@ -66,6 +66,24 @@
 #  define RMW_ROSETTE_MAX_PENDING_CHANGES 10
 #endif
 
+#ifndef RMW_ROSETTE_REPLY_DEPTH
+/// Replies each service reply writer holds until their clients acknowledge
+/// them, 1 to 8. The reply history drops each reply once its client has it
+/// (StatefulWriter::release_replies_on_delivery()), so this is the number of
+/// replies in flight at once, not a history of past replies: a reply written
+/// while this many are unacknowledged displaces the oldest of them, whose
+/// client then never receives it. Replies wait for a client that is still
+/// matching (a new `ros2 service call` or `ros2 param` process), for its
+/// acknowledgement, and for a repair after a lost datagram, so concurrent
+/// clients need room beyond one. Every reply writer has this depth whatever
+/// the service's QoS requests, and takes a shallow writer slot sized for it
+/// (RTPS_SHALLOW_WRITER_DEPTH).
+#  define RMW_ROSETTE_REPLY_DEPTH 4
+#endif
+
+static_assert(RMW_ROSETTE_REPLY_DEPTH >= 1 && RMW_ROSETTE_REPLY_DEPTH <= 8,
+              "RMW_ROSETTE_REPLY_DEPTH must be 1 to 8");
+
 namespace rmw_rosette {
 
 /// Publisher pool: application publishers plus each node's own.
@@ -108,6 +126,13 @@ static_assert(RTPS_MAX_USER_WRITERS >= rmw_rosette::kRtpsWriterCapacity,
               "RTPS_MAX_USER_WRITERS cannot hold every publisher, service and client writer");
 static_assert(RTPS_MAX_USER_READERS >= rmw_rosette::kRtpsReaderCapacity,
               "RTPS_MAX_USER_READERS cannot hold every subscription, service and client reader");
+// Every service reply writer fits a shallow slot, and the other writers,
+// which may be deeper, fit the deep slots.
+static_assert(RTPS_MAX_SHALLOW_WRITERS == 0 || RTPS_SHALLOW_WRITER_DEPTH >= RMW_ROSETTE_REPLY_DEPTH,
+              "shallow writer slots cannot hold a reply writer of RMW_ROSETTE_REPLY_DEPTH");
+static_assert(RTPS_MAX_USER_WRITERS - RTPS_MAX_SHALLOW_WRITERS
+                  >= rmw_rosette::kRtpsWriterCapacity - rmw_rosette::kServiceCapacity,
+              "the deep writer slots cannot hold every publisher, client and participant writer");
 static_assert(RTPS_MAX_LOCAL_ENDPOINTS >= rmw_rosette::kRtpsWriterCapacity &&
               RTPS_MAX_LOCAL_ENDPOINTS >= rmw_rosette::kRtpsReaderCapacity,
               "RTPS_MAX_LOCAL_ENDPOINTS cannot announce every local endpoint through SEDP");

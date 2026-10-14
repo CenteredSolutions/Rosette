@@ -180,6 +180,34 @@ void report_transport_stats(const rtps::SocketUdpTransport& transport) noexcept 
 }
 
 /**
+ * @brief Prints the session's count of writer changes lost to a full history, when any were.
+ *
+ * Each counted eviction already logged a warning as it happened (rate
+ * limited, StatefulWriter::evicted_unacknowledged()); this line gives the
+ * session's total as the context is finalized. On a node with services it
+ * is the number of replies lost to a reply history shallower than the
+ * replies in flight, the evidence for raising RMW_ROSETTE_REPLY_DEPTH.
+ *
+ * @param[in] participant Participant being torn down.
+ *
+ * Verification:
+ * - Correct means: one line on stderr exactly when the participant's
+ *   total is above zero.
+ * - Covered by: TC-PART-8.5.1-014 (the total); the line itself by inspection.
+ */
+void report_writer_evictions(const rtps::RTPSParticipant& participant) noexcept {
+    const uint32_t evicted = participant.evicted_unacknowledged();
+    if (evicted == 0u) {
+        return;
+    }
+
+    std::fprintf(stderr,
+                 "rmw_rosette: %u changes evicted before their readers had them "
+                 "(on a service, each is a lost reply; RMW_ROSETTE_REPLY_DEPTH=%u)\n",
+                 static_cast<unsigned>(evicted), static_cast<unsigned>(RMW_ROSETTE_REPLY_DEPTH));
+}
+
+/**
  * @brief Destroys a context's driver, participant, and transport, in that order.
  *
  * rmw_context_fini() and rmw_init()'s failure path share this one teardown,
@@ -502,6 +530,7 @@ rmw_ret_t rmw_context_fini(rmw_context_t* context) {
     rmw_rosette::Context& ctx = impl->rosette_context;
     if (ctx.constructed) {
         report_transport_stats(*ctx.transport);
+        report_writer_evictions(*ctx.participant);
         destroy_participant(ctx);
     }
     context_pool().release(impl);

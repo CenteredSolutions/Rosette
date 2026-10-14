@@ -78,6 +78,10 @@ bool StatefulWriter::add_change(CacheChange&& change) noexcept {
     // A full history evicts its oldest change (KEEP_LAST, §8.3.3.1). Every
     // matched proxy has been sent less than the new change, so it is UNSENT
     // everywhere without touching the proxies.
+    if (writer_cache_.size() == writer_cache_.capacity()) {
+        note_eviction();
+    }
+
     CacheChange* inserted = writer_cache_.add_change(static_cast<CacheChange&&>(change));
     if (!inserted) {
         RTPS_LOG_E("writer", "cache add_change failed (SN=%ld:%lu)", change.sequenceNumber.high,
@@ -900,6 +904,40 @@ void StatefulWriter::encode_heartbeat(Octet* out, const EntityId& reader_id) con
 
     memcpy(out, &smh, sizeof(smh));
     memcpy(out + sizeof(smh), &body, sizeof(body));
+}
+
+void StatefulWriter::note_eviction() noexcept {
+    if (reliability_ != ReliabilityKind::RELIABLE) {
+        return;
+    }
+
+    // The writer's own changes fill its history, so KEEP_LAST evicts the
+    // lowest sequence number (HistoryCache::add_change()).
+    const SequenceNumber oldest_sn = writer_cache_.get_seq_num_min();
+    const CacheChange*   oldest = writer_cache_.get_change(oldest_sn);
+    if (oldest == nullptr) {
+        return;
+    }
+
+    const bool undelivered =
+        releaseRepliesOnDelivery_ ? !reply_delivered(*oldest, true) : !all_readers_acked(oldest_sn);
+    if (!undelivered) {
+        return;
+    }
+
+    // Logged at counts 1, 2, 4, 8, ...: a publisher of latest values that
+    // outpaces a slow reader evicts on every write, and the log must not
+    // flood a serial console while the count stays exact.
+    ++evictedUnacknowledged_;
+    if ((evictedUnacknowledged_ & (evictedUnacknowledged_ - 1u)) == 0u) {
+        const EntityId& id = guid_.entityId;
+        RTPS_LOG_W(
+            "writer",
+            "%02x%02x%02x%02x evicted unacknowledged SN=%lu from %u-deep history (%lu so far)",
+            id.entityKey[0], id.entityKey[1], id.entityKey[2], id.entityKind,
+            (unsigned long)oldest_sn.low, (unsigned)writer_cache_.capacity(),
+            (unsigned long)evictedUnacknowledged_);
+    }
 }
 
 bool StatefulWriter::all_readers_acked(const SequenceNumber& sn) const noexcept {

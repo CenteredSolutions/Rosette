@@ -139,6 +139,7 @@ if(BUILD_TESTING)
   # implementation without going through rmw_implementation's loader.
   foreach(test_name test_introspection_c_codec test_guard_condition test_pub_sub_loopback
                     test_change_ring test_local_node_entities test_service_departed_client
+                    test_service_reply_depth
                     test_init_options)
     ament_add_gtest(${test_name} test/${test_name}.cpp TIMEOUT 60)
     target_link_libraries(${test_name} rmw_rosette)
