@@ -15,7 +15,7 @@ struct Obs {
     int unmatch_calls = 0;
 };
 
-static bool on_match(const MatchedEndpoint&, const MatchedEndpoint&, const TopicName&,
+static bool on_match(const MatchedEndpoint&, const MatchedEndpoint&, const char*,
                      void* user) noexcept {
     auto* o = static_cast<Obs*>(user);
     o->match_calls++;
@@ -163,7 +163,7 @@ struct PairObs {
 static bool tc_sedp_8_5_5_1_005(std::string& err) {
     PairObs obs{};
     EndpointMatchTable t(
-        [](const MatchedEndpoint& w, const MatchedEndpoint& r, const TopicName& topic,
+        [](const MatchedEndpoint& w, const MatchedEndpoint& r, const char* topic,
            void* u) noexcept {
             auto* o = static_cast<PairObs*>(u);
             o->calls++;
@@ -171,7 +171,7 @@ static bool tc_sedp_8_5_5_1_005(std::string& err) {
             o->last_r = r.guid;
             o->reader_locators = r.locatorCount;
             o->first_locator = r.locatorCount ? r.locators[0] : LOCATOR_INVALID;
-            o->topic = topic;
+            (void)o->topic.assign(topic);
             return true;
         },
         nullptr, &obs);
@@ -270,8 +270,7 @@ struct DisplaceObs {
 static bool tc_sedp_8_5_5_1_008(std::string& err) {
     DisplaceObs obs{};
     EndpointMatchTable t(
-        [](const MatchedEndpoint& w, const MatchedEndpoint& r, const TopicName&,
-           void* u) noexcept {
+        [](const MatchedEndpoint& w, const MatchedEndpoint& r, const char*, void* u) noexcept {
             auto* o = static_cast<DisplaceObs*>(u);
             o->match_calls++;
             o->last_remote = w.guid.prefix.value[0] == 0x10u ? r.guid : w.guid;
@@ -280,8 +279,7 @@ static bool tc_sedp_8_5_5_1_008(std::string& err) {
         [](const Guid&, const Guid&, void* u) noexcept {
             static_cast<DisplaceObs*>(u)->unmatch_calls++;
         },
-        &obs,
-        [](void* u) noexcept { static_cast<DisplaceObs*>(u)->change_calls++; });
+        &obs, [](void* u) noexcept { static_cast<DisplaceObs*>(u)->change_calls++; });
 
     const Guid local_reader = make_guid(0x10u, 0x00u, 0x00u, make_entity(1u, 1u, 1u, 0x04u));
     const Guid local_writer = make_guid(0x10u, 0x00u, 0x00u, make_entity(1u, 1u, 2u, 0x03u));
@@ -375,8 +373,7 @@ static bool tc_sedp_8_5_5_1_009(std::string& err) {
 static bool tc_sedp_8_5_5_1_010(std::string& err) {
     PairObs obs{};
     EndpointMatchTable t(
-        [](const MatchedEndpoint&, const MatchedEndpoint& r, const TopicName&,
-           void* u) noexcept {
+        [](const MatchedEndpoint&, const MatchedEndpoint& r, const char*, void* u) noexcept {
             auto* o = static_cast<PairObs*>(u);
             o->calls++;
             o->last_r = r.guid;
@@ -465,7 +462,7 @@ static bool tc_sedp_8_5_5_1_012(std::string& err) {
     } obs{};
 
     EndpointMatchTable t(
-        [](const MatchedEndpoint&, const MatchedEndpoint& r, const TopicName&, void* u) noexcept {
+        [](const MatchedEndpoint&, const MatchedEndpoint& r, const char*, void* u) noexcept {
             auto* o = static_cast<RelocObs*>(u);
             o->matches++;
             o->reader_locators = r.locators;
@@ -524,7 +521,7 @@ static bool tc_sedp_8_5_5_1_013(std::string& err) {
     } obs{};
 
     EndpointMatchTable t(
-        [](const MatchedEndpoint& w, const MatchedEndpoint&, const TopicName&, void* u) noexcept {
+        [](const MatchedEndpoint& w, const MatchedEndpoint&, const char*, void* u) noexcept {
             auto* o = static_cast<Reported*>(u);
             o->calls++;
             o->count = w.locatorCount;

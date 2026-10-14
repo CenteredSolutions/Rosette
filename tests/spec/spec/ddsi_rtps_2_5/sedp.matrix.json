@@ -68,6 +68,15 @@
       "test_ids": ["TC-SEDP-8.5.5.1-008", "TC-SEDP-8.5.5.1-009", "TC-SEDP-8.5.5.1-011", "TC-SEDP-8.5.4.2-002"]
     },
     {
+      "id": "REQ-SEDP-8.5.5.1-LOCAL-NAMES-PACKED",
+      "section": "8.5.5.1",
+      "page": 169,
+      "normativity": "implementation-limit",
+      "statement": "A local endpoint's topic and type names are kept whole in a shared arena of RTPS_LOCAL_NAME_BYTES, each distinct name stored once however many endpoints use it; they read back exactly after other endpoints are removed or renamed, and an endpoint the table has no record or name room for is not recorded.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.5.1-014", "TC-SEDP-8.5.5.1-015"]
+    },
+    {
       "id": "REQ-SEDP-8.5.4.2-UDP-LOCATORS-KEPT",
       "section": "8.5.4.2",
       "page": 166,

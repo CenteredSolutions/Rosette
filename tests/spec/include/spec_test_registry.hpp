@@ -46,6 +46,7 @@ void append_sedp_tests_8_5_4_rebuild(std::vector<TestCase>& tests);
 void append_sedp_tests_8_5_4_peer_locators(std::vector<TestCase>& tests);
 void append_sedp_tests_8_5_4_2_endpoint_locator_lists(std::vector<TestCase>& tests);
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests);
+void append_sedp_tests_8_5_5_1_local_names(std::vector<TestCase>& tests);
 void append_sedp_tests_9_6_3_2(std::vector<TestCase>& tests);
 
 void register_all_sedp_tests(std::vector<TestCase>& tests);

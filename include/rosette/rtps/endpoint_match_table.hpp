@@ -14,8 +14,12 @@
  * Only pairs with a local endpoint are ever wired, so the table keeps two
  * kinds of record:
  *
- *   Local endpoints   full topic and type names, QoS. At most
- *                     RTPS_MAX_LOCAL_ENDPOINTS writers and as many readers.
+ *   Local endpoints   32 octets: the GUID, QoS, the 32-bit keys of the
+ *                     topic and type names, and the offsets of the full names
+ *                     in a StringArena of RTPS_LOCAL_NAME_BYTES, which packs
+ *                     them end to end and keeps a name endpoints share once.
+ *                     At most RTPS_MAX_LOCAL_WRITERS writers and
+ *                     RTPS_MAX_LOCAL_READERS readers.
  *   Remote endpoints  16 octets: EntityId, QoS, a 32-bit key of the topic
  *                     name and one of the type name (name_key()), and the
  *                     index of the endpoint's origin. No names.
@@ -44,8 +48,14 @@
  * (LocalSubnets::select()), as the SPDP peer table narrows a participant's
  * defaults, so an endpoint announcing those defaults keeps the same list.
  *
+ * The arena is the one copy of a local endpoint's names: matching, count()
+ * and a rebuilding SEDP writer (local_writer_data()) read them there. The
+ * participant asks has_room_for_local() before it creates an endpoint, so a
+ * full arena refuses the endpoint rather than leaving it unannounced.
+ *
  * A remote endpoint is compared by name, exactly, against the local
- * endpoints when it is announced, while its full names are at hand. A local
+ * endpoints when it is announced, while its full names are at hand (keys
+ * first, then the names of the locals whose keys agree). A local
  * endpoint created later is compared against stored remote endpoints by
  * key. A false match needs the topic keys and the type keys of two distinct
  * endpoints to collide together (about 2^-64 per pair). Graph queries that
@@ -141,6 +151,7 @@
 
 #include <string.h>
 #include "locator_ranking.hpp"
+#include "string_arena.hpp"
 #include "types.hpp"
 
 namespace rtps {
@@ -316,6 +327,36 @@ uint32_t name_key(const char* name) noexcept;
 #ifndef RTPS_MAX_LOCAL_ENDPOINTS
 #  define RTPS_MAX_LOCAL_ENDPOINTS 8
 #endif
+/// Local writers and readers recorded. A participant needs one record per
+/// user writer (reader) it can create, so these follow its writer and reader
+/// tables rather than the larger of the two.
+#ifndef RTPS_MAX_LOCAL_WRITERS
+#  define RTPS_MAX_LOCAL_WRITERS RTPS_MAX_LOCAL_ENDPOINTS
+#endif
+#ifndef RTPS_MAX_LOCAL_READERS
+#  define RTPS_MAX_LOCAL_READERS RTPS_MAX_LOCAL_ENDPOINTS
+#endif
+/// The average octets one local endpoint's names take (strlen(topic) +
+/// strlen(type) + 2), which sizes the default name arena. ROS 2 entries run
+/// to about 40-110 octets with a short node name: rt/rosout takes 42, a
+/// node's parameter services 86-107 (rq/<node>/get_parametersRequest with
+/// rcl_interfaces::srv::dds_::GetParameters_Request_ is 86), and a node of 59
+/// topics, services and actions under <node>/<area>/ averages 95, or 89 once
+/// the names its endpoints share are stored once. 128 leaves a third above
+/// that average, and is half of the 2 * RTPS_MAX_TOPIC_NAME_LEN one endpoint
+/// can take at most.
+#ifndef RTPS_LOCAL_NAME_BYTES_PER_ENDPOINT
+#  define RTPS_LOCAL_NAME_BYTES_PER_ENDPOINT 128
+#endif
+/// Octets for the names of every local endpoint at once. The arena is
+/// shared, so one endpoint with long names fits as long as the total does.
+/// When it does not, creating the endpoint fails and logs
+/// RTPS_LOCAL_NAME_BYTES; a build that knows its names sets their total
+/// instead (rmw_rosette: RMW_ROSETTE_LOCAL_NAME_BYTES).
+#ifndef RTPS_LOCAL_NAME_BYTES
+#  define RTPS_LOCAL_NAME_BYTES \
+      ((RTPS_MAX_LOCAL_WRITERS + RTPS_MAX_LOCAL_READERS) * RTPS_LOCAL_NAME_BYTES_PER_ENDPOINT)
+#endif
 /// UDP locators kept per remote endpoint, as the SPDP peer record keeps
 /// RTPS_MAX_PEER_LOCATORS. Equal limits let an endpoint announcing its
 /// participant's defaults compare equal to them, so it keeps no list of its
@@ -381,11 +422,11 @@ struct MatchedEndpoint {
 class EndpointMatchTable {
 public:
     /// A writer-reader pair became compatible, or a waiting pair is offered
-    /// again. `topic` is the topic name of the pair's local endpoint. Returns
-    /// `true` when every local endpoint of the pair holds a proxy for its
-    /// partner, `false` when the pair waits for one.
+    /// again. `topic` is the topic name of the pair's local endpoint, valid
+    /// for the call. Returns `true` when every local endpoint of the pair
+    /// holds a proxy for its partner, `false` when the pair waits for one.
     using OnMatch = bool (*)(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
-                             const TopicName& topic, void* user_data) noexcept;
+                             const char* topic, void* user_data) noexcept;
 
     /// Whether the owner could now bind every local half of the waiting pair
     /// (`writer_guid`, `reader_guid`) that holds no proxy yet.
@@ -483,6 +524,34 @@ public:
 
     /// @brief As add_writer(), for a reader.
     void add_reader(const DiscoveredReaderData& rd) noexcept;
+
+    /**
+     * @brief Whether a new local endpoint with these names can be recorded.
+     *
+     * The participant asks before it creates a local writer or reader, so an
+     * endpoint the table could not record (and SEDP could therefore not
+     * announce) is never created. A record is needed in the writer or reader
+     * table, and the names the arena does not hold yet must fit its free
+     * octets.
+     *
+     * @param[in] topic     The endpoint's topic name.
+     * @param[in] type      The endpoint's type name.
+     * @param[in] is_writer `true` for a writer, `false` for a reader.
+     * @return `true` when add_writer() (add_reader()) would record it.
+     *
+     * Verification:
+     * - Correct means: true exactly when a free record exists and
+     *   StringArena::cost() of the topic, plus that of the type when it
+     *   differs from the topic, is at most the free octets; the
+     *   participant's create_writer() and create_reader() return null
+     *   otherwise.
+     * - Covered by: TC-SEDP-8.5.5.1-015, TC-PART-8.5.1-012.
+     */
+    bool has_room_for_local(const TopicName& topic, const TopicName& type,
+                            bool is_writer) const noexcept;
+
+    /// @brief Octets the local endpoints' names take in the arena (RTPS_LOCAL_NAME_BYTES).
+    uint32_t local_name_bytes_used() const noexcept { return names_.used(); }
 
     /// @brief Forgets a writer and reports every pair it was part of as dissolved.
     void remove_writer(const Guid& writer_guid) noexcept;
@@ -659,18 +728,103 @@ public:
     bool local_reader_data(const Guid& guid, DiscoveredReaderData& out) const noexcept;
 
 private:
+    using Names = StringArena<RTPS_LOCAL_NAME_BYTES>;
 
     struct LocalEndpoint {
-        Guid            guid        = GUID_UNKNOWN;
-        TopicName       topicName   = {};
-        TopicName       typeName    = {};
-        uint32_t        topicKey    = 0;   ///< name_key(topicName).
-        uint32_t        typeKey     = 0;   ///< name_key(typeName).
-        ReliabilityKind reliability = ReliabilityKind::BEST_EFFORT;
-        DurabilityKind  durability  = DurabilityKind::VOLATILE;
-        bool            expectsInlineQos = false;
+        Guid     guid = GUID_UNKNOWN;
+        uint32_t topicKey = 0;          ///< name_key() of the topic name.
+        uint32_t typeKey = 0;           ///< name_key() of the type name.
+        uint16_t topic = Names::kNone;  ///< Topic name in names_.
+        uint16_t type = Names::kNone;   ///< Type name in names_.
+        uint8_t  reliability = 1u;      ///< ReliabilityKind.
+        uint8_t  durability = 0u;       ///< DurabilityKind.
+        bool     expectsInlineQos = false;
+
         bool valid() const noexcept { return guid != GUID_UNKNOWN; }
+
+        ReliabilityKind reliability_kind() const noexcept {
+            return static_cast<ReliabilityKind>(reliability);
+        }
+
+        DurabilityKind durability_kind() const noexcept {
+            return static_cast<DurabilityKind>(durability);
+        }
     };
+
+    /// @brief The topic name of a stored local endpoint.
+    const char* topic_of(const LocalEndpoint& l) const noexcept { return names_.str(l.topic); }
+
+    /// @brief The type name of a stored local endpoint.
+    const char* type_of(const LocalEndpoint& l) const noexcept { return names_.str(l.type); }
+
+    /// @brief True when stored local endpoint @p l has exactly these names; keys are compared
+    /// first, so the names are read only for an endpoint that very likely matches.
+    bool has_names(const LocalEndpoint& l, uint32_t topic_key, const char* topic, uint32_t type_key,
+                   const char* type) const noexcept {
+        return l.topicKey == topic_key && l.typeKey == type_key && strcmp(topic_of(l), topic) == 0
+               && strcmp(type_of(l), type) == 0;
+    }
+
+    /// @brief True when two stored local endpoints have the same topic and type names: the
+    /// arena keeps one copy of each name, so equal names are equal offsets.
+    static bool same_names(const LocalEndpoint& a, const LocalEndpoint& b) noexcept {
+        return a.topic == b.topic && a.type == b.type;
+    }
+
+    /// @brief Octets the arena needs to store @p topic and @p type, sharing the names it holds.
+    uint32_t names_cost(const char* topic, const char* type) const noexcept {
+        return names_.cost(topic) + (strcmp(topic, type) == 0 ? 0u : names_.cost(type));
+    }
+
+    /**
+     * @brief Records a local writer or reader, its names in the arena.
+     *
+     * The record is the one already stored for `guid`, else a free one. A
+     * stored endpoint whose names are unchanged keeps them; otherwise the
+     * new names are interned before the old ones are released, so a refused
+     * update leaves the record as it was, and an old name another record
+     * still uses stays in the arena.
+     *
+     * @param[in,out] table     local_writers_ or local_readers_.
+     * @param[in]     n         Entries in `table`.
+     * @param[in]     endpoint  The record to store, its `topic` and `type` offsets ignored.
+     * @param[in]     topic     The endpoint's topic name.
+     * @param[in]     type      The endpoint's type name.
+     * @param[out]    is_change `true` when the endpoint is new or its names changed.
+     * @return The stored record, or null when no record or no name room was free.
+     *
+     * Verification:
+     * - Correct means: topic_of() and type_of() of the record read the names
+     *   back, a name already in the arena is not stored again, and a refusal
+     *   changes neither the table nor the arena.
+     * - Covered by: TC-SEDP-8.5.5.1-014, TC-SEDP-8.5.5.1-015.
+     */
+    LocalEndpoint* store_local(LocalEndpoint* table, uint32_t n, const LocalEndpoint& endpoint,
+                               const char* topic, const char* type, bool& is_change) noexcept;
+
+    /// @brief Frees a stored local endpoint and its names.
+    void clear_local(LocalEndpoint& l) noexcept;
+
+    /**
+     * @brief Releases the names a record no longer uses, unless another record still does.
+     *
+     * Each name is released only when no local writer or reader refers to
+     * it, and every record's offsets above it are lowered. The higher of the
+     * two offsets is released first, so releasing it never moves the other.
+     *
+     * @param[in] topic The released record's topic offset, or Names::kNone.
+     * @param[in] type  The released record's type offset, or Names::kNone.
+     *
+     * Verification:
+     * - Correct means: a name another record shares stays readable through
+     *   that record, and the arena ends holding exactly the names the
+     *   records refer to.
+     * - Covered by: TC-SEDP-8.5.5.1-014.
+     */
+    void release_names(uint16_t topic, uint16_t type) noexcept;
+
+    /// @brief Releases the arena string at @p at when no record refers to it.
+    void release_if_unused(uint16_t at) noexcept;
 
     /// Origin index of a free RemoteEndpoint.
     static constexpr uint8_t kNoOrigin = 0xFFu;
@@ -892,7 +1046,9 @@ private:
      * QoS (§8.5.5.1), against local endpoints of the opposite kind.
      *
      * @param[in] topic            The remote endpoint's topic name.
+     * @param[in] topic_key        name_key() of `topic`.
      * @param[in] type             The remote endpoint's type name.
+     * @param[in] type_key         name_key() of `type`.
      * @param[in] reliability      The remote endpoint's reliability kind.
      * @param[in] durability       The remote endpoint's durability kind.
      * @param[in] remote_is_writer `true` for a remote writer (compared with
@@ -907,8 +1063,8 @@ private:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.5.1
      */
-    bool pairs_with_local(const TopicName& topic, const TopicName& type,
-                          ReliabilityKind reliability, DurabilityKind durability,
+    bool pairs_with_local(const TopicName& topic, uint32_t topic_key, const TopicName& type,
+                          uint32_t type_key, ReliabilityKind reliability, DurabilityKind durability,
                           bool remote_is_writer) const noexcept;
 
     /// @brief True when a reported pair names `guid` as its writer (`is_writer`) or reader.
@@ -964,7 +1120,7 @@ private:
      *   §8.4.1.4 (matched_reader_add), §8.4.7.4 (matched_writer_add)
      */
     bool report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
-                const TopicName& topic) noexcept;
+                const char* topic) noexcept;
 
     /// @brief Reports every pair of local writer `w` with a stored reader;
     /// with `stop_at_bind`, returns `true` at the first pair that binds.
@@ -979,7 +1135,7 @@ private:
     /// every path that forgets an endpoint dissolves its pairs first, and
     /// displacement spares an endpoint in any record, waiting or not.
     bool describe(const MatchRecord& m, MatchedEndpoint& writer, MatchedEndpoint& reader,
-                  const TopicName*& topic) noexcept;
+                  const char*& topic) noexcept;
 
     /// @brief The waiting record with the oldest ticket MayMatch accepts, or null.
     MatchRecord* oldest_bindable() noexcept;
@@ -1043,8 +1199,9 @@ private:
     /// @brief Tells the owner the set of known endpoints changed.
     void changed() noexcept { if (on_change_) on_change_(user_data_); }
 
-    LocalEndpoint  local_writers_[RTPS_MAX_LOCAL_ENDPOINTS]     = {};
-    LocalEndpoint  local_readers_[RTPS_MAX_LOCAL_ENDPOINTS]     = {};
+    LocalEndpoint     local_writers_[RTPS_MAX_LOCAL_WRITERS] = {};
+    LocalEndpoint     local_readers_[RTPS_MAX_LOCAL_READERS] = {};
+    Names             names_;
     RemoteEndpoint remote_writers_[RTPS_MAX_DISCOVERED_WRITERS] = {};
     RemoteEndpoint remote_readers_[RTPS_MAX_DISCOVERED_READERS] = {};
     RemoteOrigin   origins_[RTPS_MAX_REMOTE_ORIGINS]            = {};

@@ -9,6 +9,7 @@ void register_all_sedp_tests(std::vector<TestCase>& tests) {
     append_sedp_tests_8_5_4_peer_locators(tests);
     append_sedp_tests_8_5_4_2_endpoint_locator_lists(tests);
     append_sedp_tests_8_5_5_1(tests);
+    append_sedp_tests_8_5_5_1_local_names(tests);
     append_sedp_tests_9_6_3_2(tests);
 }
 

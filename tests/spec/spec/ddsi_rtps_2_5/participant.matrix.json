@@ -106,6 +106,14 @@
       "test_ids": ["TC-PART-8.5.1-008"]
     },
     {
+      "id": "REQ-PART-8.5.5.1-LOCAL-ENDPOINT-RECORDED",
+      "section": "8.5.5.1",
+      "normativity": "shall",
+      "statement": "A local endpoint the match table could not record, and SEDP so could not announce, is refused before it is built.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-012"]
+    },
+    {
       "id": "REQ-PART-8.5.3.2-ANSWER-REACHABLE-LOCATOR",
       "section": "8.5.3.2",
       "page": 160,
