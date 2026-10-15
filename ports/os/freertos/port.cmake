@@ -70,6 +70,16 @@ target_link_libraries(rosette_platform PUBLIC freertos_kernel)
 # configSUPPORT_PICO_SYNC_INTEROP and configSUPPORT_PICO_TIME_INTEROP to 1:
 # the kernel library is not compiled with LIB_PICO_SYNC / LIB_PICO_TIME,
 # from which rp2040_config.h would otherwise infer them.
+#
+# FREE_RTOS_KERNEL_SMP declares the kernel SMP-capable, as the port's own
+# library.cmake does; it does not select SMP. The V11 kernel is one source for
+# one or two cores, and the board's FreeRTOSConfig.h still picks the count.
+# The Pico SDK's pico_flash is the only reader: it lets flash.c consult
+# configNUMBER_OF_CORES. With 2, flash_safe_execute() parks the other core in
+# a RAM-resident task with interrupts off while flash is erased or programmed,
+# and pico_flash fails the build unless configUSE_CORE_AFFINITY is 1, since
+# the handshake pins that task to the other core. With 1, flash.c compiles no
+# FreeRTOS handshake and flash_safe_execute() is unaffected by this define.
 if(FREERTOS_PORT STREQUAL "GCC_RP2040")
   get_target_property(_rf_kernel_dir freertos_kernel SOURCE_DIR)
   target_link_libraries(freertos_kernel_port_headers INTERFACE
@@ -80,6 +90,7 @@ if(FREERTOS_PORT STREQUAL "GCC_RP2040")
   target_link_libraries(freertos_kernel_port PRIVATE pico_multicore)
   target_compile_definitions(rosette_platform PUBLIC
     LIB_FREERTOS_KERNEL=1
+    FREE_RTOS_KERNEL_SMP=1
     PICO_CONFIG_RTOS_ADAPTER_HEADER=${_rf_kernel_dir}/portable/ThirdParty/GCC/RP2040/include/freertos_sdk_config.h)
 endif()
 
