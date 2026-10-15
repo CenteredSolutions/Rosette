@@ -58,7 +58,7 @@ static bool tc_swr_8_4_6_001(std::string& err) {
     ReaderProxy proxy{};
     const Guid reader = make_guid(0x51u, 0x52u, 0x53u, make_entity(1u, 2u, 3u, 0x07u));
     const Locator loc = make_udpv4_locator(0xC0A80190u, 7411u);
-    proxy.init(reader, &loc, 1u, false, SequenceNumber::from_int64(1));
+    proxy.init(reader, &loc, 1u, false, SequenceNumber::from_int64(1), true);
 
     proxy.requested_changes_set(run(1, 100), 10u);
     CHECK(proxy.nackPending && proxy.nackPendingSinceMs == 10u, "a request arms nackResponseDelay");
@@ -100,7 +100,7 @@ static bool tc_swr_8_4_6_002(std::string& err) {
     // however deep the history.
     const Guid reader = make_guid(0x61u, 0x62u, 0x63u, make_entity(1u, 2u, 3u, 0x07u));
     ReaderProxy proxy{};
-    proxy.init(reader, nullptr, 0u, false, SequenceNumber::from_int64(3));
+    proxy.init(reader, nullptr, 0u, false, SequenceNumber::from_int64(3), true);
     HistoryCacheStorage<8> history{};
     for (int64_t sn = 1; sn <= 6; ++sn) {
         CacheChange c{};

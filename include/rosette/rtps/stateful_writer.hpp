@@ -353,6 +353,13 @@ public:
      * it (ReaderProxy::init()), so the reader's traffic follows the owning
      * record when it takes a new address.
      *
+     * The writer serves the reader reliably only when both are RELIABLE
+     * (§8.4.4; serves_reliably()). A BEST_EFFORT reader of a RELIABLE writer
+     * is served as a best-effort writer serves every reader (§8.4.9.1): it is
+     * pushed each change once, is sent no HEARTBEAT, and never holds a change
+     * in the history, delays a release, or counts toward
+     * evicted_unacknowledged(), because it never acknowledges anything.
+     *
      * The proxy is bound from the writer's pool (ProxyPool::bind()): always
      * while the writer has fewer matches than its floor, and above it only
      * while the pool has a proxy no other writer's floor is promised, up to
@@ -365,6 +372,8 @@ public:
      *   `locator_count` is 0.
      * @param[in] locator_count      Number of locators.
      * @param[in] expects_inline_qos Its expectsInlineQos.
+     * @param[in] reader_reliability The RELIABILITY kind the reader announced;
+     *   SEDP's built-in readers are RELIABLE.
      * @return `false` when the reader is already matched or the pool refuses
      *   a proxy (the writer is at its cap, or above its floor with every
      *   free proxy promised to other floors). RTPSParticipant keeps a refused
@@ -374,19 +383,22 @@ public:
      * - Correct means: the new reader is sent every cached change of a
      *   TRANSIENT_LOCAL writer, and a reliable writer's newest one arrives
      *   with a non-final HEARTBEAT spanning the cache; a best-effort writer
-     *   sends no HEARTBEAT; writers sharing a pool are refused exactly as
-     *   ProxyPool admission decides.
+     *   sends no HEARTBEAT; a BEST_EFFORT reader is sent each change once and
+     *   no HEARTBEAT; writers sharing a pool are refused exactly as ProxyPool
+     *   admission decides.
      * - Covered by: TC-SWR-8.4.1.1-001, TC-SWR-8.4.1.4-002, TC-SWR-8.4.1.4-003,
-     *   TC-SWR-8.4.1.4-008, TC-SWR-8.4.1.4-009.
+     *   TC-SWR-8.4.1.4-008, TC-SWR-8.4.1.4-009, TC-SWR-8.4.9.1-001,
+     *   TC-SWR-8.4.9.1-002.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.4.1.1, §8.7.2.2,
-     *   §8.4.15.4 (piggybacked HEARTBEAT)
+     *   §8.4.15.4 (piggybacked HEARTBEAT), §8.4.4 (behavior per matched reader),
+     *   §8.4.9.1 (best-effort StatefulWriter)
      */
-    bool matched_reader_add(const Guid&    reader_guid,
-                            const Locator* unicast_locators,
-                            uint8_t        locator_count,
-                            bool           expects_inline_qos = false) noexcept;
+    bool matched_reader_add(
+        const Guid& reader_guid, const Locator* unicast_locators, uint8_t locator_count,
+        bool            expects_inline_qos = false,
+        ReliabilityKind reader_reliability = ReliabilityKind::RELIABLE) noexcept;
 
     /**
      * @brief Unmatches a remote reader; a GUID that is neither bound nor waiting changes nothing
@@ -430,9 +442,11 @@ public:
      * @param[in] final_flag  FinalFlag: the reader need not answer when up to date.
      * @param[in] directed_to When known, send only to this reader, with its
      *   readerId; otherwise send to every matched reader with readerId UNKNOWN.
+     *   Either way only readers served reliably (serves_reliably()) are sent
+     *   one: a best-effort reader ignores HEARTBEATs (§8.4.9.1).
      *
      * Verification:
-     * - Covered by: TC-SWR-8.2.2-002, TC-SWR-8.4.3-002.
+     * - Covered by: TC-SWR-8.2.2-002, TC-SWR-8.4.3-002, TC-SWR-8.4.9.1-001.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.2.2, §8.3.7.5 (HEARTBEAT)
@@ -442,7 +456,9 @@ public:
     /**
      * @brief Processes an ACKNACK from a matched reader.
      *
-     * Ignores unknown readers and non-increasing counts. Marks everything
+     * Ignores unknown readers, readers served best-effort (serves_reliably();
+     * best-effort behavior receives no ACKNACK, §8.4.9.1), and non-increasing
+     * counts. Marks everything
      * below readerSNState.bitmapBase acknowledged, marks the NACKed numbers
      * that are relevant to the reader and still in the history REQUESTED
      * (repaired by tick() after nackResponseDelay), GAPs the other NACKed
@@ -475,7 +491,7 @@ public:
      *   this writer again receives what a newly matched reader would.
      * - Covered by: TC-SWR-8.4.3-001, TC-SWR-8.4.3-002, TC-SWR-8.4.3-003,
      *   TC-SWR-8.4.9-001, TC-SWR-8.2.2-003, TC-SWR-8.4.1.4-004,
-     *   TC-SWR-8.4.1.4-005, TC-SWR-8.4.1.4-006.
+     *   TC-SWR-8.4.1.4-005, TC-SWR-8.4.1.4-006, TC-SWR-8.4.9.1-001.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.3, §8.4.9.2.8, §8.4.9.2.12, §8.4.15.4,
@@ -572,7 +588,8 @@ public:
      * put the fragments the reader lacks back behind the ones it holds, and
      * on a link whose receive buffer takes fewer than all of them the same
      * ones would be lost on every retry. A NACK_FRAG whose count is not above
-     * the last one processed for the reader is a duplicate and is ignored.
+     * the last one processed for the reader is a duplicate and is ignored, and
+     * so is any NACK_FRAG from a reader served best-effort (serves_reliably()).
      *
      * @param[in] ctx Parse context; supplies the sender's GUID prefix.
      * @param[in] msg The decoded NACK_FRAG.
@@ -595,17 +612,20 @@ public:
      * First, for each reader whose nackResponseDelay has elapsed, resends
      * its REQUESTED changes (GAPping any the history evicted) and follows
      * them with a directed final HEARTBEAT. Then, once per heartbeatPeriod,
-     * sends a HEARTBEAT to each reader that still has unacknowledged changes
-     * and restarts the count toward the next piggybacked HEARTBEAT.
+     * sends a HEARTBEAT to each reader served reliably that still has
+     * unacknowledged changes, and restarts the count toward the next
+     * piggybacked HEARTBEAT. A reader served best-effort requests nothing and
+     * is never announcing, so tick() sends it nothing.
      *
      * @param[in] now_ms Current rosette::platform::monotonic_ms().
      *
      * Verification:
      * - Covered by: TC-SWR-8.4.2.2-001, TC-SWR-8.4.9-004, TC-SWR-8.4.9-002,
-     *   TC-SWR-8.2.2-003, TC-SWR-8.4.4-001.
+     *   TC-SWR-8.2.2-003, TC-SWR-8.4.4-001, TC-SWR-8.4.9.1-001.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.4.1.1 (nackResponseDelay, heartbeatPeriod), §8.4.9.2
+     * - OMG DDSI-RTPS 2.5 §8.4.1.1 (nackResponseDelay, heartbeatPeriod), §8.4.9.2,
+     *   §8.4.9.1
      */
     void tick(uint32_t now_ms) noexcept;
 
@@ -657,17 +677,42 @@ public:
     bool release_replies_on_delivery() const noexcept { return releaseRepliesOnDelivery_; }
 
     /**
+     * @brief Releases the replies a reader that has just bound was the last to hold.
+     *
+     * A reader waiting for a proxy keeps the replies to its requester in the
+     * history (reply_delivered()), and the match table clears its waiting mark
+     * only after matched_reader_add() returns. A BEST_EFFORT reader that binds
+     * is sent the replay and never acknowledges, so no ACKNACK follows to
+     * trigger the release; the participant calls this once the mark is clear.
+     * Only a service reply writer holds replies for waiting readers, so any
+     * other writer does nothing.
+     *
+     * Verification:
+     * - Correct means: after a waiting best-effort reader binds and this runs,
+     *   the reply sent to it is released unless another reader of a requester
+     *   still waits; a writer that is not a reply writer keeps its history.
+     * - Covered by: TC-PART-8.4.1.4-008.
+     *
+     * References:
+     * - OMG DDS-RPC 1.0 §7.8.2 (related sample identity)
+     * - OMG DDSI-RTPS 2.5 §8.4.9.1 (best-effort StatefulWriter)
+     */
+    void on_waiting_reader_bound() noexcept;
+
+    /**
      * @brief Changes KEEP_LAST evicted before their readers had them.
      *
      * A full history evicts its oldest change to make room for a new one
      * (§8.3.3.1). That is the point of KEEP_LAST when every reader already
      * has the oldest change, and a loss when one does not: a reader that
      * then asks for it is sent a GAP and never receives it. This counts the
-     * losses on a RELIABLE writer. A change counts when a matched reader has
-     * not acknowledged it, and, on a service reply writer, when its
-     * requester has not received it (reply_delivered()), which includes a
-     * reply waiting for its client to match. A BEST_EFFORT writer repairs
-     * nothing, so it counts nothing. The 1st, 2nd, 4th, 8th, ... eviction
+     * losses on a RELIABLE writer. A change counts when a matched reader
+     * served reliably has not acknowledged it, and, on a service reply
+     * writer, when its requester has not received it (reply_delivered()),
+     * which includes a reply waiting for its client to match. A BEST_EFFORT
+     * writer repairs nothing, so it counts nothing, and a BEST_EFFORT reader
+     * of a RELIABLE writer is never repaired, so a change only it lacks does
+     * not count either. The 1st, 2nd, 4th, 8th, ... eviction
      * counted also logs a warning naming the writer and the sequence number.
      *
      * On a service reply writer any count is a lost reply: more replies were
@@ -682,9 +727,10 @@ public:
      * Verification:
      * - Correct means: evicting a change some matched reader has not
      *   acknowledged, or an undelivered reply, counts once; evicting a change
-     *   every reader acknowledged, or one with no reader matched on a
-     *   writer that is not a reply writer, counts nothing.
-     * - Covered by: TC-SWR-8.4.7-013, TC-SWR-8.4.7-014.
+     *   every reader acknowledged, one with no reader matched on a writer
+     *   that is not a reply writer, or one only best-effort readers lack,
+     *   counts nothing.
+     * - Covered by: TC-SWR-8.4.7-013, TC-SWR-8.4.7-014, TC-SWR-8.4.9.1-001.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.3.1 (KEEP_LAST), §8.4.9.2.12 (GAP for an
@@ -696,8 +742,9 @@ public:
      * @brief True when every matched reader has acknowledged the newest change.
      *
      * Acknowledgments are cumulative, so this means every change in the
-     * history is acknowledged. An empty history, and any BEST_EFFORT writer,
-     * report true.
+     * history is acknowledged. Only readers served reliably are asked: an
+     * empty history, any BEST_EFFORT writer, and a writer whose readers are
+     * all BEST_EFFORT report true.
      *
      * Verification:
      * - Covered by: TC-SWR-8.4.7-001.
@@ -717,8 +764,8 @@ public:
      * them only when the peer is reactivated.
      *
      * @param[in] prefix GUID prefix of the remote participant.
-     * @return `true` when no matched reader has that prefix, for a
-     *   BEST_EFFORT writer, for an empty history, and when every matched
+     * @return `true` when no matched reader served reliably has that prefix,
+     *   for a BEST_EFFORT writer, for an empty history, and when every such
      *   reader with that prefix has acknowledged the newest change.
      *
      * Verification:
@@ -1055,7 +1102,8 @@ private:
      * them too. The write paths pass heartbeat_due().
      *
      * @param[in] with_heartbeat Piggyback a HEARTBEAT on the newest change's
-     *   datagram to each reader.
+     *   datagram to each reader served reliably; a reader served best-effort
+     *   gets the change alone.
      *
      * Verification:
      * - Correct means: every UNSENT change is attempted once per reader and
@@ -1102,12 +1150,40 @@ private:
     ///   HEARTBEAT to `reader_id` for the current range and heartbeatCount_.
     void encode_heartbeat(Octet* out, const EntityId& reader_id) const noexcept;
 
-    /// @brief True when every matched reader has acknowledged `sn`.
+    /**
+     * @brief True when this writer serves `proxy`'s reader by the reliable protocol.
+     *
+     * The protocol toward each matched reader follows the reliabilityLevel of
+     * both the writer and the reader (§8.4.4). A RELIABLE writer may match a
+     * BEST_EFFORT reader, and serves it as a best-effort writer would
+     * (§8.4.9.1); a BEST_EFFORT writer never matches a RELIABLE reader.
+     *
+     * @param[in] proxy A proxy of this writer.
+     * @return `true` when the writer and the reader are both RELIABLE: the
+     *   reader is sent HEARTBEATs, repaired, and waited for. `false` when
+     *   either is BEST_EFFORT: the reader is pushed each change once.
+     *
+     * Verification:
+     * - Correct means: no HEARTBEAT, repair or GAP goes to a reader served
+     *   best-effort, and its acknowledgment state never holds a change in the
+     *   history or counts an eviction.
+     * - Covered by: TC-SWR-8.4.9.1-001, TC-SWR-8.4.9.1-002.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.4, §8.4.9.1 (Table 8.65), §8.4.9.2
+     * - OMG DDS 1.4 §2.2.3 (RELIABILITY is requested/offered: a RELIABLE
+     *   DataWriter matches a BEST_EFFORT DataReader)
+     */
+    bool serves_reliably(const ReaderProxy& proxy) const noexcept {
+        return reliability_ == ReliabilityKind::RELIABLE && proxy.isReliable;
+    }
+
+    /// @brief True when every matched reader served reliably has acknowledged `sn`.
     bool all_readers_acked(const SequenceNumber& sn) const noexcept;
 
     /// @brief True when no matched reader still needs `sn`: each has
     ///   acknowledged it or never had it relevant (ReaderProxy::is_done_with).
-    bool all_readers_done_with(const SequenceNumber& sn, bool reliable) const noexcept;
+    bool all_readers_done_with(const SequenceNumber& sn) const noexcept;
 
     /**
      * @brief Drops every change no reader still needs.
@@ -1145,8 +1221,9 @@ private:
     bool requester_has_waiting_reader(const GuidPrefix& requester) const noexcept;
 
     /// @brief True when `reply` names a requester whose matched readers are
-    ///   all done with it, at least one of them is matched, and none waits to bind.
-    bool reply_delivered(const CacheChange& reply, bool reliable) const noexcept;
+    ///   all done with it (ReaderProxy::is_done_with(), as each is served), at
+    ///   least one of them is matched, and none waits to bind.
+    bool reply_delivered(const CacheChange& reply) const noexcept;
 
     /// @brief Counts and logs the oldest change, about to be evicted from a
     ///   full history, when a reader still needs it (evicted_unacknowledged()).

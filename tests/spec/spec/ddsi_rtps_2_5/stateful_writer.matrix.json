@@ -189,9 +189,17 @@
       "id": "REQ-SWR-8.3.3.1-COUNT-UNDELIVERED-EVICTIONS",
       "section": "8.3.3.1",
       "normativity": "implementation-behavior",
-      "statement": "A RELIABLE writer counts each change KEEP_LAST evicts while a matched reader has not acknowledged it, or, on a service reply writer, while its requester has not received it; a change every reader acknowledged, or one no reader was matched for on a writer that is not a reply writer, is not counted, and a BEST_EFFORT writer counts nothing. The 1st, 2nd, 4th, 8th, ... counted eviction logs a warning.",
+      "statement": "A RELIABLE writer counts each change KEEP_LAST evicts while a matched reader it serves reliably has not acknowledged it, or, on a service reply writer, while its requester has not received it; a change every reader acknowledged, one no reader was matched for on a writer that is not a reply writer, or one only BEST_EFFORT readers lack, is not counted, and a BEST_EFFORT writer counts nothing. The 1st, 2nd, 4th, 8th, ... counted eviction logs a warning.",
       "status": "implemented",
-      "test_ids": ["TC-SWR-8.4.7-013", "TC-SWR-8.4.7-014", "TC-SWR-8.4.7-015"]
+      "test_ids": ["TC-SWR-8.4.7-013", "TC-SWR-8.4.7-014", "TC-SWR-8.4.9.1-001", "TC-SWR-8.4.9.1-002", "TC-SWR-8.4.7-015"]
+    },
+    {
+      "id": "REQ-SWR-8.4.4-BEST-EFFORT-READER",
+      "section": "8.4.4",
+      "normativity": "shall",
+      "statement": "The behavior of a Writer with respect to each matched Reader depends on the reliabilityLevel of both: a RELIABLE StatefulWriter serves a matched BEST_EFFORT reader by the best-effort StatefulWriter behavior (8.4.9.1), pushing each change to it once with no HEARTBEAT, piggybacked or periodic, and acting on no ACKNACK or NACK_FRAG from it; such a reader holds no change in a VOLATILE writer's history, counts as having acknowledged for acknowledged_by_all() and acknowledged_by_participant(), and adds no eviction to the count; a TRANSIENT_LOCAL replay to it carries no HEARTBEAT. The participant passes each discovered reader's announced reliability to the writer it matches.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.9.1-001", "TC-SWR-8.4.9.1-002", "TC-SWR-8.4.9.1-003"]
     },
     {
       "id": "REQ-SWR-8.3.7.5-NACKFRAG-REPAIR",

@@ -6,6 +6,7 @@ void register_all_participant_tests(std::vector<TestCase>& tests) {
     append_participant_tests_8_5_1(tests);
     append_participant_waiting_match_tests(tests);
     append_participant_writer_eviction_tests(tests);
+    append_participant_reader_reliability_tests(tests);
 }
 
 } // namespace spec_test

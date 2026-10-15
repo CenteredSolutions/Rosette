@@ -451,6 +451,14 @@ ParseResult RTPSParticipant::parse_received(const Octet* buf,
     return r;
 }
 
+void RTPSParticipant::release_replies_to_bound_readers() noexcept {
+    for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i) {
+        if (writer_alive_[i] && writers_[i]) {
+            writers_[i]->on_waiting_reader_bound();
+        }
+    }
+}
+
 void RTPSParticipant::tick(uint32_t now_ms) noexcept {
     if (!has_addresses()) {
         return;
@@ -468,6 +476,9 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
     // the rescan.
     if (rebind_due_) {
         rebind_due_ = match_table_.match_oldest_waiting();
+        if (rebind_due_) {
+            release_replies_to_bound_readers();
+        }
     }
 
     if (!rebind_due_ && match_table_.rescan_due()) {
@@ -655,7 +666,8 @@ bool RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
             const Locator* locs = reader.locators;
             uint8_t count = reader.locatorCount;
             p->resolve_endpoint_locators(reader.guid.prefix, locs, count);
-            bound = iw->matched_reader_add(reader.guid, locs, count, reader.expectsInlineQos);
+            bound = iw->matched_reader_add(reader.guid, locs, count, reader.expectsInlineQos,
+                                           reader.reliability);
         }
     }
 

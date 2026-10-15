@@ -493,7 +493,7 @@ public:
      *   of it once a proxy is free for it; a turned-away pair is recorded
      *   on the first tick after room frees that binds no waiting match.
      * - Covered by: TC-PART-8.5.1-006, TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-002,
-     *   TC-PART-8.4.1.4-005.
+     *   TC-PART-8.4.1.4-005, TC-PART-8.4.1.4-008.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.3.2 (lease), §8.4.1.4 (matched_reader_add),
@@ -1164,6 +1164,10 @@ private:
     /// A user endpoint's proxy freed since the last tick that bound no
     /// waiting match, so one may bind now.
     bool rebind_due_ = false;
+
+    /// @brief Lets each reply writer release the replies a just-bound reader
+    ///   was the last to hold (StatefulWriter::on_waiting_reader_bound()).
+    void release_replies_to_bound_readers() noexcept;
 };
 
 } // namespace rtps

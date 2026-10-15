@@ -24,6 +24,15 @@
  * no group (Publisher/Subscriber) entities, and a writer sends to each
  * matched reader at its unicast locators only.
  *
+ * Reader reliability
+ * ------------------
+ * The proxy also records whether its reader is RELIABLE. A writer's behavior
+ * toward each matched reader depends on the reliabilityLevel of both
+ * (§8.4.4): a RELIABLE writer may match a BEST_EFFORT reader, and toward it
+ * follows the best-effort behavior (§8.4.9.1): it pushes each change once,
+ * sends no HEARTBEAT, and expects no ACKNACK. StatefulWriter reads it from
+ * isReliable.
+ *
  * Locator reference
  * -----------------
  * A writer sends each reader's traffic to one unicast locator, so the proxy
@@ -116,6 +125,9 @@ public:
     Guid    remoteReaderGuid   = GUID_UNKNOWN;  ///< §8.4.1.1
     bool    expectsInlineQos   = false;         ///< §8.4.1.1
     bool    isActive           = false;         ///< §8.4.1.1
+    /// The reader announced RELIABLE; see "Reader reliability" above. Kept
+    /// beside the other flags, where it costs no padding.
+    bool    isReliable = true;
 
     /// The entry of this reader's unicastLocatorList it is addressed at
     /// (§8.4.1.1), owned by the record the proxy was matched from; null
@@ -157,8 +169,8 @@ public:
      * @brief Starts tracking a newly matched reader.
      *
      * Resets every attribute, then records the reader's GUID, inline-QoS
-     * expectation, the locator it is addressed at, and the first change
-     * relevant to it. Every relevant change still in the writer's history is
+     * expectation, reliability, the locator it is addressed at, and the first
+     * change relevant to it. Every relevant change still in the writer's history is
      * then UNSENT (§8.4.1.4, "matched_reader_add").
      *
      * The proxy refers to the first UDP entry of `unicast_locs` (else its
@@ -174,6 +186,8 @@ public:
      * @param[in] first_relevant_sn  Lowest sequence number the reader is to
      *   receive: 1 for a TRANSIENT_LOCAL writer, which replays its history;
      *   the writer's next sequence number for a VOLATILE one.
+     * @param[in] reliable           True when the reader announced RELIABLE,
+     *   false for BEST_EFFORT (§8.4.4).
      *
      * Verification:
      * - Correct means: after init, next_unsent_change() walks exactly the
@@ -187,7 +201,8 @@ public:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.4.1.1, §8.7.2.2
      */
     void init(const Guid& reader_guid, const Locator* unicast_locs, uint8_t unicast_count,
-              bool expects_inline_qos, const SequenceNumber& first_relevant_sn) noexcept;
+              bool expects_inline_qos, const SequenceNumber& first_relevant_sn,
+              bool reliable) noexcept;
 
     /**
      * @brief Starts tracking the same reader again as if it had just matched.
@@ -196,8 +211,8 @@ public:
      * its endpoints and matches them again on the next announcement, and its
      * readers start over while this proxy still records their old progress.
      * The writer calls this when such a reader shows it has started over
-     * (StatefulWriter::on_acknack()). The reader keeps its GUID, locators and
-     * inline-QoS expectation; its acknowledgement, sent and requested
+     * (StatefulWriter::on_acknack()). The reader keeps its GUID, locators,
+     * inline-QoS expectation and reliability; its acknowledgement, sent and requested
      * changes, and ACKNACK and NACK_FRAG counts reset as init() resets them.
      *
      * @param[in] first_relevant_sn Lowest sequence number the reader is to

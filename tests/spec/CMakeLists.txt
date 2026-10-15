@@ -274,6 +274,7 @@ add_executable(stateful_writer_spec_tests
     src/test_stateful_writer_8_4_15_piggyback_heartbeat.cpp
     src/test_stateful_writer_8_4_7_release_finished.cpp
     src/test_stateful_writer_8_4_7_undelivered_eviction.cpp
+    src/test_stateful_writer_8_4_9_1_best_effort_reader.cpp
     src/test_stateful_writer_8_4_4_fragment_repair.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
@@ -346,6 +347,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     src/test_participant_8_5_1.cpp
     src/test_participant_waiting_matches.cpp
     src/test_participant_writer_evictions.cpp
+    src/test_participant_8_4_4_reader_reliability.cpp
     ../../src/rtps/participant.cpp
     ../../src/rtps/participant_peer_tiers.cpp
     ../../src/rtps/stateful_reader.cpp
