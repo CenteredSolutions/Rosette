@@ -8,12 +8,14 @@
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/types.hpp"
 
-#include <cstdio>
-#include <cstdlib>
+#include <rcutils/strdup.h>
+#include <rmw/error_handling.h>
 #include <rmw/init.h>
 #include <rmw/init_options.h>
 #include <rmw/rmw.h>
-#include <rmw/error_handling.h>
+#include <rmw/security_options.h>
+#include <cstdio>
+#include <cstdlib>
 
 // rmw_context_impl_s is defined in types.hpp, not here: rmw_node.cpp and
 // rmw_wait_set.cpp also dereference context->impl->rosette_context, and
@@ -245,29 +247,134 @@ rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_alloca
 }
 
 /**
- * @brief Deep-copies an rmw_init_options_t.
+ * @brief Deep-copies an rmw_init_options_t, including the strings the options own.
  *
- * @param[in] src Options to copy from.
- * @param[out] dst Options to copy into.
- * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if either argument
- *   is null.
+ * The options own two heap strings: `enclave` and
+ * `security_options.security_root_path`. rcl_init() fills `enclave` with
+ * rcutils_strdup() in the context's own copy of the options, and
+ * rcl_context_fini() finalizes that copy through rmw_init_options_fini(),
+ * so the copy duplicates both strings with `src`'s allocator and
+ * rmw_init_options_fini() frees them; a shallow copy would leave two
+ * owners of one string.
+ *
+ * @param[in] src Options to copy from; initialized by rmw_init_options_init().
+ * @param[out] dst Options to copy into; must be zero-initialized
+ *   (rmw_get_zero_initialized_init_options()). Untouched on failure.
+ * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` if either argument is
+ *   null, `dst` is already initialized or `src`'s allocator is invalid;
+ *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` if `src` is another rmw's;
+ *   `RMW_RET_BAD_ALLOC` if a string cannot be duplicated.
+ *
+ * Verification:
+ * - Correct means: `dst` equals `src` field for field except that its
+ *   strings are its own copies, and finalizing both returns every byte
+ *   they allocated.
+ * - Covered by: rmw_rosette/test/test_init_options.cpp
+ *   (TC-RMW-INITOPT-002, -004, -007, -008).
+ *
+ * References:
+ * - rmw/init_options.h (Humble), `rmw_init_options_copy`, `rmw_init_options_fini`
+ * - rmw/security_options.h (Humble), `rmw_security_options_copy`
+ * - rcl/src/rcl/init.c (Humble), `rcl_init` (the enclave rcutils_strdup)
  */
 rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_t* dst) {
-    if (!src || !dst) return RMW_RET_INVALID_ARGUMENT;
-    *dst = *src;  // Every field here is a plain value or non-owned pointer.
+    if (!src || !dst) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_copy: null argument");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+
+    if (src->implementation_identifier != rmw_rosette_identifier) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_copy: options of another rmw");
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    if (dst->implementation_identifier != nullptr) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_copy: destination already initialized");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+
+    const rcutils_allocator_t* allocator = &src->allocator;
+    if (!rcutils_allocator_is_valid(allocator)) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_copy: invalid allocator");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+
+    rmw_init_options_t copy = *src;
+    copy.enclave = nullptr;
+    copy.security_options = rmw_get_zero_initialized_security_options();
+    if (src->enclave != nullptr) {
+        copy.enclave = rcutils_strdup(src->enclave, *allocator);
+        if (copy.enclave == nullptr) {
+            RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_copy: cannot copy the enclave");
+            return RMW_RET_BAD_ALLOC;
+        }
+    }
+
+    if (rmw_security_options_copy(&src->security_options, allocator, &copy.security_options)
+        != RMW_RET_OK) {
+        allocator->deallocate(copy.enclave, allocator->state);
+        return RMW_RET_BAD_ALLOC;
+    }
+
+    *dst = copy;
     return RMW_RET_OK;
 }
 
 /**
- * @brief Releases an rmw_init_options_t.
+ * @brief Releases an rmw_init_options_t and the strings it owns.
+ *
+ * Frees `enclave` and `security_options.security_root_path` with the
+ * options' allocator (see rmw_init_options_copy() for who fills them),
+ * then resets the options. Options that were never initialized, or were
+ * already finalized, carry no implementation identifier, own nothing and
+ * are only reset. Options stamped by another rmw are rejected before any
+ * of their fields is read, because their layout and ownership rules are
+ * not this rmw's.
  *
  * @param[in,out] init_options Options to finalize; reset to the
- *   zero-initialized state on return.
- * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `init_options`
- *   is null.
+ *   zero-initialized state on return, and untouched on failure.
+ * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` if `init_options` is
+ *   null, or owns a string but has no valid allocator to free it with;
+ *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` if the options are another
+ *   rmw's.
+ *
+ * Verification:
+ * - Correct means: after rcl_init() and rcl_shutdown() / rcl_context_fini()
+ *   the heap is back where it was; on the RP2040 that is the session
+ *   restart check, `rcl_heap` equal from one session to the next. Foreign
+ *   options come back with every field and allocation unchanged.
+ * - Covered by: rmw_rosette/test/test_init_options.cpp
+ *   (TC-RMW-INITOPT-001, -003, -005, -006).
+ *
+ * References:
+ * - rmw/init_options.h (Humble), `rmw_init_options_fini`
+ * - rmw/security_options.h (Humble), `rmw_security_options_fini`
  */
 rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
-    if (!init_options) return RMW_RET_INVALID_ARGUMENT;
+    if (!init_options) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_fini: null argument");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+
+    if (init_options->implementation_identifier != nullptr
+        && init_options->implementation_identifier != rmw_rosette_identifier) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_fini: options of another rmw");
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    const bool owns_strings = init_options->enclave != nullptr
+                              || init_options->security_options.security_root_path != nullptr;
+    const rcutils_allocator_t* allocator = &init_options->allocator;
+    if (owns_strings) {
+        if (!rcutils_allocator_is_valid(allocator)) {
+            RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_fini: invalid allocator");
+            return RMW_RET_INVALID_ARGUMENT;
+        }
+
+        allocator->deallocate(init_options->enclave, allocator->state);
+        (void)rmw_security_options_fini(&init_options->security_options, allocator);
+    }
+
     *init_options = rmw_get_zero_initialized_init_options();
     return RMW_RET_OK;
 }
