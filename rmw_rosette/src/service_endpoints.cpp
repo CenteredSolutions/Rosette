@@ -49,6 +49,7 @@ ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
     if (server) {
         wcfg.durability = rtps::DurabilityKind::TRANSIENT_LOCAL;
         wcfg.releaseRepliesOnDelivery = true;
+        wcfg.slotClass = rtps::WriterSlotClass::SHALLOW;
     }
 
     wcfg.topicName.assign(server ? reply_topic : request_topic);

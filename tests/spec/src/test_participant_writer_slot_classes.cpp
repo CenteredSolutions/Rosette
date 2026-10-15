@@ -34,10 +34,11 @@ using participant_support::CaptureTransport;
 
 namespace {
 
-WriterConfig writer_on(const char* topic) {
+WriterConfig writer_on(const char* topic, WriterSlotClass slot_class = WriterSlotClass::DEEP) {
     WriterConfig cfg{};
     (void)cfg.topicName.assign(topic);
     (void)cfg.typeName.assign("T_");
+    cfg.slotClass = slot_class;
     // TRANSIENT_LOCAL keeps every change with no reader matched, so the
     // history fills to its depth.
     cfg.durability = DurabilityKind::TRANSIENT_LOCAL;
@@ -59,69 +60,65 @@ bool fills_to(StatefulWriter* w, uint32_t count, uint8_t expected) {
 }  // namespace
 
 static bool tc_part_8_5_1_013(std::string& err) {
+    constexpr WriterSlotClass kShallow = WriterSlotClass::SHALLOW;
+
     CaptureTransport tx{};
     RTPSParticipant  p(0u, 1u, tx);
     CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
     CHECK(p.free_writer_slots(false) == 2u && p.free_writer_slots(true) == 2u,
           "the table starts with two free slots of each class");
 
+    // A DEEP writer takes a deep slot whatever its depth, so a depth-1 writer
+    // never uses up a slot a SHALLOW writer is sized for.
     StatefulWriter* deep1 = p.create_writer<8>(writer_on("rt/deep1"));
-    StatefulWriter* deep2 = p.create_writer<4>(writer_on("rt/deep2"));
+    StatefulWriter* deep2 = p.create_writer<1>(writer_on("rt/deep2"));
     CHECK(deep1 != nullptr && deep2 != nullptr && p.free_writer_slots(false) == 0u
               && p.free_writer_slots(true) == 2u,
-          "writers deeper than a shallow slot take deep slots");
-    CHECK(p.create_writer<8>(writer_on("rt/deep3")) == nullptr && p.free_writer_slots(true) == 2u,
-          "a deep writer is refused rather than put in a shallow slot too small for it");
+          "DEEP writers, of any depth, take deep slots");
+    CHECK(p.create_writer<1>(writer_on("rt/deep3")) == nullptr && p.free_writer_slots(true) == 2u,
+          "a DEEP writer is refused rather than put in a shallow slot, even one it would fit");
 
-    StatefulWriter* shallow1 = p.create_writer<1>(writer_on("rt/shallow1"));
-    StatefulWriter* shallow2 = p.create_writer<2>(writer_on("rt/shallow2"));
+    StatefulWriter* shallow1 = p.create_writer<1>(writer_on("rt/shallow1", kShallow));
+    StatefulWriter* shallow2 = p.create_writer<2>(writer_on("rt/shallow2", kShallow));
     CHECK(shallow1 != nullptr && shallow2 != nullptr && p.free_writer_slots(true) == 0u,
-          "writers that fit a shallow slot take one");
+          "SHALLOW writers take shallow slots");
     CHECK(fills_to(shallow2, 3u, 2u) && fills_to(shallow1, 2u, 1u) && fills_to(deep1, 9u, 8u)
-              && fills_to(deep2, 5u, 4u) && shallow2->cache().size() == 2u,
+              && fills_to(deep2, 2u, 1u) && shallow2->cache().size() == 2u,
           "each writer keeps its own depth, and the shallow slots do not overlap their "
           "neighbours");
-    CHECK(p.create_writer<1>(writer_on("rt/full")) == nullptr, "a full table refuses any writer");
+    CHECK(p.create_writer<1>(writer_on("rt/full")) == nullptr
+              && p.create_writer<1>(writer_on("rt/full", kShallow)) == nullptr,
+          "a full table refuses any writer");
 
+    // Endpoint churn: a freed slot returns to its own class only.
     CHECK(p.delete_writer(deep2), "a deep writer is deleted");
-    StatefulWriter* overflow = p.create_writer<1>(writer_on("rt/overflow"));
-    CHECK(overflow != nullptr && p.free_writer_slots(false) == 0u,
-          "a shallow writer takes a deep slot once every shallow slot is taken");
+    CHECK(p.create_writer<1>(writer_on("rt/spill", kShallow)) == nullptr
+              && p.free_writer_slots(false) == 1u,
+          "a SHALLOW writer is refused rather than spilled into a free deep slot");
     CHECK(p.delete_writer(shallow1) && p.free_writer_slots(true) == 1u
-              && p.create_writer<4>(writer_on("rt/deep4")) == nullptr,
+              && p.create_writer<4>(writer_on("rt/toodeep", kShallow)) == nullptr,
           "a free shallow slot does not hold a writer deeper than it");
 
-    CHECK(p.delete_writer(overflow), "the overflowing shallow writer is deleted");
-    StatefulWriter* deep5 = p.create_writer<8>(writer_on("rt/deep5"));
-    CHECK(deep5 != nullptr && fills_to(deep5, 8u, 8u),
-          "a freed deep slot holds a deep writer again");
-    StatefulWriter* shallow3 = p.create_writer<2>(writer_on("rt/shallow3"));
+    StatefulWriter* deep3 = p.create_writer<8>(writer_on("rt/deep3"));
+    CHECK(deep3 != nullptr && fills_to(deep3, 8u, 8u) && p.free_writer_slots(true) == 1u,
+          "a freed deep slot holds a deep writer again, leaving the shallow slot free");
+    StatefulWriter* shallow3 = p.create_writer<2>(writer_on("rt/shallow3", kShallow));
     CHECK(shallow3 != nullptr && p.free_writer_slots(true) == 0u && fills_to(shallow3, 2u, 2u)
               && shallow2->cache().size() == 2u,
-          "a freed shallow slot is reused by the next shallow writer");
+          "a freed shallow slot is reused by the next SHALLOW writer");
     return true;
 }
 
 }  // namespace spec_test
 
-int main() {
+int main(int argc, char** argv) {
     const spec_test::TestCase tests[] = {
         {"TC-PART-8.5.1-013",
-         "§8.5.1: a writer that fits a shallow slot takes a free one before a deep slot, a "
-         "deeper writer takes only a deep slot, and every writer keeps its own depth.",
+         "§8.5.1: a SHALLOW writer takes only a shallow slot and a DEEP writer only a deep "
+         "one, whatever their depths, so endpoint churn never leaves one class short, and "
+         "every writer keeps its own depth.",
          spec_test::tc_part_8_5_1_013},
     };
 
-    int failures = 0;
-    for (const spec_test::TestCase& tc : tests) {
-        std::string err{};
-        if (tc.fn(err)) {
-            printf("[PASS] %s\n  Spec: %s\n", tc.id, tc.doc);
-        } else {
-            fprintf(stderr, "[FAIL] %s\n  Spec: %s\n  Error: %s\n", tc.id, tc.doc, err.c_str());
-            ++failures;
-        }
-    }
-
-    return failures == 0 ? 0 : 1;
+    return spec_test::run_standalone_tests(tests, sizeof(tests) / sizeof(tests[0]), argc, argv);
 }

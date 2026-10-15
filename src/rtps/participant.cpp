@@ -955,20 +955,16 @@ bool RTPSParticipant::local_endpoint_fits(const TopicName& topic, const TopicNam
     return true;
 }
 
-int RTPSParticipant::find_free_writer_slot(bool fits_shallow, bool fits_deep) const noexcept {
-    if (fits_shallow) {
-        for (uint32_t i = kDeepWriterSlots; i < RTPS_MAX_USER_WRITERS; ++i) {
-            if (!writer_alive_[i]) {
-                return static_cast<int>(i);
-            }
-        }
+int RTPSParticipant::find_free_writer_slot(bool shallow, bool fits) const noexcept {
+    if (!fits) {
+        return -1;
     }
 
-    if (fits_deep) {
-        for (uint32_t i = 0u; i < kDeepWriterSlots; ++i) {
-            if (!writer_alive_[i]) {
-                return static_cast<int>(i);
-            }
+    const uint32_t first = shallow ? kDeepWriterSlots : 0u;
+    const uint32_t end = shallow ? RTPS_MAX_USER_WRITERS : kDeepWriterSlots;
+    for (uint32_t i = first; i < end; ++i) {
+        if (!writer_alive_[i]) {
+            return static_cast<int>(i);
         }
     }
 

@@ -2,12 +2,13 @@
  * @file test_service_reply_depth.cpp
  * @brief A service reply writer holds RMW_ROSETTE_REPLY_DEPTH replies in flight.
  *
- * A service and RMW_ROSETTE_REPLY_DEPTH clients of it share one rmw_rosette
- * context over real UDP loopback, using the generated std_srvs/SetBool type
- * support. rmw_rosette runs the participant only inside rmw_wait(), so replies
- * sent between two waits stay unacknowledged until the next one: answering
- * every client before waiting puts RMW_ROSETTE_REPLY_DEPTH replies in flight
- * at once, as concurrent clients of a busy service do.
+ * A service and its clients (as many as RMW_ROSETTE_REPLY_DEPTH and
+ * RMW_ROSETTE_MAX_CLIENTS allow) share one rmw_rosette context over real UDP
+ * loopback, using the generated std_srvs/SetBool type support. rmw_rosette
+ * runs the participant only inside rmw_wait(), so replies sent between two
+ * waits stay unacknowledged until the next one: answering RMW_ROSETTE_REPLY_DEPTH
+ * requests before waiting puts that many replies in flight at once, as
+ * concurrent requests to a busy service do.
  *
  * Verification:
  * - Correct means: the reply writer's depth and the depth it reports are
@@ -23,6 +24,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include <rmw/rmw.h>
 
 #include <std_srvs/srv/set_bool.h>
@@ -31,7 +34,14 @@
 
 namespace {
 
-constexpr int kClients = RMW_ROSETTE_REPLY_DEPTH;
+/// Replies the service holds at once: one request each, so every reply is in
+/// flight before any is delivered.
+constexpr int kRequests = RMW_ROSETTE_REPLY_DEPTH;
+
+/// Clients of the service. Client entities are a separate capacity
+/// (RMW_ROSETTE_MAX_CLIENTS), so a reply depth above it is reached by
+/// sending several requests from each client rather than by adding clients.
+constexpr int kClients = kRequests < RMW_ROSETTE_MAX_CLIENTS ? kRequests : RMW_ROSETTE_MAX_CLIENTS;
 
 /// One context with a SetBool service and kClients clients of it.
 class ServiceReplyDepth : public ::testing::Test {
@@ -119,27 +129,38 @@ TEST_F(ServiceReplyDepth, EveryReplyInFlightArrives) {
         ASSERT_TRUE(available) << "a client and the service never matched";
     }
 
+    // Request r goes out from client r % kClients, so the clients share the
+    // kRequests replies the service will hold, and each client's count of
+    // replies is known. The service's request reader keeps at most
+    // RMW_ROSETTE_MAX_PENDING_CHANGES requests between takes, so they go out
+    // and are taken in waves of that size; no reply is sent until every
+    // request is taken, which is what puts them all in flight together.
+    int                            expected[kClients] = {};
     std_srvs__srv__SetBool_Request req{};
     std_srvs__srv__SetBool_Request__init(&req);
-    for (rmw_client_t* client : clients_) {
-        int64_t sequence = 0;
-        ASSERT_EQ(rmw_send_request(client, &req, &sequence), RMW_RET_OK);
-    }
-
-    rmw_service_info_t headers[kClients] = {};
+    rmw_service_info_t headers[kRequests] = {};
     int                taken_requests = 0;
-    for (int i = 0; i < 50 && taken_requests < kClients; ++i) {
-        pump();
-        bool taken = true;
-        while (taken && taken_requests < kClients) {
-            ASSERT_EQ(rmw_take_request(service_, &headers[taken_requests], &req, &taken),
-                      RMW_RET_OK);
-            taken_requests += taken ? 1 : 0;
+    for (int sent = 0; sent < kRequests;) {
+        const int wave_end = std::min(kRequests, sent + RMW_ROSETTE_MAX_PENDING_CHANGES);
+        for (; sent < wave_end; ++sent) {
+            int64_t sequence = 0;
+            ASSERT_EQ(rmw_send_request(clients_[sent % kClients], &req, &sequence), RMW_RET_OK);
+            ++expected[sent % kClients];
+        }
+
+        for (int i = 0; i < 50 && taken_requests < wave_end; ++i) {
+            pump();
+            bool taken = true;
+            while (taken && taken_requests < wave_end) {
+                ASSERT_EQ(rmw_take_request(service_, &headers[taken_requests], &req, &taken),
+                          RMW_RET_OK);
+                taken_requests += taken ? 1 : 0;
+            }
         }
     }
 
     std_srvs__srv__SetBool_Request__fini(&req);
-    ASSERT_EQ(taken_requests, kClients) << "not every request arrived";
+    ASSERT_EQ(taken_requests, kRequests) << "not every request arrived";
 
     std_srvs__srv__SetBool_Response res{};
     std_srvs__srv__SetBool_Response__init(&res);
@@ -151,25 +172,30 @@ TEST_F(ServiceReplyDepth, EveryReplyInFlightArrives) {
     EXPECT_EQ(reply_history().size(), RMW_ROSETTE_REPLY_DEPTH)
         << "every reply is held until its client acknowledges it";
 
-    bool replied[kClients] = {};
-    int  replies = 0;
-    for (int i = 0; i < 50 && replies < kClients; ++i) {
+    int received[kClients] = {};
+    int replies = 0;
+    for (int i = 0; i < 50 && replies < kRequests; ++i) {
         pump();
         for (int c = 0; c < kClients; ++c) {
-            rmw_service_info_t reply_header{};
-            bool               taken = false;
-            ASSERT_EQ(rmw_take_response(clients_[c], &reply_header, &res, &taken), RMW_RET_OK);
-            if (taken) {
-                EXPECT_FALSE(replied[c]) << "client " << c << " received two replies";
-                EXPECT_TRUE(res.success);
-                replied[c] = true;
-                ++replies;
+            bool taken = true;
+            while (taken) {
+                rmw_service_info_t reply_header{};
+                ASSERT_EQ(rmw_take_response(clients_[c], &reply_header, &res, &taken), RMW_RET_OK);
+                if (taken) {
+                    EXPECT_TRUE(res.success);
+                    ++received[c];
+                    ++replies;
+                }
             }
         }
     }
 
     std_srvs__srv__SetBool_Response__fini(&res);
-    EXPECT_EQ(replies, kClients) << "a reply in flight was lost";
+    EXPECT_EQ(replies, kRequests) << "a reply in flight was lost";
+    for (int c = 0; c < kClients; ++c) {
+        EXPECT_EQ(received[c], expected[c]) << "client " << c << " got the wrong number of replies";
+    }
+
     for (int i = 0; i < 20 && !reply_history().is_empty(); ++i) {
         pump();
     }

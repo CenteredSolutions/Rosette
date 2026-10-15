@@ -246,6 +246,43 @@ static bool tc_swr_8_4_7_014(std::string& err) {
     return true;
 }
 
+/// Adds one change to @p w's history without a send pass.
+static bool add_unsent(StatefulWriter& w) {
+    BufRef       payload{};
+    CacheChange* change = w.new_change(ChangeKind::ALIVE, payload, 4u);
+    if (change == nullptr) {
+        return false;
+    }
+
+    memcpy(payload.data, kPayload, 4u);
+    payload.size = 4u;
+    change->payload.size = 4u;
+    return w.add_change(static_cast<CacheChange&&>(*change));
+}
+
+// §8.4.7.1, §8.7.2.2.1: a VOLATILE reader matched after SN 1 was written
+// starts at the next sequence number, so SN 1 was never relevant to it and
+// evicting SN 1 loses nothing it needed.
+static bool tc_swr_8_4_7_015(std::string& err) {
+    CaptureTransport            tx{};
+    const Guid                  writer = make_guid(0x50u, make_entity(1u, 2u, 3u, 0x02u));
+    const Guid                  a = make_guid(0x51u, make_entity(4u, 5u, 6u, 0x07u));
+    StatefulWriterStorage<1, 1> w(writer, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx,
+                                  5u, 1000u);
+    // add_change() rather than write_async(): a send pass would release SN 1
+    // at once, with no reader matched, and leave nothing to evict.
+    CHECK(add_unsent(w), "add SN 1 with no reader matched");
+    CHECK(w.matched_reader_add(a, &kLocA, 1u, false), "match A after SN 1");
+    CHECK(add_unsent(w), "add SN 2 over SN 1");
+    CHECK(w.evicted_unacknowledged() == 0u,
+          "evicting a change that was never relevant to the matched reader counts nothing");
+
+    CHECK(add_unsent(w), "add SN 3 over unacknowledged SN 2");
+    CHECK(w.evicted_unacknowledged() == 1u,
+          "evicting a change that was relevant to the reader and unacknowledged counts once");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_7_undelivered_eviction(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.7-013",
                      "§8.3.3.1/§8.4.9.2.12, DDS-RPC §7.8.2: a service reply lost on the wire is "
@@ -258,6 +295,11 @@ void append_stateful_writer_tests_8_4_7_undelivered_eviction(std::vector<TestCas
                      "matched reader acknowledged it, and nothing for changes every reader has or "
                      "no reader was matched for; a BEST_EFFORT writer counts nothing.",
                      tc_swr_8_4_7_014});
+    tests.push_back({"TC-SWR-8.4.7-015",
+                     "§8.4.7.1, §8.7.2.2.1: evicting a change that was never relevant to a "
+                     "reader matched after it was written is not counted; evicting one that was "
+                     "relevant and unacknowledged is.",
+                     tc_swr_8_4_7_015});
 }
 
 }  // namespace spec_test

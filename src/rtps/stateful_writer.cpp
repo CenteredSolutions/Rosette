@@ -919,8 +919,8 @@ void StatefulWriter::note_eviction() noexcept {
         return;
     }
 
-    const bool undelivered =
-        releaseRepliesOnDelivery_ ? !reply_delivered(*oldest, true) : !all_readers_acked(oldest_sn);
+    const bool undelivered = releaseRepliesOnDelivery_ ? !reply_delivered(*oldest, true)
+                                                       : !all_readers_done_with(oldest_sn, true);
     if (!undelivered) {
         return;
     }
@@ -950,6 +950,16 @@ bool StatefulWriter::all_readers_acked(const SequenceNumber& sn) const noexcept 
     return true;
 }
 
+bool StatefulWriter::all_readers_done_with(const SequenceNumber& sn, bool reliable) const noexcept {
+    for (const ReaderProxy& proxy : matched()) {
+        if (!proxy.is_done_with(sn, reliable)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void StatefulWriter::release_finished_changes() noexcept {
     const bool is_volatile = durability_ == DurabilityKind::VOLATILE;
     if (!is_volatile && !releaseRepliesOnDelivery_) {
@@ -967,13 +977,9 @@ void StatefulWriter::release_finished_changes() noexcept {
             return;
         }
 
-        for (const ReaderProxy& proxy : matched()) {
-            if (!proxy.is_done_with(c.sequenceNumber, reliable)) {
-                return;
-            }
+        if (all_readers_done_with(c.sequenceNumber, reliable)) {
+            c.clear();
         }
-
-        c.clear();
     });
 }
 

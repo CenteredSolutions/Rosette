@@ -181,7 +181,7 @@ static bool tc_part_8_5_1_012(std::string& err) {
 
 }  // namespace spec_test
 
-int main() {
+int main(int argc, char** argv) {
     const spec_test::TestCase tests[] = {
         {"TC-SEDP-8.5.5.1-015",
          "§8.5.4.2/§8.5.5.1: a local endpoint the match table has no record or name room for is "
@@ -197,16 +197,5 @@ int main() {
          spec_test::tc_part_8_5_1_012},
     };
 
-    int failures = 0;
-    for (const spec_test::TestCase& tc : tests) {
-        std::string err{};
-        if (tc.fn(err)) {
-            printf("[PASS] %s\n  Spec: %s\n", tc.id, tc.doc);
-        } else {
-            fprintf(stderr, "[FAIL] %s\n  Spec: %s\n  Error: %s\n", tc.id, tc.doc, err.c_str());
-            ++failures;
-        }
-    }
-
-    return failures == 0 ? 0 : 1;
+    return spec_test::run_standalone_tests(tests, sizeof(tests) / sizeof(tests[0]), argc, argv);
 }

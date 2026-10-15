@@ -207,6 +207,8 @@ foreach(_sedp_target sedp_spec_tests sedp_spec_tests_rebuild)
 endforeach()
 target_compile_definitions(sedp_spec_tests_rebuild PRIVATE SPEC_SEDP_REBUILD_ANNOUNCEMENTS=1)
 
+set(LOCAL_NAME_LIMIT_PASSED_JSON
+    ${CMAKE_CURRENT_BINARY_DIR}/local_name_limit_passed.json)
 set(SEDP_PASSED_JSON
     ${CMAKE_CURRENT_BINARY_DIR}/sedp_passed.json)
 
@@ -380,6 +382,10 @@ target_compile_definitions(participant_spec_tests PRIVATE
 
 set(PARTICIPANT_PASSED_JSON
     ${CMAKE_CURRENT_BINARY_DIR}/participant_passed.json)
+set(WRITER_SLOT_CLASS_PASSED_JSON
+    ${CMAKE_CURRENT_BINARY_DIR}/writer_slot_class_passed.json)
+set(PARTICIPANT_TIER_PASSED_JSON
+    ${CMAKE_CURRENT_BINARY_DIR}/participant_tier_passed.json)
 
 add_test(
     NAME participant_spec_conformance
@@ -548,11 +554,12 @@ if (Python3_Interpreter_FOUND)
 
     add_custom_target(sedp_spec_report
         COMMAND sedp_spec_tests --emit-pass-json ${SEDP_PASSED_JSON}
+        COMMAND local_name_limit_spec_tests --emit-pass-json ${LOCAL_NAME_LIMIT_PASSED_JSON}
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/spec_trace_report.py
                 --matrix ${CMAKE_CURRENT_SOURCE_DIR}/spec/ddsi_rtps_2_5/sedp.matrix.json
-                --passed ${SEDP_PASSED_JSON}
-        DEPENDS sedp_spec_tests
+                --passed ${SEDP_PASSED_JSON} ${LOCAL_NAME_LIMIT_PASSED_JSON}
+        DEPENDS sedp_spec_tests local_name_limit_spec_tests
         COMMENT "Generating RTPS statement coverage report for SEDP"
     )
 
@@ -586,13 +593,20 @@ if (Python3_Interpreter_FOUND)
         COMMENT "Generating RTPS statement coverage report for stateful_reader"
     )
 
+    # The participant matrix is run by the default-capacity program and by the
+    # standalone programs built with their own capacity definitions.
     add_custom_target(participant_spec_report
         COMMAND participant_spec_tests --emit-pass-json ${PARTICIPANT_PASSED_JSON}
+        COMMAND local_name_limit_spec_tests --emit-pass-json ${LOCAL_NAME_LIMIT_PASSED_JSON}
+        COMMAND writer_slot_class_spec_tests --emit-pass-json ${WRITER_SLOT_CLASS_PASSED_JSON}
+        COMMAND participant_tier_spec_tests --emit-pass-json ${PARTICIPANT_TIER_PASSED_JSON}
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/spec_trace_report.py
                 --matrix ${CMAKE_CURRENT_SOURCE_DIR}/spec/ddsi_rtps_2_5/participant.matrix.json
-                --passed ${PARTICIPANT_PASSED_JSON}
-        DEPENDS participant_spec_tests
+                --passed ${PARTICIPANT_PASSED_JSON} ${LOCAL_NAME_LIMIT_PASSED_JSON}
+                         ${WRITER_SLOT_CLASS_PASSED_JSON} ${PARTICIPANT_TIER_PASSED_JSON}
+        DEPENDS participant_spec_tests local_name_limit_spec_tests writer_slot_class_spec_tests
+                participant_tier_spec_tests
         COMMENT "Generating RTPS statement coverage report for participant"
     )
 endif()

@@ -66,14 +66,25 @@
 #  define RMW_ROSETTE_MAX_PENDING_CHANGES 10
 #endif
 
+#ifndef RMW_ROSETTE_MAX_WRITER_DEPTH
+/// Deepest KEEP_LAST history a publisher keeps, 1 to 255. Deeper requests
+/// and KEEP_ALL run at this depth and report it through their actual QoS
+/// (qos.hpp). The writer slots that hold any writer are sized for it, and no
+/// writer is deeper, the service reply writers included
+/// (RMW_ROSETTE_REPLY_DEPTH).
+#  define RMW_ROSETTE_MAX_WRITER_DEPTH 8
+#endif
+
+static_assert(RMW_ROSETTE_MAX_WRITER_DEPTH >= 1 && RMW_ROSETTE_MAX_WRITER_DEPTH <= 255,
+              "RMW_ROSETTE_MAX_WRITER_DEPTH must be a writer depth, 1 to 255");
+
 #ifndef RMW_ROSETTE_REPLY_DEPTH
 /// Replies each service reply writer holds until their clients acknowledge
-/// them, 1 to 8. The reply history drops each reply once its client has it
-/// (StatefulWriter::release_replies_on_delivery()), so this is the number of
-/// replies in flight at once, not a history of past replies: a reply written
-/// while this many are unacknowledged displaces the oldest of them, whose
-/// client then never receives it. Replies wait for a client that is still
-/// matching (a new `ros2 service call` or `ros2 param` process), for its
+/// them, 1 to RMW_ROSETTE_MAX_WRITER_DEPTH. The reply history drops each reply once its client has
+/// it (StatefulWriter::release_replies_on_delivery()), so this is the number of replies in flight
+/// at once, not a history of past replies: a reply written while this many are unacknowledged
+/// displaces the oldest of them, whose client then never receives it. Replies wait for a client
+/// that is still matching (a new `ros2 service call` or `ros2 param` process), for its
 /// acknowledgement, and for a repair after a lost datagram, so concurrent
 /// clients need room beyond one. Every reply writer has this depth whatever
 /// the service's QoS requests, and takes a shallow writer slot sized for it
@@ -81,8 +92,9 @@
 #  define RMW_ROSETTE_REPLY_DEPTH 4
 #endif
 
-static_assert(RMW_ROSETTE_REPLY_DEPTH >= 1 && RMW_ROSETTE_REPLY_DEPTH <= 8,
-              "RMW_ROSETTE_REPLY_DEPTH must be 1 to 8");
+static_assert(RMW_ROSETTE_REPLY_DEPTH >= 1
+                  && RMW_ROSETTE_REPLY_DEPTH <= RMW_ROSETTE_MAX_WRITER_DEPTH,
+              "RMW_ROSETTE_REPLY_DEPTH must be 1 to RMW_ROSETTE_MAX_WRITER_DEPTH");
 
 namespace rmw_rosette {
 
@@ -122,12 +134,14 @@ static_assert(RTPS_POOL_CLASS4_SIZE >= RMW_ROSETTE_MAX_SAMPLE_SIZE,
               "the largest buffer-pool class must hold RMW_ROSETTE_MAX_SAMPLE_SIZE");
 #endif
 #ifdef RTPS_MAX_USER_WRITERS
+static_assert(RTPS_DEEP_WRITER_DEPTH >= RMW_ROSETTE_MAX_WRITER_DEPTH,
+              "the deep writer slots cannot hold a writer of RMW_ROSETTE_MAX_WRITER_DEPTH");
 static_assert(RTPS_MAX_USER_WRITERS >= rmw_rosette::kRtpsWriterCapacity,
               "RTPS_MAX_USER_WRITERS cannot hold every publisher, service and client writer");
 static_assert(RTPS_MAX_USER_READERS >= rmw_rosette::kRtpsReaderCapacity,
               "RTPS_MAX_USER_READERS cannot hold every subscription, service and client reader");
-// Every service reply writer fits a shallow slot, and the other writers,
-// which may be deeper, fit the deep slots.
+// Every service reply writer fits a shallow slot, and every other writer,
+// which may be deeper, takes a deep slot.
 static_assert(RTPS_MAX_SHALLOW_WRITERS == 0 || RTPS_SHALLOW_WRITER_DEPTH >= RMW_ROSETTE_REPLY_DEPTH,
               "shallow writer slots cannot hold a reply writer of RMW_ROSETTE_REPLY_DEPTH");
 static_assert(RTPS_MAX_USER_WRITERS - RTPS_MAX_SHALLOW_WRITERS

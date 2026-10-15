@@ -1,5 +1,7 @@
 #include "spec_test_common.hpp"
 
+#include <stdio.h>
+
 #include <fstream>
 
 namespace spec_test {
@@ -190,6 +192,36 @@ bool write_passed_json(const std::string& path, const std::vector<std::string>& 
     }
     out << "]\n}\n";
     return true;
+}
+
+int run_standalone_tests(const TestCase* tests, size_t count, int argc, char** argv) {
+    std::string pass_json{};
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string(argv[i]) == "--emit-pass-json") {
+            pass_json = argv[i + 1];
+        }
+    }
+
+    std::vector<std::string> passed_ids{};
+    int                      failures = 0;
+    for (size_t i = 0; i < count; ++i) {
+        std::string err{};
+        if (tests[i].fn(err)) {
+            printf("[PASS] %s\n  Spec: %s\n", tests[i].id, tests[i].doc);
+            passed_ids.push_back(tests[i].id);
+        } else {
+            fprintf(stderr, "[FAIL] %s\n  Spec: %s\n  Error: %s\n", tests[i].id, tests[i].doc,
+                    err.c_str());
+            ++failures;
+        }
+    }
+
+    if (!pass_json.empty() && !write_passed_json(pass_json, passed_ids)) {
+        fprintf(stderr, "Failed to write pass JSON: %s\n", pass_json.c_str());
+        ++failures;
+    }
+
+    return failures == 0 ? 0 : 1;
 }
 
 } // namespace spec_test

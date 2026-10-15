@@ -1105,6 +1105,10 @@ private:
     /// @brief True when every matched reader has acknowledged `sn`.
     bool all_readers_acked(const SequenceNumber& sn) const noexcept;
 
+    /// @brief True when no matched reader still needs `sn`: each has
+    ///   acknowledged it or never had it relevant (ReaderProxy::is_done_with).
+    bool all_readers_done_with(const SequenceNumber& sn, bool reliable) const noexcept;
+
     /**
      * @brief Drops every change no reader still needs.
      *
