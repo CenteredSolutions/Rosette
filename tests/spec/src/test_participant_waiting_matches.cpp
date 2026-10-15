@@ -48,12 +48,13 @@ Guid remote_reader(const GuidPrefix& prefix, Octet n) {
 }
 
 /// Announces `reader` of `topic` through the participant's match table, as SEDP does.
-void announce_reader(RTPSParticipant& p, const Guid& reader, const char* topic = "pool_topic") {
+void announce_reader(RTPSParticipant& p, const Guid& reader, const char* topic = "pool_topic",
+                     ReliabilityKind reliability = ReliabilityKind::RELIABLE) {
     DiscoveredReaderData rd{};
     rd.readerGuid = reader;
     rd.topicName.assign(topic);
     rd.typeName.assign("pkg::msg::PoolType");
-    rd.reliabilityKind = ReliabilityKind::RELIABLE;
+    rd.reliabilityKind = reliability;
     rd.durabilityKind = DurabilityKind::TRANSIENT_LOCAL;
     p.match_table().add_reader(rd);
 }
@@ -379,6 +380,51 @@ bool tc_part_8_4_1_4_007(std::string& err) {
 
 }  // namespace
 
+// TC-PART-8.4.1.4-008: a reply kept for a waiting BEST_EFFORT reader leaves the
+// history once that reader binds and is sent the reply; the reader never
+// acknowledges, so the bind itself must trigger the release. A reply to a
+// requester that still has another reader waiting stays.
+bool tc_part_8_4_1_4_008(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup");
+    const GuidPrefix other = make_prefix(0xC1u, 0xC2u, 0xC3u);
+    const GuidPrefix client = make_prefix(0xD1u, 0xD2u, 0xD3u);
+    CHECK(add_peer(p, other, 7411u) && add_peer(p, client, 7412u), "both peers are accepted");
+
+    StatefulWriter* replies = create_capped_writer(p, 1u);
+    CHECK(replies != nullptr, "a reply writer capped at one reader is created");
+    replies->release_replies_on_delivery(true);
+
+    announce_reader(p, remote_reader(other, 1u));
+    const Guid first = remote_reader(client, 2u);
+    const Guid second = remote_reader(client, 3u);
+    announce_reader(p, first, "pool_topic", ReliabilityKind::BEST_EFFORT);
+    announce_reader(p, second, "pool_topic", ReliabilityKind::BEST_EFFORT);
+
+    InlineQos reply{};
+    reply.hasRelatedSampleIdentity = true;
+    reply.relatedSampleIdentity.writerGuid = Guid{client, make_entity(0x50u, 0x51u, 0x52u, 0x03u)};
+    reply.relatedSampleIdentity.sequenceNumber = SequenceNumber::from_int64(1);
+    CHECK(replies->write_async(ChangeKind::ALIVE, kPayload, 4u, reply), "the reply is written");
+
+    const SequenceNumber sn = SequenceNumber::from_int64(1);
+    p.match_table().remove_reader(remote_reader(other, 1u));
+    tx.packets.clear();
+    p.tick(200u);
+    CHECK(replies->matched_reader_lookup(first) != nullptr, "the first client reader binds");
+    CHECK(sent_data(tx, first, 1), "the reply is sent to it");
+    CHECK(replies->cache().get_change(sn) != nullptr,
+          "the reply stays while another reader of the client waits");
+
+    p.match_table().remove_reader(first);
+    p.tick(300u);
+    CHECK(replies->matched_reader_lookup(second) != nullptr, "the second client reader binds");
+    CHECK(replies->cache().get_change(sn) == nullptr,
+          "the reply leaves the history once the client has no reader waiting");
+    return true;
+}
+
 void append_participant_waiting_match_tests(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.4.1.4-001",
                      "§8.4.1.4: a match refused by the writer's cap waits; after a proxy "
@@ -412,6 +458,10 @@ void append_participant_waiting_match_tests(std::vector<TestCase>& tests) {
                      "§8.4.1.4/§8.5.5.1: a waiting pair stays older than every pair reported "
                      "after it, however many pairs are reported and dissolved while it waits.",
                      tc_part_8_4_1_4_007});
+    tests.push_back({"TC-PART-8.4.1.4-008",
+                     "§8.4.1.4/§8.4.9.1: a reply kept for a waiting BEST_EFFORT reader is "
+                     "released when that reader binds and no other reader of its client waits.",
+                     tc_part_8_4_1_4_008});
 }
 
 }  // namespace spec_test

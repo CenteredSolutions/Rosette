@@ -193,6 +193,18 @@ static bool tc_swr_8_4_9_1_003(std::string& err) {
     CHECK(tx.best_effort.data == 3, "the history is replayed to it");
     CHECK(tx.best_effort.heartbeats == 0, "with no HEARTBEAT");
     CHECK(w.cache().size() == 3u, "the history stays for readers that match later");
+    CHECK(w.acknowledged_by_all(), "retained changes are no debt of a best-effort reader");
+    CHECK(w.acknowledged_by_participant(kBestEffortReader.prefix),
+          "nor of its participant, while the history still holds them");
+
+    for (int i = 0; i < 3; ++i) {
+        CHECK(w.write_async(ChangeKind::ALIVE, kPayload, 4u), "write past the history depth");
+    }
+
+    CHECK(w.cache().size() == 4u, "the KEEP_LAST history is full");
+    CHECK(w.evicted_unacknowledged() == 0u,
+          "overflowing the history evicts nothing a best-effort reader owes");
+    CHECK(w.acknowledged_by_all(), "and the reader still owes no acknowledgment");
     return true;
 }
 

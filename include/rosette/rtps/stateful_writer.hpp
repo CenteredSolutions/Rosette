@@ -677,6 +677,29 @@ public:
     bool release_replies_on_delivery() const noexcept { return releaseRepliesOnDelivery_; }
 
     /**
+     * @brief Releases the replies a reader that has just bound was the last to hold.
+     *
+     * A reader waiting for a proxy keeps the replies to its requester in the
+     * history (reply_delivered()), and the match table clears its waiting mark
+     * only after matched_reader_add() returns. A BEST_EFFORT reader that binds
+     * is sent the replay and never acknowledges, so no ACKNACK follows to
+     * trigger the release; the participant calls this once the mark is clear.
+     * Only a service reply writer holds replies for waiting readers, so any
+     * other writer does nothing.
+     *
+     * Verification:
+     * - Correct means: after a waiting best-effort reader binds and this runs,
+     *   the reply sent to it is released unless another reader of a requester
+     *   still waits; a writer that is not a reply writer keeps its history.
+     * - Covered by: TC-PART-8.4.1.4-008.
+     *
+     * References:
+     * - OMG DDS-RPC 1.0 §7.8.2 (related sample identity)
+     * - OMG DDSI-RTPS 2.5 §8.4.9.1 (best-effort StatefulWriter)
+     */
+    void on_waiting_reader_bound() noexcept;
+
+    /**
      * @brief Changes KEEP_LAST evicted before their readers had them.
      *
      * A full history evicts its oldest change to make room for a new one

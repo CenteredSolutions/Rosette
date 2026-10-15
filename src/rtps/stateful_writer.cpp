@@ -280,6 +280,12 @@ void StatefulWriter::matched_reader_remove(const Guid& reader_guid) noexcept {
     }
 }
 
+void StatefulWriter::on_waiting_reader_bound() noexcept {
+    if (releaseRepliesOnDelivery_) {
+        release_finished_changes();
+    }
+}
+
 void StatefulWriter::drop_replies_to_departed(const GuidPrefix& requester) noexcept {
     for (const ReaderProxy& proxy : matched()) {
         if (proxy.remoteReaderGuid.prefix == requester) {
