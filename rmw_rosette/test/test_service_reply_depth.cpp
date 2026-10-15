@@ -83,6 +83,13 @@ protected:
         EXPECT_TRUE(ret == RMW_RET_OK || ret == RMW_RET_TIMEOUT);
     }
 
+    /// Requests the service's request ring keeps between takes: the KEEP_LAST
+    /// depth of its actual QoS, at most RMW_ROSETTE_MAX_PENDING_CHANGES.
+    int request_ring_depth() const {
+        const auto* service = static_cast<const rmw_rosette::Service*>(service_->data);
+        return static_cast<int>(service->requests.depth());
+    }
+
     const rtps::HistoryCache& reply_history() const {
         return static_cast<const rmw_rosette::Service*>(service_->data)->reply_writer->cache();
     }
@@ -131,8 +138,9 @@ TEST_F(ServiceReplyDepth, EveryReplyInFlightArrives) {
 
     // Request r goes out from client r % kClients, so the clients share the
     // kRequests replies the service will hold, and each client's count of
-    // replies is known. The service's request reader keeps at most
-    // RMW_ROSETTE_MAX_PENDING_CHANGES requests between takes, so they go out
+    // replies is known. The service's request reader keeps only as many
+    // requests between takes as its request ring is deep (the depth of the
+    // service's QoS, within RMW_ROSETTE_MAX_PENDING_CHANGES), so they go out
     // and are taken in waves of that size; no reply is sent until every
     // request is taken, which is what puts them all in flight together.
     int                            expected[kClients] = {};
@@ -140,8 +148,10 @@ TEST_F(ServiceReplyDepth, EveryReplyInFlightArrives) {
     std_srvs__srv__SetBool_Request__init(&req);
     rmw_service_info_t headers[kRequests] = {};
     int                taken_requests = 0;
+    const int          wave_size = request_ring_depth();
+    ASSERT_GE(wave_size, 1);
     for (int sent = 0; sent < kRequests;) {
-        const int wave_end = std::min(kRequests, sent + RMW_ROSETTE_MAX_PENDING_CHANGES);
+        const int wave_end = std::min(kRequests, sent + wave_size);
         for (; sent < wave_end; ++sent) {
             int64_t sequence = 0;
             ASSERT_EQ(rmw_send_request(clients_[sent % kClients], &req, &sequence), RMW_RET_OK);
