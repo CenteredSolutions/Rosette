@@ -149,18 +149,14 @@ inline uint8_t select_writer_depth(const rmw_qos_profile_t& qos) noexcept {
  *   is full.
  */
 inline rtps::StatefulWriter* create_writer_for_qos(rtps::RTPSParticipant& participant,
-                                                     const rtps::WriterConfig& cfg,
-                                                     const rmw_qos_profile_t& qos) noexcept {
-    const uint8_t depth = select_writer_depth(qos);
-    if (depth == 1) {
-        return participant.create_writer<1>(cfg);
+                                                   const rtps::WriterConfig& cfg,
+                                                   const rmw_qos_profile_t& qos) noexcept {
+    switch (select_writer_depth(qos)) {
+        case 1:                  return participant.create_writer<1>(cfg);
+        case kMidWriterDepth:    return participant.create_writer<kMidWriterDepth>(cfg);
+        default:
+        case kMaxWriterDepth:    return participant.create_writer<kMaxWriterDepth>(cfg);               
     }
-
-    if (depth == kMidWriterDepth) {
-        return participant.create_writer<kMidWriterDepth>(cfg);
-    }
-
-    return participant.create_writer<kMaxWriterDepth>(cfg);
 }
 
 /**
