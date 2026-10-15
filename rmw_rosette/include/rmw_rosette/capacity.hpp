@@ -141,9 +141,15 @@ static_assert(RTPS_MAX_USER_WRITERS >= rmw_rosette::kRtpsWriterCapacity,
 static_assert(RTPS_MAX_USER_READERS >= rmw_rosette::kRtpsReaderCapacity,
               "RTPS_MAX_USER_READERS cannot hold every subscription, service and client reader");
 // Every service reply writer fits a shallow slot, and every other writer,
-// which may be deeper, takes a deep slot.
+// which may be deeper, takes a deep slot. A reply writer asks for a shallow
+// slot and never spills into a free deep one, so when the shallow class is
+// enabled it needs a slot per service; with no shallow slots, replies take
+// deep slots, which the deep-slot check below covers.
 static_assert(RTPS_MAX_SHALLOW_WRITERS == 0 || RTPS_SHALLOW_WRITER_DEPTH >= RMW_ROSETTE_REPLY_DEPTH,
               "shallow writer slots cannot hold a reply writer of RMW_ROSETTE_REPLY_DEPTH");
+static_assert(RTPS_MAX_SHALLOW_WRITERS == 0
+                  || RTPS_MAX_SHALLOW_WRITERS >= rmw_rosette::kServiceCapacity,
+              "RTPS_MAX_SHALLOW_WRITERS cannot hold a reply writer for every service");
 static_assert(RTPS_MAX_USER_WRITERS - RTPS_MAX_SHALLOW_WRITERS
                   >= rmw_rosette::kRtpsWriterCapacity - rmw_rosette::kServiceCapacity,
               "the deep writer slots cannot hold every publisher, client and participant writer");
