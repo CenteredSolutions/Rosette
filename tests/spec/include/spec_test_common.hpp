@@ -68,4 +68,27 @@ ParseOps make_ops_all(TestCapture& cap);
 
 bool write_passed_json(const std::string& path, const std::vector<std::string>& passed_ids);
 
+/**
+ * @brief Runs a standalone spec program's test cases and reports each one.
+ *
+ * Programs built with their own capacity definitions cannot join a registry
+ * shared with the default-capacity programs, so each has its own main().
+ * This is the body they share: it prints a PASS or FAIL line per case and,
+ * when argv carries `--emit-pass-json <path>`, writes the IDs that passed in
+ * the format tools/spec_trace_report.py reads.
+ *
+ * @param[in] tests Cases to run, in order; owned by the caller.
+ * @param[in] count Number of cases in @p tests.
+ * @param[in] argc  Argument count of main().
+ * @param[in] argv  Arguments of main(); only `--emit-pass-json` is read.
+ * @return 0 when every case passed and any requested JSON was written, else 1.
+ *
+ * Verification:
+ * - Correct means: the exit status is nonzero exactly when a case failed, and
+ *   the JSON lists exactly the cases that passed.
+ * - Covered by: the CTest entry of each standalone spec program, and the
+ *   spec report targets that read its JSON.
+ */
+int run_standalone_tests(const TestCase* tests, size_t count, int argc, char** argv);
+
 } // namespace spec_test

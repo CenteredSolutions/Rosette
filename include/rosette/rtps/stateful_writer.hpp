@@ -657,6 +657,42 @@ public:
     bool release_replies_on_delivery() const noexcept { return releaseRepliesOnDelivery_; }
 
     /**
+     * @brief Changes KEEP_LAST evicted before their readers had them.
+     *
+     * A full history evicts its oldest change to make room for a new one
+     * (§8.3.3.1). That is the point of KEEP_LAST when every reader already
+     * has the oldest change, and a loss when one does not: a reader that
+     * then asks for it is sent a GAP and never receives it. This counts the
+     * losses on a RELIABLE writer. A change counts when a matched reader has
+     * not acknowledged it, and, on a service reply writer, when its
+     * requester has not received it (reply_delivered()), which includes a
+     * reply waiting for its client to match. A BEST_EFFORT writer repairs
+     * nothing, so it counts nothing. The 1st, 2nd, 4th, 8th, ... eviction
+     * counted also logs a warning naming the writer and the sequence number.
+     *
+     * On a service reply writer any count is a lost reply: more replies were
+     * in flight at once than its depth (RMW_ROSETTE_REPLY_DEPTH) while one of
+     * them needed a repair or waited for its client to match. On a publisher
+     * of latest values (a state topic at KEEP_LAST(1)), evicting a sample a
+     * slow reader has not acknowledged is what KEEP_LAST is for, and the
+     * count measures how many samples that reader missed.
+     *
+     * @return Evictions counted since the writer was created; wraps at 2^32.
+     *
+     * Verification:
+     * - Correct means: evicting a change some matched reader has not
+     *   acknowledged, or an undelivered reply, counts once; evicting a change
+     *   every reader acknowledged, or one with no reader matched on a
+     *   writer that is not a reply writer, counts nothing.
+     * - Covered by: TC-SWR-8.4.7-013, TC-SWR-8.4.7-014.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.3.1 (KEEP_LAST), §8.4.9.2.12 (GAP for an
+     *   irrelevant change)
+     */
+    uint32_t evicted_unacknowledged() const noexcept { return evictedUnacknowledged_; }
+
+    /**
      * @brief True when every matched reader has acknowledged the newest change.
      *
      * Acknowledgments are cumulative, so this means every change in the
@@ -1069,6 +1105,10 @@ private:
     /// @brief True when every matched reader has acknowledged `sn`.
     bool all_readers_acked(const SequenceNumber& sn) const noexcept;
 
+    /// @brief True when no matched reader still needs `sn`: each has
+    ///   acknowledged it or never had it relevant (ReaderProxy::is_done_with).
+    bool all_readers_done_with(const SequenceNumber& sn, bool reliable) const noexcept;
+
     /**
      * @brief Drops every change no reader still needs.
      *
@@ -1108,6 +1148,10 @@ private:
     ///   all done with it, at least one of them is matched, and none waits to bind.
     bool reply_delivered(const CacheChange& reply, bool reliable) const noexcept;
 
+    /// @brief Counts and logs the oldest change, about to be evicted from a
+    ///   full history, when a reader still needs it (evicted_unacknowledged()).
+    void note_eviction() noexcept;
+
     Guid            guid_;
     ReliabilityKind reliability_;
     DurabilityKind  durability_;
@@ -1125,6 +1169,7 @@ private:
     uint32_t       lastHbSentMs_   = 0;
     uint32_t       writesSinceHb_  = 0;  ///< RELIABLE writes since any HEARTBEAT.
     bool           releaseRepliesOnDelivery_ = false;  ///< Service reply writer.
+    uint32_t       evictedUnacknowledged_ = 0;         ///< See evicted_unacknowledged().
     FragmentRepair fragRepair_{};                      ///< Pending NACK_FRAG repair.
 
     /// Called when a matched reader started over (set_rematch_listener()).

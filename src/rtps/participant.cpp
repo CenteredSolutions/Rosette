@@ -315,6 +315,7 @@ bool RTPSParticipant::delete_writer(StatefulWriter* writer) noexcept
         owe_parked_peers();
         match_table_.remove_writer(guid);
         const uint8_t floor = writer->min_matched_readers();
+        evicted_by_deleted_writers_ += writer->evicted_unacknowledged();
         writer->~StatefulWriter();
         release_endpoint_floor(reader_proxies_, floor);
         rebind_due_ = true;
@@ -954,10 +955,50 @@ bool RTPSParticipant::local_endpoint_fits(const TopicName& topic, const TopicNam
     return true;
 }
 
-int RTPSParticipant::find_free_writer_slot() const noexcept {
-    for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
-        if (!writer_alive_[i]) return i;
+int RTPSParticipant::find_free_writer_slot(bool shallow, bool fits) const noexcept {
+    if (!fits) {
+        return -1;
+    }
+
+    const uint32_t first = shallow ? kDeepWriterSlots : 0u;
+    const uint32_t end = shallow ? RTPS_MAX_USER_WRITERS : kDeepWriterSlots;
+    for (uint32_t i = first; i < end; ++i) {
+        if (!writer_alive_[i]) {
+            return static_cast<int>(i);
+        }
+    }
+
     return -1;
+}
+
+Octet* RTPSParticipant::writer_slot_storage(int slot) noexcept {
+    const uint32_t i = static_cast<uint32_t>(slot);
+    return i < kDeepWriterSlots ? deep_writer_storage_.slot(i)
+                                : shallow_writer_storage_.slot(i - kDeepWriterSlots);
+}
+
+uint32_t RTPSParticipant::evicted_unacknowledged() const noexcept {
+    uint32_t evicted = evicted_by_deleted_writers_;
+    for (uint32_t i = 0u; i < RTPS_MAX_USER_WRITERS; ++i) {
+        if (writer_alive_[i] && writers_[i] != nullptr) {
+            evicted += writers_[i]->evicted_unacknowledged();
+        }
+    }
+
+    return evicted;
+}
+
+uint32_t RTPSParticipant::free_writer_slots(bool shallow) const noexcept {
+    const uint32_t first = shallow ? kDeepWriterSlots : 0u;
+    const uint32_t end = shallow ? RTPS_MAX_USER_WRITERS : kDeepWriterSlots;
+    uint32_t       free = 0u;
+    for (uint32_t i = first; i < end; ++i) {
+        if (!writer_alive_[i]) {
+            ++free;
+        }
+    }
+
+    return free;
 }
 
 StatefulWriter* RTPSParticipant::find_writer(const EntityId& eid) noexcept {

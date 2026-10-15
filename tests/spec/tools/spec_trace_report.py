@@ -17,12 +17,14 @@ def load_json(path: Path) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--matrix", required=True, type=Path)
-    ap.add_argument("--passed", required=True, type=Path)
+    ap.add_argument("--passed", required=True, type=Path, nargs="+",
+                    help="pass JSON of every program that runs this matrix's tests")
     args = ap.parse_args()
 
     matrix = load_json(args.matrix)
-    passed_blob = load_json(args.passed)
-    passed_tests = set(passed_blob.get("passed_test_ids", []))
+    passed_tests = set()
+    for path in args.passed:
+        passed_tests.update(load_json(path).get("passed_test_ids", []))
 
     statements = matrix.get("statements", [])
     implemented = [s for s in statements if s.get("status") == "implemented"]

@@ -267,12 +267,35 @@ rmw_ret_t rmw_service_request_subscription_get_actual_qos(const rmw_service_t* s
     return RMW_RET_OK;
 }
 
-/// @brief Reports the effective QoS of the reply writer.
+/**
+ * @brief Reports the effective QoS of the reply writer.
+ *
+ * The reply writer is TRANSIENT_LOCAL with KEEP_LAST(RMW_ROSETTE_REPLY_DEPTH)
+ * history whatever the service requested (create_service_endpoints()), so
+ * those replace the requested durability and depth.
+ *
+ * @param[in]  service The service.
+ * @param[out] qos     Receives the reply writer's QoS.
+ * @return RMW_RET_OK, or RMW_RET_INVALID_ARGUMENT for a null argument.
+ *
+ * Verification:
+ * - Correct means: depth and durability are those of the reply writer's
+ *   history, for any requested profile.
+ * - Covered by: rmw_rosette/test/test_service_reply_depth.cpp.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_service_response_publisher_get_actual_qos`
+ */
 rmw_ret_t rmw_service_response_publisher_get_actual_qos(const rmw_service_t* service,
                                                         rmw_qos_profile_t* qos) {
-    if (!service || !service->data || !qos) return RMW_RET_INVALID_ARGUMENT;
+    if (!service || !service->data || !qos) {
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+
     *qos = rmw_rosette::effective_qos(static_cast<const rmw_rosette::Service*>(service->data)->qos,
                                       true, 0);
+    qos->durability = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL;
+    qos->depth = RMW_ROSETTE_REPLY_DEPTH;
     return RMW_RET_OK;
 }
 

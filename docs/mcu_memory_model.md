@@ -39,9 +39,9 @@ firmware capacity:
 | | `rtps_chatter` (RTPS core, direct) | `rclc_chatter` (rclc over `rmw_rosette`) |
 | --- | ---: | ---: |
 | Flash (`.text`) | 204,488 B | 285,236 B |
-| Static RAM (`.bss`) | **62,836 B** | **101,416 B** |
-| RTPS participant (all tables below) | 28,824 | 56,992 |
-|   writer slots | 4 × 1,048 | 11 × 1,048 |
+| Static RAM (`.bss`) | **62,836 B** | **99,816 B** |
+| RTPS participant (all tables below) | 28,824 | 55,392 |
+|   writer slots | 4 × 1,048 | 7 × 1,048 + 4 × 648 |
 |   reader slots | 4 × 76 | 10 × 76 |
 |   `ReaderProxy` / `WriterProxy` pools | 2,640 + 2,128 | 7,232 + 5,296 |
 |   assembly pool (6 slots) | 824 | 824 |
@@ -112,11 +112,28 @@ history the storage hands it and the proxies it binds from the pool. A writer of
 depth 8 differ in layout, never in code, so adding depths costs RAM, not
 flash.
 
-**Every writer slot is the same size**: `RTPS_PARTICIPANT_MAX_WRITER_BYTES`,
-which defaults to `sizeof(SharedPoolStatefulWriter<8>)` (1,048 B). A table of
-uniform slots means any slot can hold a writer of any depth, so writers can
-be created and destroyed in any order without fragmenting the table. The cost
-is that a depth-1 writer (352 B) still occupies a 1,048 B slot.
+**Writer slots come in two sizes.** A deep slot is
+`RTPS_PARTICIPANT_MAX_WRITER_BYTES` long, by default
+`sizeof(SharedPoolStatefulWriter<RTPS_DEEP_WRITER_DEPTH>)` (1,048 B at the
+default depth of 8), and holds a writer of any depth up to
+`RTPS_DEEP_WRITER_DEPTH` (1 to 255; `RMW_ROSETTE_MAX_WRITER_DEPTH` in
+`rmw_rosette`). `RTPS_SHALLOW_WRITER_DEPTH` is at most that, so a shallow slot
+is never larger than a deep one. A shallow slot is `sizeof(SharedPoolStatefulWriter<RTPS_SHALLOW_WRITER_DEPTH>)`
+long; `RTPS_MAX_SHALLOW_WRITERS` of the `RTPS_MAX_USER_WRITERS` slots are
+shallow. The creator names the class (`WriterConfig::slotClass`): a shallow
+writer takes only shallow slots and every other writer only deep ones. The
+participant does not infer the class from a writer's depth, because a
+shallow-depth writer in a shallow slot, or a shallow writer in a deep one,
+would leave the other class short after endpoint churn. Each class is sized for
+its own writers, so writers can be created and destroyed in any order while
+each class stays within its count.
+
+`rmw_rosette` gives each service reply writer a shallow slot. A reply writer
+drops each reply once its client has it, so its history holds only the
+replies in flight, `RMW_ROSETTE_REPLY_DEPTH` (4) of them, whatever the
+service's QoS requests: a depth-4 reply writer takes 648 B where a deep slot
+takes 1,048 B. Every other writer takes a deep slot, where a depth-1 writer
+(352 B) still occupies 1,048 B.
 
 ### Per-match state lives in shared pools
 
@@ -291,7 +308,7 @@ counts, which is why a publisher costs more than a subscription there.
 | --- | ---: | --- | --- |
 | `RMW_ROSETTE_MAX_PUBLISHERS` | 4 | writer slot, 8 reader proxies, local endpoint and match records, SEDP history, publisher handle | 3,388 B |
 | `RMW_ROSETTE_MAX_SUBSCRIPTIONS` | 4 | reader slot, 8 writer proxies, match records, subscription handle with its `ChangeRing` | 936 B |
-| `RMW_ROSETTE_MAX_SERVICES` | 4 | one writer **and** one reader, with their proxies, records, and handle | 4,068 B |
+| `RMW_ROSETTE_MAX_SERVICES` | 4 | one reply writer in a shallow slot **and** one reader, with their proxies, records, and handle | 3,668 B |
 | `RMW_ROSETTE_MAX_CLIENTS` | 2 | one writer and one reader, with their proxies, records, and handle | 4,068 B |
 | `RMW_ROSETTE_MAX_NODES` | 1 | node pool; multiplies the per-node entities below | |
 | `RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE` | 0 | 6 for `rclc_parameter_server`, 0 without | 6 services per node (≈ 24 KB) |
@@ -305,6 +322,8 @@ counts, which is why a publisher costs more than a subscription there.
 | `RMW_ROSETTE_MIN_MATCHED_ENDPOINTS` | 1 | floor: proxies reserved for every endpoint slot, so its first matches never wait | raises the pools' minimum size |
 | `RMW_ROSETTE_MATCH_WAITERS` | 8 (`MAX_MATCHED_ENDPOINTS`) | matches waiting for a proxy at once, oldest bound first | 36 B (one match record) |
 | `RMW_ROSETTE_ASSEMBLY_SLOTS` | empty: the datagram and large block counts (6) | fragmented samples in reassembly at once, across all readers | 136 B |
+| `RMW_ROSETTE_MAX_WRITER_DEPTH` | 8 | deepest KEEP_LAST history a publisher keeps (1 to 255); deeper requests and KEEP_ALL run at this depth; sizes the deep writer slots | 100 B per history slot per deep writer |
+| `RMW_ROSETTE_REPLY_DEPTH` | 4 | replies each service holds until acknowledged (1 to `RMW_ROSETTE_MAX_WRITER_DEPTH`); a reply written while this many are unacknowledged displaces the oldest; sizes the shallow writer slots | 100 B per reply per service |
 | `RMW_ROSETTE_MAX_PENDING_CHANGES` | 10 | `ChangeRing` depth ceiling per subscription, service, and client | 72 B per entry per entity, plus the blocks unread entries pin |
 | `RMW_ROSETTE_MAX_DATAGRAM_SIZE` | 1472 | receive buffer, datagram pool class, DATA_FRAG threshold | the datagram class × 4 blocks |
 | `RMW_ROSETTE_MAX_SAMPLE_SIZE` | 4096 | largest pool class: the biggest message sent or received | × `RMW_ROSETTE_LARGE_BUFFERS` |
@@ -376,7 +395,9 @@ translation unit must see the same values (the one-definition rule).
 | Macro | Header | Notes |
 | --- | --- | --- |
 | `RTPS_MAX_USER_WRITERS`, `RTPS_MAX_USER_READERS` | `participant.hpp` | slot counts |
-| `RTPS_PARTICIPANT_MAX_WRITER_BYTES` | `participant.hpp` | slot size; lowering it below `StatefulWriterStorage<8, R>` saves ~700 B per slot but makes `create_writer<8>()` fail to compile, and `rmw_rosette` instantiates depths 1, 4, and 8 (`kSupportedWriterDepths` in `qos.hpp`) |
+| `RTPS_DEEP_WRITER_DEPTH` | `participant.hpp` | deepest history any writer keeps (1 to 255), which deep writer slots are sized for; `rmw_rosette` sets it to `RMW_ROSETTE_MAX_WRITER_DEPTH` |
+| `RTPS_MAX_SHALLOW_WRITERS`, `RTPS_SHALLOW_WRITER_DEPTH` | `participant.hpp` | shallow writer slots, out of `RTPS_MAX_USER_WRITERS`, and the deepest history one holds (at most `RTPS_DEEP_WRITER_DEPTH`); `rmw_rosette` sets one per service at `RMW_ROSETTE_REPLY_DEPTH` |
+| `RTPS_PARTICIPANT_MAX_WRITER_BYTES` | `participant.hpp` | deep slot size; lowering it below `StatefulWriterStorage<8, R>` saves ~700 B per slot but makes `create_writer<8>()` fail to compile, and `rmw_rosette` instantiates depths 1, 4, and 8 (`kSupportedWriterDepths` in `qos.hpp`) |
 | `RTPS_MAX_MATCHED_READERS`, `RTPS_MAX_MATCHED_WRITERS` | `stateful_writer.hpp`, `types.hpp` | cap: proxies per endpoint |
 | `RTPS_READER_PROXY_POOL`, `RTPS_WRITER_PROXY_POOL`, `RTPS_MIN_MATCHES_PER_ENDPOINT` | `participant.hpp`, `proxy_pool.hpp` | shared proxy pools and the floor reserved per endpoint slot; a `static_assert` proves the pools hold every floor |
 | `RTPS_MAX_WAITING_MATCHES` | `endpoint_match_table.hpp` | matches waiting for a proxy; `RTPS_MAX_MATCH_RECORDS` must cover both pools plus these |
@@ -401,8 +422,8 @@ cmake --build build-hw/pico2-lean --target rclc_chatter
 
 | | Default capacity | Declared capacity | Saved |
 | --- | ---: | ---: | ---: |
-| `.bss` total | 101,416 B | **63,980 B** | 37,436 B |
-| rmw context (participant, transport, rx buffer) | 59,160 | 24,880 | 34,280 |
+| `.bss` total | 99,816 B | **63,980 B** | 35,836 B |
+| rmw context (participant, transport, rx buffer) | 57,560 | 24,880 | 32,680 |
 | buffer pool | 34,080 | 31,668 | 2,412 |
 | subscription + publisher pools | 4,976 | 1,256 | 3,720 |
 | `.text` | 285,236 | 279,108 | 6,128 |
@@ -499,7 +520,7 @@ prints them at shutdown.
 | No heap in the stack | Bounded, visible RAM; failures at boot; no fragmentation over long uptimes. The same discipline as MISRA C:2012 Rule 21.3 and the JPL/NASA "Power of Ten" rule 3. |
 | Capacity from a few application limits, derived in one CMake module | An application states what it creates; the derived tables cannot be sized inconsistently, and `capacity.hpp` asserts it. |
 | Templates lay out storage; logic compiles once | `SharedPoolStatefulWriter<D>`, `HistoryCacheStorage<N>`, `ProxyPoolStorage<P, N>`, and `FragmentAssemblyPoolStorage<N>` hold arrays; `StatefulWriter`, `HistoryCache`, `ProxyPool`, and `FragmentAssembler` are plain classes in `.cpp` files. Depth is a RAM decision that costs no flash (the approach of LLVM's `SmallVector` / `SmallVectorImpl`). |
-| Uniform writer slots | Any slot takes any depth, so creation and deletion order never fragment the table. |
+| Two writer slot classes | A deep slot takes any depth and a shallow slot only the writers the creator names as shallow (service replies), so creation and deletion order never fragment either class, while shallow writers do not pay for the deepest history. |
 | Per-match state in shared pools, with floors | RAM follows the matches a firmware has at once, not endpoints × cap; a floor per slot means an endpoint's first match never depends on what others borrowed, and a refused match waits instead of being dropped. A shared buffer with per-queue guarantees, as in shared-memory packet switches (Choudhury and Hahne, 1998). |
 | Contiguous samples, fragmented only on the wire | Serialization, repair, and reassembly work on one span; the largest pool class is reserved so small traffic cannot starve large samples. |
 | Reference-counted blocks | Zero-copy from serialization to the wire and from reassembly to `rmw_take()`. |

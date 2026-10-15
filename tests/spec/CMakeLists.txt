@@ -207,6 +207,8 @@ foreach(_sedp_target sedp_spec_tests sedp_spec_tests_rebuild)
 endforeach()
 target_compile_definitions(sedp_spec_tests_rebuild PRIVATE SPEC_SEDP_REBUILD_ANNOUNCEMENTS=1)
 
+set(LOCAL_NAME_LIMIT_PASSED_JSON
+    ${CMAKE_CURRENT_BINARY_DIR}/local_name_limit_passed.json)
 set(SEDP_PASSED_JSON
     ${CMAKE_CURRENT_BINARY_DIR}/sedp_passed.json)
 
@@ -271,6 +273,7 @@ add_executable(stateful_writer_spec_tests
     src/test_stateful_writer_8_4_9_announcing.cpp
     src/test_stateful_writer_8_4_15_piggyback_heartbeat.cpp
     src/test_stateful_writer_8_4_7_release_finished.cpp
+    src/test_stateful_writer_8_4_7_undelivered_eviction.cpp
     src/test_stateful_writer_8_4_4_fragment_repair.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
@@ -342,6 +345,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     src/test_participant_platform_stub.cpp
     src/test_participant_8_5_1.cpp
     src/test_participant_waiting_matches.cpp
+    src/test_participant_writer_evictions.cpp
     ../../src/rtps/participant.cpp
     ../../src/rtps/participant_peer_tiers.cpp
     ../../src/rtps/stateful_reader.cpp
@@ -378,6 +382,10 @@ target_compile_definitions(participant_spec_tests PRIVATE
 
 set(PARTICIPANT_PASSED_JSON
     ${CMAKE_CURRENT_BINARY_DIR}/participant_passed.json)
+set(WRITER_SLOT_CLASS_PASSED_JSON
+    ${CMAKE_CURRENT_BINARY_DIR}/writer_slot_class_passed.json)
+set(PARTICIPANT_TIER_PASSED_JSON
+    ${CMAKE_CURRENT_BINARY_DIR}/participant_tier_passed.json)
 
 add_test(
     NAME participant_spec_conformance
@@ -435,6 +443,45 @@ target_compile_definitions(local_name_limit_spec_tests PRIVATE
 add_test(
     NAME local_name_limit_spec_conformance
     COMMAND local_name_limit_spec_tests
+)
+
+# Two deep and two shallow writer slots, so a test can fill each class: every
+# other spec program keeps the default of deep slots only.
+add_executable(writer_slot_class_spec_tests
+    src/test_participant_writer_slot_classes.cpp
+    src/spec_test_common.cpp
+    src/test_participant_platform_stub.cpp
+    ../../src/rtps/participant.cpp
+    ../../src/rtps/participant_peer_tiers.cpp
+    ../../src/rtps/stateful_reader.cpp
+    ../../src/rtps/fragment_assembler.cpp
+    ../../src/rtps/sn_window.cpp
+    ../../src/rtps/history_cache.cpp
+    ../../src/rtps/reader_proxy.cpp
+    ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/proxy_pool.cpp
+    ../../src/rtps/writer_proxy.cpp
+    ../../src/rtps/spdp.cpp
+    ../../src/rtps/spdp_peer_records.cpp
+    ../../src/rtps/sedp.cpp
+    ../../src/rtps/endpoint_match_table.cpp
+    ../../src/rtps/locator_ranking.cpp
+    ../../src/rtps/message_parser.cpp
+    ../../src/rtps/buf_pool.cpp
+)
+target_include_directories(writer_slot_class_spec_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+)
+target_compile_definitions(writer_slot_class_spec_tests PRIVATE
+    RTPS_LOG_LEVEL=0
+    RTPS_MAX_USER_WRITERS=4
+    RTPS_MAX_SHALLOW_WRITERS=2
+    RTPS_SHALLOW_WRITER_DEPTH=2
+)
+add_test(
+    NAME writer_slot_class_spec_conformance
+    COMMAND writer_slot_class_spec_tests
 )
 
 # The peer-tier tests need an active tier smaller than the network: two
@@ -507,11 +554,12 @@ if (Python3_Interpreter_FOUND)
 
     add_custom_target(sedp_spec_report
         COMMAND sedp_spec_tests --emit-pass-json ${SEDP_PASSED_JSON}
+        COMMAND local_name_limit_spec_tests --emit-pass-json ${LOCAL_NAME_LIMIT_PASSED_JSON}
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/spec_trace_report.py
                 --matrix ${CMAKE_CURRENT_SOURCE_DIR}/spec/ddsi_rtps_2_5/sedp.matrix.json
-                --passed ${SEDP_PASSED_JSON}
-        DEPENDS sedp_spec_tests
+                --passed ${SEDP_PASSED_JSON} ${LOCAL_NAME_LIMIT_PASSED_JSON}
+        DEPENDS sedp_spec_tests local_name_limit_spec_tests
         COMMENT "Generating RTPS statement coverage report for SEDP"
     )
 
@@ -545,13 +593,20 @@ if (Python3_Interpreter_FOUND)
         COMMENT "Generating RTPS statement coverage report for stateful_reader"
     )
 
+    # The participant matrix is run by the default-capacity program and by the
+    # standalone programs built with their own capacity definitions.
     add_custom_target(participant_spec_report
         COMMAND participant_spec_tests --emit-pass-json ${PARTICIPANT_PASSED_JSON}
+        COMMAND local_name_limit_spec_tests --emit-pass-json ${LOCAL_NAME_LIMIT_PASSED_JSON}
+        COMMAND writer_slot_class_spec_tests --emit-pass-json ${WRITER_SLOT_CLASS_PASSED_JSON}
+        COMMAND participant_tier_spec_tests --emit-pass-json ${PARTICIPANT_TIER_PASSED_JSON}
         COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/spec_trace_report.py
                 --matrix ${CMAKE_CURRENT_SOURCE_DIR}/spec/ddsi_rtps_2_5/participant.matrix.json
-                --passed ${PARTICIPANT_PASSED_JSON}
-        DEPENDS participant_spec_tests
+                --passed ${PARTICIPANT_PASSED_JSON} ${LOCAL_NAME_LIMIT_PASSED_JSON}
+                         ${WRITER_SLOT_CLASS_PASSED_JSON} ${PARTICIPANT_TIER_PASSED_JSON}
+        DEPENDS participant_spec_tests local_name_limit_spec_tests writer_slot_class_spec_tests
+                participant_tier_spec_tests
         COMMENT "Generating RTPS statement coverage report for participant"
     )
 endif()
@@ -834,7 +889,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
 endif()
 
 # Every spec and fuzz target runs on the platform port.
-foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests sedp_spec_tests_rebuild history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_spec_tests_rebuild participant_tier_spec_tests local_name_limit_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
+foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests sedp_spec_tests_rebuild history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_spec_tests_rebuild participant_tier_spec_tests local_name_limit_spec_tests writer_slot_class_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
     if(TARGET ${_t})
         rosette_spec_use_platform(${_t})
     endif()

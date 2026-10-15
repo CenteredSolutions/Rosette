@@ -5,6 +5,7 @@
 
 #include "rmw_rosette/service_endpoints.hpp"
 
+#include "rmw_rosette/capacity.hpp"
 #include "rmw_rosette/qos.hpp"
 #include "rmw_rosette/topic_naming.hpp"
 
@@ -42,10 +43,13 @@ ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
     // match late, so a reply sent in that window still arrives; clients drop
     // replies correlated with other clients' requests. Each reply leaves the
     // history once its requester has it, so the history holds only replies
-    // still in flight rather than the last depth replies.
+    // still in flight rather than the last depth replies. Its depth,
+    // RMW_ROSETTE_REPLY_DEPTH, bounds the replies in flight at once whatever
+    // `qos` requests.
     if (server) {
         wcfg.durability = rtps::DurabilityKind::TRANSIENT_LOCAL;
         wcfg.releaseRepliesOnDelivery = true;
+        wcfg.slotClass = rtps::WriterSlotClass::SHALLOW;
     }
 
     wcfg.topicName.assign(server ? reply_topic : request_topic);
@@ -56,8 +60,12 @@ ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
     rcfg.topicName.assign(server ? request_topic : reply_topic);
     rcfg.typeName.assign(server ? request_type : reply_type);
 
-    writer = create_writer_for_qos(participant, wcfg, qos);
-    if (!writer) return ServiceEndpointsStatus::TablesFull;
+    writer = server ? participant.create_writer<RMW_ROSETTE_REPLY_DEPTH>(wcfg)
+                    : create_writer_for_qos(participant, wcfg, qos);
+    if (!writer) {
+        return ServiceEndpointsStatus::TablesFull;
+    }
+
     reader = participant.create_reader(rcfg, on_change, user_data);
     if (!reader) {
         participant.delete_writer(writer);

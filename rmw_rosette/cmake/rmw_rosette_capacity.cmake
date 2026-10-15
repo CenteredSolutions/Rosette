@@ -19,6 +19,17 @@
 # participant adds one writer of its own on ros_discovery_info, the topic that
 # tells stock peers which nodes it hosts.
 #
+# A writer's slot is sized for its history depth. Service reply writers hold
+# only the replies in flight, RMW_ROSETTE_REPLY_DEPTH of them, and take
+# shallow slots sized for that depth, one per service; every other writer
+# takes a deep slot, sized for the deepest history a publisher can request.
+# On a 32-bit target a writer is about 256 octets plus 100 per history slot,
+# so a depth-4 reply writer saves 400 octets over a depth-8 slot. The role
+# picks the slot class, not the depth, so a publisher can never take a slot
+# a service needs. No writer is deeper than RMW_ROSETTE_MAX_WRITER_DEPTH, the
+# depth deep slots are sized for, and the reply depth is bounded by it too: a
+# shallow slot is never larger than a deep one.
+#
 # The proxies of matched remote endpoints come from two participant-wide
 # pools, one for the readers matched to local writers and one for the writers
 # matched to local readers (docs/design/shared_proxy_pools.md). Every local
@@ -67,6 +78,10 @@ set(RMW_ROSETTE_MAX_SAMPLE_SIZE 65532 CACHE STRING
     "Largest serialized message (publish, service request or reply) in octets; sizes the largest buffer-pool class (at most 65532)")
 set(RMW_ROSETTE_MAX_PENDING_CHANGES 10 CACHE STRING
     "Deepest KEEP_LAST history a subscription, service, or client keeps between takes; deeper requests and KEEP_ALL run at this depth (10 holds rmw_qos_profile_default whole)")
+set(RMW_ROSETTE_MAX_WRITER_DEPTH 8 CACHE STRING
+    "Deepest KEEP_LAST history a publisher keeps, 1 to 255; deeper requests and KEEP_ALL run at this depth. Writer slots that hold any writer are sized for it, at about 100 octets per history slot on a 32-bit target")
+set(RMW_ROSETTE_REPLY_DEPTH 4 CACHE STRING
+    "Replies each service holds until their clients acknowledge them, 1 to RMW_ROSETTE_MAX_WRITER_DEPTH: a reply written while this many are unacknowledged displaces the oldest, whose client never receives it. Every service reply writer has this depth whatever its QoS requests, and takes a writer slot sized for it rather than for the deepest writer")
 set(RMW_ROSETTE_LARGE_BUFFERS 48 CACHE STRING
     "Blocks of RMW_ROSETTE_MAX_SAMPLE_SIZE (and, in the host pool profile, of 16 KiB): samples held in writer histories, reassembly, and take rings")
 set(RMW_ROSETTE_ASSEMBLY_SLOTS "" CACHE STRING
@@ -85,6 +100,13 @@ if(_rr_rtps_writers GREATER _rr_rtps_readers)
   set(_rr_local_endpoints ${_rr_rtps_writers})
 else()
   set(_rr_local_endpoints ${_rr_rtps_readers})
+endif()
+if(RMW_ROSETTE_MAX_WRITER_DEPTH LESS 1 OR RMW_ROSETTE_MAX_WRITER_DEPTH GREATER 255)
+  message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_MAX_WRITER_DEPTH (${RMW_ROSETTE_MAX_WRITER_DEPTH}) must be 1 to 255")
+endif()
+if(RMW_ROSETTE_REPLY_DEPTH LESS 1 OR RMW_ROSETTE_REPLY_DEPTH GREATER RMW_ROSETTE_MAX_WRITER_DEPTH)
+  message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_REPLY_DEPTH (${RMW_ROSETTE_REPLY_DEPTH}) must be 1 to "
+                      "RMW_ROSETTE_MAX_WRITER_DEPTH (${RMW_ROSETTE_MAX_WRITER_DEPTH})")
 endif()
 if(_rr_local_endpoints GREATER 253)
   message(FATAL_ERROR "rmw_rosette: ${_rr_local_endpoints} local RTPS endpoints exceed the "
@@ -257,7 +279,8 @@ endif()
 
 message(STATUS "rmw_rosette capacity: ${_rr_publishers} publishers, "
                "${RMW_ROSETTE_MAX_SUBSCRIPTIONS} subscriptions, ${_rr_services} services, "
-               "${RMW_ROSETTE_MAX_CLIENTS} clients -> ${_rr_rtps_writers} RTPS writers, "
+               "${RMW_ROSETTE_MAX_CLIENTS} clients -> ${_rr_rtps_writers} RTPS writers "
+               "(${_rr_services} of them depth-${RMW_ROSETTE_REPLY_DEPTH} reply writers), "
                "${_rr_rtps_readers} RTPS readers, ${_rr_reader_proxies} reader proxies, "
                "${_rr_writer_proxies} writer proxies, ${_rr_assembly_slots} assembly slots")
 
@@ -280,8 +303,13 @@ function(rmw_rosette_apply_capacity target)
     RMW_ROSETTE_MAX_DATAGRAM_SIZE=${RMW_ROSETTE_MAX_DATAGRAM_SIZE}
     RMW_ROSETTE_MAX_SAMPLE_SIZE=${RMW_ROSETTE_MAX_SAMPLE_SIZE}
     RMW_ROSETTE_MAX_PENDING_CHANGES=${RMW_ROSETTE_MAX_PENDING_CHANGES}
+    RMW_ROSETTE_MAX_WRITER_DEPTH=${RMW_ROSETTE_MAX_WRITER_DEPTH}
+    RMW_ROSETTE_REPLY_DEPTH=${RMW_ROSETTE_REPLY_DEPTH}
+    RTPS_DEEP_WRITER_DEPTH=${RMW_ROSETTE_MAX_WRITER_DEPTH}
     RTPS_SEDP_REBUILD_ANNOUNCEMENTS=${_rr_sedp_rebuild}
     RTPS_MAX_USER_WRITERS=${_rr_rtps_writers}
+    RTPS_MAX_SHALLOW_WRITERS=${_rr_services}
+    RTPS_SHALLOW_WRITER_DEPTH=${RMW_ROSETTE_REPLY_DEPTH}
     RTPS_MAX_USER_READERS=${_rr_rtps_readers}
     RTPS_MAX_LOCAL_ENDPOINTS=${_rr_local_endpoints}
     RTPS_MAX_LOCAL_WRITERS=${_rr_rtps_writers}

@@ -45,10 +45,12 @@ enum class ServiceEndpointsStatus : uint8_t {
  * @brief Creates the RTPS writer and reader for one service or client.
  *
  * Composes the request and reply topic and type names, creates the writer
- * with a depth chosen from `qos` (create_writer_for_qos()) and the reader
- * with `on_change` as its delivery callback. A server's reply writer is
- * TRANSIENT_LOCAL whatever `qos` requests, so a reply written before the
- * calling client's reply reader has matched is still delivered once it does.
+ * and the reader with `on_change` as its delivery callback. A client's
+ * request writer has a depth chosen from `qos` (create_writer_for_qos()). A
+ * server's reply writer is TRANSIENT_LOCAL with depth RMW_ROSETTE_REPLY_DEPTH
+ * whatever `qos` requests: a reply written before the calling client's reply
+ * reader has matched is still delivered once it does, and the history holds
+ * the replies in flight at once (capacity.hpp).
  * Both endpoints are then associated with `node` on `ros_discovery_info`
  * (ros_discovery_info_writer.hpp), which is how stock peers attribute the
  * service or client to its node. On any failure, whatever was created is

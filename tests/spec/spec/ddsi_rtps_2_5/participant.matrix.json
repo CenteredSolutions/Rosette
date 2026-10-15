@@ -167,6 +167,24 @@
       "test_ids": ["TC-PART-8.5.1-011"]
     },
     {
+      "id": "REQ-PART-8.5.1-WRITER-SLOT-CLASSES",
+      "section": "8.5.1",
+      "page": 149,
+      "normativity": "implementation-behavior",
+      "statement": "Of the participant's writer slots, RTPS_MAX_SHALLOW_WRITERS are sized for a writer of at most RTPS_SHALLOW_WRITER_DEPTH and the rest for any writer. A writer the creator names SHALLOW takes only a shallow slot and any other writer only a deep slot, whatever their depths, so deleting and recreating writers never leaves one class short, and every writer keeps the history depth it was created with.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-013"]
+    },
+    {
+      "id": "REQ-PART-8.5.1-EVICTION-TOTAL",
+      "section": "8.5.1",
+      "page": 149,
+      "normativity": "implementation-behavior",
+      "statement": "The participant reports the number of changes its user writers' histories evicted before their readers had them, summed over every user writer it has had, deleted writers included.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-014"]
+    },
+    {
       "id": "REQ-PART-8.4.1.4-WAITING-MATCHES",
       "section": "8.4.1.4",
       "normativity": "implementation-behavior",

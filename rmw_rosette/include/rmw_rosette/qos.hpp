@@ -13,6 +13,7 @@
 
 #pragma once
 
+#include "rmw_rosette/capacity.hpp"
 #include "rosette/rtps/endpoint_match_table.hpp"
 #include "rosette/rtps/participant.hpp"
 #include "types.hpp"
@@ -82,19 +83,20 @@ inline rtps::DurabilityKind to_rtps_durability(rmw_qos_durability_policy_t polic
 }
 
 /// The closed set of CacheDepth instantiations rmw_rosette is willing to
-/// compile. Small and power-of-two-ish on purpose — each entry here is a
-/// distinct StatefulWriter<N,...> instantiation baked into the firmware
+/// compile: depth 1, depth 4, and RMW_ROSETTE_MAX_WRITER_DEPTH (the three
+/// coincide where the maximum is 4 or less). Small on purpose: each distinct
+/// entry is a StatefulWriter<N,...> instantiation baked into the firmware
 /// image, so this list is a size/flexibility trade the application makes
-/// once, not something to open-end. KEEP_ALL maps to the largest entry;
-/// there's no bounded representation for genuinely-unbounded history.
+/// once through the maximum, not something to open-end. KEEP_ALL maps to the
+/// largest entry; there's no bounded representation for genuinely-unbounded
+/// history.
 ///
-/// Capped at 8, not higher: RTPSParticipant's writer storage table sizes
-/// each slot to fit its default RTPS_PARTICIPANT_MAX_WRITER_BYTES, which
-/// is itself sized for SharedPoolStatefulWriter<8> (see
-/// participant.hpp) — create_writer<16>() would trip that class's
-/// static_assert unless a board config raises the byte budget to match.
-/// Going past 8 is a real option, just not a default one.
-inline constexpr uint8_t kSupportedWriterDepths[] = {1, 4, 8};
+/// The maximum is also the depth the participant's deep writer slots are
+/// sized for (RTPS_DEEP_WRITER_DEPTH, set to match by
+/// rmw_rosette_capacity.cmake), so no writer can be deeper.
+inline constexpr uint8_t kMaxWriterDepth = RMW_ROSETTE_MAX_WRITER_DEPTH;
+inline constexpr uint8_t kMidWriterDepth = kMaxWriterDepth < 4 ? kMaxWriterDepth : 4;
+inline constexpr uint8_t kSupportedWriterDepths[] = {1, kMidWriterDepth, kMaxWriterDepth};
 
 /**
  * @brief Resolves an rmw_qos_profile_t's requested history depth to one
@@ -133,10 +135,10 @@ inline uint8_t select_writer_depth(const rmw_qos_profile_t& qos) noexcept {
  * `D` has to be resolved from `qos.depth` at run time.
  *
  * Dispatches select_writer_depth()'s result to the matching
- * `create_writer<D>()`; each case lays out a
+ * `create_writer<D>()`; each depth lays out a
  * `SharedPoolStatefulWriter<D>`, and all of them run
  * the same compiled writer. A new entry in kSupportedWriterDepths needs a
- * matching case added here.
+ * matching branch added here.
  *
  * @param[in,out] participant Owns the writer's storage slot.
  * @param[in] cfg Reliability/durability/topic/type config for the writer.
@@ -147,13 +149,13 @@ inline uint8_t select_writer_depth(const rmw_qos_profile_t& qos) noexcept {
  *   is full.
  */
 inline rtps::StatefulWriter* create_writer_for_qos(rtps::RTPSParticipant& participant,
-                                                     const rtps::WriterConfig& cfg,
-                                                     const rmw_qos_profile_t& qos) noexcept {
+                                                   const rtps::WriterConfig& cfg,
+                                                   const rmw_qos_profile_t& qos) noexcept {
     switch (select_writer_depth(qos)) {
-        case 1:  return participant.create_writer<1>(cfg);
-        case 4:  return participant.create_writer<4>(cfg);
-        case 8:  return participant.create_writer<8>(cfg);
-        default: return nullptr;  // unreachable given select_writer_depth()'s range
+        case 1:                  return participant.create_writer<1>(cfg);
+        case kMidWriterDepth:    return participant.create_writer<kMidWriterDepth>(cfg);
+        default:
+        case kMaxWriterDepth:    return participant.create_writer<kMaxWriterDepth>(cfg);               
     }
 }
 

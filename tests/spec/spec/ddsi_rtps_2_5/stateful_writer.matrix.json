@@ -178,6 +178,22 @@
       "test_ids": ["TC-SWR-8.4.7-007", "TC-SWR-8.4.7-008", "TC-SWR-8.4.7-009", "TC-SWR-8.4.7-010", "TC-SWR-8.4.7-011", "TC-SWR-8.4.7-012"]
     },
     {
+      "id": "REQ-SWR-8.4.7-REPLY-LOSS-REPAIR",
+      "section": "8.4.7.1",
+      "normativity": "implementation-behavior",
+      "statement": "A service reply lost on the wire is resent on its requester's NACK while it is still in the KEEP_LAST history, that is while fewer than depth later replies are in flight; once a later reply displaces it, the NACK is answered with GAP and the requester never receives the reply. The reply writer's depth therefore bounds the replies a service has in flight to concurrent clients.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.7-013"]
+    },
+    {
+      "id": "REQ-SWR-8.3.3.1-COUNT-UNDELIVERED-EVICTIONS",
+      "section": "8.3.3.1",
+      "normativity": "implementation-behavior",
+      "statement": "A RELIABLE writer counts each change KEEP_LAST evicts while a matched reader has not acknowledged it, or, on a service reply writer, while its requester has not received it; a change every reader acknowledged, or one no reader was matched for on a writer that is not a reply writer, is not counted, and a BEST_EFFORT writer counts nothing. The 1st, 2nd, 4th, 8th, ... counted eviction logs a warning.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.7-013", "TC-SWR-8.4.7-014", "TC-SWR-8.4.7-015"]
+    },
+    {
       "id": "REQ-SWR-8.3.7.5-NACKFRAG-REPAIR",
       "section": "8.3.7.5",
       "normativity": "shall",
