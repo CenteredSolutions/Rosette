@@ -252,7 +252,9 @@ StatefulReader* RTPSParticipant::create_reader(
         StatefulReader::OnChangeAvailable on_change_avail,
         void*                             user_data) noexcept
 {
-    if (!endpoint_names_fit(cfg.topicName, cfg.typeName)) return nullptr;
+    if (!local_endpoint_fits(cfg.topicName, cfg.typeName, /*is_writer=*/false)) {
+        return nullptr;
+    }
 
     int slot = -1;
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i)
@@ -640,7 +642,7 @@ void RTPSParticipant::on_endpoints_changed(void* self) noexcept
 }
 
 bool RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
-                                        const MatchedEndpoint& reader, const TopicName& topic,
+                                        const MatchedEndpoint& reader, const char* topic,
                                         void* self) noexcept {
     auto* p = static_cast<RTPSParticipant*>(self);
     bool bound = true;
@@ -670,9 +672,9 @@ bool RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
     }
 
     if (bound) {
-        RTPS_LOG_I("participant", "endpoint match: topic=%s", topic.str);
+        RTPS_LOG_I("participant", "endpoint match: topic=%s", topic);
     } else {
-        RTPS_LOG_I("participant", "endpoint match waits for a proxy: topic=%s", topic.str);
+        RTPS_LOG_I("participant", "endpoint match waits for a proxy: topic=%s", topic);
     }
 
     return bound;
@@ -931,13 +933,25 @@ void RTPSParticipant::dispatch_gap(const ParseContext& ctx,
 // Internal helpers
 // ============================================================
 
-bool RTPSParticipant::endpoint_names_fit(const TopicName& topic,
-                                         const TopicName& type) noexcept
-{
-    if (topic.fits() && type.fits()) return true;
-    RTPS_LOG_E("participant", "endpoint name longer than %d octets refused: topic=%s type=%s",
-               RTPS_MAX_TOPIC_NAME_LEN - 1, topic.str, type.str);
-    return false;
+bool RTPSParticipant::local_endpoint_fits(const TopicName& topic, const TopicName& type,
+                                          bool is_writer) const noexcept {
+    if (!topic.fits() || !type.fits()) {
+        RTPS_LOG_E("participant", "endpoint name longer than %d octets refused: topic=%s type=%s",
+                   RTPS_MAX_TOPIC_NAME_LEN - 1, topic.str, type.str);
+        return false;
+    }
+
+    if (!match_table_.has_room_for_local(topic, type, is_writer)) {
+        RTPS_LOG_E("participant",
+                   "%s topic=%s refused: no %s record (RTPS_MAX_LOCAL_%s) or name room "
+                   "(RTPS_LOCAL_NAME_BYTES=%lu, %lu used) in the match table",
+                   is_writer ? "writer" : "reader", topic.str, is_writer ? "writer" : "reader",
+                   is_writer ? "WRITERS" : "READERS", (unsigned long)RTPS_LOCAL_NAME_BYTES,
+                   (unsigned long)match_table_.local_name_bytes_used());
+        return false;
+    }
+
+    return true;
 }
 
 int RTPSParticipant::find_free_writer_slot() const noexcept {

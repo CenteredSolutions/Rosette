@@ -71,6 +71,8 @@ set(RMW_ROSETTE_LARGE_BUFFERS 48 CACHE STRING
     "Blocks of RMW_ROSETTE_MAX_SAMPLE_SIZE (and, in the host pool profile, of 16 KiB): samples held in writer histories, reassembly, and take rings")
 set(RMW_ROSETTE_ASSEMBLY_SLOTS "" CACHE STRING
     "Fragmented samples in reassembly at once across all subscriptions, services, and clients; empty: one per block of the two largest buffer-pool classes, the blocks a reassembled sample can occupy")
+set(RMW_ROSETTE_LOCAL_NAME_BYTES "" CACHE STRING
+    "Octets for the topic and type names of every local RTPS endpoint at once (strlen + 1 for each distinct name, a name endpoints share counted once; a service is two endpoints); empty: RTPS_LOCAL_NAME_BYTES_PER_ENDPOINT (128) octets per endpoint, above the 40-110 a ROS 2 endpoint takes. Creating an endpoint whose names do not fit fails and logs RTPS_LOCAL_NAME_BYTES")
 
 math(EXPR _rr_publishers
      "${RMW_ROSETTE_MAX_PUBLISHERS} + ${RMW_ROSETTE_MAX_NODES} * ${RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE}")
@@ -239,6 +241,20 @@ if(_rr_assembly_slots LESS 1 OR _rr_assembly_slots GREATER 65535)
   message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_ASSEMBLY_SLOTS (${_rr_assembly_slots}) must be 1 to 65535")
 endif()
 
+# Local endpoint names (rosette/rtps/string_arena.hpp): the match table
+# keeps every local endpoint's names packed in one arena, each distinct name
+# once. Left empty,
+# the RTPS header allows 128 octets per endpoint, above the 40-110 a ROS 2
+# endpoint takes; a firmware that knows its endpoints sets their total.
+set(_rr_local_name_definition "")
+if(NOT RMW_ROSETTE_LOCAL_NAME_BYTES STREQUAL "")
+  if(RMW_ROSETTE_LOCAL_NAME_BYTES LESS 4 OR RMW_ROSETTE_LOCAL_NAME_BYTES GREATER 65534)
+    message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_LOCAL_NAME_BYTES (${RMW_ROSETTE_LOCAL_NAME_BYTES}) "
+                        "must be 4 to 65534")
+  endif()
+  set(_rr_local_name_definition RTPS_LOCAL_NAME_BYTES=${RMW_ROSETTE_LOCAL_NAME_BYTES})
+endif()
+
 message(STATUS "rmw_rosette capacity: ${_rr_publishers} publishers, "
                "${RMW_ROSETTE_MAX_SUBSCRIPTIONS} subscriptions, ${_rr_services} services, "
                "${RMW_ROSETTE_MAX_CLIENTS} clients -> ${_rr_rtps_writers} RTPS writers, "
@@ -268,6 +284,9 @@ function(rmw_rosette_apply_capacity target)
     RTPS_MAX_USER_WRITERS=${_rr_rtps_writers}
     RTPS_MAX_USER_READERS=${_rr_rtps_readers}
     RTPS_MAX_LOCAL_ENDPOINTS=${_rr_local_endpoints}
+    RTPS_MAX_LOCAL_WRITERS=${_rr_rtps_writers}
+    RTPS_MAX_LOCAL_READERS=${_rr_rtps_readers}
+    ${_rr_local_name_definition}
     RTPS_MAX_PEERS=${RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS}
     RTPS_MAX_KNOWN_PEERS=${RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS}
     RTPS_MAX_MATCHED_READERS=${RMW_ROSETTE_MAX_MATCHED_ENDPOINTS}

@@ -19,7 +19,7 @@ struct Obs {
     int match_calls = 0;
 };
 
-static bool on_match(const MatchedEndpoint&, const MatchedEndpoint&, const TopicName&,
+static bool on_match(const MatchedEndpoint&, const MatchedEndpoint&, const char*,
                      void* user) noexcept {
     auto* o = static_cast<Obs*>(user);
     o->match_calls++;
@@ -166,7 +166,7 @@ static bool tc_sedp_9_6_3_2_003(std::string& err) {
 
     FakeTransport tx{};
     EndpointMatchTable table(
-        [](const MatchedEndpoint& w, const MatchedEndpoint&, const TopicName&, void* u) noexcept {
+        [](const MatchedEndpoint& w, const MatchedEndpoint&, const char*, void* u) noexcept {
             auto* o = static_cast<Reported*>(u);
             o->calls++;
             o->count = w.locatorCount;

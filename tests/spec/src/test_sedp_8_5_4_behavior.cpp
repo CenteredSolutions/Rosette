@@ -107,7 +107,7 @@ struct MatchObs {
     Guid last_r = GUID_UNKNOWN;
 };
 
-static bool on_match(const MatchedEndpoint& writer, const MatchedEndpoint& reader, const TopicName&,
+static bool on_match(const MatchedEndpoint& writer, const MatchedEndpoint& reader, const char*,
                      void* user) noexcept {
     auto* o = static_cast<MatchObs*>(user);
     o->calls++;
@@ -443,7 +443,7 @@ static bool tc_sedp_8_5_4_009(std::string& err) {
     UnmatchObs obs{};
     FakeTransport tx{};
     EndpointMatchTable table(
-        [](const MatchedEndpoint&, const MatchedEndpoint&, const TopicName&, void* u) noexcept {
+        [](const MatchedEndpoint&, const MatchedEndpoint&, const char*, void* u) noexcept {
             static_cast<UnmatchObs*>(u)->matches++;
             return true;
         },

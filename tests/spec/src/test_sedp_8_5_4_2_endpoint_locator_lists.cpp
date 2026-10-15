@@ -60,8 +60,7 @@ bool lookup_defaults_of_any(const GuidPrefix&, const Locator*& locators, uint8_t
     return true;
 }
 
-bool on_match(const MatchedEndpoint& w, const MatchedEndpoint&, const TopicName&,
-              void* user) noexcept {
+bool on_match(const MatchedEndpoint& w, const MatchedEndpoint&, const char*, void* user) noexcept {
     auto* f = static_cast<Fixture*>(user);
     f->matches++;
     f->reported_count = w.locatorCount;
@@ -212,7 +211,7 @@ struct ReaderLocators {
     Locator by_prefix[256] = {};
 };
 
-bool record_reader(const MatchedEndpoint&, const MatchedEndpoint& r, const TopicName&,
+bool record_reader(const MatchedEndpoint&, const MatchedEndpoint& r, const char*,
                    void* user) noexcept {
     auto* seen = static_cast<ReaderLocators*>(user);
     seen->by_prefix[r.guid.prefix.value[0]] = r.locatorCount > 0u ? r.locators[0] : LOCATOR_INVALID;

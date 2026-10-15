@@ -173,6 +173,11 @@ static_assert(RTPS_MAX_MATCH_RECORDS
                   >= RTPS_READER_PROXY_POOL + RTPS_WRITER_PROXY_POOL + RTPS_MAX_WAITING_MATCHES,
               "RTPS_MAX_MATCH_RECORDS cannot hold a record for every proxy in both pools and "
               "RTPS_MAX_WAITING_MATCHES waiting matches");
+// The match table records every user endpoint the participant creates.
+static_assert(RTPS_MAX_LOCAL_WRITERS >= RTPS_MAX_USER_WRITERS,
+              "RTPS_MAX_LOCAL_WRITERS cannot record every user writer");
+static_assert(RTPS_MAX_LOCAL_READERS >= RTPS_MAX_USER_READERS,
+              "RTPS_MAX_LOCAL_READERS cannot record every user reader");
 
 // ============================================================
 // WriterConfig / ReaderConfig
@@ -278,7 +283,9 @@ public:
         static_assert(alignof(W) <= alignof(SharedPoolStatefulWriter<8>),
                       "writer storage is aligned for SharedPoolStatefulWriter<8>");
 
-        if (!endpoint_names_fit(cfg.topicName, cfg.typeName)) return nullptr;
+        if (!local_endpoint_fits(cfg.topicName, cfg.typeName, /*is_writer=*/true)) {
+            return nullptr;
+        }
 
         // Find a free slot.
         int slot = find_free_writer_slot();
@@ -634,7 +641,7 @@ private:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.4.7.4 (matched_writer_add)
      */
     static bool on_endpoint_match(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
-                                  const TopicName& topic, void* self) noexcept;
+                                  const char* topic, void* self) noexcept;
 
     /// @brief The match table's MayMatch: whether every local half of the pair
     /// that holds no proxy yet could bind one now.
@@ -807,21 +814,28 @@ private:
     static void release_endpoint_floor(ProxyPool& pool, uint8_t floor) noexcept;
 
     /**
-     * @brief True when a local endpoint's names were stored whole.
+     * @brief True when a new local endpoint can be named, recorded and announced.
      *
      * An endpoint announced under a truncated name would be matched by
-     * whatever shares the prefix, so create_writer() and create_reader()
-     * refuse it instead (and log why).
+     * whatever shares the prefix, and one the match table cannot record
+     * would never be announced (a rebuilding SEDP writer reads its
+     * announcement from that record), so create_writer() and create_reader()
+     * refuse either instead, before anything is built, and log why.
      *
-     * @param[in] topic The endpoint's topic name.
-     * @param[in] type  The endpoint's type name.
-     * @return `false` when either name did not fit a TopicName.
+     * @param[in] topic     The endpoint's topic name.
+     * @param[in] type      The endpoint's type name.
+     * @param[in] is_writer `true` for a writer, `false` for a reader.
+     * @return `false` when either name did not fit a TopicName, or the match
+     *   table has no record or name room for it
+     *   (EndpointMatchTable::has_room_for_local()).
      *
      * Verification:
-     * - Correct means: no local endpoint with a truncated name is created.
-     * - Covered by: TC-PART-8.5.1-008.
+     * - Correct means: no local endpoint with a truncated name, or that the
+     *   match table could not record, is created.
+     * - Covered by: TC-PART-8.5.1-008, TC-PART-8.5.1-012.
      */
-    static bool endpoint_names_fit(const TopicName& topic, const TopicName& type) noexcept;
+    bool local_endpoint_fits(const TopicName& topic, const TopicName& type,
+                             bool is_writer) const noexcept;
 
     /// @brief The local writer (SEDP builtin or user) with entity ID `eid`, or null.
     StatefulWriter* find_writer(const EntityId& eid) noexcept;
