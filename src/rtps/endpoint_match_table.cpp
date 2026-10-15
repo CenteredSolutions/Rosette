@@ -79,20 +79,59 @@ EndpointMatchTable::LocalEndpoint* EndpointMatchTable::store_local(LocalEndpoint
         return slot;
     }
 
-    if (names_cost(topic, type) > names_.free_bytes()) {
+    const uint32_t reclaimed = stored ? reclaimable_bytes(*slot, topic, type) : 0u;
+    if (names_cost(topic, type) > names_.free_bytes() + reclaimed) {
         return nullptr;
     }
 
-    // Both names fit, so neither intern() is refused. The record takes the
-    // new offsets before the old names are released, so a name it keeps
-    // (only its type or only its topic changed) counts as still in use.
+    // The check above admits the update, so nothing below can be refused.
+    // The old names are released first, because a full arena has room for
+    // the new ones only once they are gone; the record refers to nothing
+    // meanwhile, so a name only it used is released, and a name another
+    // record shares stays in the arena.
     const uint16_t old_topic = stored ? slot->topic : Names::kNone;
     const uint16_t old_type = stored ? slot->type : Names::kNone;
     *slot = endpoint;
+    slot->topic = Names::kNone;
+    slot->type = Names::kNone;
+    release_names(old_topic, old_type);
     slot->topic = names_.intern(topic);
     slot->type = names_.intern(type);
-    release_names(old_topic, old_type);
     return slot;
+}
+
+uint32_t EndpointMatchTable::reclaimable_bytes(const LocalEndpoint& slot, const char* topic,
+                                               const char* type) const noexcept {
+    const auto shared = [&](uint16_t at) {
+        const auto refers = [&](const LocalEndpoint& l) {
+            return &l != &slot && (l.topic == at || l.type == at);
+        };
+        for (const LocalEndpoint& w : local_writers_) {
+            if (refers(w)) {
+                return true;
+            }
+        }
+
+        for (const LocalEndpoint& r : local_readers_) {
+            if (refers(r)) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+    const auto reclaim = [&](uint16_t at) -> uint32_t {
+        if (at == Names::kNone
+            || strcmp(names_.str(at), topic) == 0
+            || strcmp(names_.str(at), type) == 0
+            || shared(at)) {
+            return 0u;
+        }
+
+        return Names::size_of(names_.str(at));
+    };
+
+    return reclaim(slot.topic) + (slot.type == slot.topic ? 0u : reclaim(slot.type));
 }
 
 void EndpointMatchTable::clear_local(LocalEndpoint& l) noexcept {

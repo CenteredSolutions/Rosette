@@ -1,7 +1,7 @@
 /**
  * @file test_local_endpoint_name_limits.cpp
- * @brief What happens when the match table's local name arena is full: TC-SEDP-8.5.5.1-015 for
- * the table, TC-PART-8.5.1-012 for the participant.
+ * @brief What happens when the match table's local name arena is full: TC-SEDP-8.5.5.1-015 and
+ * TC-SEDP-8.5.5.1-016 for the table, TC-PART-8.5.1-012 for the participant.
  *
  * Built as its own program, local_name_limit_spec_tests, with RTPS_LOCAL_NAME_BYTES=160, small
  * enough for a few short names to fill, while every other spec program keeps the default arena
@@ -112,6 +112,44 @@ static bool tc_sedp_8_5_5_1_015(std::string& err) {
     return true;
 }
 
+// A rename is judged by the names it leaves behind, not by the free octets
+// before it releases the old ones.
+static bool tc_sedp_8_5_5_1_016(std::string& err) {
+    EndpointMatchTable t;
+    GuidPrefix         local{};
+    local.value[0] = 0x10u;
+    t.set_local_prefix(local);
+
+    const DiscoveredWriterData before = local_writer(local, 1u, topic_of_size(80u, 'a'));
+    t.add_writer(before);
+    t.add_reader(local_reader(local, 2u, topic_of_size(77u, 'r')));
+    CHECK(t.local_name_bytes_used() == 160u, "80 + 77 octets of topics and the type fill the arena");
+
+    DiscoveredWriterData renamed = before;
+    (void)renamed.topicName.assign(topic_of_size(80u, 'b').c_str());
+    DiscoveredWriterData back{};
+    t.add_writer(renamed);
+    CHECK(t.local_writer_data(renamed.writerGuid, back)
+              && strcmp(back.topicName.str, renamed.topicName.str) == 0
+              && t.local_name_bytes_used() == 160u,
+          "a full arena takes a rename to a topic of the same size, the old topic released");
+
+    // The reader joins the writer's topic, so a rename frees nothing.
+    t.remove_reader(Guid{local, make_entity(0u, 0u, 2u, 0x04u)});
+    t.add_reader(local_reader(local, 2u, topic_of_size(80u, 'b')));
+    t.add_reader(local_reader(local, 3u, topic_of_size(77u, 'r')));
+    CHECK(t.local_name_bytes_used() == 160u, "a reader on the writer's topic shares its octets");
+
+    DiscoveredWriterData moved = renamed;
+    (void)moved.topicName.assign(topic_of_size(80u, 'c').c_str());
+    t.add_writer(moved);
+    CHECK(t.local_writer_data(moved.writerGuid, back)
+              && strcmp(back.topicName.str, renamed.topicName.str) == 0
+              && t.local_name_bytes_used() == 160u,
+          "a rename whose old topic a reader still uses does not fit, and changes nothing");
+    return true;
+}
+
 static bool tc_part_8_5_1_012(std::string& err) {
     CaptureTransport tx{};
     RTPSParticipant  p(0u, 1u, tx);
@@ -149,6 +187,10 @@ int main() {
          "§8.5.4.2/§8.5.5.1: a local endpoint the match table has no record or name room for is "
          "not recorded, has_room_for_local() says so beforehand, and removal makes room again.",
          spec_test::tc_sedp_8_5_5_1_015},
+        {"TC-SEDP-8.5.5.1-016",
+         "§8.5.5.1: renaming a local endpoint fits when its final set of names fits, counting the "
+         "octets its old names free; a refused rename leaves the record and the arena as they were.",
+         spec_test::tc_sedp_8_5_5_1_016},
         {"TC-PART-8.5.1-012",
          "§8.5.1/§8.5.4.2: the participant refuses a writer or reader the match table could not "
          "record (and SEDP so could not announce) before building it.",

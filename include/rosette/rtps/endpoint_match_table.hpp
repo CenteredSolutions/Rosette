@@ -780,10 +780,13 @@ private:
      * @brief Records a local writer or reader, its names in the arena.
      *
      * The record is the one already stored for `guid`, else a free one. A
-     * stored endpoint whose names are unchanged keeps them; otherwise the
-     * new names are interned before the old ones are released, so a refused
-     * update leaves the record as it was, and an old name another record
-     * still uses stays in the arena.
+     * stored endpoint whose names are unchanged keeps them. Otherwise the
+     * update is admitted when the new names fit in the free octets plus the
+     * octets the old names free (reclaimable_bytes()), so a rename fits a
+     * full arena whenever the final set of names does. An admitted update
+     * releases the old names, then interns the new ones; a refused update
+     * leaves the record and the arena as they were, and an old name another
+     * record still uses stays in the arena.
      *
      * @param[in,out] table     local_writers_ or local_readers_.
      * @param[in]     n         Entries in `table`.
@@ -797,10 +800,16 @@ private:
      * - Correct means: topic_of() and type_of() of the record read the names
      *   back, a name already in the arena is not stored again, and a refusal
      *   changes neither the table nor the arena.
-     * - Covered by: TC-SEDP-8.5.5.1-014, TC-SEDP-8.5.5.1-015.
+     * - Covered by: TC-SEDP-8.5.5.1-014, TC-SEDP-8.5.5.1-015, TC-SEDP-8.5.5.1-016.
      */
     LocalEndpoint* store_local(LocalEndpoint* table, uint32_t n, const LocalEndpoint& endpoint,
                                const char* topic, const char* type, bool& is_change) noexcept;
+
+    /// @brief Octets the arena frees when stored local endpoint @p slot is renamed to
+    /// @p topic and @p type: its old names that no other record refers to and that the new names
+    /// do not repeat.
+    uint32_t reclaimable_bytes(const LocalEndpoint& slot, const char* topic,
+                               const char* type) const noexcept;
 
     /// @brief Frees a stored local endpoint and its names.
     void clear_local(LocalEndpoint& l) noexcept;
