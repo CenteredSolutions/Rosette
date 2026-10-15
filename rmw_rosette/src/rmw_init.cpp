@@ -269,7 +269,8 @@ rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_alloca
  * - Correct means: `dst` equals `src` field for field except that its
  *   strings are its own copies, and finalizing both returns every byte
  *   they allocated.
- * - Covered by: rmw_rosette/test/test_init_options.cpp.
+ * - Covered by: rmw_rosette/test/test_init_options.cpp
+ *   (TC-RMW-INITOPT-002, -004, -007, -008).
  *
  * References:
  * - rmw/init_options.h (Humble), `rmw_init_options_copy`, `rmw_init_options_fini`
@@ -325,18 +326,25 @@ rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_
  * Frees `enclave` and `security_options.security_root_path` with the
  * options' allocator (see rmw_init_options_copy() for who fills them),
  * then resets the options. Options that were never initialized, or were
- * already finalized, own nothing and are only reset.
+ * already finalized, carry no implementation identifier, own nothing and
+ * are only reset. Options stamped by another rmw are rejected before any
+ * of their fields is read, because their layout and ownership rules are
+ * not this rmw's.
  *
  * @param[in,out] init_options Options to finalize; reset to the
- *   zero-initialized state on return.
+ *   zero-initialized state on return, and untouched on failure.
  * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` if `init_options` is
- *   null, or owns a string but has no valid allocator to free it with.
+ *   null, or owns a string but has no valid allocator to free it with;
+ *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` if the options are another
+ *   rmw's.
  *
  * Verification:
  * - Correct means: after rcl_init() and rcl_shutdown() / rcl_context_fini()
  *   the heap is back where it was; on the RP2040 that is the session
- *   restart check, `rcl_heap` equal from one session to the next.
- * - Covered by: rmw_rosette/test/test_init_options.cpp.
+ *   restart check, `rcl_heap` equal from one session to the next. Foreign
+ *   options come back with every field and allocation unchanged.
+ * - Covered by: rmw_rosette/test/test_init_options.cpp
+ *   (TC-RMW-INITOPT-001, -003, -005, -006).
  *
  * References:
  * - rmw/init_options.h (Humble), `rmw_init_options_fini`
@@ -346,6 +354,12 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
     if (!init_options) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_fini: null argument");
         return RMW_RET_INVALID_ARGUMENT;
+    }
+
+    if (init_options->implementation_identifier != nullptr
+        && init_options->implementation_identifier != rmw_rosette_identifier) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_fini: options of another rmw");
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
 
     const bool owns_strings = init_options->enclave != nullptr

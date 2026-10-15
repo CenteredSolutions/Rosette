@@ -27,7 +27,20 @@ namespace {
 /// Live allocations made through `counting_allocator()`.
 int g_live = 0;
 
+/// Allocations attempted so far, and the 0-based attempt that fails (-1: none fail).
+int g_attempts = 0;
+int g_fail_at = -1;
+
+/// Counts an allocation attempt and reports whether it is the one to fail.
+bool should_fail() {
+    return g_attempts++ == g_fail_at;
+}
+
 void* count_allocate(size_t size, void*) {
+    if (should_fail()) {
+        return nullptr;
+    }
+
     ++g_live;
     return std::malloc(size);
 }
@@ -42,6 +55,10 @@ void count_deallocate(void* pointer, void*) {
 
 void* count_reallocate(void* pointer, size_t size, void*) {
     if (pointer == nullptr) {
+        if (should_fail()) {
+            return nullptr;
+        }
+
         ++g_live;
     }
 
@@ -49,6 +66,10 @@ void* count_reallocate(void* pointer, size_t size, void*) {
 }
 
 void* count_zero_allocate(size_t count, size_t size, void*) {
+    if (should_fail()) {
+        return nullptr;
+    }
+
     ++g_live;
     return std::calloc(count, size);
 }
@@ -73,7 +94,11 @@ rmw_init_options_t options_with_strings() {
 
 class InitOptionsTest : public ::testing::Test {
 protected:
-    void SetUp() override { g_live = 0; }
+    void SetUp() override {
+        g_live = 0;
+        g_attempts = 0;
+        g_fail_at = -1;
+    }
 
     void TearDown() override { rmw_reset_error(); }
 };
@@ -143,6 +168,63 @@ TEST_F(InitOptionsTest, FiniOfEmptyOptionsIsANoOp) {
     rmw_init_options_t used = options_with_strings();
     EXPECT_EQ(rmw_init_options_fini(&used), RMW_RET_OK);
     EXPECT_EQ(rmw_init_options_fini(&used), RMW_RET_OK);
+    EXPECT_EQ(g_live, 0);
+}
+
+// TC-RMW-INITOPT-006: options stamped by another rmw are rejected and left exactly as found.
+TEST_F(InitOptionsTest, FiniRefusesOptionsOfAnotherRmw) {
+    rmw_init_options_t options = options_with_strings();
+    const char* const own_identifier = options.implementation_identifier;
+    options.implementation_identifier = "rmw_other_implementation";
+    char* const enclave = options.enclave;
+
+    EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_INCORRECT_RMW_IMPLEMENTATION);
+    EXPECT_EQ(g_live, 2);
+    EXPECT_EQ(options.enclave, enclave);
+    EXPECT_STREQ(options.implementation_identifier, "rmw_other_implementation");
+    rmw_reset_error();
+
+    options.implementation_identifier = own_identifier;
+    EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
+    EXPECT_EQ(g_live, 0);
+}
+
+// TC-RMW-INITOPT-007: a failed enclave duplication returns BAD_ALLOC and leaves dst untouched.
+TEST_F(InitOptionsTest, CopyReportsAnEnclaveAllocationFailure) {
+    rmw_init_options_t source = options_with_strings();
+    rmw_init_options_t destination = rmw_get_zero_initialized_init_options();
+
+    g_attempts = 0;
+    g_fail_at = 0;
+    EXPECT_EQ(rmw_init_options_copy(&source, &destination), RMW_RET_BAD_ALLOC);
+    EXPECT_EQ(g_live, 2);
+    EXPECT_EQ(destination.implementation_identifier, nullptr);
+    EXPECT_EQ(destination.enclave, nullptr);
+    EXPECT_EQ(destination.security_options.security_root_path, nullptr);
+    rmw_reset_error();
+
+    g_fail_at = -1;
+    EXPECT_EQ(rmw_init_options_fini(&source), RMW_RET_OK);
+    EXPECT_EQ(g_live, 0);
+}
+
+// TC-RMW-INITOPT-008: when the security root fails after the enclave was copied, the enclave is released.
+TEST_F(InitOptionsTest, CopyReleasesTheEnclaveWhenTheSecurityRootFails) {
+    rmw_init_options_t source = options_with_strings();
+    rmw_init_options_t destination = rmw_get_zero_initialized_init_options();
+
+    g_attempts = 0;
+    g_fail_at = 1;
+    EXPECT_EQ(rmw_init_options_copy(&source, &destination), RMW_RET_BAD_ALLOC);
+    EXPECT_GE(g_attempts, 2);
+    EXPECT_EQ(g_live, 2);  // only the source's strings remain
+    EXPECT_EQ(destination.implementation_identifier, nullptr);
+    EXPECT_EQ(destination.enclave, nullptr);
+    EXPECT_EQ(destination.security_options.security_root_path, nullptr);
+    rmw_reset_error();
+
+    g_fail_at = -1;
+    EXPECT_EQ(rmw_init_options_fini(&source), RMW_RET_OK);
     EXPECT_EQ(g_live, 0);
 }
 
