@@ -225,6 +225,34 @@ public:
 
     SocketError last_error() const noexcept override { return last_error_; }
 
+    /**
+     * @brief Makes FreeRTOS+TCP give @p semaphore whenever it queues a datagram for this socket.
+     *
+     * @param[in] semaphore A platform::Event's semaphore.
+     * @return True when the socket was bound to another semaphore before (or
+     *   none), so a datagram may already be waiting unannounced.
+     */
+    bool bind_wake_semaphore(SemaphoreHandle_t semaphore) noexcept {
+        if (!is_open() || semaphore == wake_semaphore_) {
+            return false;
+        }
+
+        (void)FreeRTOS_setsockopt(handle_, 0, FREERTOS_SO_SET_SEMAPHORE, &semaphore,
+                                  sizeof(semaphore));
+        wake_semaphore_ = semaphore;
+        return true;
+    }
+
+    /// @brief Whether a datagram is queued, without taking it.
+    bool has_datagram() noexcept {
+        uint8_t* data = nullptr;
+        return is_open()
+               && FreeRTOS_recvfrom(handle_, &data, 0u,
+                                    FREERTOS_ZERO_COPY | FREERTOS_MSG_PEEK | FREERTOS_MSG_DONTWAIT,
+                                    nullptr, nullptr)
+                      > 0;
+    }
+
 private:
     void leave_all_multicast_groups() noexcept {
         if (multicast_joined_) {
@@ -235,6 +263,7 @@ private:
     }
 
     Socket_t                  handle_ = FREERTOS_INVALID_SOCKET;
+    SemaphoreHandle_t         wake_semaphore_ = nullptr;
     SocketMulticastMembership multicast_membership_{};
     bool                      multicast_joined_ = false;
     SocketError               last_error_ = SocketError::none;
@@ -259,6 +288,23 @@ std::unique_ptr<Socket> FreeRtosSocketProvider::open(SocketDomain domain, Socket
         FreeRTOS_closesocket(handle);
     }
     return socket;
+}
+
+void FreeRtosSocketProvider::wait_readable(Socket* const* sockets, std::size_t count,
+                                           rosette::platform::Event& wake,
+                                           uint32_t                  timeout_ms) noexcept {
+    bool pending = false;
+    for (std::size_t i = 0u; i < count; ++i) {
+        // Every socket this provider hands out is a FreeRtosDatagramSocket.
+        auto* const socket = static_cast<FreeRtosDatagramSocket*>(sockets[i]);
+        if (socket != nullptr && socket->bind_wake_semaphore(wake.native_handle())) {
+            pending = pending || socket->has_datagram();
+        }
+    }
+
+    if (!pending) {
+        (void)wake.wait_for(timeout_ms);
+    }
 }
 
 }  // namespace rosette::net::freertos

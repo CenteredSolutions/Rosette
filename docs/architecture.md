@@ -163,8 +163,8 @@ stateless address autoconfiguration beside IPv4
 address and default router from the router's advertisements. The RTPS
 transport and `rmw_rosette`'s network port both reach the chip through
 `board_socket_provider()`, which hands out IPv6 UDP sockets on those parts;
-RTPS itself announces IPv4 locators. `examples/wiznet_udp_echo` with
-`tools/wiznet_udp_echo_probe.py` checks the socket path and every address the
+RTPS itself announces IPv4 locators. `examples/udp_echo` with
+`tools/udp_echo_probe.py` checks the socket path and every address the
 board holds, below any ROS layer. What the network must provide (subnet,
 multicast, ports, domain) is in [network_configuration.md](network_configuration.md).
 

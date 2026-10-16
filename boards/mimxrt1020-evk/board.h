@@ -13,12 +13,15 @@ extern "C" {
 #endif
 
 /**
- * @brief Starts the LPUART1 console, prints the reset cause, and flashes the user LED.
+ * @brief Starts the console, readies the Ethernet PHY, and flashes the user LED.
  *
  * Call once at the top of `main()`. The clock tree and the time base are
  * already running: the chip port brings them up before main()
  * (ports/chip/imxrt/chip_imxrt.cpp). The console is LPUART1, which the
- * DAPLink probe bridges to its USB virtual serial port.
+ * DAPLink probe bridges to its USB virtual serial port. Ethernet: muxes the
+ * RMII and MDIO pads, starts the ENET PLL's 50 MHz reference clock on
+ * ENET_REF_CLK, and pulses the KSZ8081's reset; the ENET itself starts when
+ * FreeRTOS+TCP initialises the interface (enet_interface.cpp).
  */
 void board_init(void);
 

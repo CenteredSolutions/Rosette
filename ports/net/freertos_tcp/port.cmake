@@ -70,3 +70,10 @@ target_sources(rosette_net PRIVATE
 # several share a name with a portable header in include/rosette/net.
 target_include_directories(rosette_net PUBLIC ${ROSETTE_ROOT})
 target_link_libraries(rosette_net PUBLIC freertos_plus_tcp)
+
+# Two pairs of static libraries call each other: FreeRTOS+TCP calls this
+# port's application hooks (random.cpp, the host-name hook), and the board
+# network calls the board's add_board_network_interface() in rosette_bsp.
+# Each library of a pair lists the other, so the linker sees both orders.
+target_link_libraries(freertos_plus_tcp PUBLIC rosette_net)
+target_link_libraries(rosette_net PUBLIC $<TARGET_NAME_IF_EXISTS:rosette_bsp>)

@@ -92,6 +92,12 @@
 #define ipconfigZERO_COPY_RX_DRIVER             0
 #define ipconfigZERO_COPY_TX_DRIVER             0
 
+// ── Socket wake-up ────────────────────────────────────────────────────────────
+// FreeRtosSocketProvider::wait_readable() points each socket's user semaphore
+// at the caller's platform::Event, which the stack gives once it has queued a
+// datagram (ports/net/freertos_tcp/socket.hpp).
+#define ipconfigSOCKET_HAS_USER_SEMAPHORE 1
+
 // ── Logging / debug ───────────────────────────────────────────────────────────
 #define ipconfigHAS_PRINTF                      0
 #define ipconfigHAS_DEBUG_PRINTF                0

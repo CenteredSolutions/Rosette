@@ -26,6 +26,12 @@
  *      Event        auto-reset wakeup; signal() is safe from any thread, core,
  *                   and (via signal_from_isr()) interrupt handler
  *      sleep_ms()   yields the caller for a duration
+ *      run_main_task(entry)
+ *                   runs the application's main loop where the OS needs
+ *                   it: under FreeRTOS a task, with the scheduler started
+ *                   (never returns); elsewhere a plain call on the calling
+ *                   thread. An application's main() calls board_init() and
+ *                   then this, so the same main() serves every OS port.
  *  - from the chip layer (ports/chip/<name>/):
  *      monotonic_us()        the single time base; never steps
  *      device_unique_id()    8 octets unique per running Rosette instance

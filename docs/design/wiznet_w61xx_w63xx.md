@@ -2,8 +2,8 @@
 
 Status: W6100 and W6300 over 1-bit SPI, IPv4 and hardware IPv6. The W6100 is
 hardware-verified on the W6100-EVB-Pico (RP2040): DHCP, IPv6 link-local and
-SLAAC global addresses, ping and UDP echo over each (`examples/wiznet_udp_echo`,
-`tools/wiznet_udp_echo_probe.py`). The W6300 builds but has not run on
+SLAAC global addresses, ping and UDP echo over each (`examples/udp_echo`,
+`tools/udp_echo_probe.py`). The W6300 builds but has not run on
 hardware. 4-bit QSPI for the W6300 is scoped below and not implemented.
 
 ## Why

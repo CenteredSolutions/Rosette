@@ -10,7 +10,7 @@ build the example's target. Board firmware lands at
 
 | Example | What it shows | Needs | Hardware-verified on |
 | --- | --- | --- | --- |
-| [`wiznet_udp_echo`](wiznet_udp_echo/main.cpp) | The network below ROS: DHCP / link-local IPv4, IPv6 link-local and SLAAC on the W6100 / W6300, UDP echo (port 7) and a status port (port 8) per family. The first thing to flash on a new board. | a WIZnet board | W6100-EVB-Pico (IPv4, IPv6 link-local and global) |
+| [`udp_echo`](udp_echo/main.cpp) | The network below ROS: DHCP / link-local IPv4, IPv6 link-local and SLAAC on the W6100 / W6300, UDP echo (port 7) and a status port (port 8) per family. The first thing to flash on a new board. | any board with a network | W6100-EVB-Pico (IPv4, IPv6 link-local and global) |
 | [`rclc_chatter`](rclc_chatter/main.cpp) | A stock `rclc` node on `rmw_rosette`: publishes `/rosette/chatter` every second, prints `/rosette/command`, reports the rcl heap. The template for your own firmware. | a WIZnet board, the C client stack for the board's CPU | W5100S-EVB-Pico2 |
 | [`rtps_chatter`](rtps_chatter/main.cpp) | The same topics on the RTPS core directly, with no `rcl`: participant, writer, reader, and hand-written CDR. The smallest ROS-visible image. | a WIZnet board | W5100S-EVB-Pico2 |
 | [`storage_demo`](storage_demo/main.cpp) | The LittleFS volume, a `DeviceConfig` record, and the `FileStore` blob API. | host (`ROSETTE_BOARD=posix`) | host |
@@ -23,13 +23,15 @@ settings that every board example shares (addresses, domain, ports) are in
 
 ## Board support
 
-| Board | `wiznet_udp_echo` | `rtps_chatter` | `rclc_chatter` |
+| Board | `udp_echo` | `rtps_chatter` | `rclc_chatter` |
 | --- | --- | --- | --- |
 | `w5100s-evb-pico2` | builds (IPv4 only) | runs | runs |
 | `w5100s-evb-pico` | builds (IPv4 only) | builds | builds with the RP2040 C client stack |
 | `w6100-evb-pico` | runs | builds | builds with the RP2040 C client stack |
 | `w6100-evb-pico2` | builds | builds | builds |
 | `w6300-evb-pico2` | builds | builds | builds |
+| `micromod-teensy-w5500` | builds (IPv4 only) | – | – |
+| `mimxrt1020-evk` | runs (IPv4, IPv6 link-local) | – | – |
 
 "Runs" means verified on the board against stock ROS 2 (or, for the echo, a
 Linux host); "builds" means the image links and has not been run.

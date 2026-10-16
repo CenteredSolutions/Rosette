@@ -92,7 +92,7 @@ build either interface and measure one against the other.
    `configMAX_SYSCALL_INTERRUPT_PRIORITY`.
 3. `ports/net/freertos_tcp/board_network.cpp`: the open item in `ports_move_plan.md` that lets any
    FreeRTOS+TCP image link.
-4. The ENET `MacDevice`, copying, with the three contract additions. Bench: DHCP, ping, `wiznet_udp_echo`'s
+4. The ENET `MacDevice`, copying, with the three contract additions. Bench: DHCP, ping, `udp_echo`'s
    counterpart, then `led_files` against `rmw_fastrtps_cpp` and `rmw_cyclonedds_cpp`. Record RAM and round-trip
    times.
 5. The lending contract and interface. Measure the same image again; the difference is the case for keeping it.

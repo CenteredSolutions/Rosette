@@ -130,8 +130,8 @@ NetworkConfig board_default_network() noexcept;
  *   tests/host/posix_board_network_test.cpp (the host backend,
  *   TC-NET-BRD-001 to TC-NET-BRD-003);
  *   examples/rtps_chatter and examples/rclc_chatter on the W5100S-EVB-Pico2
- *   (bidirectional traffic with stock Fast DDS); examples/wiznet_udp_echo
- *   with tools/wiznet_udp_echo_probe.py on the W6100-EVB-Pico (ping and UDP
+ *   (bidirectional traffic with stock Fast DDS); examples/udp_echo
+ *   with tools/udp_echo_probe.py on the W6100-EVB-Pico (ping and UDP
  *   echo on every address).
  *
  * References:
@@ -226,7 +226,7 @@ uint32_t board_ipv4_address() noexcept;
  * Verification:
  * - Correct means: every listed address is one the chip holds in SIPR,
  *   LLAR, or GUAR.
- * - Covered by: examples/wiznet_udp_echo with tools/wiznet_udp_echo_probe.py
+ * - Covered by: examples/udp_echo with tools/udp_echo_probe.py
  *   on the W6100-EVB-Pico (ping and UDP echo on every listed address).
  */
 const AddressSnapshot& board_address_snapshot() noexcept;

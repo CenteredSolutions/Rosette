@@ -12,6 +12,9 @@
  *   user LED      GPIO_AD_B0_05      GPIO1_IO05, active low
  *   PHY RST_B     GPIO_AD_B0_04      GPIO1_IO04, active low
  *   PHY INTRP     GPIO_AD_B1_06      GPIO1_IO22, active low
+ *   RMII          GPIO_AD_B0_08..15  ENET_REF_CLK1, RDATA01/00, RX_EN, RX_ER,
+ *                                    TX_EN, TDATA00/01
+ *   MDIO, MDC     GPIO_EMC_40, _41   ENET_MDIO, ENET_MDC
  *   console TX    GPIO_AD_B0_06      LPUART1_TX
  *   console RX    GPIO_AD_B0_07      LPUART1_RX
  *
@@ -30,6 +33,12 @@
 #define ROSETTE_PIN_PHY_RST ROSETTE_IMXRT_GPIO(1, 4)   ///< KSZ8081 RST_B, active low
 #define ROSETTE_PIN_PHY_INT ROSETTE_IMXRT_GPIO(1, 22)  ///< KSZ8081 INTRP, active low
 #define ROSETTE_PHY_MDIO_ADDRESS 2u                    ///< KSZ8081 PHYAD strapping
+
+// ENET DMA rings (enet_interface.cpp): each buffer is 1536 bytes of DTCM. RX
+// absorbs a burst while the receive task runs; TX holds frames the wire has
+// not taken yet.
+#define ROSETTE_ENET_RX_BUFFERS 4u
+#define ROSETTE_ENET_TX_BUFFERS 2u
 
 // ── Console ──────────────────────────────────────────────────────────────────
 #define ROSETTE_CONSOLE_LPUART LPUART1

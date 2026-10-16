@@ -10,7 +10,7 @@ stack's own addressing. What a user configures is in
 `rosette/net/board_network.hpp` is the composition every WIZnet
 firmware uses: it declares DHCP with a link-local fallback for IPv4 and, on
 parts with hardware IPv6, SLAAC for IPv6, over the pieces below.
-`wiznet_udp_echo`, `rtps_chatter`, and `rclc_chatter` call it. Firmware that
+`udp_echo`, `rtps_chatter`, and `rclc_chatter` call it. Firmware that
 needs a different address policy declares its own list the same way.
 
 ## The pieces
@@ -359,7 +359,7 @@ The config's `v6` list decides whether SLAAC runs (`board_default_network()`
 lists it on these parts). The default `ready_when` accepts the snapshot once
 IPv4 is up, so a stuck IPv6 duplicate address detection cannot hold up
 bring-up; a firmware that needs IPv6 before `rcl_init()` names that in its
-predicate (`examples/wiznet_udp_echo` waits for every family, with a
+predicate (`examples/udp_echo` waits for every family, with a
 timeout).
 
 ## Verification
@@ -387,9 +387,9 @@ providers ordered by the config, the ready predicates). All fakeable — `fake_c
 `poll(now_ms)` so their tests use plain integers, no clock hook.
 
 On hardware: DHCP acquisition is exercised by every `rtps_chatter` and
-`rclc_chatter` boot on the W5100S-EVB-Pico2, and `wiznet_udp_echo` on the
+`rclc_chatter` boot on the W5100S-EVB-Pico2, and `udp_echo` on the
 W6100-EVB-Pico acquires IPv4, IPv6 link-local, and a SLAAC global address,
-with ping and UDP echo over each (`tools/wiznet_udp_echo_probe.py`). On the
+with ping and UDP echo over each (`tools/udp_echo_probe.py`). On the
 W6100-EVB-Pico with a test DHCP server that answered only after a delay, the
 board fell back to link-local, kept echoing through failed DHCP probes, moved
 to the leased address when the server answered, and renewed it at T1 by

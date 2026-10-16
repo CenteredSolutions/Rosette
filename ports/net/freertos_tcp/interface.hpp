@@ -15,10 +15,18 @@
  * in rosette/net/mac.hpp, so this port knows no chip, and no chip driver
  * knows FreeRTOS+TCP.
  *
- * Receive wake-up goes through the platform contract: the board attaches the
- * controller's interrupt pin (attach_rx_interrupt()), whose falling edge
- * signals a platform::Event the receive task sleeps on. Without a pin the
- * task polls the device every kRxPollMs.
+ * Receive wake-up goes through the platform contract: the receive task sleeps
+ * on a platform::Event. An on-chip MAC signals it from its own interrupt
+ * (MacDevice::set_receive_event()); for a SPI controller the board attaches
+ * the controller's interrupt pin (attach_rx_interrupt()), whose falling edge
+ * signals it. With neither, the task polls the device every kRxPollMs.
+ *
+ * Link: the interface reports itself initialised only while the PHY has
+ * carrier, so FreeRTOS+TCP brings its endpoints up (and starts DHCP) only
+ * with a link. The receive task checks the PHY every kLinkPollMs while idle,
+ * which also lets the device follow a renegotiated speed and duplex, and
+ * calls FreeRTOS_NetworkDown() when carrier goes; the stack then retries
+ * initialise() until carrier returns.
  */
 
 #include <array>
@@ -76,8 +84,11 @@ public:
     /// Receive-task sleep between device polls when no interrupt pin is attached.
     static constexpr uint32_t kRxPollMs = 64u;
 
-    /// Receive-task sleep with an interrupt pin attached; bounds the cost of a lost edge.
+    /// Receive-task sleep with a receive interrupt; bounds the cost of a lost edge.
     static constexpr uint32_t kRxIdleWaitMs = 1000u;
+
+    /// Interval between PHY checks while the receive task is idle.
+    static constexpr uint32_t kLinkPollMs = 1000u;
 
     /// Receive-task pause when FreeRTOS+TCP has no network buffer free, so the IP task can return
     /// one.
@@ -163,16 +174,24 @@ public:
      * FreeRTOS+TCP calls this from the IP task at start-up and again after a
      * link-down, until it returns pdTRUE.
      *
-     * @return pdTRUE when the provider carries frames and the receive task
-     *   runs; pdFALSE when the descriptor is not filled, the provider failed
-     *   to initialise, or the task could not be created (the stack retries).
+     * @return pdTRUE when the provider carries frames, the PHY has carrier,
+     *   and the receive task runs; pdFALSE when the descriptor is not filled,
+     *   the provider failed to initialise, there is no carrier, or the task
+     *   could not be created (the stack retries).
      */
     BaseType_t initialise() {
         if ((interface_ == nullptr) || !device_.initialise(mac_address_)) {
             return pdFALSE;
         }
 
+        link_up_ = device_.phy_status().link_up;
+        if (!link_up_) {
+            return pdFALSE;
+        }
+
         if (rx_task_handle_ == nullptr) {
+            rx_interrupt_attached_ =
+                device_.set_receive_event(&rx_event_) || rx_interrupt_attached_;
             char task_name[16] = {};
             std::snprintf(task_name, sizeof(task_name), "%.12s_rx", name_.data());
             const BaseType_t ret = xTaskCreate(&rx_task_entry, task_name, 512u, this,
@@ -282,17 +301,51 @@ private:
         }
     }
 
+    /// @brief pfAddAllowedMAC: opens the device's multicast filter for one group address.
     void add_allowed_mac(const uint8_t* mac_address) noexcept {
         if ((mac_address != nullptr) && ((mac_address[0] & 0x01u) != 0u)) {
-            ++multicast_accept_refcount_;
+            device_.add_multicast(to_mac(mac_address));
         }
     }
 
+    /// @brief pfRemoveAllowedMAC: withdraws one add_allowed_mac() for the group.
     void remove_allowed_mac(const uint8_t* mac_address) noexcept {
-        if ((mac_address != nullptr) && ((mac_address[0] & 0x01u) != 0u)
-            && (multicast_accept_refcount_ > 0u)) {
-            --multicast_accept_refcount_;
+        if ((mac_address != nullptr) && ((mac_address[0] & 0x01u) != 0u)) {
+            device_.remove_multicast(to_mac(mac_address));
         }
+    }
+
+    static mac_address_type to_mac(const uint8_t* octets) noexcept {
+        mac_address_type mac{};
+        std::memcpy(mac.data(), octets, mac.size());
+        return mac;
+    }
+
+    /**
+     * @brief Checks the PHY at most every kLinkPollMs, and takes the network down when carrier
+     * goes.
+     *
+     * Verification:
+     * - Correct means: unplugging the cable brings the endpoints down within
+     *   kLinkPollMs plus one idle wait, and plugging it back in brings them
+     *   up again with a fresh DHCP exchange.
+     * - Covered by: cable pull on the MIMXRT1020-EVK.
+     *
+     * References: FreeRTOS+TCP V4 FreeRTOS_NetworkDown().
+     */
+    void poll_link() noexcept {
+        const uint32_t now = rosette::platform::monotonic_ms();
+        if (now - last_link_poll_ms_ < kLinkPollMs) {
+            return;
+        }
+
+        last_link_poll_ms_ = now;
+        const bool up = device_.phy_status().link_up;
+        if (link_up_ && !up) {
+            FreeRTOS_NetworkDown(interface_);
+        }
+
+        link_up_ = up;
     }
 
     /**
@@ -320,7 +373,10 @@ private:
         for (;;) {
             const std::size_t frame_length = device_.peek_frame_size();
             if (frame_length == 0u) {
-                (void)rx_event_.wait_for(rx_interrupt_attached_ ? kRxIdleWaitMs : kRxPollMs);
+                if (!rx_event_.wait_for(rx_interrupt_attached_ ? kRxIdleWaitMs : kRxPollMs)) {
+                    poll_link();
+                }
+
                 continue;
             }
 
@@ -365,7 +421,8 @@ private:
     TaskHandle_t             rx_task_handle_ = nullptr;
     std::array<char, 16>     name_{};
     mac_address_type         mac_address_{};
-    UBaseType_t              multicast_accept_refcount_ = 0u;
+    uint32_t                 last_link_poll_ms_ = 0u;
+    bool                     link_up_ = false;
     bool                     rx_interrupt_attached_ = false;
 };
 

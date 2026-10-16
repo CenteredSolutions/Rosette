@@ -43,9 +43,12 @@ void rosette_freertos_assert_failed(const char* file, int line);
 #define configUSE_TIME_SLICING 1
 
 // ── Heap ──────────────────────────────────────────────────────────────────────
-// heap_4: first fit with block merging. Task stacks and kernel objects only;
-// FreeRTOS+TCP's network buffers are a static array (BufferAllocation_1).
-#define configTOTAL_HEAP_SIZE ((size_t)(24 * 1024))
+// heap_4: first fit with block merging. Task stacks, kernel objects, and
+// FreeRTOS+TCP's network buffers (BufferAllocation_2, about 1.6 KiB each).
+// The heap array is the board's (board_init.c), in the OCRAM: only the CPU
+// touches it, so it can be cached, and the DTCM stays free for DMA rings.
+#define configTOTAL_HEAP_SIZE ((size_t)(64 * 1024))
+#define configAPPLICATION_ALLOCATED_HEAP 1
 
 // ── Synchronisation ───────────────────────────────────────────────────────────
 #define configUSE_MUTEXES 1

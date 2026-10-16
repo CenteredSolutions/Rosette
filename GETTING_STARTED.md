@@ -170,7 +170,7 @@ Tag_CPU_arch` prints `v8-M.mainline` for RP2350 and `v6S-M` for RP2040.
 
 `examples/rclc_chatter` is a stock `rclc` node: it publishes
 `hello from rclc #N` on `/rosette/chatter` every second and prints every string
-received on `/rosette/command`. `examples/wiznet_udp_echo` checks the network
+received on `/rosette/command`. `examples/udp_echo` checks the network
 underneath it with plain UDP. Configure one build directory per board:
 
 | | W5100S-EVB-Pico2 | W6100-EVB-Pico |
@@ -185,7 +185,7 @@ W5100S-EVB-Pico2:
 ```bash
 cmake -S . -B build-hw/pico2 -DROSETTE_BOARD=w5100s-evb-pico2 \
       -DROSETTE_ROS2_C_STACK_DIR=$PWD/build-micro-ros-pico2/firmware/mcu_ws/install
-cmake --build build-hw/pico2 --target wiznet_udp_echo rclc_chatter
+cmake --build build-hw/pico2 --target udp_echo rclc_chatter
 ```
 
 W6100-EVB-Pico:
@@ -193,7 +193,7 @@ W6100-EVB-Pico:
 ```bash
 cmake -S . -B build-hw/w6100-pico -DROSETTE_BOARD=w6100-evb-pico \
       -DROSETTE_ROS2_C_STACK_DIR=$PWD/build-micro-ros-pico/firmware/mcu_ws/install
-cmake --build build-hw/w6100-pico --target wiznet_udp_echo rclc_chatter
+cmake --build build-hw/w6100-pico --target udp_echo rclc_chatter
 ```
 
 Both boards are bare metal, powered and flashed over the Pico's USB port, and
@@ -204,7 +204,7 @@ take their Ethernet from the on-board chip.
 Flash the echo example and read the addresses it prints:
 
 ```bash
-tools/pico_uf2_flash.py build-hw/w6100-pico/examples/wiznet_udp_echo/wiznet_udp_echo.uf2 --monitor 30
+tools/pico_uf2_flash.py build-hw/w6100-pico/examples/udp_echo/udp_echo.uf2 --monitor 30
 ```
 
 ```text
@@ -214,7 +214,7 @@ tools/pico_uf2_flash.py build-hw/w6100-pico/examples/wiznet_udp_echo/wiznet_udp_
 [echo] udp/7 ipv4 open, ipv6 open; status on udp/8
 ```
 
-Then, from the ROS 2 host, `tools/wiznet_udp_echo_probe.py 192.168.1.57`
+Then, from the ROS 2 host, `tools/udp_echo_probe.py 192.168.1.57`
 pings and echoes every address the board holds. The W5100S has no IPv6, so it
 prints an IPv4 address only. If this step fails, fix the network before going
 further; [docs/network_configuration.md](docs/network_configuration.md) lists
@@ -233,7 +233,7 @@ tools/pico_uf2_flash.py build-hw/pico2/examples/rclc_chatter/rclc_chatter.uf2 --
 The first flash of a blank board needs BOOTSEL held at power-up. If your
 desktop does not mount the drive automatically, mount it
 (`udisksctl mount -b /dev/sdX1`) and the tool continues. When the USB console
-is unreliable (a VM's USB passthrough), a board running `wiznet_udp_echo`
+is unreliable (a VM's USB passthrough), a board running `udp_echo`
 can be sent to BOOTSEL over the network instead:
 `tools/pico_uf2_flash.py <uf2> --bootsel-udp 192.168.1.57`.
 
@@ -392,7 +392,7 @@ into the participant or its endpoints holds `driver.mutex()`.
 
 | Symptom | Look at |
 | --- | --- |
-| No address, or no echo | the board's console `[net]` lines; `tools/wiznet_udp_echo_probe.py`; [docs/network_configuration.md](docs/network_configuration.md#checking-the-network-below-ros) |
+| No address, or no echo | the board's console `[net]` lines; `tools/udp_echo_probe.py`; [docs/network_configuration.md](docs/network_configuration.md#checking-the-network-below-ros) |
 | Nothing discovered | Same `ROS_DOMAIN_ID` on both sides (firmware uses 0)? An `rmw_rosette` host on several networks uses its default route's interface unless `ROSETTE_INTERFACE=eth0` names the boards' one. Same IPv4 subnet, multicast delivered, UDP 7400+ open on the host's firewall ([ports](docs/network_configuration.md#what-ros-2-traffic-needs))? A stale `ros2` daemon (`ros2 daemon stop`) |
 | RP2040 firmware faults at boot | it was linked against the RP2350 C client stack (step 4) |
 | Discovery works, data does not | RTPS log level 4 shows every HEARTBEAT, ACKNACK, and DATA (`-DROSETTE_RMW_LOG_LEVEL=4` for firmware `rmw_rosette`, `-DROSETTE_RTPS_LOG_LEVEL=4` for `rosette_rtps`, `-DRMW_ROSETTE_RTPS_LOG_LEVEL=4` for the colcon package) |

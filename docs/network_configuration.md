@@ -100,7 +100,7 @@ the C++17 this tree builds with.
 A Rosette board is a DDSI-RTPS participant, the same as any Fast DDS or
 Cyclone DDS process. It uses the standard RTPS port mapping (DDSI-RTPS 2.5
 §9.6.1.1) over **IPv4**. The chip's IPv6 addresses serve UDP6 sockets
-(`wiznet_udp_echo` uses them), but `rmw_rosette` announces IPv4 locators
+(`udp_echo` uses them), but `rmw_rosette` announces IPv4 locators
 only, so ROS traffic flows over IPv4.
 
 | Traffic | Address and port (domain *d*, participant *p*) | Domain 0, *p* = 0 | Domain 42, *p* = 0 |
@@ -155,7 +155,7 @@ keeps the board's peer tables (`RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` and
 
 ## Checking the network below ROS
 
-`examples/wiznet_udp_echo` brings the network up exactly as a ROS firmware
+`examples/udp_echo` brings the network up exactly as a ROS firmware
 does and answers on plain UDP, so it separates network problems from ROS
 problems:
 
@@ -165,7 +165,7 @@ problems:
 | UDP 8 (IPv4 and IPv6) | replies with the board's addresses and echo counters; the datagram `bootsel` reboots the board into its USB bootloader |
 
 ```console
-$ tools/wiznet_udp_echo_probe.py 192.168.1.57
+$ tools/udp_echo_probe.py 192.168.1.57
 ```
 
 The probe asks the board for its addresses, then runs `ping`, `ping6`, and a

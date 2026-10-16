@@ -91,7 +91,22 @@ foreach(_var MCUX_SDK_PATH CMSIS_PATH TINYUSB_PATH)
   endif()
 endforeach()
 
+# The SDK drivers port.cmake compiles. A local SDK is used only when it holds
+# all of them, so a sparse checkout from before a driver joined the list is
+# fetched again with the new one.
+set(ROSETTE_IMXRT_SDK_DRIVERS common enet igpio lpspi lpuart pit trng)
+
+set(_imxrt_sdk_complete FALSE)
 if(MCUX_SDK_PATH AND EXISTS "${MCUX_SDK_PATH}/devices/${ROSETTE_IMXRT_DEVICE}")
+  set(_imxrt_sdk_complete TRUE)
+  foreach(_driver ${ROSETTE_IMXRT_SDK_DRIVERS})
+    if(NOT EXISTS "${MCUX_SDK_PATH}/drivers/${_driver}")
+      set(_imxrt_sdk_complete FALSE)
+    endif()
+  endforeach()
+endif()
+
+if(_imxrt_sdk_complete)
   message(STATUS "Using local MCUXpresso SDK: ${MCUX_SDK_PATH}")
 else()
   message(STATUS "Fetching MCUXpresso SDK ${ROSETTE_MCUX_SDK_GIT_TAG} "
@@ -101,15 +116,15 @@ else()
     set(_sdk "/${_sdk}")
   endif()
 
+  set(_driver_paths)
+  foreach(_driver ${ROSETTE_IMXRT_SDK_DRIVERS})
+    list(APPEND _driver_paths "${_sdk}/drivers/${_driver}/")
+  endforeach()
+
   _imxrt_fetch_sparse(rosette_mcux_sdk
     ${ROSETTE_MCUX_SDK_GIT_REPOSITORY} ${ROSETTE_MCUX_SDK_GIT_TAG} ${ROSETTE_MCUX_SDK_GIT_COMMIT}
     "${_sdk}/devices/${ROSETTE_IMXRT_DEVICE}/"
-    "${_sdk}/drivers/common/"
-    "${_sdk}/drivers/igpio/"
-    "${_sdk}/drivers/lpspi/"
-    "${_sdk}/drivers/lpuart/"
-    "${_sdk}/drivers/pit/"
-    "${_sdk}/drivers/trng/"
+    ${_driver_paths}
     "${_sdk}/boards/${ROSETTE_IMXRT_SDK_BOARD}/clock_config.*"
     "/COPYING-BSD-3"
     "/LICENSE*")

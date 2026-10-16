@@ -13,15 +13,17 @@
  *  - this header defines the contract and nothing else; it names no RTOS,
  *    no IP stack, and no chip;
  *  - a MAC provider implements it against hardware, for example the WIZnet
- *    chip in MACRAW mode (ports/net/wiznet/macraw_device.hpp);
+ *    chip in MACRAW mode (ports/net/wiznet/macraw_device.hpp) or the i.MX RT
+ *    ENET (ports/chip/imxrt/imxrt_enet_mac_device.hpp);
  *  - an IP-stack port consumes it, for example the FreeRTOS+TCP network
  *    interface (ports/net/freertos_tcp/interface.hpp), which is
  *    a template over the provider type and owns the provider by value.
  *
  * A board composes the two, e.g.
  * `freertos::NetworkInterface<wiznet::WiznetMacrawDevice<Chip, Bus>>`, and
- * wires the controller's interrupt pin to the consumer. Neither the provider
- * nor the consumer knows the other's concrete type.
+ * wires a SPI controller's interrupt pin to the consumer; an on-chip MAC
+ * signals the consumer from its own interrupt (set_receive_event()). Neither
+ * the provider nor the consumer knows the other's concrete type.
  *
  * The interface mirrors rosette::net::AddressProvider in style: a small set
  * of pure virtual operations and no compile-time capability probing. A
@@ -33,6 +35,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+
+namespace rosette::platform {
+class Event;
+}  // namespace rosette::platform
 
 namespace rosette::net {
 
@@ -74,19 +80,25 @@ struct PhyStatus {
  * hand down frames and query link state.
  *
  * Receive notification: a consumer drains the receive queue with
- * peek_frame_size() and receive_frame() until it is empty, then sleeps until
- * the controller's interrupt line falls (or a poll interval passes, on a
- * board with no line). A provider whose controller has an interrupt line
- * must leave it so that any frame queued after receive_frame() returns
- * produces a fresh falling edge. Which GPIO carries that line is a board
- * fact, so the provider never attaches it.
+ * peek_frame_size() and receive_frame() until it is empty, then sleeps on a
+ * platform::Event until a frame arrives (or a poll interval passes). Two
+ * kinds of provider signal it. An on-chip MAC with its own interrupt signals
+ * the event from that interrupt (set_receive_event()). A SPI controller
+ * cannot: its interrupt line is a GPIO, a board fact, so the board attaches
+ * the line to the consumer instead, and the provider must leave the line so
+ * that any frame queued after receive_frame() returns produces a fresh
+ * falling edge.
+ *
+ * Multicast: a MAC that filters multicast frames in hardware passes only the
+ * groups the consumer has asked for (add_multicast()); one that passes every
+ * multicast frame treats those calls as no-ops.
  *
  * Lifetime and threading: a MacDevice is constructed once and lives for the
  * duration of the network stack. receive_frame() and peek_frame_size() run
  * on the network interface's RX task; send_frame() runs on the IP task and
- * the IGMP output path. Implementations must make those two call sites safe
- * to run concurrently, either lock-free (independent controller sockets) or
- * behind the bus mutex.
+ * the IGMP output path; phy_status() and the multicast calls run on either.
+ * Implementations must make those call sites safe to run concurrently,
+ * either lock-free (independent controller sockets) or behind a mutex.
  */
 class MacDevice {
 public:
@@ -170,11 +182,51 @@ public:
     virtual std::size_t peek_frame_size() noexcept = 0;
 
     /**
-     * @brief Current PHY link state.
+     * @brief Current PHY link state, with the MAC following what the PHY negotiated.
+     *
+     * The consumer calls it on every idle wake of its receive task and
+     * whenever the IP stack asks for the link. A MAC whose speed and duplex
+     * are programmed separately from the PHY's (an on-chip MAC over RMII)
+     * reprograms them here when the negotiated values change, so frames keep
+     * flowing after the link partner renegotiates.
      *
      * @return A PhyStatus snapshot for the controller's link.
      */
     virtual PhyStatus phy_status() noexcept = 0;
+
+    /**
+     * @brief Hands the device the event to signal when a frame arrives.
+     *
+     * Called once by the consumer before its receive task starts. A device
+     * with its own receive interrupt signals @p event from it
+     * (platform::Event::signal_from_isr()) for every frame queued after the
+     * consumer last found the queue empty.
+     *
+     * @param[in] event The consumer's receive event; it outlives the device.
+     * @return True when the device signals @p event itself; false when it has
+     *   no interrupt of its own, in which case the board attaches the
+     *   controller's interrupt line to the consumer, or the consumer polls.
+     */
+    virtual bool set_receive_event(rosette::platform::Event* event) noexcept = 0;
+
+    /**
+     * @brief Accepts frames addressed to one multicast MAC address.
+     *
+     * The consumer calls it once per group join (IPv4 01:00:5e:..., IPv6
+     * 33:33:...), and remove_multicast() once per leave. A hardware hash
+     * filter can map two groups to one bucket, so the device counts requests
+     * per bucket and closes a bucket only when its last group leaves.
+     *
+     * @param[in] group A multicast address (I/G bit set).
+     */
+    virtual void add_multicast(const MacAddress& group) noexcept = 0;
+
+    /**
+     * @brief Withdraws one add_multicast() request for @p group.
+     *
+     * @param[in] group An address passed to add_multicast() earlier.
+     */
+    virtual void remove_multicast(const MacAddress& group) noexcept = 0;
 
 protected:
     MacDevice() = default;

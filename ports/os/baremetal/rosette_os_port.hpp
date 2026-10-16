@@ -144,4 +144,16 @@ inline void sleep_ms(uint32_t ms) noexcept {
     }
 }
 
+/**
+ * @brief Runs @p entry, the application's main loop, on the calling thread.
+ *
+ * There is no scheduler to start, so this is a plain call; see
+ * platform.hpp for the contract.
+ *
+ * @param[in] entry The application's main loop.
+ */
+inline void run_main_task(void (*entry)()) noexcept {
+    entry();
+}
+
 }  // namespace rosette::platform

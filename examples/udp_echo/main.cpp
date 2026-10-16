@@ -2,13 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 /**
- * @file examples/wiznet_udp_echo/main.cpp
- * @brief RFC 862 UDP echo on a WIZnet board, over IPv4 and hardware IPv6.
+ * @file examples/udp_echo/main.cpp
+ * @brief RFC 862 UDP echo over IPv4 and IPv6, on any board with a network.
  *
- * The smallest end-to-end check of the chip driver below every ROS layer: the
- * board brings its network up (DHCP or IPv4 link-local; on the W6100 / W6300
- * also IPv6 SLAAC), opens one UDP socket per family on port 7, and returns
- * every datagram to its sender. Both rmw_rosette and the micro-ROS agent
+ * The smallest end-to-end check of the board's network below every ROS layer:
+ * the board brings its network up (DHCP or IPv4 link-local, and IPv6 SLAAC
+ * where the network has IPv6: the W6100 / W6300, FreeRTOS+TCP), opens UDP
+ * port 7, and returns every datagram to its sender. It opens one socket per
+ * family, or one socket for both where the provider is dual-stack
+ * (SocketProvider::dual_stack_sockets(): FreeRTOS+TCP), and counts echoes by
+ * the sender's family either way. Both rmw_rosette and the micro-ROS agent
  * client sit on exactly this socket path, so what passes here passes for them.
  *
  *   - prints the IPv4 address, and the IPv6 link-local and global addresses as
@@ -19,15 +22,16 @@
  *     (on an RP2040 / RP2350 the datagram `bootsel` restarts the board into its
  *     USB bootloader for reflashing);
  *   - sets its wall clock by SNTP from the server named at configure time
- *     (`-DWIZNET_UDP_ECHO_NTP_SERVER=<IPv4>`), then from any server DHCP
+ *     (`-DUDP_ECHO_NTP_SERVER=<IPv4>`), then from any server DHCP
  *     offers, so a host can compare the `clock` status line with its own.
  *
  * Sleeping between datagrams uses the provider's wait_readable() on the
- * receive event the chip's INT pin signals, the same wake path the RTPS
- * participant driver uses, so a round trip far below the one-second wait
- * shows that INT reaches the MCU.
+ * receive event the network signals (a WIZnet chip's INT pin, the FreeRTOS+TCP
+ * socket semaphore), the same wake path the RTPS participant driver uses, so
+ * a round trip far below the one-second wait shows that the wake reaches the
+ * receive loop.
  *
- * From a host on the same link: tools/wiznet_udp_echo_probe.py <board IPv4>
+ * From a host on the same link: tools/udp_echo_probe.py <board IPv4>
  * (ping, ping6, and echo round trips for every address the board prints).
  *
  * Verification: every probe datagram comes back unchanged to its sender over
@@ -60,25 +64,31 @@ namespace {
 namespace net = rosette::net;
 namespace pf = rosette::platform;
 
-constexpr uint16_t kEchoPort = 7u;
+constexpr uint16_t    kEchoPort = 7u;
 /// Receive buffering the echo sockets ask for: a full 1472-octet datagram
 /// fits. A socket that asks for nothing gets the smallest free buffer, which
 /// on the W5100S is 1 KiB.
 constexpr std::size_t kEchoReceiveBytes = 2048u;
 /// Any datagram here is answered with the board's addresses and counters.
-constexpr uint16_t kStatusPort = 8u;
-constexpr uint32_t kWaitMs = 1000u;
-constexpr uint32_t kReportPeriodMs = 5000u;
+constexpr uint16_t    kStatusPort = 8u;
+constexpr uint32_t    kWaitMs = 1000u;
+constexpr uint32_t    kReportPeriodMs = 5000u;
 /// Longest wait for every family at boot; IPv6 DAD takes about a second.
-constexpr uint32_t kBringUpTimeoutMs = 30000u;
+constexpr uint32_t    kBringUpTimeoutMs = 30000u;
 
-/// One echo socket and its counters.
-struct EchoSocket {
-    const char* family = "";
-    std::unique_ptr<net::Socket> socket;
+/// Echo counters for the datagrams of one family's peers.
+struct EchoCounts {
     uint32_t echoed = 0u;
     uint32_t errors = 0u;
 };
+
+/// Counters by sender family: [0] IPv4 peers, [1] IPv6 peers.
+std::array<EchoCounts, 2> g_counts;
+
+/// @brief The g_counts entry for peers of `domain`.
+EchoCounts& counts_for(net::SocketDomain domain) {
+    return g_counts[domain == net::SocketDomain::ipv6 ? 1u : 0u];
+}
 
 std::array<uint8_t, 1500> g_buffer;
 
@@ -116,28 +126,35 @@ std::unique_ptr<net::Socket> open_echo_socket(net::SocketProvider& sockets,
     return s;
 }
 
-/// @brief Returns every waiting datagram to its sender.
-void serve(EchoSocket& e) {
-    if (!e.socket) {
+/**
+ * @brief Returns every waiting datagram to its sender.
+ *
+ * @param[in] s      An echo socket, or null when it could not be opened.
+ * @param[in] domain The socket's own family, which a receive error is
+ *   counted against; an echo is counted against its sender's family.
+ */
+void serve(net::Socket* s, net::SocketDomain domain) {
+    if (s == nullptr) {
         return;
     }
 
     for (;;) {
         net::SocketAddress from{};
-        const auto n = e.socket->recv_from(g_buffer.data(), g_buffer.size(), &from);
-        if (n < 0 && e.socket->last_error() == net::SocketError::would_block) {
+        const auto         n = s->recv_from(g_buffer.data(), g_buffer.size(), &from);
+        if (n < 0 && s->last_error() == net::SocketError::would_block) {
             return;
         }
 
         if (n <= 0) {
-            ++e.errors;
+            ++counts_for(domain).errors;
             return;
         }
 
-        if (e.socket->send_to(g_buffer.data(), static_cast<std::size_t>(n), from) == n) {
-            ++e.echoed;
+        EchoCounts& counts = counts_for(from.domain);
+        if (s->send_to(g_buffer.data(), static_cast<std::size_t>(n), from) == n) {
+            ++counts.echoed;
         } else {
-            ++e.errors;
+            ++counts.errors;
         }
     }
 }
@@ -147,7 +164,7 @@ void serve(EchoSocket& e) {
  *
  * The board's default config is ready on IPv4 alone; this example waits for
  * every family it echoes on, so the first status reply already lists them
- * all for tools/wiznet_udp_echo_probe.py.
+ * all for tools/udp_echo_probe.py.
  *
  * @param[in] snapshot The board's current addresses.
  * @return Whether every family the board runs holds an address.
@@ -167,14 +184,14 @@ bool every_family_up(const net::AddressSnapshot& snapshot) {
  *
  * @param[out] out Text buffer.
  * @param[in]  cap Its size.
- * @param[in]  v4  IPv4 echo socket counters.
- * @param[in]  v6  IPv6 echo socket counters.
  * @return Length written, excluding the terminator.
  */
-int format_status(char* out, int cap, const EchoSocket& v4, const EchoSocket& v6) {
-    const uint32_t a = net::board_ipv4_address();
-    char ll[48] = "none";
-    char gl[48] = "none";
+int format_status(char* out, int cap) {
+    const EchoCounts& v4 = g_counts[0];
+    const EchoCounts& v6 = g_counts[1];
+    const uint32_t    a = net::board_ipv4_address();
+    char              ll[48] = "none";
+    char              gl[48] = "none";
     for (const net::AddressEntry& entry : net::board_address_snapshot().v6.addresses) {
         char* text = entry.link_local() ? ll : gl;
         net::inet::ntop6(entry.address.data(), text, sizeof(ll));
@@ -212,13 +229,13 @@ int format_status(char* out, int cap, const EchoSocket& v4, const EchoSocket& v6
  * This is a development convenience of this example: anyone on the link can
  * send it.
  */
-void serve_status(net::Socket* s, const EchoSocket& v4, const EchoSocket& v6) {
+void serve_status(net::Socket* s) {
     if (s == nullptr) {
         return;
     }
 
     net::SocketAddress from{};
-    std::ptrdiff_t got = 0;
+    std::ptrdiff_t     got = 0;
     while ((got = s->recv_from(g_buffer.data(), g_buffer.size(), &from)) >= 0) {
 #if defined(ROSETTE_CHIP_RP2)
         if (got == 7 && std::memcmp(g_buffer.data(), "bootsel", 7) == 0) {
@@ -228,10 +245,75 @@ void serve_status(net::Socket* s, const EchoSocket& v4, const EchoSocket& v6) {
         }
 #endif
 
-        char text[512];
-        const int n = format_status(text, sizeof(text), v4, v6);
+        char      text[512];
+        const int n = format_status(text, sizeof(text));
         if (n > 0) {
             (void)s->send_to(text, static_cast<std::size_t>(n), from);
+        }
+    }
+}
+
+/**
+ * @brief The application: bring the network up, then echo and report for ever.
+ *
+ * Runs where the OS needs it (platform::run_main_task()): on a bare-metal
+ * board straight from main(), under FreeRTOS as a task once the scheduler
+ * runs, since bring-up sleeps while the IP task works.
+ */
+void run_echo() {
+    pf::sleep_ms(1500u);  // give a USB console time to enumerate
+    std::printf("\n[echo] udp_echo\n");
+
+    net::NetworkConfig network = net::board_default_network();
+    network.ready_when = every_family_up;
+    network.ready_timeout_ms = kBringUpTimeoutMs;  // then echo on whatever is up
+    // A configured server is static configuration, so SNTP runs on any build that names one.
+    if (net::inet::make_socket_address_v4(UDP_ECHO_NTP_SERVER, net::kNtpServerPort,
+                                          network.time.server)) {
+        network.time.enabled = true;
+    }
+
+    (void)net::bring_up_board_network("rosette-echo", network);
+    net::SocketProvider& sockets = net::board_socket_provider();
+
+    // A dual-stack provider carries both families on one socket per port and
+    // will not bind a second; otherwise each family has its own socket.
+    const bool dual = sockets.dual_stack_sockets();
+    auto echo4 = open_echo_socket(sockets, net::SocketDomain::ipv4, kEchoPort, kEchoReceiveBytes);
+    auto echo6 =
+        dual ? nullptr
+             : open_echo_socket(sockets, net::SocketDomain::ipv6, kEchoPort, kEchoReceiveBytes);
+    auto status4 = open_echo_socket(sockets, net::SocketDomain::ipv4, kStatusPort, 0u);
+    auto status6 =
+        dual ? nullptr : open_echo_socket(sockets, net::SocketDomain::ipv6, kStatusPort, 0u);
+    if (dual) {
+        std::printf("[echo] udp/%u ipv4+ipv6 %s; status on udp/%u\n", kEchoPort,
+                    echo4 ? "open" : "unavailable", kStatusPort);
+    } else {
+        std::printf("[echo] udp/%u ipv4 %s, ipv6 %s; status on udp/%u\n", kEchoPort,
+                    echo4 ? "open" : "unavailable", echo6 ? "open" : "unavailable", kStatusPort);
+    }
+
+    pf::Event wake;
+    sockets.set_receive_event(&wake);
+    net::Socket* const watch[] = {echo4.get(), echo6.get(), status4.get(), status6.get()};
+
+    uint32_t next_report = pf::monotonic_ms() + kReportPeriodMs;
+    for (;;) {
+        sockets.wait_readable(watch, 4u, wake, kWaitMs);
+        serve(echo4.get(), net::SocketDomain::ipv4);
+        serve(echo6.get(), net::SocketDomain::ipv6);
+        serve_status(status4.get());
+        serve_status(status6.get());
+
+        const uint32_t now = pf::monotonic_ms();
+        net::poll_board_network(now);
+        if (static_cast<int32_t>(now - next_report) >= 0) {
+            next_report += kReportPeriodMs;
+            char text[512];
+            if (format_status(text, sizeof(text)) > 0) {
+                std::printf("[echo] %s\n", text);
+            }
         }
     }
 }
@@ -240,51 +322,6 @@ void serve_status(net::Socket* s, const EchoSocket& v4, const EchoSocket& v6) {
 
 int main() {
     board_init();
-    pf::sleep_ms(1500u);  // give a USB console time to enumerate
-    std::printf("\n[echo] wiznet_udp_echo\n");
-
-    net::NetworkConfig network = net::board_default_network();
-    network.ready_when = every_family_up;
-    network.ready_timeout_ms = kBringUpTimeoutMs;  // then echo on whatever is up
-    // A configured server is static configuration, so SNTP runs on any build that names one.
-    if (net::inet::make_socket_address_v4(WIZNET_UDP_ECHO_NTP_SERVER, net::kNtpServerPort,
-                                          network.time.server)) {
-        network.time.enabled = true;
-    }
-
-    (void)net::bring_up_board_network("rosette-echo", network);
-    net::SocketProvider& sockets = net::board_socket_provider();
-
-    EchoSocket v4{"ipv4",
-                  open_echo_socket(sockets, net::SocketDomain::ipv4, kEchoPort, kEchoReceiveBytes)};
-    EchoSocket v6{"ipv6",
-                  open_echo_socket(sockets, net::SocketDomain::ipv6, kEchoPort, kEchoReceiveBytes)};
-    auto status4 = open_echo_socket(sockets, net::SocketDomain::ipv4, kStatusPort, 0u);
-    auto status6 = open_echo_socket(sockets, net::SocketDomain::ipv6, kStatusPort, 0u);
-    std::printf("[echo] udp/%u ipv4 %s, ipv6 %s; status on udp/%u\n", kEchoPort,
-                v4.socket ? "open" : "unavailable", v6.socket ? "open" : "unavailable",
-                kStatusPort);
-
-    pf::Event wake;
-    sockets.set_receive_event(&wake);
-    net::Socket* const watch[] = {v4.socket.get(), v6.socket.get(), status4.get(), status6.get()};
-
-    uint32_t next_report = pf::monotonic_ms() + kReportPeriodMs;
-    for (;;) {
-        sockets.wait_readable(watch, 4u, wake, kWaitMs);
-        serve(v4);
-        serve(v6);
-        serve_status(status4.get(), v4, v6);
-        serve_status(status6.get(), v4, v6);
-
-        const uint32_t now = pf::monotonic_ms();
-        net::poll_board_network(now);
-        if (static_cast<int32_t>(now - next_report) >= 0) {
-            next_report += kReportPeriodMs;
-            char text[512];
-            if (format_status(text, sizeof(text), v4, v6) > 0) {
-                std::printf("[echo] %s\n", text);
-            }
-        }
-    }
+    pf::run_main_task(&run_echo);
+    return 0;
 }

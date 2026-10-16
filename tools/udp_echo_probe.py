@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
 # SPDX-License-Identifier: Apache-2.0
-"""Probe a board running examples/wiznet_udp_echo over every address it holds.
+"""Probe a board running examples/udp_echo over every address it holds.
 
 Architecture:
     For each board address (IPv4, IPv6 link-local, IPv6 global) the probe
     runs two checks from this host on the same link. The IPv6 addresses are
     asked from the firmware's status port (UDP 8) unless given with --ipv6.
 
-    1. ICMP echo (`ping` / `ping -6`). The WIZnet chip answers these in
-       silicon, so a reply proves the address is programmed on the chip and
-       neighbor discovery (ARP or IPv6 ND) resolves it.
-    2. UDP echo (RFC 862, port 7). Datagrams of several sizes up to the
-       1472-octet hardware-UDP limit (1452 for IPv6) go to the firmware, which
-       returns each one from the socket of the matching family. A reply proves
-       the driver's receive header decoding, send path, and source address
-       selection for that family; the round-trip time shows whether the chip's
-       INT pin wakes the firmware (well under its 1 s idle wait) or not.
+    1. ICMP echo (`ping` / `ping -6`). The board's network answers these
+       below the firmware (a WIZnet chip in silicon, FreeRTOS+TCP in its IP
+       task), so a reply proves the address is configured and neighbor
+       discovery (ARP or IPv6 ND) resolves it.
+    2. UDP echo (RFC 862, port 7). Datagrams of up to 1024 octets go to the
+       firmware, which returns each one. A reply proves the receive path, the
+       send path, and source address selection for that family; the
+       round-trip time shows whether a datagram wakes the firmware's receive
+       loop (well under its 1 s idle wait) or not.
 
     Link-local IPv6 needs a scope: the interface is taken from --iface, or
     from the host's IPv4 route to the board.
@@ -27,10 +27,10 @@ Verification:
 
 References:
     RFC 862 (Echo Protocol); RFC 4291 §2.5.6 (link-local scope);
-    W6100 datasheet §SLCR (hardware ICMPv6).
+    W6100 datasheet, SLCR register (hardware ICMPv6).
 
 Usage:
-    tools/wiznet_udp_echo_probe.py 192.168.32.79
+    tools/udp_echo_probe.py 192.168.32.79
 """
 
 from __future__ import annotations

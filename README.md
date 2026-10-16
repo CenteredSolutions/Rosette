@@ -76,7 +76,7 @@ $ ros2 node list
 | Messages up to 64 KB through a link that drops datagrams over 1472 octets | `tests/ros2/run_rmw_frag_loopback.sh` |
 | Stock `ros2 node list` / `node info` show Rosette nodes | `ros_discovery_info`, same harness |
 | A stock `rclc` node on an RP2350 + W5100S board, no RTOS, talking to unconfigured Fast DDS; rcl heap steady at ~4 KB | `examples/rclc_chatter` on the W5100S-EVB-Pico2 |
-| Dual-stack networking on an RP2040 + W6100 board: DHCP, IPv6 link-local and SLAAC global, ping and UDP echo over each | `examples/wiznet_udp_echo` on the W6100-EVB-Pico |
+| Dual-stack networking on an RP2040 + W6100 board: DHCP, IPv6 link-local and SLAAC global, ping and UDP echo over each | `examples/udp_echo` on the W6100-EVB-Pico |
 | DDSI-RTPS protocol statements, by spec section | `tests/spec` (`TC-<AREA>-<section>-<seq>`) |
 
 ### Known limitations
@@ -127,11 +127,12 @@ Select a board at configure time with `-DROSETTE_BOARD=<name>`.
 | --- | --- | --- | --- | --- | --- |
 | `posix` | host | BSD sockets | POSIX | host: `RMW_IMPLEMENTATION=rmw_rosette` | – |
 | `w5100s-evb-pico2` | RP2350 | W5100S hardware UDP | none | ✔ runs | ✔ runs |
-| `w6100-evb-pico` | RP2040 | W6100 hardware UDP, IPv4 + IPv6, SPI | none | builds (RP2040 C client stack); not run on hardware | builds; `wiznet_udp_echo` runs (IPv4, IPv6 link-local and SLAAC global) |
+| `w6100-evb-pico` | RP2040 | W6100 hardware UDP, IPv4 + IPv6, SPI | none | builds (RP2040 C client stack); not run on hardware | builds; `udp_echo` runs (IPv4, IPv6 link-local and SLAAC global) |
 | `w6100-evb-pico2` | RP2350 | W6100 hardware UDP, IPv4 + IPv6, SPI | none | builds; not run on hardware | builds; not run on hardware |
 | `w6300-evb-pico2` | RP2350 | W6300 hardware UDP, single-lane QSPI | none | builds; not run on hardware | builds; not run on hardware |
 | `w5100s-evb-pico` | RP2040 | W5100S hardware UDP | none | builds (RP2040 C client stack); not run on hardware | builds |
-| `micromod-teensy-w5500` | i.MX RT1062 | W5500 hardware UDP, IPv4, SPI | none | – | –; `wiznet_udp_echo` builds, not run on hardware |
+| `micromod-teensy-w5500` | i.MX RT1062 | W5500 hardware UDP, IPv4, SPI | none | – | –; `udp_echo` builds, not run on hardware |
+| `mimxrt1020-evk` | i.MX RT1021 | on-chip ENET + KSZ8081 PHY, FreeRTOS+TCP, IPv4 + IPv6 | FreeRTOS | – | –; `udp_echo` runs (IPv4 DHCP, IPv6 link-local) |
 
 `posix` is the default board on macOS; `w5100s-evb-pico2` elsewhere. "Runs"
 means verified on the board against stock ROS 2; "builds" means the image
@@ -175,8 +176,8 @@ first with the echo example:
 ```bash
 cmake -S . -B build-hw/w6100-pico -DROSETTE_BOARD=w6100-evb-pico \
       -DROSETTE_ROS2_C_STACK_DIR=$PWD/build-micro-ros-pico/firmware/mcu_ws/install
-cmake --build build-hw/w6100-pico --target wiznet_udp_echo rclc_chatter
-tools/pico_uf2_flash.py build-hw/w6100-pico/examples/wiznet_udp_echo/wiznet_udp_echo.uf2 --monitor 30
+cmake --build build-hw/w6100-pico --target udp_echo rclc_chatter
+tools/pico_uf2_flash.py build-hw/w6100-pico/examples/udp_echo/udp_echo.uf2 --monitor 30
 ```
 
 [GETTING_STARTED.md](GETTING_STARTED.md) walks through each step: installing
@@ -197,7 +198,7 @@ starting your own firmware project.
 | `cmake/` | board selection, port lookup, RTPS and firmware build modules, dependency fetchers |
 | `examples/` | firmware and host examples, current and planned: [examples/README.md](examples/README.md) |
 | `tests/` | `spec` (conformance), `loopback`, `host`, `platform`, `ros2` (interop) |
-| `tools/` | `pico_uf2_flash.py` (flash a board, follow its console), `wiznet_udp_echo_probe.py` (ping and echo every board address) |
+| `tools/` | `pico_uf2_flash.py` (flash a board, follow its console), `udp_echo_probe.py` (ping and echo every board address) |
 
 ## Documentation
 

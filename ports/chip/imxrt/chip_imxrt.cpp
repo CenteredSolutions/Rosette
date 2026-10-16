@@ -140,7 +140,7 @@ void dispatch_falling_edges(uint32_t port_number) noexcept {
  * Verification:
  * - Correct means: each falling edge on the pin calls the handler once, and
  *   a second attach of the pin replaces the first.
- * - Covered by: examples/wiznet_udp_echo on the micromod-teensy-w5500 board
+ * - Covered by: examples/udp_echo on the micromod-teensy-w5500 board
  *   (the boot log does not print "INT not attached").
  *
  * References: i.MX RT1060 Reference Manual §12.5 (GPIO_ICR1/2, GPIO_IMR, GPIO_ISR).

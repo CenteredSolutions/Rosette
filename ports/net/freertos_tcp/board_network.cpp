@@ -248,13 +248,22 @@ void BoardNetwork::start(const NetworkConfig& config) noexcept {
  *
  * Each up endpoint with a non-zero address becomes one entry of its family.
  * The IPv4 source is `manual` for a fixed address, `zeroconf` for a
- * 169.254/16 address, and `dhcp` otherwise; IPv6 entries are `slaac`.
+ * 169.254/16 address, and `dhcp` otherwise; IPv6 entries are `slaac`. A
+ * router-discovery endpoint counts only once a router has answered: when
+ * none does, FreeRTOS+TCP marks it up anyway (eRAStateFailed) on its default
+ * settings, an unspecified prefix with a random interface ID, which is no
+ * SLAAC address (RFC 4862 §5.5.3 forms one only from an advertised prefix).
  *
  * Verification:
- * - Correct means: every listed address is one an up endpoint holds, and an
- *   endpoint going down (link loss) removes its address on the next poll.
+ * - Correct means: every listed address is one an up endpoint holds, an
+ *   endpoint going down (link loss) removes its address on the next poll,
+ *   and on a link with no router only the fe80:: address is listed.
  * - Covered by: bring-up on the MIMXRT1020-EVK (the `[net]` address lines
- *   match the DHCP server's lease table).
+ *   match the DHCP server's lease table; tools/udp_echo_probe.py reads the
+ *   list from the status port and reaches every address on it).
+ *
+ * References: RFC 4862 §5.5.3 (prefix information); FreeRTOS+TCP
+ * FreeRTOS_RA.c, xRAProcess_HandleWaitStates().
  */
 void BoardNetwork::refresh_snapshot() noexcept {
     snapshot.active = started;
@@ -280,6 +289,12 @@ void BoardNetwork::refresh_snapshot() noexcept {
         }
 #if ROSETTE_FREERTOS_TCP_SLAAC
         else {
+            // With no router heard, the stack still brings the endpoint up on its fallback
+            // settings: no prefix and a random interface ID, which nothing on the link reaches.
+            if (ep->bits.bWantRA != 0u && ep->xRAData.bits.bRouterReplied == 0u) {
+                continue;
+            }
+
             std::memcpy(address.data(), ep->ipv6_settings.xIPAddress.ucBytes, address.size());
             if (address != std::array<uint8_t, 16>{}) {
                 (void)snapshot.v6.addresses.add(

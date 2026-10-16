@@ -95,6 +95,10 @@ public:
     /// @brief Clears a pending signal without waiting; returns whether one was pending.
     bool consume() noexcept { return xSemaphoreTake(handle_, 0) == pdTRUE; }
 
+    /// @brief The binary semaphore underneath, for FreeRTOS code that gives it directly
+    /// (FreeRTOS+TCP's FREERTOS_SO_SET_SEMAPHORE); giving it is signal().
+    SemaphoreHandle_t native_handle() const noexcept { return handle_; }
+
 private:
 #if configSUPPORT_STATIC_ALLOCATION
     StaticSemaphore_t storage_{};
@@ -108,6 +112,45 @@ private:
 inline void sleep_ms(uint32_t ms) noexcept {
     const TickType_t ticks = pdMS_TO_TICKS(ms);
     vTaskDelay((ticks == 0 && ms > 0) ? 1 : ticks);  // never round a real delay to a no-op
+}
+
+/// Stack of the task run_main_task() creates, in words; a board may set it in FreeRTOSConfig.h.
+#ifndef ROSETTE_FREERTOS_MAIN_STACK_WORDS
+#  define ROSETTE_FREERTOS_MAIN_STACK_WORDS 2048u
+#endif
+
+/**
+ * @brief Runs @p entry, the application's main loop, as a FreeRTOS task, and starts the scheduler.
+ *
+ * The task has ROSETTE_FREERTOS_MAIN_STACK_WORDS of stack from the kernel's
+ * heap and the priority just above idle, below the IP and network receive
+ * tasks, so the stack's work preempts the application's. If @p entry
+ * returns, its task is deleted. Never returns: the scheduler runs from here
+ * on, and if it cannot start (no heap for the idle task) the kernel's
+ * malloc-failed hook halts with a message first.
+ *
+ * @param[in] entry The application's main loop.
+ *
+ * Verification:
+ * - Correct means: @p entry runs with the scheduler started, so its
+ *   sleep_ms() and Event waits block in the kernel.
+ * - Covered by: tests/platform/platform_contract_test.cpp (EventCrossTask)
+ *   on the MIMXRT1020-EVK.
+ *
+ * References: FreeRTOS xTaskCreate(), vTaskStartScheduler().
+ */
+inline void run_main_task(void (*entry)()) noexcept {
+    static void (*main_entry)() = nullptr;
+    main_entry = entry;
+    (void)xTaskCreate(
+        [](void*) {
+            main_entry();
+            vTaskDelete(nullptr);
+        },
+        "main", ROSETTE_FREERTOS_MAIN_STACK_WORDS, nullptr, tskIDLE_PRIORITY + 1, nullptr);
+    vTaskStartScheduler();
+    for (;;) {
+    }
 }
 
 }  // namespace rosette::platform
