@@ -128,6 +128,8 @@ const char* describe(ConfigError error) noexcept {
             return "static_ipv4 listed without static_v4.address";
         case ConfigError::no_ready_predicate:
             return "ready_when is null";
+        case ConfigError::unsupported_order:
+            return "this backend cannot run the listed methods in this order";
     }
 
     return "unknown";

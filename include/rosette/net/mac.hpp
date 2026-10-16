@@ -15,7 +15,7 @@
  *  - a MAC provider implements it against hardware, for example the WIZnet
  *    chip in MACRAW mode (ports/net/wiznet/macraw_device.hpp);
  *  - an IP-stack port consumes it, for example the FreeRTOS+TCP network
- *    interface (ports/net/freertos_tcp/freertos_tcp_interface.hpp), which is
+ *    interface (ports/net/freertos_tcp/interface.hpp), which is
  *    a template over the provider type and owns the provider by value.
  *
  * A board composes the two, e.g.

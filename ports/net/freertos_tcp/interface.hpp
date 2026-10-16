@@ -4,7 +4,7 @@
 #pragma once
 
 /**
- * @file ports/net/freertos_tcp/freertos_tcp_interface.hpp
+ * @file ports/net/freertos_tcp/interface.hpp
  * @brief A FreeRTOS+TCP network interface over any rosette::net::MacDevice.
  *
  * FreeRTOS+TCP reaches hardware through a C descriptor, NetworkInterface_t,
@@ -38,7 +38,7 @@ extern "C" {
 #include "NetworkInterface.h"
 }
 
-#include "freertos_tcp_igmp.hpp"
+#include "ports/net/freertos_tcp/igmp.hpp"
 #include "rosette/net/mac.hpp"
 #include "rosette/platform/gpio_interrupt.hpp"
 #include "rosette/platform/platform.hpp"
@@ -226,9 +226,9 @@ private:
         return self == nullptr ? pdFALSE : self->initialise();
     }
 
-    static BaseType_t pf_output(NetworkInterface_t* interface,
+    static BaseType_t pf_output(NetworkInterface_t*              interface,
                                 NetworkBufferDescriptor_t* const descriptor,
-                                BaseType_t xReleaseAfterSend) {
+                                BaseType_t                       xReleaseAfterSend) {
         NetworkInterface* self = from_interface(interface);
         return self == nullptr ? pdFALSE : self->output(descriptor, xReleaseAfterSend);
     }
@@ -359,14 +359,14 @@ private:
         }
     }
 
-    Device device_;
+    Device                   device_;
     rosette::platform::Event rx_event_;
-    NetworkInterface_t* interface_ = nullptr;
-    TaskHandle_t rx_task_handle_ = nullptr;
-    std::array<char, 16> name_{};
-    mac_address_type mac_address_{};
-    UBaseType_t multicast_accept_refcount_ = 0u;
-    bool rx_interrupt_attached_ = false;
+    NetworkInterface_t*      interface_ = nullptr;
+    TaskHandle_t             rx_task_handle_ = nullptr;
+    std::array<char, 16>     name_{};
+    mac_address_type         mac_address_{};
+    UBaseType_t              multicast_accept_refcount_ = 0u;
+    bool                     rx_interrupt_attached_ = false;
 };
 
 }  // namespace rosette::net::freertos

@@ -11,7 +11,7 @@
 #   wiznet_board_types.hpp        BoardChip / BoardBus / BoardDevice from board_config.h
 #   wiznet_board_network.cpp      rosette/net/board_network.hpp over the chip's hardware
 #                                 sockets (ROSETTE_NET_STACK=wiznet)
-#   wiznet_macraw_interface.cpp   ports/net/freertos_tcp/freertos_tcp_board_interface.hpp:
+#   wiznet_macraw_interface.cpp   ports/net/freertos_tcp/board_interface.hpp:
 #                                 the chip in MACRAW mode (ports/net/wiznet/macraw_device.hpp)
 #                                 as FreeRTOS+TCP's network interface
 #                                 (ROSETTE_NET_STACK=freertos_tcp)

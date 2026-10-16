@@ -72,7 +72,7 @@ virtual bool take_sent_frame(void*& owner) noexcept = 0;                    // f
 Lent buffers are the IP stack's own: FreeRTOS+TCP's network buffers, whose `NetworkBufferDescriptor_t*` is the
 `owner` the device hands back. The device keeps no frame storage of its own.
 
-`ports/net/freertos_tcp/freertos_tcp_lending_interface.hpp` is the consumer: a second interface template beside
+`ports/net/freertos_tcp/lending_interface.hpp` is the consumer: a second interface template beside
 `NetworkInterface<Device>`, so each stays one short file. Its receive task replaces each frame it takes with a
 fresh network buffer before posting the frame to the IP task. When the pool has none free it drops the frame and
 lends the same buffer back, so the receive ring never runs empty. That is the invariant a test must prove: with the
@@ -90,7 +90,7 @@ build either interface and measure one against the other.
 2. FreeRTOS on imxrt: the kernel's `ARM_CM4F` port (the RT1021's M7 is not the r0p1 revision the `ARM_CM7/r0p1` port
    works around), SysTick beside the PIT time base, ENET interrupt priority at or below
    `configMAX_SYSCALL_INTERRUPT_PRIORITY`.
-3. `ports/net/freertos_tcp/freertos_tcp_board_network.cpp`: the open item in `ports_move_plan.md` that lets any
+3. `ports/net/freertos_tcp/board_network.cpp`: the open item in `ports_move_plan.md` that lets any
    FreeRTOS+TCP image link.
 4. The ENET `MacDevice`, copying, with the three contract additions. Bench: DHCP, ping, `wiznet_udp_echo`'s
    counterpart, then `led_files` against `rmw_fastrtps_cpp` and `rmw_cyclonedds_cpp`. Record RAM and round-trip

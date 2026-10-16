@@ -62,9 +62,13 @@
 #define ipconfigUSE_DHCP                        1
 #define ipconfigDHCP_REGISTER_HOSTNAME          1
 #define ipconfigMAXIMUM_DISCOVER_TX_PERIOD      pdMS_TO_TICKS(5000u)
-// RFC 3927 AutoIP fallback when DHCP finds no server. FreeRtosTcpAddressProvider
-// reports the resulting 169.254/16 endpoint as AddressMode::zeroconf_v4.
+// RFC 3927 AutoIP fallback when DHCP finds no server. The board network
+// (ports/net/freertos_tcp/board_network.cpp) reports the resulting
+// 169.254/16 address with AddressSource::zeroconf.
 #define ipconfigDHCP_FALL_BACK_AUTO_IP          1
+// The board network decides DHCP or a fixed address per endpoint before the
+// IP task starts, so the stack needs no per-phase DHCP callback.
+#define ipconfigUSE_DHCP_HOOK 0
 
 // ── DNS ───────────────────────────────────────────────────────────────────────
 #define ipconfigUSE_DNS                         1

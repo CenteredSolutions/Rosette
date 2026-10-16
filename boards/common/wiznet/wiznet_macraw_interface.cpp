@@ -6,17 +6,18 @@
  * @brief The WIZnet boards' FreeRTOS+TCP interface: the chip in MACRAW mode.
  *
  * Composition only: the FreeRTOS+TCP port supplies NetworkInterface<Device>
- * (ports/net/freertos_tcp/freertos_tcp_interface.hpp), the WIZnet port
+ * (ports/net/freertos_tcp/interface.hpp), the WIZnet port
  * supplies the MAC (ports/net/wiznet/macraw_device.hpp), and this file picks
  * the board's chip, bus, and interrupt pin from `board_config.h` and
- * implements freertos_tcp_board_interface.hpp over them.
+ * implements board_interface.hpp over them.
  */
 
-#include "freertos_tcp_board_interface.hpp"
+#include "ports/net/freertos_tcp/board_interface.hpp"
 
 #include <cstdio>
 
-#include "freertos_tcp_interface.hpp"
+#include "board.h"
+#include "ports/net/freertos_tcp/interface.hpp"
 #include "ports/net/wiznet/macraw_device.hpp"
 #include "wiznet_board_types.hpp"
 
@@ -34,7 +35,8 @@ NetworkInterface_t g_wiz0_descriptor;
 
 }  // namespace
 
-NetworkInterface_t* add_board_network_interface(const MacAddress& mac) noexcept {
+NetworkInterface_t* add_board_network_interface(MacAddress& mac) noexcept {
+    board_get_mac_address(mac.data());
     g_wiz0.set_station_mac_address(mac);
     NetworkInterface_t* descriptor = g_wiz0.add_to_freertos(g_wiz0_descriptor, "wiz0");
     if (!g_wiz0.attach_rx_interrupt(ROSETTE_PIN_WIZNET_INT)) {

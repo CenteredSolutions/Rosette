@@ -118,11 +118,11 @@ fails there as a link error, not only as an include finding.
   `close_socket()`, and each register access acquires again), so a lock there must be re-entrant. Every board drives
   its chip from one thread, so the rp2 buses hold nothing. Before a second thread uses the chip, either the platform
   contract gains a recursive mutex or the device takes the lock once per public call and the bus never does.
-- **FreeRTOS+TCP** (`ports/net/freertos_tcp/`) configures and compiles off-target against FreeRTOS+TCP V4.2.2, but
-  no image links yet: nothing implements `board_network.hpp` over it (`freertos_tcp_board_network.cpp` would call
-  `add_board_network_interface()`, add endpoints, start the IP task, and hand out a `FreeRtosSocketProvider`), and
-  nothing starts the scheduler. On the RP2350, the kernel's `ARM_CM33_NTZ` port also needs `configENABLE_FPU`,
-  `configENABLE_MPU` and `configENABLE_TRUSTZONE` in `FreeRTOSConfig.h`; the Raspberry Pi kernel fork's RP2350 port
-  is the likely base. Once it links, a WIZnet board in MACRAW mode with `ROSETTE_OS=freertos` and
-  `ROSETTE_NET_STACK=freertos_tcp` gets a CI build.
+- **FreeRTOS+TCP** (`ports/net/freertos_tcp/`): `board_network.cpp` implements `board_network.hpp` over it, the
+  NetworkConfig as FreeRTOS+TCP endpoints on an interface the board supplies (`board_interface.hpp`). The
+  MIMXRT1020-EVK (`boards/mimxrt1020-evk`) builds it on the i.MX RT1021 with the kernel's `GCC_ARM_CM4F` port
+  (docs/design/imxrt_enet_mac_device.md). On the RP2350, the kernel's `ARM_CM33_NTZ` port also needs
+  `configENABLE_FPU`, `configENABLE_MPU` and `configENABLE_TRUSTZONE` in `FreeRTOSConfig.h`; the Raspberry Pi
+  kernel fork's RP2350 port is the likely base. A WIZnet board in MACRAW mode with `ROSETTE_OS=freertos` and
+  `ROSETTE_NET_STACK=freertos_tcp` would show the composition model working on a second MAC.
 - **lwIP** will be `ports/net/lwip/`. The boundary check already has its zone and header family.

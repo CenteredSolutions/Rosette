@@ -4,7 +4,7 @@
 #pragma once
 
 /**
- * @file ports/net/freertos_tcp/freertos_tcp_address_provider.hpp
+ * @file ports/net/freertos_tcp/address_provider.hpp
  * @brief `AddressProvider`s that observe FreeRTOS+TCP's own addressing.
  *
  * FreeRTOS+TCP already runs DHCP, RFC 3927 AutoIP fallback
@@ -38,8 +38,8 @@ namespace rosette::net::freertos {
 class FreeRtosObserver : public rosette::net::AddressProvider {
 public:
     explicit FreeRtosObserver(
-            rosette::net::AddressFamily family = rosette::net::AddressFamily::ipv4) noexcept
-            : family_(family) {
+        rosette::net::AddressFamily family = rosette::net::AddressFamily::ipv4) noexcept
+        : family_(family) {
         lease_.family = family_;
     }
 
@@ -88,7 +88,7 @@ private:
         } else {
             std::array<uint8_t, 16> v6{};
             if (endpoint_ipv6(v6)) {
-                lease_.source = AddressSource::slaac;    // link_local flag distinguishes fe80::
+                lease_.source = AddressSource::slaac;  // link_local flag distinguishes fe80::
                 lease_.add(v6, 64u);
                 lease_.state = AddressPhase::bound;
             } else {
@@ -149,9 +149,9 @@ private:
     }
 
     rosette::net::AddressFamily family_;
-    rosette::net::AddressLease lease_{};
-    bool started_ = false;
+    rosette::net::AddressLease  lease_{};
+    bool                        started_ = false;
     inline static volatile bool net_up_ = false;
 };
 
-}    // namespace rosette::net::freertos
+}  // namespace rosette::net::freertos
