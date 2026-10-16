@@ -75,13 +75,22 @@ FallingEdgeSlot g_falling_edge[4];
 
 /// @brief The combined interrupt that serves `pin`: one per port half (bits 0..15, 16..31).
 IRQn_Type falling_edge_irq(uint32_t pin) noexcept {
+#if defined(GPIO4)
+    constexpr IRQn_Type kGpio4Low = GPIO4_Combined_0_15_IRQn;
+    constexpr IRQn_Type kGpio4High = GPIO4_Combined_16_31_IRQn;
+#else
+    // A part without GPIO4 (the RT1021): rosette_imxrt_gpio_port() rejects
+    // its pins before this table is read.
+    constexpr IRQn_Type kGpio4Low = NotAvail_IRQn;
+    constexpr IRQn_Type kGpio4High = NotAvail_IRQn;
+#endif
     static constexpr IRQn_Type kLow[] = {GPIO1_Combined_0_15_IRQn, GPIO2_Combined_0_15_IRQn,
-                                         GPIO3_Combined_0_15_IRQn, GPIO4_Combined_0_15_IRQn,
+                                         GPIO3_Combined_0_15_IRQn, kGpio4Low,
                                          GPIO5_Combined_0_15_IRQn};
     static constexpr IRQn_Type kHigh[] = {GPIO1_Combined_16_31_IRQn, GPIO2_Combined_16_31_IRQn,
-                                          GPIO3_Combined_16_31_IRQn, GPIO4_Combined_16_31_IRQn,
+                                          GPIO3_Combined_16_31_IRQn, kGpio4High,
                                           GPIO5_Combined_16_31_IRQn};
-    const uint32_t port = (pin >> 5) - 1u;
+    const uint32_t             port = (pin >> 5) - 1u;
     return rosette_imxrt_gpio_bit(pin) < 16u ? kLow[port] : kHigh[port];
 }
 
@@ -96,9 +105,9 @@ IRQn_Type falling_edge_irq(uint32_t pin) noexcept {
  */
 void dispatch_falling_edges(uint32_t port_number) noexcept {
     GPIO_Type* const port = rosette_imxrt_gpio_port(port_number << 5);
-    const uint32_t flags = GPIO_PortGetInterruptFlags(port);
+    const uint32_t   flags = GPIO_PortGetInterruptFlags(port);
     for (FallingEdgeSlot& slot : g_falling_edge) {
-        const uint32_t mask = 1u << rosette_imxrt_gpio_bit(slot.pin);
+        const uint32_t             mask = 1u << rosette_imxrt_gpio_bit(slot.pin);
         const GpioInterruptHandler handler = slot.handler;
         if (handler == nullptr || (slot.pin >> 5) != port_number || (flags & mask) == 0u) {
             continue;
@@ -203,9 +212,9 @@ void device_unique_id(uint8_t out[8]) noexcept {
  */
 uint32_t boot_nonce() noexcept {
     static const uint32_t nonce = [] {
-        uint32_t value = 0u;
+        uint32_t      value = 0u;
         trng_config_t config;
-        const bool drawn = TRNG_GetDefaultConfig(&config) == kStatus_Success
+        const bool    drawn = TRNG_GetDefaultConfig(&config) == kStatus_Success
                            && TRNG_Init(TRNG, &config) == kStatus_Success
                            && TRNG_GetRandomData(TRNG, &value, sizeof(value)) == kStatus_Success;
         TRNG_Deinit(TRNG);
@@ -383,6 +392,7 @@ void GPIO3_Combined_16_31_IRQHandler(void) {
     rosette::platform::dispatch_falling_edges(3u);
 }
 
+#if defined(GPIO4)
 void GPIO4_Combined_0_15_IRQHandler(void) {
     rosette::platform::dispatch_falling_edges(4u);
 }
@@ -390,6 +400,7 @@ void GPIO4_Combined_0_15_IRQHandler(void) {
 void GPIO4_Combined_16_31_IRQHandler(void) {
     rosette::platform::dispatch_falling_edges(4u);
 }
+#endif
 
 void GPIO5_Combined_0_15_IRQHandler(void) {
     rosette::platform::dispatch_falling_edges(5u);

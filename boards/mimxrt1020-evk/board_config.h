@@ -1,0 +1,46 @@
+/**
+ * @file boards/mimxrt1020-evk/board_config.h
+ * @brief Hardware mapping for the NXP MIMXRT1020-EVK.
+ *
+ * The board carries an i.MX RT1021 (MIMXRT1021DAG5A) whose ENET MAC reaches a
+ * Microchip KSZ8081RNB PHY over RMII; the RT1021 supplies the PHY's 50 MHz
+ * reference clock. The on-board DAPLink probe flashes the part over SWD and
+ * bridges LPUART1 to a USB virtual serial port. Pads (MIMXRT1020-EVK
+ * schematic; MicroPython ports/mimxrt/boards/MIMXRT1020_EVK):
+ *
+ *   function      i.MX RT pad        GPIO / peripheral
+ *   user LED      GPIO_AD_B0_05      GPIO1_IO05, active low
+ *   PHY RST_B     GPIO_AD_B0_04      GPIO1_IO04, active low
+ *   PHY INTRP     GPIO_AD_B1_06      GPIO1_IO22, active low
+ *   console TX    GPIO_AD_B0_06      LPUART1_TX
+ *   console RX    GPIO_AD_B0_07      LPUART1_RX
+ *
+ * printf() goes to LPUART1 at 115200 8N1 (/dev/ttyACM* on the host the
+ * probe's USB port is plugged into).
+ */
+
+#pragma once
+
+#include "imxrt_gpio_pin.h"
+
+#define ROSETTE_PIN_STATUS_LED ROSETTE_IMXRT_GPIO(1, 5)  ///< user LED, active low
+#define ROSETTE_STATUS_LED_BOOT_FLASH_US 100000u
+
+// ── Ethernet PHY ─────────────────────────────────────────────────────────────
+#define ROSETTE_PIN_PHY_RST ROSETTE_IMXRT_GPIO(1, 4)   ///< KSZ8081 RST_B, active low
+#define ROSETTE_PIN_PHY_INT ROSETTE_IMXRT_GPIO(1, 22)  ///< KSZ8081 INTRP, active low
+#define ROSETTE_PHY_MDIO_ADDRESS 2u                    ///< KSZ8081 PHYAD strapping
+
+// ── Console ──────────────────────────────────────────────────────────────────
+#define ROSETTE_CONSOLE_LPUART LPUART1
+#define ROSETTE_CONSOLE_BAUD 115200u
+
+// ── MAC address ──────────────────────────────────────────────────────────────
+// The EVK's OCOTP MAC fuses are blank; board_get_mac_address() keeps this
+// locally administered prefix and takes the last three octets from the fuse UID.
+#define ROSETTE_MAC_ADDR_DEFAULT {0x02, 0x10, 0x21, 0x00, 0x00, 0x01}
+
+// ── Persistent storage ───────────────────────────────────────────────────────
+// None: the i.MX RT port reserves no flash region (ports/chip/imxrt/imxrt_flash_region.c).
+#define ROSETTE_STORAGE_FLASH_OFFSET 0x00000000u
+#define ROSETTE_STORAGE_FLASH_SIZE 0x00000000u

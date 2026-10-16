@@ -44,8 +44,10 @@ static inline GPIO_Type* rosette_imxrt_gpio_port(uint32_t pin) {
             return GPIO2;
         case 3u:
             return GPIO3;
+#if defined(GPIO4)
         case 4u:
             return GPIO4;
+#endif
         case 5u:
             return GPIO5;
         default:

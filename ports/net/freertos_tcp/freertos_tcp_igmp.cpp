@@ -178,7 +178,7 @@ TickType_t MulticastService::response_delay_ticks_ipv6(
 NetworkEndPoint_t* MulticastService::find_ipv4_endpoint(uint32_t interface_address) noexcept
 {
     if (interface_address != 0u) {
-        NetworkEndPoint_t* by_address = FreeRTOS_FindEndPointOnIP_IPv4(interface_address);
+        NetworkEndPoint_t* by_address = FreeRTOS_FindEndPointOnIP_IPv4(interface_address, 0u);
         if ((by_address != nullptr) && ENDPOINT_IS_IPv4(by_address)) {
             return by_address;
         }

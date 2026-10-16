@@ -36,6 +36,14 @@ set(FETCHCONTENT_QUIET OFF)
 # firmware build.
 set(FREERTOS_PLUS_TCP_NETWORK_IF "A_CUSTOM_NETWORK_IF" CACHE STRING "" FORCE)
 
+# A custom interface is a target named freertos_plus_tcp_network_if, which
+# FreeRTOS+TCP links. Rosette's interface is the board composition's
+# NetworkInterface<Device>, compiled into rosette_bsp, so this target only
+# satisfies the name.
+if(NOT TARGET freertos_plus_tcp_network_if)
+  add_library(freertos_plus_tcp_network_if INTERFACE)
+endif()
+
 if(DEFINED ENV{FREERTOS_TCP_PATH})
   set(FREERTOS_TCP_PATH "$ENV{FREERTOS_TCP_PATH}")
 endif()

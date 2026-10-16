@@ -27,6 +27,13 @@
 #  include "pico/multicore.h"
 #  include "pico/stdlib.h"
 #endif
+#if defined(ROSETTE_CHIP_IMXRT)
+#  include "board.h"
+#endif
+#if defined(ROSETTE_OS_FREERTOS)
+#  include "FreeRTOS.h"
+#  include "task.h"
+#endif
 
 namespace pf = rosette::platform;
 
@@ -122,6 +129,26 @@ void test_event_cross_thread() {
 }
 #endif
 
+#if defined(ROSETTE_OS_FREERTOS)
+/// Event: a signal from another task wakes a blocked wait promptly.
+void test_event_cross_task() {
+    static pf::Event e;
+    const uint64_t   t0 = pf::monotonic_us();
+    TaskHandle_t     signaler = nullptr;
+    const BaseType_t created = xTaskCreate(
+        [](void*) {
+            pf::sleep_ms(20);
+            e.signal();
+            vTaskDelete(nullptr);
+        },
+        "signaler", configMINIMAL_STACK_SIZE, nullptr, tskIDLE_PRIORITY + 1, &signaler);
+    const bool     woke = (created == pdPASS) && e.wait_for(1000u);
+    const uint64_t waited = pf::monotonic_us() - t0;
+    check(woke && waited >= 19000u && waited < 500000u, "EventCrossTask",
+          "another task's signal ends a blocking wait after its 20 ms sleep");
+}
+#endif
+
 // The bare-metal OS layer's cross-core guarantees, on the dual-core RP2040 /
 // RP2350; a single-core chip has no second core to test against.
 #if defined(ROSETTE_OS_BAREMETAL) && defined(ROSETTE_CHIP_RP2)
@@ -211,6 +238,9 @@ int run_contract() {
 #if defined(ROSETTE_OS_POSIX)
     test_event_cross_thread();
 #endif
+#if defined(ROSETTE_OS_FREERTOS)
+    test_event_cross_task();
+#endif
 #if defined(ROSETTE_OS_BAREMETAL) && defined(ROSETTE_CHIP_RP2)
     test_event_cross_core();
     test_mutex_cross_core();
@@ -234,8 +264,31 @@ int main() {
         sleep_ms(5000);
     }
 }
+#elif defined(ROSETTE_OS_FREERTOS)
+/// Under FreeRTOS the contract runs in a task, since sleep_ms() and Event
+/// waits block in the scheduler; the run repeats every few seconds so a
+/// terminal that opens the console late still sees a result.
+int main() {
+#  if defined(ROSETTE_CHIP_IMXRT)
+    board_init();
+#  endif
+    xTaskCreate(
+        [](void*) {
+            for (;;) {
+                run_contract();
+                pf::sleep_ms(5000);
+            }
+        },
+        "contract", 1024u, nullptr, tskIDLE_PRIORITY + 2, nullptr);
+    vTaskStartScheduler();
+    std::printf("platform contract: the scheduler did not start\n");
+    return EXIT_FAILURE;
+}
 #else
 int main() {
+#  if defined(ROSETTE_CHIP_IMXRT)
+    board_init();
+#  endif
     return run_contract() ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 #endif

@@ -31,6 +31,8 @@
 #                                 this directory is on the include path for the
 #                                 board's composition
 #   ROSETTE_CHIP_STORAGE_SOURCES  a LittleFS hook that never mounts
+#   ROSETTE_CHIP_TEST_LIBRARIES   rosette_bsp: the platform contract test starts
+#                                 the board's console with board_init()
 #   rosette_chip_add_image_outputs(<target>)
 #                                 the .hex (teensy_loader_cli, NXP tools) and .bin images
 #
@@ -151,6 +153,7 @@ if(ROSETTE_IMXRT_USB_CONSOLE)
 endif()
 
 set(ROSETTE_CHIP_STORAGE_SOURCES ${ROSETTE_PORT_DIR}/imxrt_littlefs_unmounted.cpp)
+set(ROSETTE_CHIP_TEST_LIBRARIES rosette_bsp)
 set(ROSETTE_CHIP_BASE_HEADERS rosette_mcux_sdk)
 
 function(rosette_chip_add_image_outputs target)
