@@ -293,7 +293,7 @@ void check_w5500() {
     using Chipset = fake::FakeWiznetChip<Chip>;
     using Device = wiz::WiznetDevice<Chip, Chipset>;
     Chipset chip;
-    Device dev{chip};
+    Device  dev{chip};
     dev.init_socket_mode(kMac);
 
     check(dev.open_udp_socket(1, 7400), "W5500: IPv4 socket opens (TC-NET-WIZ-W5500-001)");
@@ -302,15 +302,15 @@ void check_w5500() {
     chip.set_rx_pointer(1, static_cast<uint16_t>(2048u - 4u));
     chip.deliver(1, w5100s_record(v({10, 0, 0, 7}), 1234, v({'a', 'b', 'c', 'd', 'e', 'f'})));
     std::array<uint8_t, 64> buf{};
-    wiz::UdpEndpoint from{};
-    const auto n = dev.udp_receive_from(1, buf.data(), buf.size(), &from);
+    wiz::UdpEndpoint        from{};
+    const auto              n = dev.udp_receive_from(1, buf.data(), buf.size(), &from);
     check(n == 6 && buf[0] == 'a' && buf[5] == 'f',
           "W5500: payload after {ip, port, length} header, across the ring end "
           "(TC-NET-WIZ-W5500-002)");
     check(!from.ipv6 && from.ipv4() == std::array<uint8_t, 4>{10, 0, 0, 7} && from.port == 1234,
           "W5500: sender address and port decoded");
 
-    const uint8_t hello[] = {'h', 'e', 'l', 'l', 'o'};
+    const uint8_t    hello[] = {'h', 'e', 'l', 'l', 'o'};
     wiz::UdpEndpoint unicast{};
     unicast.address = {192, 168, 32, 96};
     unicast.port = 7777;

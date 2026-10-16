@@ -38,8 +38,8 @@ public:
 
     struct Config {
         LPSPI_Type* lpspi = nullptr;
-        uint32_t cs_pin = 0u;  ///< ROSETTE_IMXRT_GPIO(port, bit) of the chip select.
-        uint8_t read_fill = 0xFFu;
+        uint32_t    cs_pin = 0u;  ///< ROSETTE_IMXRT_GPIO(port, bit) of the chip select.
+        uint8_t     read_fill = 0xFFu;
     };
 
     /**
@@ -119,8 +119,8 @@ private:
     }
 
     LPSPI_Type* lpspi_;
-    GPIO_Type* cs_port_;
-    uint32_t cs_bit_;
+    GPIO_Type*  cs_port_;
+    uint32_t    cs_bit_;
 };
 
 }  // namespace rosette::platform

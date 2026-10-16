@@ -44,7 +44,7 @@
 #include "wiznet_board_bus.hpp"
 
 #ifndef ROSETTE_WIZNET_CHIP
-#error "board_config.h must define ROSETTE_WIZNET_CHIP (e.g. W5100S)"
+#  error "board_config.h must define ROSETTE_WIZNET_CHIP (e.g. W5100S)"
 #endif
 
 namespace rosette::net::wiznet {

@@ -75,9 +75,9 @@ struct BoardIpv6 {
 template <typename Chip>
 struct BoardIpv6<Chip, true> {
     WiznetSlaacProvider<Chip, BoardBus> slaac;
-    AddressProvider* providers[kMaxMethodsPerFamily]{};
-    std::size_t count;
-    AddressManager v6;
+    AddressProvider*                    providers[kMaxMethodsPerFamily]{};
+    std::size_t                         count;
+    AddressManager                      v6;
 
     BoardIpv6(BoardDevice& device, BoardSocketProvider& sockets, NetInterface& iface,
               const std::array<uint8_t, 6>& mac, const MethodList& methods) noexcept
@@ -95,7 +95,7 @@ struct BoardIpv6<Chip, true> {
 template <std::size_t Entries>
 struct BoardArp {
     ArpCacheStorage<Entries> table;
-    BoardArpResolver resolver;
+    BoardArpResolver         resolver;
 
     explicit BoardArp(BoardDevice& device) noexcept : resolver(device, table) {}
 
@@ -123,25 +123,25 @@ AddressManagerPolicy policy_for(const NetworkConfig& config) noexcept {
 
 /// @brief The chip driver, every provider the board can run, and the managers the config selects.
 struct BoardNetwork {
-    std::array<uint8_t, 6> mac;
-    BoardBus bus;
-    BoardDevice device;
-    BoardArp<kBoardArpCacheEntries> arp;
-    BoardSocketProvider sockets;
-    BoardLink link;
+    std::array<uint8_t, 6>               mac;
+    BoardBus                             bus;
+    BoardDevice                          device;
+    BoardArp<kBoardArpCacheEntries>      arp;
+    BoardSocketProvider                  sockets;
+    BoardLink                            link;
     WiznetInterface<BoardChip, BoardBus> iface;
-    DhcpAddressProvider dhcp;
-    Ipv4LinkLocalProvider zeroconf;
-    StaticAddressProvider fixed;
-    AddressProvider* v4_providers[kMaxMethodsPerFamily]{};
-    std::size_t v4_count;
-    AddressManager v4;
-    BoardIpv6<BoardChip> ipv6;
-    NetworkAddress address;
-    SntpClient sntp;
-    ReadyPredicate ready_when;
-    bool chip_ready = false;
-    uint32_t chip_retry_ms;
+    DhcpAddressProvider                  dhcp;
+    Ipv4LinkLocalProvider                zeroconf;
+    StaticAddressProvider                fixed;
+    AddressProvider*                     v4_providers[kMaxMethodsPerFamily]{};
+    std::size_t                          v4_count;
+    AddressManager                       v4;
+    BoardIpv6<BoardChip>                 ipv6;
+    NetworkAddress                       address;
+    SntpClient                           sntp;
+    ReadyPredicate                       ready_when;
+    bool                                 chip_ready = false;
+    uint32_t                             chip_retry_ms;
 
     /// @brief The board's MAC address (board_get_mac_address()).
     static std::array<uint8_t, 6> board_mac() noexcept {
@@ -267,7 +267,7 @@ void print_addresses(const AddressSnapshot& snapshot) noexcept {
  */
 BringUpResult wait_until_ready(BoardNetwork& network, uint32_t timeout_ms) noexcept {
     const uint32_t start = pf::monotonic_ms();
-    uint32_t next_note = start + kProgressPeriodMs;
+    uint32_t       next_note = start + kProgressPeriodMs;
     for (;;) {
         const uint32_t now = pf::monotonic_ms();
         network.poll(now);

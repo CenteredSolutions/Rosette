@@ -33,11 +33,11 @@
 #include "fsl_romapi.h"
 
 #ifndef ROSETTE_IMXRT_FLASH_SIZE_BYTES
-#error "The board must set ROSETTE_IMXRT_FLASH_SIZE_BYTES (board.cmake)"
+#  error "The board must set ROSETTE_IMXRT_FLASH_SIZE_BYTES (board.cmake)"
 #endif
 
 #ifndef ROSETTE_IMXRT_FLASH_SERIAL_CLK
-#define ROSETTE_IMXRT_FLASH_SERIAL_CLK kFLEXSPISerialClk_133MHz
+#  define ROSETTE_IMXRT_FLASH_SERIAL_CLK kFLEXSPISerialClk_133MHz
 #endif
 
 /// One LUT entry: two instructions (opcode, pad count, operand) each.

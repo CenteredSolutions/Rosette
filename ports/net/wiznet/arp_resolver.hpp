@@ -410,7 +410,7 @@ private:
         // Unreachable for a chip without SLCR ARP: the constructor refuses one.
         if constexpr (Chip::has_socketless_arp()) {
             if (probing_) {
-                Mac mac{};
+                Mac        mac{};
                 const auto outcome = device_.poll_arp_probe(mac);
                 if (outcome == device_type::ArpProbe::pending) {
                     return;

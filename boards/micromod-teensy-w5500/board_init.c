@@ -178,7 +178,7 @@ void board_get_mac_address(uint8_t mac[6]) {
     }
 
     static const uint8_t kFallback[6] = ROSETTE_MAC_ADDR_DEFAULT;
-    const uint32_t uid = OCOTP->CFG0 ^ OCOTP->CFG1;
+    const uint32_t       uid = OCOTP->CFG0 ^ OCOTP->CFG1;
     mac[0] = kFallback[0];
     mac[1] = kFallback[1];
     mac[2] = kFallback[2];

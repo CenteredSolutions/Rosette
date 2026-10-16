@@ -192,7 +192,7 @@ void check_w5500_frames() {
     check(rd_rxbuf.bytes[0] == 0x00 && rd_rxbuf.bytes[1] == 0x40 && rd_rxbuf.bytes[2] == 0x18,
           "W5500 read RX-buffer frame = {0x00,0x40,0x18}");
 
-    RecordingBus bus;
+    RecordingBus                       bus;
     wiz::WiznetDevice<C, RecordingBus> dev{bus};
     dev.hardware_reset();
     check(bus.log.size() == 1 && prefix_is(bus.log[0], false, {0x00, 0x00, 0x04})

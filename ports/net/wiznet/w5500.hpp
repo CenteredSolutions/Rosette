@@ -41,7 +41,7 @@ struct W5500 final : ChipBase {
 
     static constexpr socket_type socket_count() { return 8u; }
     static constexpr socket_type macraw_socket() { return 0u; }
-    static constexpr bool auto_wrap() { return true; }
+    static constexpr bool        auto_wrap() { return true; }
 
     // ── address packing ─────────────────────────────────────────────────────
     static constexpr uint8_t common_block() { return 0x00u; }
@@ -68,18 +68,18 @@ struct W5500 final : ChipBase {
     }
 
     // ── common registers (§4.1) ─────────────────────────────────────────────
-    static constexpr uint8_t chip_version() { return 0x04u; }                         // VERSIONR
-    static constexpr auto common_mode() { return common(0x0000u); }                   // MR
-    static constexpr auto common_gateway() { return common(0x0001u); }                // GAR
-    static constexpr auto common_subnet() { return common(0x0005u); }                 // SUBR
-    static constexpr auto common_mac_address() { return common(0x0009u); }            // SHAR
-    static constexpr auto common_ip_address() { return common(0x000Fu); }             // SIPR
-    static constexpr auto common_interrupt() { return common(0x0015u); }              // IR
-    static constexpr auto common_interrupt_clear() { return common_interrupt(); }     // IR, W1C
-    static constexpr auto common_socket_interrupt() { return common(0x0017u); }       // SIR
-    static constexpr auto common_socket_interrupt_mask() { return common(0x0018u); }  // SIMR
-    static constexpr auto common_link_status() { return common(0x002Eu); }            // PHYCFGR
-    static constexpr auto common_version() { return common(0x0039u); }                // VERSIONR
+    static constexpr uint8_t chip_version() { return 0x04u; }                            // VERSIONR
+    static constexpr auto    common_mode() { return common(0x0000u); }                   // MR
+    static constexpr auto    common_gateway() { return common(0x0001u); }                // GAR
+    static constexpr auto    common_subnet() { return common(0x0005u); }                 // SUBR
+    static constexpr auto    common_mac_address() { return common(0x0009u); }            // SHAR
+    static constexpr auto    common_ip_address() { return common(0x000Fu); }             // SIPR
+    static constexpr auto    common_interrupt() { return common(0x0015u); }              // IR
+    static constexpr auto    common_interrupt_clear() { return common_interrupt(); }     // IR, W1C
+    static constexpr auto    common_socket_interrupt() { return common(0x0017u); }       // SIR
+    static constexpr auto    common_socket_interrupt_mask() { return common(0x0018u); }  // SIMR
+    static constexpr auto    common_link_status() { return common(0x002Eu); }            // PHYCFGR
+    static constexpr auto    common_version() { return common(0x0039u); }                // VERSIONR
 
     // SIR bit n is set while socket n has an interrupt pending; Sn_IR clears it. IR bit 7
     // (CONFLICT) is set when an ARP reply carries our own SIPR from another MAC.

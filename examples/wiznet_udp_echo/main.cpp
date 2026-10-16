@@ -52,7 +52,7 @@
 #include "rosette/platform/wall_clock.hpp"
 
 #if defined(ROSETTE_CHIP_RP2)
-#include "pico/bootrom.h"
+#  include "pico/bootrom.h"
 #endif
 
 namespace {

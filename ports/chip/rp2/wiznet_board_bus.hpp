@@ -22,9 +22,9 @@
 #include "board_config.h"
 
 #if defined(ROSETTE_WIZNET_BUS_QSPI)
-#include "rp2_qspi_bus.hpp"
+#  include "rp2_qspi_bus.hpp"
 #else
-#include "rp2_spi_bus.hpp"
+#  include "rp2_spi_bus.hpp"
 #endif
 
 namespace rosette::net::wiznet {

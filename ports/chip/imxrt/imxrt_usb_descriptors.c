@@ -32,15 +32,15 @@
 #include "tusb.h"
 
 #ifndef ROSETTE_IMXRT_USB_VID
-#define ROSETTE_IMXRT_USB_VID 0x1209u
+#  define ROSETTE_IMXRT_USB_VID 0x1209u
 #endif
 
 #ifndef ROSETTE_IMXRT_USB_PID
-#define ROSETTE_IMXRT_USB_PID 0x0001u
+#  define ROSETTE_IMXRT_USB_PID 0x0001u
 #endif
 
 #ifndef ROSETTE_IMXRT_USB_PRODUCT
-#define ROSETTE_IMXRT_USB_PRODUCT "Rosette console"
+#  define ROSETTE_IMXRT_USB_PRODUCT "Rosette console"
 #endif
 
 enum {
@@ -141,7 +141,7 @@ const uint8_t* tud_descriptor_other_speed_configuration_cb(uint8_t index) {
 /// @brief Writes the fuse unique ID (CFG1:CFG0) as 16 hex digits into `out`.
 static uint8_t serial_number_utf16(uint16_t* out) {
     static const char kHex[] = "0123456789ABCDEF";
-    const uint64_t uid = ((uint64_t)OCOTP->CFG1 << 32) | OCOTP->CFG0;
+    const uint64_t    uid = ((uint64_t)OCOTP->CFG1 << 32) | OCOTP->CFG0;
     for (uint8_t i = 0; i < 16u; ++i) {
         out[i] = (uint16_t)kHex[(uid >> (60u - 4u * i)) & 0xFu];
     }
