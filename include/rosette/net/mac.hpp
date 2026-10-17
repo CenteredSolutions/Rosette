@@ -8,7 +8,9 @@
  * @brief Hardware-neutral contract for an Ethernet MAC / link device.
  *
  * rosette::net::MacDevice is the contract between a link-layer device and a
- * software IP stack that runs on the microcontroller. Three roles meet here:
+ * software IP stack that runs on the microcontroller; MacLink is its control
+ * half, which a lending device (rosette/net/lending_mac.hpp) shares. Three
+ * roles meet here:
  *
  *  - this header defines the contract and nothing else; it names no RTOS,
  *    no IP stack, and no chip;
@@ -72,37 +74,39 @@ struct PhyStatus {
 };
 
 /**
- * @brief Abstract Ethernet MAC device: framed transmit/receive plus link state.
+ * @brief The control half of an Ethernet controller: bring-up, address, PHY, wake-up, multicast.
  *
- * A MacDevice sits directly above the register interface of an Ethernet
- * controller and exposes whole-frame send and receive to the IP stack. It
- * owns the controller's data path: callers never touch chip registers, they
- * hand down frames and query link state.
+ * Every link-layer device a software IP stack drives has these operations,
+ * whatever its data path. MacDevice adds whole-frame copying on top
+ * (send_frame(), receive_frame()); LendingMacDevice (rosette/net/lending_mac.hpp)
+ * adds buffer exchange, for a DMA controller that moves frames straight into
+ * and out of the IP stack's own buffers. A consumer is written against one of
+ * the two, never against MacLink alone.
  *
- * Receive notification: a consumer drains the receive queue with
- * peek_frame_size() and receive_frame() until it is empty, then sleeps on a
- * platform::Event until a frame arrives (or a poll interval passes). Two
- * kinds of provider signal it. An on-chip MAC with its own interrupt signals
- * the event from that interrupt (set_receive_event()). A SPI controller
- * cannot: its interrupt line is a GPIO, a board fact, so the board attaches
- * the line to the consumer instead, and the provider must leave the line so
- * that any frame queued after receive_frame() returns produces a fresh
- * falling edge.
+ * Receive notification: a consumer drains the receive queue until it is
+ * empty, then sleeps on a platform::Event until a frame arrives (or a poll
+ * interval passes). Two kinds of provider signal it. An on-chip MAC with its
+ * own interrupt signals the event from that interrupt (set_receive_event()).
+ * A SPI controller cannot: its interrupt line is a GPIO, a board fact, so the
+ * board attaches the line to the consumer instead, and the provider must
+ * leave the line so that any frame queued after the consumer's last receive
+ * produces a fresh falling edge.
  *
  * Multicast: a MAC that filters multicast frames in hardware passes only the
  * groups the consumer has asked for (add_multicast()); one that passes every
  * multicast frame treats those calls as no-ops.
  *
- * Lifetime and threading: a MacDevice is constructed once and lives for the
- * duration of the network stack. receive_frame() and peek_frame_size() run
- * on the network interface's RX task; send_frame() runs on the IP task and
- * the IGMP output path; phy_status() and the multicast calls run on either.
+ * Lifetime and threading: a device is constructed once and lives for the
+ * duration of the network stack. The receive operations run on the network
+ * interface's RX task; the transmit operations run on the IP task and the
+ * IGMP output path; phy_status() and the multicast calls run on either.
  * Implementations must make those call sites safe to run concurrently,
- * either lock-free (independent controller sockets) or behind a mutex.
+ * either lock-free (independent controller sockets or rings) or behind a
+ * mutex.
  */
-class MacDevice {
+class MacLink {
 public:
-    virtual ~MacDevice() = default;
+    virtual ~MacLink() = default;
 
     /**
      * @brief Bring the controller out of reset and program @p mac.
@@ -133,53 +137,13 @@ public:
     /**
      * @brief Largest frame the controller can move, in bytes.
      *
-     * Measured as the buffer handed to send_frame(): the Ethernet header
-     * plus payload, without the hardware-appended FCS. The network interface
-     * rejects oversized transmit descriptors before calling send_frame().
+     * Measured from the destination MAC: the Ethernet header plus payload,
+     * without the hardware-appended FCS. The network interface rejects
+     * longer frames before handing them to the device.
      *
      * @return Maximum frame size in bytes; 0 disables the length check.
      */
     virtual std::size_t max_frame_size() const noexcept = 0;
-
-    /**
-     * @brief Transmit one complete Ethernet frame.
-     *
-     * @param[in] data   Frame bytes, starting at the destination MAC.
-     * @param[in] length Frame length in bytes; the caller guarantees it is
-     *                   non-zero and within max_frame_size().
-     * @return True if the frame was handed to the controller for
-     *         transmission; false on a bus error or an exhausted TX buffer.
-     */
-    virtual bool send_frame(const uint8_t* data, std::size_t length) noexcept = 0;
-
-    /**
-     * @brief Copy the frame at the head of the RX queue into @p buffer.
-     *
-     * Call after peek_frame_size() reports a non-zero size. Consumes exactly
-     * one frame from the controller's receive queue.
-     *
-     * @param[out] buffer   Destination for the frame bytes.
-     * @param[in]  capacity Size of @p buffer; at least the most recent
-     *                      peek_frame_size() result.
-     * @return Number of bytes written to @p buffer, or 0 if no frame was
-     *         available or it did not fit.
-     */
-    virtual std::size_t receive_frame(uint8_t* buffer, std::size_t capacity) noexcept = 0;
-
-    /**
-     * @brief Length of the head-of-queue received frame without consuming it.
-     *
-     * Drives the consumer's receive loop: a non-zero result is the size of
-     * the buffer the consumer allocates and hands to receive_frame(); zero
-     * means the consumer sleeps until the next receive notification. The
-     * result is the head frame's own length, never the total of several
-     * queued frames, because a consumer with fixed-size network buffers
-     * cannot allocate more than max_frame_size().
-     *
-     * @return Byte length of the next frame, at most max_frame_size() when
-     *         that is non-zero, or 0 when the RX queue is empty.
-     */
-    virtual std::size_t peek_frame_size() noexcept = 0;
 
     /**
      * @brief Current PHY link state, with the MAC following what the PHY negotiated.
@@ -227,6 +191,69 @@ public:
      * @param[in] group An address passed to add_multicast() earlier.
      */
     virtual void remove_multicast(const MacAddress& group) noexcept = 0;
+
+protected:
+    MacLink() = default;
+    MacLink(const MacLink&) = default;
+    MacLink(MacLink&&) = default;
+    MacLink& operator=(const MacLink&) = default;
+    MacLink& operator=(MacLink&&) = default;
+};
+
+/**
+ * @brief An Ethernet MAC whose frames are copied in and out: framed transmit/receive plus link
+ * state.
+ *
+ * A MacDevice sits directly above the register interface of an Ethernet
+ * controller and exposes whole-frame send and receive to the IP stack. It
+ * owns the controller's data path and its frame storage (on-chip SRAM for a
+ * SPI controller, driver-owned DMA buffers for an on-chip MAC): callers hand
+ * down frames to copy and receive copies of frames.
+ *
+ * A consumer drains the receive queue with peek_frame_size() and
+ * receive_frame() until it is empty, then sleeps as MacLink describes.
+ */
+class MacDevice : public MacLink {
+public:
+    /**
+     * @brief Transmit one complete Ethernet frame.
+     *
+     * @param[in] data   Frame bytes, starting at the destination MAC.
+     * @param[in] length Frame length in bytes; the caller guarantees it is
+     *                   non-zero and within max_frame_size().
+     * @return True if the frame was handed to the controller for
+     *         transmission; false on a bus error or an exhausted TX buffer.
+     */
+    virtual bool send_frame(const uint8_t* data, std::size_t length) noexcept = 0;
+
+    /**
+     * @brief Copy the frame at the head of the RX queue into @p buffer.
+     *
+     * Call after peek_frame_size() reports a non-zero size. Consumes exactly
+     * one frame from the controller's receive queue.
+     *
+     * @param[out] buffer   Destination for the frame bytes.
+     * @param[in]  capacity Size of @p buffer; at least the most recent
+     *                      peek_frame_size() result.
+     * @return Number of bytes written to @p buffer, or 0 if no frame was
+     *         available or it did not fit.
+     */
+    virtual std::size_t receive_frame(uint8_t* buffer, std::size_t capacity) noexcept = 0;
+
+    /**
+     * @brief Length of the head-of-queue received frame without consuming it.
+     *
+     * Drives the consumer's receive loop: a non-zero result is the size of
+     * the buffer the consumer allocates and hands to receive_frame(); zero
+     * means the consumer sleeps until the next receive notification. The
+     * result is the head frame's own length, never the total of several
+     * queued frames, because a consumer with fixed-size network buffers
+     * cannot allocate more than max_frame_size().
+     *
+     * @return Byte length of the next frame, at most max_frame_size() when
+     *         that is non-zero, or 0 when the RX queue is empty.
+     */
+    virtual std::size_t peek_frame_size() noexcept = 0;
 
 protected:
     MacDevice() = default;

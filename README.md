@@ -61,6 +61,9 @@ $ ros2 node list
   lease renewal, and re-acquisition when the cable returns.
 - IPv6 on the W6100 / W6300: link-local and SLAAC global addresses with
   duplicate address detection, and UDP6 sockets.
+- FreeRTOS+TCP over an on-chip MAC: the i.MX RT ENET receives into and
+  transmits from the stack's own network buffers, with no driver-owned frame
+  storage (`rosette/net/lending_mac.hpp`).
 
 **Boards and tools**
 - RP2040, RP2350, and NXP i.MX RT1062 boards, bare metal; POSIX hosts.

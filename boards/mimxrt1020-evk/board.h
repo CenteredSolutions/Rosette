@@ -21,7 +21,7 @@ extern "C" {
  * DAPLink probe bridges to its USB virtual serial port. Ethernet: muxes the
  * RMII and MDIO pads, starts the ENET PLL's 50 MHz reference clock on
  * ENET_REF_CLK, and pulses the KSZ8081's reset; the ENET itself starts when
- * FreeRTOS+TCP initialises the interface (enet_interface.cpp).
+ * FreeRTOS+TCP initialises the interface (enet_lending_interface.cpp).
  */
 void board_init(void);
 

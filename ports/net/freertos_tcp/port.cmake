@@ -10,12 +10,24 @@
 #                        (FreeRTOS+TCP has neither)
 #   random.cpp           the random numbers the stack asks the application for
 #   interface.hpp        NetworkInterface<Device>: a FreeRTOS+TCP interface over
-#                        any rosette::net::MacDevice (rosette/net/mac.hpp)
+#                        any copying rosette::net::MacDevice (rosette/net/mac.hpp)
+#   lending_interface.hpp, lent_buffer_pool.hpp
+#                        LendingNetworkInterface<Device>: one over a
+#                        rosette::net::LendingMacDevice, which moves frames in
+#                        the stack's own buffers (rosette/net/lending_mac.hpp)
+#   interface_binding.hpp  what the two interfaces share
 #   board_interface.hpp  the hook a board implements to register its interface
 #                        (boards/common/wiznet/ does, over the WIZnet chip in
 #                        MACRAW mode)
 #   FreeRTOSIPConfig.h   the stack's configuration; a board may supply its own
 #                        by putting its directory first
+#
+# Board input (board.cmake):
+#   ROSETTE_FREERTOS_TCP_LENT_BUFFERS  ON when the board's interface is a
+#                        LendingNetworkInterface: BufferAllocation_1, whose
+#                        buffers the board places (LentBufferPool), and
+#                        ipconfigZERO_COPY_TX_DRIVER. OFF (the default):
+#                        BufferAllocation_2 from the FreeRTOS heap.
 #
 # FreeRTOS+TCP comes from FREERTOS_TCP_PATH (environment or -D) when set, or is
 # fetched.
@@ -40,6 +52,12 @@ if(NOT TARGET freertos_plus_tcp_network_if)
   add_library(freertos_plus_tcp_network_if INTERFACE)
 endif()
 
+if(ROSETTE_FREERTOS_TCP_LENT_BUFFERS)
+  set(FREERTOS_PLUS_TCP_BUFFER_ALLOCATION "1" CACHE STRING "" FORCE)
+else()
+  set(FREERTOS_PLUS_TCP_BUFFER_ALLOCATION "2" CACHE STRING "" FORCE)
+endif()
+
 if(DEFINED ENV{FREERTOS_TCP_PATH})
   set(FREERTOS_TCP_PATH "$ENV{FREERTOS_TCP_PATH}")
 endif()
@@ -59,6 +77,9 @@ if(NOT TARGET freertos_plus_tcp)
     FetchContent_MakeAvailable(freertos_tcp)
   endif()
   target_include_directories(freertos_plus_tcp PUBLIC "${ROSETTE_PORT_DIR}")
+  if(ROSETTE_FREERTOS_TCP_LENT_BUFFERS)
+    target_compile_definitions(freertos_plus_tcp PUBLIC ipconfigZERO_COPY_TX_DRIVER=1)
+  endif()
 endif()
 
 target_sources(rosette_net PRIVATE

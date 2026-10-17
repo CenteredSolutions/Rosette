@@ -21,9 +21,12 @@
 #   imxrt_newlib_syscalls.c       printf() to the board's consoles, clock_gettime()
 #   rosette_imxrt_usb_console     with ROSETTE_IMXRT_USB_CONSOLE: TinyUSB and the
 #                                 CDC ACM console over it (imxrt_usb_console.c)
-#   imxrt_enet_mac_device.cpp     the ENET and its RMII PHY as a rosette::net::MacDevice;
-#                                 linked only into images whose board composition
-#                                 uses it (imxrt_enet_mac_device.hpp)
+#   imxrt_enet_link.cpp           the ENET's bring-up, RMII PHY, multicast filter,
+#                                 and interrupt, for either device below
+#   imxrt_enet_mac_device.cpp     the ENET as a copying rosette::net::MacDevice
+#   imxrt_enet_lending_device.cpp the ENET as a rosette::net::LendingMacDevice;
+#                                 each is linked only into images whose board
+#                                 composition uses it
 #   imxrt_flash_region.c          the flash hooks (flash.hpp): no storage region
 #   startup, IVT, boot block      the SDK's startup_<device>.S and
 #                                 fsl_flexspi_nor_boot.c, and this port's
@@ -105,6 +108,8 @@ set_source_files_properties(${_imxrt_startup} PROPERTIES
 
 target_sources(rosette_platform PRIVATE
   ${ROSETTE_PORT_DIR}/chip_imxrt.cpp
+  ${ROSETTE_PORT_DIR}/imxrt_enet_lending_device.cpp
+  ${ROSETTE_PORT_DIR}/imxrt_enet_link.cpp
   ${ROSETTE_PORT_DIR}/imxrt_enet_mac_device.cpp
   ${ROSETTE_PORT_DIR}/imxrt_flash_region.c
   ${ROSETTE_PORT_DIR}/imxrt_flexspi_nor_config.c

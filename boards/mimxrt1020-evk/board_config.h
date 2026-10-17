@@ -34,10 +34,15 @@
 #define ROSETTE_PIN_PHY_INT ROSETTE_IMXRT_GPIO(1, 22)  ///< KSZ8081 INTRP, active low
 #define ROSETTE_PHY_MDIO_ADDRESS 2u                    ///< KSZ8081 PHYAD strapping
 
-// ENET DMA rings (enet_interface.cpp): each buffer is 1536 bytes of DTCM. RX
-// absorbs a burst while the receive task runs; TX holds frames the wire has
-// not taken yet.
+// ENET DMA rings. The receive ring absorbs a burst while the receive task
+// runs; the transmit ring holds frames the wire has not taken yet.
+// Lending (enet_lending_interface.cpp, the default): the receive ring holds
+// that many of the stack's network buffers, and a transmit descriptor costs 12
+// octets, since it points at the stack's buffer.
+// Copying (enet_copying_interface.cpp): each RX and TX buffer is 1536 octets
+// of DTCM that the driver owns.
 #define ROSETTE_ENET_RX_BUFFERS 4u
+#define ROSETTE_ENET_TX_DESCRIPTORS 4u
 #define ROSETTE_ENET_TX_BUFFERS 2u
 
 // ── Console ──────────────────────────────────────────────────────────────────
