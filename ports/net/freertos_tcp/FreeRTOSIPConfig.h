@@ -14,8 +14,8 @@
  * holds ipTOTAL_ETHERNET_FRAME_SIZE = 1522 octets of frame.
  * Buffer descriptors: 10 (covers simultaneous SPDP, SEDP, DATA, ACKNACKs).
  * BufferAllocation_2 (the default) takes each from the FreeRTOS heap as
- * needed; a board whose MAC lends the stack's buffers
- * (ROSETTE_FREERTOS_TCP_LENT_BUFFERS, ports/net/freertos_tcp/port.cmake)
+ * needed; a board whose MAC works in the stack's buffers
+ * (ROSETTE_FREERTOS_TCP_ZERO_COPY, ports/net/freertos_tcp/port.cmake)
  * uses BufferAllocation_1 and places all ten in its own DMA-reachable RAM.
  *
  * DHCP vs static IP
@@ -58,7 +58,7 @@
 #define ipconfigSOCK_DEFAULT_SEND_BLOCK_TIME ipconfigUDP_MAX_SEND_BLOCK_TIME_TICKS
 // A flooded socket keeps at most this many datagrams queued and drops the
 // rest, so it cannot take the whole pool from the other sockets and from
-// transmit. With a lending MAC, ROSETTE_ENET_RX_BUFFERS of the ten buffers sit
+// transmit. With a zero-copy MAC, ROSETTE_ENET_RX_BUFFERS of the ten buffers sit
 // in the receive ring, which leaves this much for one socket and two for sends.
 #define ipconfigUDP_MAX_RX_PACKETS 4u
 #define ipconfigUDP_TIME_TO_LIVE                128u
@@ -100,10 +100,10 @@
 #define ipconfigDRIVER_INCLUDED_RX_IP_CHECKSUM  0
 
 // ── Zero-copy ─────────────────────────────────────────────────────────────────
-// A copying interface (interface.hpp) copies in both directions. A lending
-// interface (lending_interface.hpp) sends the stack's own buffers, so it needs
+// A copying interface (interface.hpp) copies in both directions. A zero-copy
+// interface (zero_copy_interface.hpp) sends the stack's own buffers, so it needs
 // pfOutput to own every buffer it is given: ipconfigZERO_COPY_TX_DRIVER = 1,
-// which port.cmake defines for a board with ROSETTE_FREERTOS_TCP_LENT_BUFFERS.
+// which port.cmake defines for a board with ROSETTE_FREERTOS_TCP_ZERO_COPY.
 // Receive needs no setting: a received frame arrives in a network buffer
 // either way.
 #define ipconfigZERO_COPY_RX_DRIVER             0

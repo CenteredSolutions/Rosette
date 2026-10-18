@@ -63,7 +63,7 @@ $ ros2 node list
   duplicate address detection, and UDP6 sockets.
 - FreeRTOS+TCP over an on-chip MAC: the i.MX RT ENET receives into and
   transmits from the stack's own network buffers, with no driver-owned frame
-  storage (`rosette/net/lending_mac.hpp`).
+  storage (`rosette/net/zero_copy_mac.hpp`).
 
 **Boards and tools**
 - RP2040, RP2350, and NXP i.MX RT1062 boards, bare metal; POSIX hosts.

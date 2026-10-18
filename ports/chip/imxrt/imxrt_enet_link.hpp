@@ -7,8 +7,8 @@
  *
  * Two devices drive the ENET, one per data path, and both are built on this
  * class: ImxrtEnetMacDevice copies frames through buffers it owns
- * (imxrt_enet_mac_device.hpp), and ImxrtEnetLendingDevice moves them in the
- * IP stack's own buffers (imxrt_enet_lending_device.hpp). Everything that
+ * (imxrt_enet_mac_device.hpp), and ImxrtEnetZeroCopyDevice moves them in the
+ * IP stack's own buffers (imxrt_enet_zero_copy_device.hpp). Everything that
  * does not touch a frame is here, so a board can build either device and
  * measure one against the other: the MCUXpresso SDK's fsl_enet brings the
  * MAC up, the PHY is reached over the ENET's MDIO bus with the IEEE 802.3
@@ -66,7 +66,7 @@ struct ImxrtEnetMode {
 };
 
 /**
- * @brief The ENET's MAC and PHY control, shared by the copying and the lending device.
+ * @brief The ENET's MAC and PHY control, shared by the copying and the zero-copy device.
  *
  * Owned by value by one device for the program's lifetime; neither copied
  * nor moved, because fsl_enet's handle and the interrupt callback hold its

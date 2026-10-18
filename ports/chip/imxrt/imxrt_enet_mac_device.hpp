@@ -11,8 +11,8 @@
  * buffer and starts the DMA. The rings and buffers are a board-sized
  * ImxrtEnetRings object the board places in DMA-reachable, non-cached RAM
  * (DTCM on these parts, where the SDK's linker scripts put .bss), so no
- * cache maintenance is needed. ImxrtEnetLendingDevice
- * (imxrt_enet_lending_device.hpp) is the same ENET without the buffers.
+ * cache maintenance is needed. ImxrtEnetZeroCopyDevice
+ * (imxrt_enet_zero_copy_device.hpp) is the same ENET without the buffers.
  *
  * Bring-up, the PHY, the multicast filter, and the receive interrupt are
  * ImxrtEnetLink's (imxrt_enet_link.hpp); this class adds the copying data

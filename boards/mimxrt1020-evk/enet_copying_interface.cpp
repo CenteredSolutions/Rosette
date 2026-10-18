@@ -1,6 +1,6 @@
 /**
  * @file boards/mimxrt1020-evk/enet_copying_interface.cpp
- * @brief The EVK's FreeRTOS+TCP interface with ROSETTE_IMXRT_ENET_LENDING=OFF: the ENET copying
+ * @brief The EVK's FreeRTOS+TCP interface with ROSETTE_IMXRT_ENET_ZERO_COPY=OFF: the ENET copying
  * through its own buffers.
  *
  * Composition only: the FreeRTOS+TCP port supplies NetworkInterface<Device>
@@ -9,8 +9,8 @@
  * rings, names the PHY, and implements
  * ports/net/freertos_tcp/board_interface.hpp over them. board_init() has
  * already muxed the RMII pads, started the 50 MHz reference clock, and
- * released the PHY from reset (board_init_ethernet()). The lending
- * composition beside it (enet_lending_interface.cpp) is the default; this one
+ * released the PHY from reset (board_init_ethernet()). The zero-copy
+ * composition beside it (enet_zero_copy_interface.cpp) is the default; this one
  * is kept to measure against it.
  */
 

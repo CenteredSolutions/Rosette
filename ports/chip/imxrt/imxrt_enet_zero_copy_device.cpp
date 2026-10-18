@@ -1,8 +1,8 @@
 /**
- * @file ports/chip/imxrt/imxrt_enet_lending_device.cpp
- * @brief The lending i.MX RT ENET device: descriptor rings over buffers the IP stack lends.
+ * @file ports/chip/imxrt/imxrt_enet_zero_copy_device.cpp
+ * @brief The zero-copy i.MX RT ENET device: descriptor rings over buffers the IP stack posts.
  *
- * See imxrt_enet_lending_device.hpp for the design. The legacy descriptor
+ * See imxrt_enet_zero_copy_device.hpp for the design. The legacy descriptor
  * fields this file uses (i.MX RT1020 RM, ENET "Legacy buffer descriptors"):
  *
  *   receive   E  (empty: the DMA owns it)   W (wrap)   L (last buffer of a frame)
@@ -12,10 +12,10 @@
  * The DMA walks each ring in order and stops at the first descriptor it does
  * not own; writing RDAR or TDAR sends it looking again. A receive slot whose
  * buffer the consumer has taken therefore simply stays not-empty, and the
- * DMA waits there until a fresh buffer is lent into it.
+ * DMA waits there until a fresh buffer is posted into it.
  */
 
-#include "imxrt_enet_lending_device.hpp"
+#include "imxrt_enet_zero_copy_device.hpp"
 
 namespace rosette::net::imxrt {
 namespace {
@@ -24,20 +24,20 @@ namespace pf = rosette::platform;
 
 /// The ENET reports a received frame's length with the SHIFT16 pad included,
 /// and expects a transmit length to include it.
-constexpr uint16_t kShiftPad = static_cast<uint16_t>(ImxrtEnetLendingDevice::kLentFrameOffset);
+constexpr uint16_t kShiftPad = static_cast<uint16_t>(ImxrtEnetZeroCopyDevice::kFrameOffset);
 
 }  // namespace
 
-bool ImxrtEnetLendingDevice::aligned(const uint8_t* data) const noexcept {
-    const uintptr_t region = reinterpret_cast<uintptr_t>(data) - kLentFrameOffset;
-    return data != nullptr && region % kLentBufferAlignment == 0u;
+bool ImxrtEnetZeroCopyDevice::aligned(const uint8_t* data) const noexcept {
+    const uintptr_t region = reinterpret_cast<uintptr_t>(data) - kFrameOffset;
+    return data != nullptr && region % kBufferAlignment == 0u;
 }
 
 /**
  * @brief Starts the ENET and the PHY over a full receive ring; later calls only latch the address.
  *
  * The receive descriptors already hold the consumer's buffers
- * (lend_receive_buffer()), so fsl_enet is given the rings without data
+ * (post_receive_buffer()), so fsl_enet is given the rings without data
  * buffers and leaves them alone. Both interrupts are on: a received frame
  * and a sent frame each wake the consumer, the second so it collects the
  * sent buffer.
@@ -48,13 +48,13 @@ bool ImxrtEnetLendingDevice::aligned(const uint8_t* data) const noexcept {
  *
  * Verification:
  * - Correct means: as ImxrtEnetLink::start(), with every received frame
- *   landing in a lent buffer two octets past its aligned start.
+ *   landing in a posted buffer two octets past its aligned start.
  * - Covered by: bring-up on the MIMXRT1020-EVK (DHCP lease,
  *   tools/udp_echo_probe.py).
  *
  * References: i.MX RT1020 Reference Manual, ENET chapter: MRBR, RACC, TACC.
  */
-bool ImxrtEnetLendingDevice::initialise(const MacAddress& mac) noexcept {
+bool ImxrtEnetZeroCopyDevice::initialise(const MacAddress& mac) noexcept {
     if (link_.started()) {
         link_.set_mac_address(mac);
         return true;
@@ -67,8 +67,8 @@ bool ImxrtEnetLendingDevice::initialise(const MacAddress& mac) noexcept {
     enet_buffer_config_t buffers{};
     buffers.rxBdNumber = rx_count_;
     buffers.txBdNumber = tx_count_;
-    buffers.rxBuffSizeAlign = static_cast<uint16_t>(kLentBufferBytes);
-    buffers.txBuffSizeAlign = static_cast<uint16_t>(kLentBufferBytes);
+    buffers.rxBuffSizeAlign = static_cast<uint16_t>(kBufferBytes);
+    buffers.txBuffSizeAlign = static_cast<uint16_t>(kBufferBytes);
     buffers.rxBdStartAddrAlign = rx_ring_;
     buffers.txBdStartAddrAlign = tx_ring_;
 
@@ -80,21 +80,21 @@ bool ImxrtEnetLendingDevice::initialise(const MacAddress& mac) noexcept {
 }
 
 /**
- * @brief Arms the receive slot after the last lent one with @p data.
+ * @brief Arms the receive slot after the last posted one with @p data.
  *
  * @param[in] data  Frame pointer of the buffer; its region starts
- *   kLentFrameOffset octets earlier.
+ *   kFrameOffset octets earlier.
  * @param[in] owner The consumer's handle for the buffer.
  * @return False when the ring is full or the buffer is misaligned.
  *
  * Verification:
  * - Correct means: with the ring full and the consumer's pool empty, every
- *   taken buffer lent straight back keeps all rx_count_ slots armed, and
+ *   taken buffer posted straight back keeps all rx_count_ slots armed, and
  *   frames are received again once the pool recovers.
  * - Covered by: a ping flood against the MIMXRT1020-EVK with the UDP echo
  *   probe running (no automated test).
  */
-bool ImxrtEnetLendingDevice::lend_receive_buffer(uint8_t* data, void* owner) noexcept {
+bool ImxrtEnetZeroCopyDevice::post_receive_buffer(uint8_t* data, void* owner) noexcept {
     if (!aligned(data) || rx_filled_ == rx_count_) {
         return false;
     }
@@ -102,7 +102,7 @@ bool ImxrtEnetLendingDevice::lend_receive_buffer(uint8_t* data, void* owner) noe
     const uint16_t slot = static_cast<uint16_t>((rx_head_ + rx_filled_) % rx_count_);
     rx_owners_[slot] = owner;
     volatile enet_rx_bd_struct_t& descriptor = rx_ring_[slot];
-    descriptor.buffer = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(data) - kLentFrameOffset);
+    descriptor.buffer = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(data) - kFrameOffset);
     descriptor.length = 0u;
 
     // The address must be visible to the DMA before the slot is handed over.
@@ -125,12 +125,12 @@ bool ImxrtEnetLendingDevice::lend_receive_buffer(uint8_t* data, void* owner) noe
  *
  * A frame the MAC flagged (CRC, overrun, length, truncation), or one that
  * spans several buffers because it outgrew MRBR, is not returned: each of
- * its buffers is lent again at the tail, and the search moves on.
+ * its buffers is posted again at the tail, and the search moves on.
  *
  * @param[out] frame The frame and its buffer's owner, on a true return.
  * @return False when the oldest slot is still the DMA's, or the ring is empty.
  */
-bool ImxrtEnetLendingDevice::take_received_frame(LentFrame& frame) noexcept {
+bool ImxrtEnetZeroCopyDevice::take_received_frame(ZeroCopyFrame& frame) noexcept {
     while (rx_filled_ > 0u) {
         volatile enet_rx_bd_struct_t& descriptor = rx_ring_[rx_head_];
         const uint16_t                control = descriptor.control;
@@ -140,7 +140,7 @@ bool ImxrtEnetLendingDevice::take_received_frame(LentFrame& frame) noexcept {
 
         // The DMA writes the frame before the status; read it in that order.
         __DMB();
-        uint8_t* const data = reinterpret_cast<uint8_t*>(descriptor.buffer) + kLentFrameOffset;
+        uint8_t* const data = reinterpret_cast<uint8_t*>(descriptor.buffer) + kFrameOffset;
         void* const    owner = rx_owners_[rx_head_];
         const uint16_t length = descriptor.length;
         rx_owners_[rx_head_] = nullptr;
@@ -153,7 +153,7 @@ bool ImxrtEnetLendingDevice::take_received_frame(LentFrame& frame) noexcept {
                           && length > kShiftPad;
         rx_discarding_ = !last;
         if (!good) {
-            (void)lend_receive_buffer(data, owner);
+            (void)post_receive_buffer(data, owner);
             continue;
         }
 
@@ -167,9 +167,9 @@ bool ImxrtEnetLendingDevice::take_received_frame(LentFrame& frame) noexcept {
 }
 
 /**
- * @brief Points the next transmit descriptor at the lent frame and starts the DMA.
+ * @brief Points the next transmit descriptor at the consumer's frame and starts the DMA.
  *
- * @param[in] frame 1..max_frame_size() octets in an aligned lent buffer.
+ * @param[in] frame 1..max_frame_size() octets in an aligned posted buffer.
  * @return False before initialise(), for a bad frame, or when every
  *   transmit descriptor is still queued.
  *
@@ -180,7 +180,7 @@ bool ImxrtEnetLendingDevice::take_received_frame(LentFrame& frame) noexcept {
  * - Covered by: tools/udp_echo_probe.py against the MIMXRT1020-EVK (each
  *   echo is compared byte for byte, at sizes 1 to 1472 octets).
  */
-bool ImxrtEnetLendingDevice::send_lent_frame(const LentFrame& frame) noexcept {
+bool ImxrtEnetZeroCopyDevice::post_send_frame(const ZeroCopyFrame& frame) noexcept {
     if (!link_.started() || !aligned(frame.data) || frame.length == 0u
         || frame.length > max_frame_size()) {
         return false;
@@ -195,7 +195,7 @@ bool ImxrtEnetLendingDevice::send_lent_frame(const LentFrame& frame) noexcept {
     tx_owners_[slot] = frame.owner;
     volatile enet_tx_bd_struct_t& descriptor = tx_ring_[slot];
     descriptor.buffer =
-        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(frame.data) - kLentFrameOffset);
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(frame.data) - kFrameOffset);
     descriptor.length = static_cast<uint16_t>(frame.length + kShiftPad);
 
     __DMB();
@@ -211,7 +211,7 @@ bool ImxrtEnetLendingDevice::send_lent_frame(const LentFrame& frame) noexcept {
     return true;
 }
 
-bool ImxrtEnetLendingDevice::take_sent_frame(void*& owner) noexcept {
+bool ImxrtEnetZeroCopyDevice::take_sent_frame(void*& owner) noexcept {
     pf::LockGuard guard(tx_mutex_);
     if (tx_used_ == 0u || (tx_ring_[tx_done_].control & ENET_BUFFDESCRIPTOR_TX_READY_MASK) != 0u) {
         return false;

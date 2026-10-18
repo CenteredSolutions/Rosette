@@ -9,12 +9,12 @@
  * whose callbacks initialise the MAC, transmit a buffer, and report the link.
  * Two interfaces fill it, one per MAC contract: NetworkInterface<Device>
  * (interface.hpp) over a copying rosette::net::MacDevice, and
- * LendingNetworkInterface<Device> (lending_interface.hpp) over a
- * rosette::net::LendingMacDevice. They differ only in how frames move, so
+ * ZeroCopyNetworkInterface<Device> (zero_copy_interface.hpp) over a
+ * rosette::net::ZeroCopyMacDevice. They differ only in how frames move, so
  * InterfaceBinding holds the rest and calls the derived class (CRTP) for
  * the data path:
  *
- *   bool prepare_device()     before the first device initialise(), e.g. lend
+ *   bool prepare_device()     before the first device initialise(), e.g. post
  *                             the receive ring its buffers
  *   BaseType_t output(...)    pfOutput
  *   bool send_raw(...)        the IGMP / MLD service's frames
@@ -71,7 +71,7 @@ namespace rosette::net::freertos {
  * copied nor moved, because the descriptor and the interrupt hold its
  * address.
  *
- * @tparam Derived The interface (NetworkInterface or LendingNetworkInterface).
+ * @tparam Derived The interface (NetworkInterface or ZeroCopyNetworkInterface).
  * @tparam Device  Concrete MAC provider, derived from net::MacLink through
  *                 one of the two MAC contracts, constructed in place from the
  *                 interface's constructor arguments.

@@ -11,10 +11,10 @@
 #   random.cpp           the random numbers the stack asks the application for
 #   interface.hpp        NetworkInterface<Device>: a FreeRTOS+TCP interface over
 #                        any copying rosette::net::MacDevice (rosette/net/mac.hpp)
-#   lending_interface.hpp, lent_buffer_pool.hpp
-#                        LendingNetworkInterface<Device>: one over a
-#                        rosette::net::LendingMacDevice, which moves frames in
-#                        the stack's own buffers (rosette/net/lending_mac.hpp)
+#   zero_copy_interface.hpp, zero_copy_buffer_pool.hpp
+#                        ZeroCopyNetworkInterface<Device>: one over a
+#                        rosette::net::ZeroCopyMacDevice, which moves frames in
+#                        the stack's own buffers (rosette/net/zero_copy_mac.hpp)
 #   interface_binding.hpp  what the two interfaces share
 #   board_interface.hpp  the hook a board implements to register its interface
 #                        (boards/common/wiznet/ does, over the WIZnet chip in
@@ -23,9 +23,9 @@
 #                        by putting its directory first
 #
 # Board input (board.cmake):
-#   ROSETTE_FREERTOS_TCP_LENT_BUFFERS  ON when the board's interface is a
-#                        LendingNetworkInterface: BufferAllocation_1, whose
-#                        buffers the board places (LentBufferPool), and
+#   ROSETTE_FREERTOS_TCP_ZERO_COPY  ON when the board's interface is a
+#                        ZeroCopyNetworkInterface: BufferAllocation_1, whose
+#                        buffers the board places (ZeroCopyBufferPool), and
 #                        ipconfigZERO_COPY_TX_DRIVER. OFF (the default):
 #                        BufferAllocation_2 from the FreeRTOS heap.
 #
@@ -52,7 +52,7 @@ if(NOT TARGET freertos_plus_tcp_network_if)
   add_library(freertos_plus_tcp_network_if INTERFACE)
 endif()
 
-if(ROSETTE_FREERTOS_TCP_LENT_BUFFERS)
+if(ROSETTE_FREERTOS_TCP_ZERO_COPY)
   set(FREERTOS_PLUS_TCP_BUFFER_ALLOCATION "1" CACHE STRING "" FORCE)
 else()
   set(FREERTOS_PLUS_TCP_BUFFER_ALLOCATION "2" CACHE STRING "" FORCE)
@@ -77,7 +77,7 @@ if(NOT TARGET freertos_plus_tcp)
     FetchContent_MakeAvailable(freertos_tcp)
   endif()
   target_include_directories(freertos_plus_tcp PUBLIC "${ROSETTE_PORT_DIR}")
-  if(ROSETTE_FREERTOS_TCP_LENT_BUFFERS)
+  if(ROSETTE_FREERTOS_TCP_ZERO_COPY)
     target_compile_definitions(freertos_plus_tcp PUBLIC ipconfigZERO_COPY_TX_DRIVER=1)
   endif()
 endif()

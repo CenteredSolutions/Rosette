@@ -24,7 +24,7 @@
 #   imxrt_enet_link.cpp           the ENET's bring-up, RMII PHY, multicast filter,
 #                                 and interrupt, for either device below
 #   imxrt_enet_mac_device.cpp     the ENET as a copying rosette::net::MacDevice
-#   imxrt_enet_lending_device.cpp the ENET as a rosette::net::LendingMacDevice;
+#   imxrt_enet_zero_copy_device.cpp the ENET as a rosette::net::ZeroCopyMacDevice;
 #                                 each is linked only into images whose board
 #                                 composition uses it
 #   imxrt_flash_region.c          the flash hooks (flash.hpp): no storage region
@@ -108,7 +108,7 @@ set_source_files_properties(${_imxrt_startup} PROPERTIES
 
 target_sources(rosette_platform PRIVATE
   ${ROSETTE_PORT_DIR}/chip_imxrt.cpp
-  ${ROSETTE_PORT_DIR}/imxrt_enet_lending_device.cpp
+  ${ROSETTE_PORT_DIR}/imxrt_enet_zero_copy_device.cpp
   ${ROSETTE_PORT_DIR}/imxrt_enet_link.cpp
   ${ROSETTE_PORT_DIR}/imxrt_enet_mac_device.cpp
   ${ROSETTE_PORT_DIR}/imxrt_flash_region.c

@@ -33,7 +33,7 @@ constexpr uint64_t kTxBusyTimeoutUs = 1000u;
  * - Correct means: as ImxrtEnetLink::start(): carrier at the link partner
  *   and frames to @p mac reach the RX ring.
  * - Covered by: bring-up on the MIMXRT1020-EVK with
- *   ROSETTE_IMXRT_ENET_LENDING=OFF (DHCP lease, tools/udp_echo_probe.py).
+ *   ROSETTE_IMXRT_ENET_ZERO_COPY=OFF (DHCP lease, tools/udp_echo_probe.py).
  *
  * References: fsl_enet.h ENET_Init(), ENET_ActiveRead().
  */

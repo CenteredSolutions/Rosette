@@ -36,7 +36,7 @@
 
 // ENET DMA rings. The receive ring absorbs a burst while the receive task
 // runs; the transmit ring holds frames the wire has not taken yet.
-// Lending (enet_lending_interface.cpp, the default): the receive ring holds
+// Zero copy (enet_zero_copy_interface.cpp, the default): the receive ring holds
 // that many of the stack's network buffers, and a transmit descriptor costs 12
 // octets, since it points at the stack's buffer.
 // Copying (enet_copying_interface.cpp): each RX and TX buffer is 1536 octets

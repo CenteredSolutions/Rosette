@@ -1,11 +1,11 @@
 #pragma once
 
 /**
- * @file ports/net/freertos_tcp/lending_interface.hpp
- * @brief A FreeRTOS+TCP network interface that lends the stack's network buffers to a
- * rosette::net::LendingMacDevice.
+ * @file ports/net/freertos_tcp/zero_copy_interface.hpp
+ * @brief A FreeRTOS+TCP network interface that posts the stack's network buffers to a
+ * rosette::net::ZeroCopyMacDevice.
  *
- * With a lending MAC (rosette/net/lending_mac.hpp) a frame is never copied
+ * With a zero-copy MAC (rosette/net/zero_copy_mac.hpp) a frame is never copied
  * between the wire and the IP task. The receive ring holds empty network
  * buffers, and a frame the DMA wrote into one goes to the IP task in that
  * same buffer. A frame the stack built goes to the wire from its own buffer,
@@ -16,14 +16,14 @@
  * What the stack must provide for that:
  *  - BufferAllocation_1, with every buffer in the device's layout and in
  *    DMA-reachable, non-cached RAM: the board defines
- *    vNetworkInterfaceAllocateRAMToBuffers() over a LentBufferPool
- *    (lent_buffer_pool.hpp);
+ *    vNetworkInterfaceAllocateRAMToBuffers() over a ZeroCopyBufferPool
+ *    (zero_copy_buffer_pool.hpp);
  *  - ipconfigZERO_COPY_TX_DRIVER = 1, so pfOutput always owns the buffer it
  *    is given (the stack duplicates one it must keep);
  *  - more buffers than the device's receive ring holds, since the ring keeps
  *    its share at all times.
  * ports/net/freertos_tcp/port.cmake sets the first two when the board asks
- * for ROSETTE_FREERTOS_TCP_LENT_BUFFERS.
+ * for ROSETTE_FREERTOS_TCP_ZERO_COPY.
  *
  * The descriptor, the receive wake-up, the link, and the multicast filter are
  * InterfaceBinding's (interface_binding.hpp); this file is the data path.
@@ -38,12 +38,12 @@
 #include <type_traits>
 
 #include "ports/net/freertos_tcp/interface_binding.hpp"
-#include "rosette/net/lending_mac.hpp"
+#include "rosette/net/zero_copy_mac.hpp"
 #include "rosette/platform/platform.hpp"
 
 #if ipconfigZERO_COPY_TX_DRIVER == 0
 #  error \
-      "LendingNetworkInterface needs ipconfigZERO_COPY_TX_DRIVER (ROSETTE_FREERTOS_TCP_LENT_BUFFERS)"
+      "ZeroCopyNetworkInterface needs ipconfigZERO_COPY_TX_DRIVER (ROSETTE_FREERTOS_TCP_ZERO_COPY)"
 #endif
 
 namespace rosette::net::freertos {
@@ -53,25 +53,25 @@ namespace rosette::net::freertos {
  *
  * Example:
  * @code{.cpp}
- * imxrt::ImxrtEnetLendingRings<4, 4> g_rings;
- * LendingNetworkInterface<imxrt::ImxrtEnetLendingDevice> g_enet0{
+ * imxrt::ImxrtEnetZeroCopyRings<4, 4> g_rings;
+ * ZeroCopyNetworkInterface<imxrt::ImxrtEnetZeroCopyDevice> g_enet0{
  *     MacAddress{}, g_rings, imxrt::ImxrtEnetConfig{2u, 5u, &configure_ksz8081}};
  * NetworkInterface_t g_enet0_descriptor;
- * g_enet0.add_to_freertos(g_enet0_descriptor, "enet0");  // the ring is lent in pfInitialise
+ * g_enet0.add_to_freertos(g_enet0_descriptor, "enet0");  // the ring is filled in pfInitialise
  * @endcode
- * Full program: boards/mimxrt1020-evk/enet_lending_interface.cpp.
+ * Full program: boards/mimxrt1020-evk/enet_zero_copy_interface.cpp.
  *
- * @tparam Device Concrete MAC provider, derived from net::LendingMacDevice
+ * @tparam Device Concrete MAC provider, derived from net::ZeroCopyMacDevice
  *                and constructed in place from the interface's constructor
  *                arguments.
  */
 template <typename Device>
-class LendingNetworkInterface : public InterfaceBinding<LendingNetworkInterface<Device>, Device> {
+class ZeroCopyNetworkInterface : public InterfaceBinding<ZeroCopyNetworkInterface<Device>, Device> {
     static_assert(
-        std::is_base_of_v<net::LendingMacDevice, Device>,
-        "LendingNetworkInterface<Device>: Device must implement rosette::net::LendingMacDevice");
+        std::is_base_of_v<net::ZeroCopyMacDevice, Device>,
+        "ZeroCopyNetworkInterface<Device>: Device must implement rosette::net::ZeroCopyMacDevice");
 
-    using Binding = InterfaceBinding<LendingNetworkInterface<Device>, Device>;
+    using Binding = InterfaceBinding<ZeroCopyNetworkInterface<Device>, Device>;
     friend Binding;
 
 public:
@@ -83,7 +83,7 @@ public:
 
 private:
     /**
-     * @brief Lends network buffers to the receive ring until it is full.
+     * @brief Posts network buffers to the receive ring until it is full.
      *
      * Runs in pfInitialise until the receive task exists; a ring left short
      * (the pool is empty, or a buffer broke the device's layout) makes the
@@ -99,7 +99,7 @@ private:
                 return false;
             }
 
-            if (!this->device_.lend_receive_buffer(buffer->pucEthernetBuffer, buffer)) {
+            if (!this->device_.post_receive_buffer(buffer->pucEthernetBuffer, buffer)) {
                 vReleaseNetworkBufferAndDescriptor(buffer);
                 return true;
             }
@@ -158,10 +158,10 @@ private:
      */
     bool send_owned(NetworkBufferDescriptor_t* buffer) noexcept {
         if (this->frame_fits(buffer->xDataLength)) {
-            const LentFrame frame{buffer->pucEthernetBuffer, buffer->xDataLength, buffer};
-            const uint64_t  start = rosette::platform::monotonic_us();
+            const ZeroCopyFrame frame{buffer->pucEthernetBuffer, buffer->xDataLength, buffer};
+            const uint64_t      start = rosette::platform::monotonic_us();
             do {
-                if (this->device_.send_lent_frame(frame)) {
+                if (this->device_.post_send_frame(frame)) {
                     return true;
                 }
 
@@ -208,7 +208,7 @@ private:
         for (;;) {
             collect_sent();
 
-            LentFrame frame;
+            ZeroCopyFrame frame;
             if (!this->device_.take_received_frame(frame)) {
                 this->wait_for_frames();
                 continue;
@@ -218,13 +218,13 @@ private:
             NetworkBufferDescriptor_t* fresh =
                 pxGetNetworkBufferWithDescriptor(ipTOTAL_ETHERNET_FRAME_SIZE, 0);
             if (fresh == nullptr) {
-                (void)this->device_.lend_receive_buffer(frame.data, received);
+                (void)this->device_.post_receive_buffer(frame.data, received);
                 iptraceETHERNET_RX_EVENT_LOST();
                 continue;
             }
 
             // A slot was freed by the take above, so the ring accepts the fresh buffer.
-            if (!this->device_.lend_receive_buffer(fresh->pucEthernetBuffer, fresh)) {
+            if (!this->device_.post_receive_buffer(fresh->pucEthernetBuffer, fresh)) {
                 vReleaseNetworkBufferAndDescriptor(fresh);
             }
 

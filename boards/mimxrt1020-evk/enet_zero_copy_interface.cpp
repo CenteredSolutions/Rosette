@@ -1,12 +1,12 @@
 /**
- * @file boards/mimxrt1020-evk/enet_lending_interface.cpp
+ * @file boards/mimxrt1020-evk/enet_zero_copy_interface.cpp
  * @brief The EVK's FreeRTOS+TCP interface: the RT1021's ENET moving frames in the stack's own
  * network buffers.
  *
  * Composition only: the FreeRTOS+TCP port supplies
- * LendingNetworkInterface<Device> and LentBufferPool
- * (ports/net/freertos_tcp/lending_interface.hpp, lent_buffer_pool.hpp), the
- * chip port supplies the MAC (ports/chip/imxrt/imxrt_enet_lending_device.hpp),
+ * ZeroCopyNetworkInterface<Device> and ZeroCopyBufferPool
+ * (ports/net/freertos_tcp/zero_copy_interface.hpp, zero_copy_buffer_pool.hpp), the
+ * chip port supplies the MAC (ports/chip/imxrt/imxrt_enet_zero_copy_device.hpp),
  * and this file sizes the descriptor rings, places the stack's network
  * buffers, names the PHY, and implements
  * ports/net/freertos_tcp/board_interface.hpp over them. board_init() has
@@ -24,29 +24,29 @@
 #include "FreeRTOS.h"
 #include "board.h"
 #include "board_config.h"
-#include "imxrt_enet_lending_device.hpp"
+#include "imxrt_enet_zero_copy_device.hpp"
 #include "ksz8081_phy.hpp"
 #include "ports/net/freertos_tcp/board_interface.hpp"
-#include "ports/net/freertos_tcp/lending_interface.hpp"
-#include "ports/net/freertos_tcp/lent_buffer_pool.hpp"
+#include "ports/net/freertos_tcp/zero_copy_buffer_pool.hpp"
+#include "ports/net/freertos_tcp/zero_copy_interface.hpp"
 
 namespace rosette::net::freertos {
 namespace {
 
-using imxrt::ImxrtEnetLendingDevice;
-using Pool = LentBufferPool<ImxrtEnetLendingDevice::kLentFrameOffset,
-                            ImxrtEnetLendingDevice::kLentBufferAlignment>;
+using imxrt::ImxrtEnetZeroCopyDevice;
+using Pool = ZeroCopyBufferPool<ImxrtEnetZeroCopyDevice::kFrameOffset,
+                                ImxrtEnetZeroCopyDevice::kBufferAlignment>;
 
-static_assert(Pool::kRegionBytes >= ImxrtEnetLendingDevice::kLentBufferBytes,
+static_assert(Pool::kRegionBytes >= ImxrtEnetZeroCopyDevice::kBufferBytes,
               "a network buffer must hold the ENET's receive buffer size (MRBR)");
 static_assert(Pool::kCount > ROSETTE_ENET_RX_BUFFERS,
               "the receive ring keeps its buffers; the stack needs some of its own");
 
 // In .bss, which the linker places in the DTCM: not cached, and reachable by the ENET's DMA.
-Pool                                                                               g_pool;
-imxrt::ImxrtEnetLendingRings<ROSETTE_ENET_RX_BUFFERS, ROSETTE_ENET_TX_DESCRIPTORS> g_rings;
+Pool                                                                                g_pool;
+imxrt::ImxrtEnetZeroCopyRings<ROSETTE_ENET_RX_BUFFERS, ROSETTE_ENET_TX_DESCRIPTORS> g_rings;
 
-LendingNetworkInterface<ImxrtEnetLendingDevice> g_enet0{
+ZeroCopyNetworkInterface<ImxrtEnetZeroCopyDevice> g_enet0{
     MacAddress{}, g_rings,
     imxrt::ImxrtEnetConfig{ROSETTE_PHY_MDIO_ADDRESS, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY,
                            &configure_ksz8081}};

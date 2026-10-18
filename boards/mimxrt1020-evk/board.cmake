@@ -9,8 +9,8 @@ set(ROSETTE_NET_STACK "freertos_tcp" PARENT_SCOPE)
 # The ENET moves frames in FreeRTOS+TCP's own network buffers (ON), or copies
 # them through buffers of its own (OFF), which costs about 9 KiB more and
 # stays available to measure against (bsp.cmake picks the composition).
-option(ROSETTE_IMXRT_ENET_LENDING "The EVK's ENET lends FreeRTOS+TCP's buffers" ON)
-set(ROSETTE_FREERTOS_TCP_LENT_BUFFERS ${ROSETTE_IMXRT_ENET_LENDING} PARENT_SCOPE)
+option(ROSETTE_IMXRT_ENET_ZERO_COPY "The EVK's ENET moves frames in FreeRTOS+TCP's buffers" ON)
+set(ROSETTE_FREERTOS_TCP_ZERO_COPY ${ROSETTE_IMXRT_ENET_ZERO_COPY} PARENT_SCOPE)
 
 # The chip port's inputs (ports/chip/imxrt/prelude.cmake, port.cmake). The
 # clock tree is the SDK's evkmimxrt1020 one: 500 MHz core from the 24 MHz

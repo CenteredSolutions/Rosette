@@ -1,15 +1,15 @@
 #pragma once
 
 /**
- * @file ports/chip/imxrt/imxrt_enet_lending_device.hpp
- * @brief The i.MX RT10xx ENET MAC, with its RMII PHY, as a rosette::net::LendingMacDevice.
+ * @file ports/chip/imxrt/imxrt_enet_zero_copy_device.hpp
+ * @brief The i.MX RT10xx ENET MAC, with its RMII PHY, as a rosette::net::ZeroCopyMacDevice.
  *
  * The ENET's DMA follows rings of eight-octet buffer descriptors, each
  * pointing at one frame buffer. This device fills those pointers with
- * buffers the IP stack lends it (rosette/net/lending_mac.hpp), so frames go
+ * buffers the IP stack posts to it (rosette/net/zero_copy_mac.hpp), so frames go
  * from the wire into the stack's network buffers and from them back to the
  * wire without a copy, and the device owns no frame storage: its board-sized
- * ImxrtEnetLendingRings is the descriptors and one owner handle per
+ * ImxrtEnetZeroCopyRings is the descriptors and one owner handle per
  * descriptor, about 12 octets per slot. ImxrtEnetMacDevice
  * (imxrt_enet_mac_device.hpp) is the same ENET with its own buffers.
  *
@@ -24,7 +24,7 @@
  * Buffer layout: both directions run with the ENET's SHIFT16 accelerators,
  * so each frame starts two octets into a 64-octet-aligned region and the IP
  * header after the 14-octet Ethernet header is word-aligned, as FreeRTOS+TCP
- * and lwIP require. Lent buffers must be in RAM the DMA reaches and the CPU
+ * and lwIP require. Posted buffers must be in RAM the DMA reaches and the CPU
  * does not cache (the DTCM on these parts).
  *
  * References: i.MX RT1020 Reference Manual, ENET chapter: "Legacy buffer
@@ -37,7 +37,7 @@
 
 #include "fsl_enet.h"
 #include "imxrt_enet_link.hpp"
-#include "rosette/net/lending_mac.hpp"
+#include "rosette/net/zero_copy_mac.hpp"
 #include "rosette/platform/platform.hpp"
 
 namespace rosette::net::imxrt {
@@ -47,7 +47,7 @@ namespace rosette::net::imxrt {
  * descriptor.
  *
  * Sized by the board and placed in DMA-reachable, non-cached RAM (.bss, in
- * the DTCM). The receive ring holds RxCount lent buffers at all times, so
+ * the DTCM). The receive ring holds RxCount posted buffers at all times, so
  * RxCount frames can arrive while the receive task is busy; the transmit
  * ring holds at most TxCount frames the wire has not taken yet.
  *
@@ -55,8 +55,8 @@ namespace rosette::net::imxrt {
  * @tparam TxCount Transmit descriptors; at least 1.
  */
 template <std::size_t RxCount, std::size_t TxCount>
-struct ImxrtEnetLendingRings {
-    static_assert(RxCount >= 2u && TxCount >= 1u, "ImxrtEnetLendingRings: too few descriptors");
+struct ImxrtEnetZeroCopyRings {
+    static_assert(RxCount >= 2u && TxCount >= 1u, "ImxrtEnetZeroCopyRings: too few descriptors");
 
     alignas(ENET_BUFF_ALIGNMENT) enet_rx_bd_struct_t rx_descriptors[RxCount];
     alignas(ENET_BUFF_ALIGNMENT) enet_tx_bd_struct_t tx_descriptors[TxCount];
@@ -65,37 +65,37 @@ struct ImxrtEnetLendingRings {
 };
 
 /**
- * @brief The ENET and its PHY behind the net::LendingMacDevice contract.
+ * @brief The ENET and its PHY behind the net::ZeroCopyMacDevice contract.
  *
  * One instance drives the part's one ENET for the program's lifetime,
  * normally owned by the board's FreeRTOS+TCP interface
- * (ports/net/freertos_tcp/lending_interface.hpp). It is neither copied nor
+ * (ports/net/freertos_tcp/zero_copy_interface.hpp). It is neither copied nor
  * moved, because fsl_enet's handle and the interrupt callback hold its
  * address.
  *
  * Concurrency: the receive ring is touched only by the consumer's receive
- * task, and before that task exists by the initial lending; the transmit
+ * task, and before that task exists by the initial posting; the transmit
  * calls come from the IP task and the receive task and share one mutex.
  *
  * Example:
  * @code{.cpp}
- * imxrt::ImxrtEnetLendingRings<4, 4> g_rings;  // .bss: DTCM, DMA-reachable and not cached
- * freertos::LendingNetworkInterface<imxrt::ImxrtEnetLendingDevice> g_enet0{
+ * imxrt::ImxrtEnetZeroCopyRings<4, 4> g_rings;  // .bss: DTCM, DMA-reachable and not cached
+ * freertos::ZeroCopyNetworkInterface<imxrt::ImxrtEnetZeroCopyDevice> g_enet0{
  *     MacAddress{}, g_rings, imxrt::ImxrtEnetConfig{2u, 5u, &configure_ksz8081}};
  * NetworkInterface_t g_descriptor;
- * g_enet0.add_to_freertos(g_descriptor, "enet0");  // lending and initialise() run in the IP task
+ * g_enet0.add_to_freertos(g_descriptor, "enet0");  // posting and initialise() run in the IP task
  * @endcode
- * Full program: boards/mimxrt1020-evk/enet_lending_interface.cpp.
+ * Full program: boards/mimxrt1020-evk/enet_zero_copy_interface.cpp.
  */
-class ImxrtEnetLendingDevice final : public net::LendingMacDevice {
+class ImxrtEnetZeroCopyDevice final : public net::ZeroCopyMacDevice {
 public:
     /// Octets SHIFT16 places in front of each frame.
-    static constexpr std::size_t kLentFrameOffset = 2u;
-    /// Alignment of the region each lent buffer starts with (the ENET's DMA rule).
-    static constexpr std::size_t kLentBufferAlignment = ENET_BUFF_ALIGNMENT;
+    static constexpr std::size_t kFrameOffset = 2u;
+    /// Alignment of the region each posted buffer starts with (the ENET's DMA rule).
+    static constexpr std::size_t kBufferAlignment = ENET_BUFF_ALIGNMENT;
     /// Receive buffer size, MRBR: the SHIFT16 pad and the longest frame, rounded up to 16 octets.
-    static constexpr std::size_t kLentBufferBytes =
-        SDK_SIZEALIGN(kLentFrameOffset + ENET_FRAME_MAX_FRAMELEN, 16u);
+    static constexpr std::size_t kBufferBytes =
+        SDK_SIZEALIGN(kFrameOffset + ENET_FRAME_MAX_FRAMELEN, 16u);
 
     /**
      * @brief Records the rings and settings; touches no hardware until initialise().
@@ -105,8 +105,8 @@ public:
      * @param[in] config PHY address, interrupt priority, PHY set-up hook.
      */
     template <std::size_t RxCount, std::size_t TxCount>
-    ImxrtEnetLendingDevice(ImxrtEnetLendingRings<RxCount, TxCount>& rings,
-                           const ImxrtEnetConfig&                   config) noexcept
+    ImxrtEnetZeroCopyDevice(ImxrtEnetZeroCopyRings<RxCount, TxCount>& rings,
+                            const ImxrtEnetConfig&                    config) noexcept
         : rx_ring_(rings.rx_descriptors),
           tx_ring_(rings.tx_descriptors),
           rx_owners_(rings.rx_owners),
@@ -115,18 +115,18 @@ public:
           tx_count_(static_cast<uint16_t>(TxCount)),
           link_(config) {}
 
-    ImxrtEnetLendingDevice(const ImxrtEnetLendingDevice&) = delete;
-    ImxrtEnetLendingDevice& operator=(const ImxrtEnetLendingDevice&) = delete;
+    ImxrtEnetZeroCopyDevice(const ImxrtEnetZeroCopyDevice&) = delete;
+    ImxrtEnetZeroCopyDevice& operator=(const ImxrtEnetZeroCopyDevice&) = delete;
 
     bool        initialise(const MacAddress& mac) noexcept override;
     std::size_t max_frame_size() const noexcept override { return ENET_FRAME_MAX_FRAMELEN - 4u; }
 
-    std::size_t lent_frame_offset() const noexcept override { return kLentFrameOffset; }
-    std::size_t lent_buffer_alignment() const noexcept override { return kLentBufferAlignment; }
-    std::size_t lent_buffer_bytes() const noexcept override { return kLentBufferBytes; }
-    bool        lend_receive_buffer(uint8_t* data, void* owner) noexcept override;
-    bool        take_received_frame(LentFrame& frame) noexcept override;
-    bool        send_lent_frame(const LentFrame& frame) noexcept override;
+    std::size_t frame_offset() const noexcept override { return kFrameOffset; }
+    std::size_t buffer_alignment() const noexcept override { return kBufferAlignment; }
+    std::size_t buffer_bytes() const noexcept override { return kBufferBytes; }
+    bool        post_receive_buffer(uint8_t* data, void* owner) noexcept override;
+    bool        take_received_frame(ZeroCopyFrame& frame) noexcept override;
+    bool        post_send_frame(const ZeroCopyFrame& frame) noexcept override;
     bool        take_sent_frame(void*& owner) noexcept override;
 
     void set_mac_address(const MacAddress& mac) noexcept override { link_.set_mac_address(mac); }
@@ -152,7 +152,7 @@ private:
     void** const                        tx_owners_;
     const uint16_t                      rx_count_;
     const uint16_t                      tx_count_;
-    uint16_t                            rx_head_ = 0u;    ///< Oldest lent receive slot.
+    uint16_t                            rx_head_ = 0u;    ///< Oldest posted receive slot.
     uint16_t                            rx_filled_ = 0u;  ///< Receive slots holding a buffer.
     bool                                rx_discarding_ = false;  ///< Inside a multi-buffer frame.
     uint16_t                            tx_next_ = 0u;           ///< Next transmit slot to fill.

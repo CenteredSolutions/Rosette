@@ -1,12 +1,12 @@
 #pragma once
 
 /**
- * @file ports/net/freertos_tcp/lent_buffer_pool.hpp
- * @brief FreeRTOS+TCP's network buffers, laid out so a lending MAC's DMA can use any of them.
+ * @file ports/net/freertos_tcp/zero_copy_buffer_pool.hpp
+ * @brief FreeRTOS+TCP's network buffers, laid out so a zero-copy MAC's DMA can use any of them.
  *
- * LendingNetworkInterface (lending_interface.hpp) lends the stack's network
+ * ZeroCopyNetworkInterface (zero_copy_interface.hpp) posts the stack's network
  * buffers straight to the MAC, so every buffer must meet the device's layout
- * rules (rosette/net/lending_mac.hpp): its region, which starts
+ * rules (rosette/net/zero_copy_mac.hpp): its region, which starts
  * FrameOffset octets before pucEthernetBuffer, aligned to Alignment and
  * reachable by the DMA. FreeRTOS+TCP's BufferAllocation_1 takes its buffer
  * storage from the network interface (vNetworkInterfaceAllocateRAMToBuffers()),
@@ -44,32 +44,32 @@ namespace rosette::net::freertos {
 
 /**
  * @brief Static storage for all ipconfigNUM_NETWORK_BUFFER_DESCRIPTORS network buffers, in a
- * lending MAC's layout.
+ * zero-copy MAC's layout.
  *
- * @tparam FrameOffset The device's lent_frame_offset().
- * @tparam Alignment   The device's lent_buffer_alignment(); a power of two.
+ * @tparam FrameOffset The device's frame_offset().
+ * @tparam Alignment   The device's buffer_alignment(); a power of two.
  *
  * Example:
  * @code{.cpp}
- * using Pool = freertos::LentBufferPool<ImxrtEnetLendingDevice::kLentFrameOffset,
- *                                       ImxrtEnetLendingDevice::kLentBufferAlignment>;
- * static_assert(Pool::kRegionBytes >= ImxrtEnetLendingDevice::kLentBufferBytes);
+ * using Pool = freertos::ZeroCopyBufferPool<ImxrtEnetZeroCopyDevice::kFrameOffset,
+ *                                           ImxrtEnetZeroCopyDevice::kBufferAlignment>;
+ * static_assert(Pool::kRegionBytes >= ImxrtEnetZeroCopyDevice::kBufferBytes);
  * Pool g_pool;  // .bss: DTCM, DMA-reachable and not cached
  * extern "C" void vNetworkInterfaceAllocateRAMToBuffers(
  *     NetworkBufferDescriptor_t buffers[ipconfigNUM_NETWORK_BUFFER_DESCRIPTORS]) {
  *     g_pool.assign(buffers);
  * }
  * @endcode
- * Full program: boards/mimxrt1020-evk/enet_lending_interface.cpp.
+ * Full program: boards/mimxrt1020-evk/enet_zero_copy_interface.cpp.
  */
 template <std::size_t FrameOffset, std::size_t Alignment>
-class LentBufferPool {
+class ZeroCopyBufferPool {
     static_assert((Alignment & (Alignment - 1u)) == 0u,
-                  "LentBufferPool: Alignment is a power of two");
+                  "ZeroCopyBufferPool: Alignment is a power of two");
     static_assert(ipBUFFER_PADDING >= FrameOffset + sizeof(void*),
-                  "LentBufferPool: the back pointer must precede the DMA region");
+                  "ZeroCopyBufferPool: the back pointer must precede the DMA region");
     static_assert(ipIP_TYPE_OFFSET > static_cast<int32_t>(FrameOffset),
-                  "LentBufferPool: the IP version byte must precede the DMA region");
+                  "ZeroCopyBufferPool: the IP version byte must precede the DMA region");
 
 public:
     /// Octets of FreeRTOS+TCP's header that precede each region.
@@ -101,7 +101,7 @@ public:
      *   multiple of Alignment, buffers do not overlap, and
      *   pxPacketBuffer_to_NetworkBuffer(pucEthernetBuffer) returns its own
      *   descriptor.
-     * - Covered by: the lending device's alignment check, which rejects any
+     * - Covered by: the zero-copy device's alignment check, which rejects any
      *   buffer that breaks the first rule and keeps the interface down
      *   (bring-up on the MIMXRT1020-EVK).
      */

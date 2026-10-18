@@ -9,7 +9,7 @@
  *
  * rosette::net::MacDevice is the contract between a link-layer device and a
  * software IP stack that runs on the microcontroller; MacLink is its control
- * half, which a lending device (rosette/net/lending_mac.hpp) shares. Three
+ * half, which a zero-copy device (rosette/net/zero_copy_mac.hpp) shares. Three
  * roles meet here:
  *
  *  - this header defines the contract and nothing else; it names no RTOS,
@@ -78,7 +78,7 @@ struct PhyStatus {
  *
  * Every link-layer device a software IP stack drives has these operations,
  * whatever its data path. MacDevice adds whole-frame copying on top
- * (send_frame(), receive_frame()); LendingMacDevice (rosette/net/lending_mac.hpp)
+ * (send_frame(), receive_frame()); ZeroCopyMacDevice (rosette/net/zero_copy_mac.hpp)
  * adds buffer exchange, for a DMA controller that moves frames straight into
  * and out of the IP stack's own buffers. A consumer is written against one of
  * the two, never against MacLink alone.

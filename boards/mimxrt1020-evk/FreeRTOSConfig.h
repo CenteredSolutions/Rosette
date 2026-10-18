@@ -44,9 +44,9 @@ void rosette_freertos_assert_failed(const char* file, int line);
 
 // ── Heap ──────────────────────────────────────────────────────────────────────
 // heap_4: first fit with block merging. Task stacks and kernel objects; with
-// ROSETTE_IMXRT_ENET_LENDING=OFF, FreeRTOS+TCP's network buffers too
+// ROSETTE_IMXRT_ENET_ZERO_COPY=OFF, FreeRTOS+TCP's network buffers too
 // (BufferAllocation_2, about 1.6 KiB each), which otherwise live in the
-// DTCM beside the ENET's rings (enet_lending_interface.cpp).
+// DTCM beside the ENET's rings (enet_zero_copy_interface.cpp).
 // The heap array is the board's (board_init.c), in the OCRAM: only the CPU
 // touches it, so it can be cached, and the DTCM stays free for DMA.
 #define configTOTAL_HEAP_SIZE ((size_t)(64 * 1024))

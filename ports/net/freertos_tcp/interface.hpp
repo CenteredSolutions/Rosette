@@ -14,7 +14,7 @@
  * and no chip driver knows FreeRTOS+TCP. Frames are copied: each received
  * frame into a fresh network buffer, each transmitted one out of the
  * stack's buffer into the provider. A DMA controller that can move frames in
- * the stack's own buffers uses LendingNetworkInterface (lending_interface.hpp)
+ * the stack's own buffers uses ZeroCopyNetworkInterface (zero_copy_interface.hpp)
  * instead.
  *
  * The descriptor, the receive wake-up, the link, and the multicast filter are
