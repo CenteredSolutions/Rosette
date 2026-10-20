@@ -149,4 +149,8 @@ uint32_t board_send_timeouts() noexcept {
     return 0u;
 }
 
+NetworkBufferUse board_network_buffer_use() noexcept {
+    return {};
+}
+
 }  // namespace rosette::net

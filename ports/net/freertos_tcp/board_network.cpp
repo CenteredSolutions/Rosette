@@ -52,6 +52,7 @@ extern "C" {
 #include "FreeRTOS.h"
 #include "FreeRTOS_IP.h"
 #include "FreeRTOS_Routing.h"
+#include "NetworkBufferManagement.h"
 }
 
 #include "ports/net/freertos_tcp/board_interface.hpp"
@@ -450,6 +451,11 @@ const AddressSnapshot& board_address_snapshot() noexcept {
 
 uint32_t board_send_timeouts() noexcept {
     return 0u;
+}
+
+NetworkBufferUse board_network_buffer_use() noexcept {
+    const uint32_t count = ipconfigNUM_NETWORK_BUFFER_DESCRIPTORS;
+    return {count, count - static_cast<uint32_t>(uxGetMinimumFreeNetworkBuffers())};
 }
 
 }  // namespace rosette::net

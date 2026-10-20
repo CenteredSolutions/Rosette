@@ -14,11 +14,13 @@
  * Exit status is 0 only when every check passes.
  */
 
+#include "rosette/platform/memory_report.hpp"
 #include "rosette/platform/platform.hpp"
 #include "rosette/platform/wall_clock.hpp"
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #if defined(ROSETTE_OS_POSIX)
 #  include <thread>
@@ -228,6 +230,72 @@ void test_wall_clock() {
     pf::WallClock::set_offset_us(before);
 }
 
+/// Checks one region report: a tracked region's peak is used and within its reservation.
+void check_region(const char* what, const pf::RegionUse& use) {
+    if (use.reserved == 0u) {
+        std::printf("[SKIP] MemoryReports: %s is not tracked here\n", what);
+        return;
+    }
+
+    char text[96];
+    std::snprintf(text, sizeof(text), "%s peak %lu is within its %lu octets", what,
+                  static_cast<unsigned long>(use.peak), static_cast<unsigned long>(use.reserved));
+    check(use.peak <= use.reserved, "MemoryReports", text);
+}
+
+/// Memory reports: peaks within their reservations, never falling, and the text bounded.
+void test_memory_reports() {
+    const pf::RegionUse stack = pf::main_stack_use();
+    check_region("main stack", stack);
+    if (stack.reserved > 0u) {
+        check(stack.peak > 0u, "MemoryReports", "the main stack has been used");
+        check(pf::main_stack_use().peak >= stack.peak, "MemoryReports",
+              "the main stack's peak never falls");
+    }
+
+    const pf::RegionUse before = pf::c_heap_use();
+    check_region("C heap", before);
+    if (before.reserved > 0u) {
+        void* const         block = std::malloc(256u);
+        const pf::RegionUse after = pf::c_heap_use();
+        check(block != nullptr && after.peak >= before.peak && after.peak >= 256u, "MemoryReports",
+              "a malloc() of 256 octets shows in the C heap's peak");
+        std::free(block);
+    }
+
+    check_region("RTOS heap", pf::rtos_heap_use());
+
+    struct Visit {
+        std::size_t calls = 0u;
+        bool        sane = true;
+    } visit;
+    const std::size_t tasks = pf::visit_task_stacks(
+        [](void* context, const char* name, const pf::RegionUse& use) {
+            auto& v = *static_cast<Visit*>(context);
+            ++v.calls;
+            v.sane = v.sane && name != nullptr && use.peak > 0u && use.peak <= use.reserved;
+        },
+        &visit);
+    check(visit.calls == tasks && visit.sane, "MemoryReports",
+          "each task is visited once, with 0 < peak <= its stack");
+#if defined(ROSETTE_OS_FREERTOS) && (configUSE_TRACE_FACILITY == 1) \
+    && (configRECORD_STACK_HIGH_ADDRESS == 1)
+    check(tasks >= 2u, "MemoryReports", "the contract task and the idle task are reported");
+#endif
+
+    char       text[384];
+    const auto n = pf::format_memory_report(text, sizeof(text));
+    check(n < sizeof(text) && text[n] == '\0', "MemoryReports",
+          "the report is terminated and fits");
+    char       tiny[8];
+    const auto cut = pf::format_memory_report(tiny, sizeof(tiny));
+    check(cut < sizeof(tiny) && std::strlen(tiny) == cut, "MemoryReports",
+          "a report cut short by a small buffer stays terminated");
+    if (n > 0u) {
+        std::printf("%s", text);
+    }
+}
+
 int run_contract() {
     g_failures = 0;
     test_monotonic_advances();
@@ -246,6 +314,7 @@ int run_contract() {
     test_mutex_cross_core();
 #endif
     test_wall_clock();
+    test_memory_reports();
     std::printf("platform contract: %s (%d failure%s)\n", g_failures ? "FAIL" : "PASS",
                 g_failures, g_failures == 1 ? "" : "s");
     return g_failures;

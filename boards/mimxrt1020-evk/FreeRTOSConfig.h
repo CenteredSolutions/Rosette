@@ -48,8 +48,14 @@ void rosette_freertos_assert_failed(const char* file, int line);
 // (BufferAllocation_2, about 1.6 KiB each), which otherwise live in the
 // DTCM beside the ENET's rings (enet_zero_copy_interface.cpp).
 // The heap array is the board's (board_init.c), in the OCRAM: only the CPU
-// touches it, so it can be cached, and the DTCM stays free for DMA.
-#define configTOTAL_HEAP_SIZE ((size_t)(64 * 1024))
+// touches it, so it can be cached, and the DTCM stays free for DMA. Its size
+// follows the ENET's buffer mode (bsp.cmake), so every file that includes
+// this one takes it from the same compile definition.
+#ifndef ROSETTE_EVK_FREERTOS_HEAP_KIB
+#  error \
+      "ROSETTE_EVK_FREERTOS_HEAP_KIB comes from boards/mimxrt1020-evk/bsp.cmake (freertos_config)"
+#endif
+#define configTOTAL_HEAP_SIZE ((size_t)(ROSETTE_EVK_FREERTOS_HEAP_KIB * 1024))
 #define configAPPLICATION_ALLOCATED_HEAP 1
 
 // ── Synchronisation ───────────────────────────────────────────────────────────
@@ -68,7 +74,10 @@ void rosette_freertos_assert_failed(const char* file, int line);
 #define configTIMER_TASK_STACK_DEPTH 256
 
 // ── Debug ─────────────────────────────────────────────────────────────────────
-#define configUSE_TRACE_FACILITY 0
+// Task status and each stack's top, for rosette::platform::visit_task_stacks():
+// a few octets per task, and the memory report sizes every stack from use.
+#define configUSE_TRACE_FACILITY 1
+#define configRECORD_STACK_HIGH_ADDRESS 1
 #define configUSE_STATS_FORMATTING_FUNCTIONS 0
 #define configGENERATE_RUN_TIME_STATS 0
 #define configCHECK_FOR_STACK_OVERFLOW 2

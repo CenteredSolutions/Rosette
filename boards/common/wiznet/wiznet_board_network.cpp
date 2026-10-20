@@ -374,4 +374,8 @@ uint32_t board_send_timeouts() noexcept {
     return g_network != nullptr ? g_network->device.send_timeouts() : 0u;
 }
 
+NetworkBufferUse board_network_buffer_use() noexcept {
+    return {};
+}
+
 }  // namespace rosette::net

@@ -21,6 +21,14 @@ set(ROSETTE_IMXRT_CPU              "MIMXRT1021DAG5A" PARENT_SCOPE)
 set(ROSETTE_IMXRT_SDK_BOARD        "evkmimxrt1020"   PARENT_SCOPE)
 set(ROSETTE_IMXRT_FLASH_SIZE_BYTES "0x800000"        PARENT_SCOPE)
 
+# The DTCM's newlib heap and main stack, at about two and a half times what
+# udp_echo used through a ping flood and a UDP blast (3,168 and 1,568 octets;
+# docs/design/imxrt_memory_budget.md). The main stack serves main() until the
+# scheduler starts and every interrupt after; the application's own stack is
+# its FreeRTOS task's.
+set(ROSETTE_IMXRT_HEAP_BYTES       "0x2000"          PARENT_SCOPE)
+set(ROSETTE_IMXRT_STACK_BYTES      "0x1000"          PARENT_SCOPE)
+
 # The kernel's Cortex-M4F port: the RT1021's Cortex-M7 is r1p1, past the
 # r0p1 erratum the ARM_CM7/r0p1 port works around. The kernel configuration
 # is this board's (FreeRTOSConfig.h beside this file).

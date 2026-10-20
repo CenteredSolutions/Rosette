@@ -239,4 +239,33 @@ const AddressSnapshot& board_address_snapshot() noexcept;
  */
 uint32_t board_send_timeouts() noexcept;
 
+/// How many network buffers an IP stack on the microcontroller has, and the most held at once.
+struct NetworkBufferUse {
+    /// Buffers in the stack's pool; 0 when the backend has no such pool.
+    uint32_t count = 0u;
+    /// Most buffers held at once since boot, at most @c count.
+    uint32_t peak = 0u;
+};
+
+/**
+ * @brief The IP stack's network-buffer pool and the most of it in use at once.
+ *
+ * Every frame in flight holds one buffer: received and not yet read by a
+ * socket, queued to send, or (with a zero-copy MAC) posted to the receive
+ * ring, so a peak at the count means frames were dropped for want of one.
+ *
+ * @return The pool's size and peak: FreeRTOS+TCP's
+ *   ipconfigNUM_NETWORK_BUFFER_DESCRIPTORS less its minimum ever free; {0, 0}
+ *   on the WIZnet chips, whose buffers are the chip's own, and on a host.
+ *
+ * Verification:
+ * - Correct means: peak never decreases, and reaches count while a flood
+ *   outruns the stack.
+ * - Covered by: examples/udp_echo on the MIMXRT1020-EVK (the memory status
+ *   line after a ping flood).
+ *
+ * References: FreeRTOS+TCP uxGetMinimumFreeNetworkBuffers().
+ */
+NetworkBufferUse board_network_buffer_use() noexcept;
+
 }  // namespace rosette::net

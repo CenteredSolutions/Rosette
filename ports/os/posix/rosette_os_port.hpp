@@ -23,6 +23,7 @@
 #pragma once
 
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
 
 #include <fcntl.h>
@@ -239,6 +240,16 @@ inline void sleep_ms(uint32_t ms) noexcept {
  */
 inline void run_main_task(void (*entry)()) noexcept {
     entry();
+}
+
+/// @brief No kernel heap here: reports {0, 0}.
+inline RegionUse rtos_heap_use() noexcept {
+    return {};
+}
+
+/// @brief No tasks here: visits nothing and returns 0.
+inline std::size_t visit_task_stacks(TaskStackVisitor, void*) noexcept {
+    return 0u;
 }
 
 }  // namespace rosette::platform

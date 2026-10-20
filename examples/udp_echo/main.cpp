@@ -17,7 +17,8 @@
  *   - prints the IPv4 address, and the IPv6 link-local and global addresses as
  *     they are acquired;
  *   - echoes each datagram on the socket it arrived on;
- *   - reports its addresses, per-family echo counters, and wall clock every
+ *   - reports its addresses, per-family echo counters, wall clock, and memory
+ *     use (rosette/platform/memory_report.hpp, and the network buffers) every
  *     five seconds on the console, and to any datagram sent to UDP port 8
  *     (on an RP2040 / RP2350 the datagram `bootsel` restarts the board into its
  *     USB bootloader for reflashing);
@@ -52,6 +53,7 @@
 #include "board.h"
 #include "rosette/net/board_network.hpp"
 #include "rosette/net/inet.h"
+#include "rosette/platform/memory_report.hpp"
 #include "rosette/platform/platform.hpp"
 #include "rosette/platform/wall_clock.hpp"
 
@@ -73,6 +75,8 @@ constexpr std::size_t kEchoReceiveBytes = 2048u;
 constexpr uint16_t    kStatusPort = 8u;
 constexpr uint32_t    kWaitMs = 1000u;
 constexpr uint32_t    kReportPeriodMs = 5000u;
+/// Room for the status text: addresses, counters, clock, and the memory lines.
+constexpr std::size_t kStatusTextBytes = 768u;
 /// Longest wait for every family at boot; IPv6 DAD takes about a second.
 constexpr uint32_t    kBringUpTimeoutMs = 30000u;
 
@@ -175,16 +179,21 @@ bool every_family_up(const net::AddressSnapshot& snapshot) {
 }
 
 /**
- * @brief Writes the board's addresses, echo counters, and wall clock as text lines.
+ * @brief Writes the board's addresses, echo counters, wall clock, and memory use as text lines.
  *
  * The same text goes to the console every kReportPeriodMs and back to any
  * datagram sent to kStatusPort, so a host can learn the board's addresses
  * even when the USB console is unavailable. The clock line is Unix time in
  * microseconds, or `unsynced` until a time source has set the wall clock.
+ * The memory lines give each reservation's peak use against its size
+ * (`netbuf` for the IP stack's network buffers, then
+ * rosette::platform::format_memory_report()), so a workload run against the
+ * board shows what each reservation needs.
  *
  * @param[out] out Text buffer.
  * @param[in]  cap Its size.
- * @return Length written, excluding the terminator.
+ * @return Length written, excluding the terminator; at most cap - 1, with the
+ *   text cut short when it does not fit.
  */
 int format_status(char* out, int cap) {
     const EchoCounts& v4 = g_counts[0];
@@ -217,7 +226,18 @@ int format_status(char* out, int cap) {
         n += std::snprintf(out + n, static_cast<std::size_t>(cap - n), "clock unsynced\n");
     }
 
-    return n;
+    const net::NetworkBufferUse buffers = net::board_network_buffer_use();
+    if (buffers.count > 0u && n < cap) {
+        n += std::snprintf(out + n, static_cast<std::size_t>(cap - n), "netbuf=%lu/%lu\n",
+                           static_cast<unsigned long>(buffers.peak),
+                           static_cast<unsigned long>(buffers.count));
+    }
+
+    if (n < cap) {
+        n += static_cast<int>(pf::format_memory_report(out + n, static_cast<std::size_t>(cap - n)));
+    }
+
+    return n < cap ? n : cap - 1;
 }
 
 /**
@@ -245,7 +265,7 @@ void serve_status(net::Socket* s) {
         }
 #endif
 
-        char      text[512];
+        char      text[kStatusTextBytes];
         const int n = format_status(text, sizeof(text));
         if (n > 0) {
             (void)s->send_to(text, static_cast<std::size_t>(n), from);
@@ -310,7 +330,7 @@ void run_echo() {
         net::poll_board_network(now);
         if (static_cast<int32_t>(now - next_report) >= 0) {
             next_report += kReportPeriodMs;
-            char text[512];
+            char text[kStatusTextBytes];
             if (format_status(text, sizeof(text)) > 0) {
                 std::printf("[echo] %s\n", text);
             }

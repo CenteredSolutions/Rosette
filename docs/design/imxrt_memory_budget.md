@@ -41,21 +41,34 @@ builds:
 The buffer pool is now the largest item. Its classes are sized by formula; sizing them from use needs the
 requested-size histogram (`RTPS_BUFPOOL_DEBUG`) and a workload on the bench first, which step 1 below provides.
 
-## Measured on the EVK today
+## Measured on the EVK
 
-`udp_echo` with the zero-copy ENET (`build-hw/rt1020-evk`), from the ELF and from the board after the echo workload:
+Every image reports its reservations' peaks: `rosette::platform::format_memory_report()`
+(`rosette/platform/memory_report.hpp`) over the platform contract's `main_stack_use()`, `c_heap_use()`,
+`rtos_heap_use()`, and `visit_task_stacks()`, with the network buffers from `net::board_network_buffer_use()`.
+`udp_echo` prints them on the console and answers them on its status port (UDP 8), and every link prints each
+region's fill (`--print-memory-usage`).
 
-| Item | Region | Reserved | Used |
+`udp_echo` with the zero-copy ENET (`build-hw/rt1020-evk`), after the echo probe, a 5000-frame ping flood at 1400
+octets, a 5 s UDP blast, and the probe again; the reservations are sized from these peaks:
+
+| Item | Region | Peak | Reserved |
 |---|---|---|---|
 | `.data` | DTCM | 2,892 B | 2,892 B |
 | `.bss`: network buffers (`g_pool`, 15,424 B), ENET rings, FreeRTOS+TCP and kernel statics | DTCM | 22,556 B | 22,556 B |
-| newlib heap (`ROSETTE_IMXRT_HEAP_BYTES`) | DTCM | 16,388 B | not yet measured |
-| main stack, MSP (`ROSETTE_IMXRT_STACK_BYTES`): startup, then interrupts only | DTCM | 16,384 B | not yet measured |
-| FreeRTOS heap: task stacks (main task 8 KiB), queues, sockets | OCRAM | 65,536 B | 16,000 B at the peak |
-| **DTCM** | | **58,220 of 65,536 B** | |
+| newlib heap (`ROSETTE_IMXRT_HEAP_BYTES`, `board.cmake`) | DTCM | 3,168 B | 8,192 B |
+| main stack, MSP (`ROSETTE_IMXRT_STACK_BYTES`, `board.cmake`): `main()` before the scheduler, then interrupts | DTCM | 1,568 B | 4,096 B |
+| FreeRTOS heap (`bsp.cmake`) | OCRAM | 16,120 B | 32,768 B |
+| task `main` (`ROSETTE_FREERTOS_MAIN_STACK_WORDS`) | FreeRTOS heap | 3,460 B | 8,188 B |
+| task `IP-task` / `enet0_rx` | FreeRTOS heap | 768 / 348 B | 2,044 B each |
+| network buffers | DTCM (`g_pool`) | 10 of 10 (the flood) | 10 |
+| **DTCM** | | | **37,740 of 65,536 B** |
 
-The fuse-default DTCM has no room for RTPS beside the network. That is the only problem; the part as a whole has
-room to spare.
+The copying ENET (`-DROSETTE_IMXRT_ENET_ZERO_COPY=OFF`) under the same workload peaks at 5,280 B of newlib heap and
+31,480 B of FreeRTOS heap, whose reservation is 64 KiB in that build because its network buffers come from it.
+
+The task stacks keep their sizes until `rtps_chatter` runs: RTPS processing deepens `main` and `IP-task`. The
+fuse-default DTCM has no room for RTPS beside the network; the part as a whole has room to spare.
 
 ## The budget
 
@@ -66,10 +79,10 @@ room to spare.
 | `.data` | 3 KiB | measured (`udp_echo`) |
 | network `.bss` | 22.6 KiB | measured |
 | RTPS state | 41.3 KiB | measured on pico2, sized for what `rtps_chatter` creates |
-| FreeRTOS heap | 32 KiB | 16 KiB peak measured, plus three RTPS sockets, doubled for margin |
-| newlib heap | 4 KiB | to confirm in step 1 |
-| MSP (interrupt nesting only) | 2 KiB | to confirm in step 1 |
-| **Total** | **about 105 KiB of 256 KiB (41 %)** | |
+| FreeRTOS heap | 32 KiB | 16 KiB peak measured, doubled |
+| newlib heap | 8 KiB | 3.1 KiB peak measured |
+| MSP | 4 KiB | 1.5 KiB peak measured |
+| **Total** | **about 111 KiB of 256 KiB (43 %)** | |
 
 ## The layout
 
@@ -77,7 +90,7 @@ Reallocate the FlexRAM banks at reset: **ITCM 0, DTCM 128 KiB (4 banks), OCRAM 1
 
 | Region | Size | Holds | `rtps_chatter` |
 |---|---|---|---|
-| DTCM | 128 KiB | everything the linker places by default: `.data`, `.bss` (the network, RTPS, the application), the newlib heap, the MSP | about 73 of 128 KiB |
+| DTCM | 128 KiB | everything the linker places by default: `.data`, `.bss` (the network, RTPS, the application), the newlib heap, the MSP | about 79 of 128 KiB |
 | OCRAM | 128 KiB | the FreeRTOS heap; large CPU-only pools when DTCM runs short | 32 of 128 KiB |
 
 Why this layout:
@@ -91,7 +104,7 @@ Why this layout:
 - **The OCRAM keeps a clear role** as the RTOS heap and the overflow for large CPU-only storage, where the D-cache
   hides its latency.
 
-The fuse default also holds this image, with RTPS moved to the OCRAM by a linker rule: DTCM about 32 of 64 KiB,
+The fuse default also holds this image, with RTPS moved to the OCRAM by a linker rule: DTCM about 37 of 64 KiB,
 OCRAM about 73 of 128 KiB. It needs no reset hook, but it leaves the ITCM idle and makes the linker script name
 Rosette's libraries, so it is the fallback rather than the plan.
 
@@ -105,11 +118,8 @@ board that keeps the fuse default (the Teensy MicroMod) changes nothing.
 
 ## Order of work
 
-1. **Measure what is reserved.** Report runtime high-water marks on the console and the status port: the FreeRTOS
-   heap's minimum ever free, each task's stack high-water mark, the MSP (painted at reset and scanned), newlib's
-   `mallinfo()`, FreeRTOS+TCP's minimum free network buffers, and the RTPS pool's low-water mark. Link with
-   `-Wl,--print-memory-usage` so every build prints each region's fill. Size the newlib heap, the MSP, and the
-   FreeRTOS heap from the numbers.
+1. **Measure what is reserved.** The memory report above, and the reservations sized from it. The RTPS pool's
+   per-class high-water marks come from `RTPS_BUFPOOL_DEBUG` once `rtps_chatter` runs (step 4).
 2. **Make `rtps_chatter` board-neutral.** Replace `pico/stdlib.h`, `stdio_usb_connected()`, and `sleep_ms()` with
    `rosette::platform`, run the loop through `platform::run_main_task()` as `udp_echo` does, and gate the example on
    a board network rather than on WIZnet and the Pico SDK. It must still build and run on the W5100S-EVB-Pico2. On
@@ -136,7 +146,8 @@ its participant takes 19.4 KiB and its buffer pool 31.7 KiB (the firmware pool p
 34.3 KiB at the firmware defaults of four publishers, four subscriptions, four services, and two clients with 96
 known participants. Each known participant costs 68 octets. With `rmw_rosette`'s entity pools, its receive buffer,
 and the rcl heap (4 KiB in use on the pico2), `rclc_chatter` needs about 18 KiB more than `rtps_chatter`: about
-123 KiB of 256 KiB in all, and DTCM about 91 of 128 KiB, with no pool moved out of it.
+129 KiB of 256 KiB in all, and DTCM about 97 of 128 KiB, with no pool moved out of it. The rcl heap is newlib's, so
+that image's newlib heap grows to about 12 KiB, sized again from its own report.
 
 The rmw capacity inputs must be set before `cmake/rmw_rosette_firmware.cmake` first runs, since `led_files` and
 `rclc_chatter` share the `rmw_rosette_firmware` target it creates. Giving each example its own capacity is part of
