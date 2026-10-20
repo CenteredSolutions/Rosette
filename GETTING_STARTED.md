@@ -375,8 +375,8 @@ allocates.
 `examples/rtps_chatter` talks to the same topics as `rclc_chatter` without
 `rcl`: it creates an `RTPSParticipant`, a writer and a reader with ROS 2 names
 (`rt/rosette/chatter`, type `std_msgs::msg::dds_::String_`), and encodes the
-CDR itself. It needs no C client stack and is the smallest image (157 KB
-flash, 74 KB RAM):
+CDR itself. It needs no C client stack and is the smallest image (113 KB
+flash, 61 KB RAM on the W5100S-EVB-Pico2):
 
 ```bash
 cmake -S . -B build-hw/pico2 -DROSETTE_BOARD=w5100s-evb-pico2
@@ -384,9 +384,14 @@ cmake --build build-hw/pico2 --target rtps_chatter
 tools/pico_uf2_flash.py build-hw/pico2/examples/rtps_chatter/rtps_chatter.uf2 --monitor 60
 ```
 
-The core's sizes are board inputs in `cmake/rosette_rtps.cmake`
-(`ROSETTE_RTPS_MAX_SAMPLE_SIZE`, `ROSETTE_RTPS_MAX_PEERS`, ...). Every call
-into the participant or its endpoints holds `driver.mutex()`.
+The core's sizes are inputs in `cmake/rosette_rtps.cmake`. The network-sized
+ones (`ROSETTE_RTPS_MAX_PEERS`, `ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS`,
+`ROSETTE_RTPS_MAX_SAMPLE_SIZE`, ...) come from the board or the command line;
+the ones the code decides (`ROSETTE_RTPS_MAX_WRITERS`, `_MAX_READERS`,
+`_MAX_WRITER_DEPTH`, `_LOCAL_NAME_BYTES`) are set by the firmware before the
+include, as `examples/rtps_chatter/CMakeLists.txt` does, since every endpoint
+slot is RAM whether it is used or not. Every call into the participant or its
+endpoints holds `driver.mutex()`.
 
 ## 9. Debugging
 
