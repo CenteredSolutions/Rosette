@@ -5,7 +5,7 @@
 
 #include "rosette/rtps/participant_driver.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 ParticipantDriver::ParticipantDriver(RTPSParticipant& participant, SocketUdpTransport& transport,
                                      rosette::net::SocketProvider& provider, Octet* rx_buffer,
@@ -40,4 +40,4 @@ uint32_t ParticipantDriver::pump_locked() noexcept
     return now_ms;
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

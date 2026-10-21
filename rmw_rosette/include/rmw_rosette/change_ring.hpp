@@ -2,7 +2,7 @@
  * @file rmw_rosette/change_ring.hpp
  * @brief Fixed-capacity buffer between RTPS reader callbacks and rmw takes.
  *
- * `rtps::StatefulReader::OnChangeAvailable` hands over a CacheChange that is
+ * `rosette::rtps::StatefulReader::OnChangeAvailable` hands over a CacheChange that is
  * valid only during the callback, and it fires from inside rmw_wait()'s
  * participant pump, while rmw_take*() runs later from the executor. Each
  * subscription, service, and client therefore keeps received changes in a
@@ -36,12 +36,12 @@ namespace rmw_rosette {
 
 /// One received change, held until an rmw take.
 struct PendingChange {
-    rtps::BufRef         payload;  ///< Retained serializedPayload, header included.
-    rtps::Guid           writer_guid = rtps::GUID_UNKNOWN;
-    rtps::SequenceNumber sequence_number = rtps::SEQUENCENUMBER_UNKNOWN;
-    rtps::Timestamp      source_timestamp = rtps::TIME_ZERO;
+    rosette::rtps::BufRef         payload;  ///< Retained serializedPayload, header included.
+    rosette::rtps::Guid           writer_guid = rosette::rtps::GUID_UNKNOWN;
+    rosette::rtps::SequenceNumber sequence_number = rosette::rtps::SEQUENCENUMBER_UNKNOWN;
+    rosette::rtps::Timestamp      source_timestamp = rosette::rtps::TIME_ZERO;
     bool                 has_related_sample_identity = false;
-    rtps::SampleIdentity related_sample_identity = {};
+    rosette::rtps::SampleIdentity related_sample_identity = {};
 };
 
 /**
@@ -71,8 +71,11 @@ public:
      * References:
      * - OMG DDS 1.4 §2.2.3.18 (HISTORY KEEP_LAST)
      */
-    bool push(const rtps::CacheChange& change) noexcept {
-        if (change.kind != rtps::ChangeKind::ALIVE) return false;
+    bool push(const rosette::rtps::CacheChange& change) noexcept {
+        if (change.kind != rosette::rtps::ChangeKind::ALIVE) {
+            return false;
+        }
+
         if (!change.payload.valid() || change.payload.size == 0) return false;
         if (count_ == depth_) {
             slots_[tail()].payload.reset();
@@ -81,12 +84,12 @@ public:
         PendingChange& slot = slots_[head_];
         // Share the reader's pool buffer: a new reference, released when the
         // slot is taken or overwritten.
-        rtps::BufRef ref{};
+        rosette::rtps::BufRef ref{};
         ref.block = change.payload.block;
         ref.data = change.payload.data;
         ref.size = change.payload.size;
         ref.retain();
-        slot.payload = static_cast<rtps::BufRef&&>(ref);
+        slot.payload = static_cast<rosette::rtps::BufRef&&>(ref);
         slot.writer_guid = change.writerGuid;
         slot.sequence_number = change.sequenceNumber;
         slot.source_timestamp = change.sourceTimestamp;
@@ -106,7 +109,7 @@ public:
     bool pop(PendingChange& out) noexcept {
         if (count_ == 0u) return false;
         const uint32_t tail = this->tail();
-        out.payload = static_cast<rtps::BufRef&&>(slots_[tail].payload);
+        out.payload = static_cast<rosette::rtps::BufRef&&>(slots_[tail].payload);
         out.writer_guid = slots_[tail].writer_guid;
         out.sequence_number = slots_[tail].sequence_number;
         out.source_timestamp = slots_[tail].source_timestamp;

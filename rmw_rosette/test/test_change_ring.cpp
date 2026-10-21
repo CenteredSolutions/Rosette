@@ -15,6 +15,8 @@
 
 #include <cstring>
 
+namespace rtps = rosette::rtps;
+
 namespace {
 
 /// Builds an ALIVE change with sequence number `sn` and a one-octet payload.

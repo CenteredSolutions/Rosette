@@ -10,11 +10,11 @@
  * Writers of every history depth are one type
  * -------------------------------------------
  * rmw_qos_profile_t.depth is a runtime value, while a writer's history depth
- * is fixed when its storage is laid out (rtps::SharedPoolStatefulWriter<D>).
+ * is fixed when its storage is laid out (rosette::rtps::SharedPoolStatefulWriter<D>).
  * qos.hpp::create_writer_for_qos() picks D from a small closed set of depths;
- * every choice is an rtps::StatefulWriter, the one compiled writer class, so
+ * every choice is an rosette::rtps::StatefulWriter, the one compiled writer class, so
  * publishers, service replies, and client requests all hold a plain
- * rtps::StatefulWriter* whatever depth it was created with.
+ * rosette::rtps::StatefulWriter* whatever depth it was created with.
  */
 
 #pragma once
@@ -92,17 +92,22 @@ struct GuardCondition {
 /// allocation per context slot, constructed once at rmw_init() and torn
 /// down once at rmw_context_fini(), not per-message.
 struct Context {
-    alignas(rtps::SocketUdpTransport) unsigned char transport_storage[sizeof(rtps::SocketUdpTransport)];
-    alignas(rtps::RTPSParticipant) unsigned char participant_storage[sizeof(rtps::RTPSParticipant)];
-    alignas(rtps::ParticipantDriver) unsigned char driver_storage[sizeof(rtps::ParticipantDriver)];
+    alignas(rosette::rtps::SocketUdpTransport) unsigned char transport_storage[sizeof(
+        rosette::rtps::SocketUdpTransport)];
+    alignas(rosette::rtps::RTPSParticipant) unsigned char participant_storage[sizeof(
+        rosette::rtps::RTPSParticipant)];
+    alignas(rosette::rtps::ParticipantDriver) unsigned char driver_storage[sizeof(
+        rosette::rtps::ParticipantDriver)];
 
     /// Socket backend from the build's network port (network_port.hpp).
     rosette::net::SocketProvider* provider = nullptr;
-    rtps::SocketUdpTransport* transport   = nullptr;  ///< placement-new'd into transport_storage
-    rtps::RTPSParticipant*    participant = nullptr;  ///< placement-new'd into participant_storage
+    rosette::rtps::SocketUdpTransport* transport =
+        nullptr;  ///< placement-new'd into transport_storage
+    rosette::rtps::RTPSParticipant* participant =
+        nullptr;  ///< placement-new'd into participant_storage
     /// Runs the participant and owns its lock; every rmw entry point that
     /// touches RTPS state or a ChangeRing holds driver->mutex().
-    rtps::ParticipantDriver*  driver      = nullptr;  ///< placement-new'd into driver_storage
+    rosette::rtps::ParticipantDriver* driver = nullptr;  ///< placement-new'd into driver_storage
     /// Publishes this participant's nodes on `ros_discovery_info`; every
     /// node and endpoint creation and destruction reports to it.
     RosDiscoveryInfoWriter discovery_info;
@@ -148,7 +153,7 @@ struct Node {
 /// Backing store for one rmw_publisher_t.
 struct Publisher {
     Node*             node   = nullptr;
-    rtps::StatefulWriter*  writer = nullptr;
+    rosette::rtps::StatefulWriter* writer = nullptr;
     MessageCodec      codec;
     rmw_qos_profile_t qos{};  ///< Profile in effect, reported by rmw_publisher_get_actual_qos().
     char              mangled_topic_name[RTPS_MAX_TOPIC_NAME_LEN] = {};
@@ -158,7 +163,7 @@ struct Publisher {
 /// changes are buffered in `received` until rmw_take() decodes them.
 struct Subscription {
     Node*                 node   = nullptr;
-    rtps::StatefulReader* reader = nullptr;
+    rosette::rtps::StatefulReader* reader = nullptr;
     MessageCodec          codec;
     rmw_qos_profile_t     qos{};  ///< Profile in effect, reported by rmw_subscription_get_actual_qos().
     char                  mangled_topic_name[RTPS_MAX_TOPIC_NAME_LEN] = {};
@@ -170,8 +175,8 @@ struct Subscription {
 /// {request writer GUID, request SN} so the client can correlate them.
 struct Service {
     Node*                 node           = nullptr;
-    rtps::StatefulReader* request_reader = nullptr;
-    rtps::StatefulWriter*      reply_writer   = nullptr;
+    rosette::rtps::StatefulReader* request_reader = nullptr;
+    rosette::rtps::StatefulWriter* reply_writer = nullptr;
     MessageCodec          request_codec;
     MessageCodec          response_codec;
     rmw_qos_profile_t     qos{};  ///< Requested profile, applied to both endpoints.
@@ -184,8 +189,8 @@ struct Service {
 /// only replies correlated with this client's request writer are accepted.
 struct Client {
     Node*                 node           = nullptr;
-    rtps::StatefulWriter*      request_writer = nullptr;
-    rtps::StatefulReader* reply_reader   = nullptr;
+    rosette::rtps::StatefulWriter* request_writer = nullptr;
+    rosette::rtps::StatefulReader* reply_reader = nullptr;
     MessageCodec          request_codec;
     MessageCodec          response_codec;
     rmw_qos_profile_t     qos{};  ///< Requested profile, applied to both endpoints.

@@ -4,8 +4,8 @@
 bindings/micropython/rosette_mpy_backend_runtime.cpp::rosette::bindings::micropython::PublisherInit 106
 bindings/micropython/rosette_mpy_schema.cpp::rosette::bindings::micropython::ParseMessageText 115
 include/rosette/ros/agent_locator_xrce.hpp::rosette::detail::parse_info_packet 118
-src/rtps/message_parser.cpp::rtps::parse_message 212
-src/rtps/spdp.cpp::rtps::SpdpReader::deserialise 134
+src/rtps/message_parser.cpp::rosette::rtps::parse_message 212
+src/rtps/spdp.cpp::rosette::rtps::SpdpReader::deserialise 134
 tests/host/address_manager_test.cpp::main 118
 tests/host/ipv4ll_provider_test.cpp::main 103
 tests/host/network_address_test.cpp::main 106

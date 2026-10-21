@@ -48,7 +48,7 @@ firmware capacity:
 |   `EndpointMatchTable` | 9,760 | 15,616 |
 |   SEDP writer + reader | 4,048 + 2,632 | 4,784 + 2,632 |
 |   SPDP reader (peer table) | 1,532 | 7,516 |
-| Buffer pool (`rtps::g_buf_pool`) | 26,988 | 34,080 |
+| Buffer pool (`rosette::rtps::g_buf_pool`) | 26,988 | 34,080 |
 | Receive buffer (one datagram) | 1,472 | (inside the rmw context) |
 | rmw entity pools (context, publishers, subscriptions, ...) | – | ~8 KB beyond the participant |
 | USB stdio, Pico SDK, board network | ~5 KB | ~5 KB |
@@ -89,7 +89,7 @@ RTPSParticipant ─────────────────────�
 └── assembly_slots_   RTPS_ASSEMBLY_SLOTS × AssemblySlot, each a fragmented
                       sample in reassembly ─► BufRef into the pool
 
-rtps::g_buf_pool   five size classes of reference-counted blocks; every
+rosette::rtps::g_buf_pool   five size classes of reference-counted blocks; every
                    payload in the system lives in one of these blocks
 
 rmw_rosette        Pool<T, N> per entity kind (context, node, publisher,
@@ -493,9 +493,9 @@ translation unit with the firmware's flags (copy them from
 
 ```cpp
 #include "rosette/rtps/participant.hpp"
-extern const unsigned s_participant = sizeof(rtps::RTPSParticipant);
-extern const unsigned s_match       = sizeof(rtps::EndpointMatchTable);
-extern const unsigned s_reader      = sizeof(rtps::DefaultStatefulReader);
+extern const unsigned s_participant = sizeof(rosette::rtps::RTPSParticipant);
+extern const unsigned s_match       = sizeof(rosette::rtps::EndpointMatchTable);
+extern const unsigned s_reader      = sizeof(rosette::rtps::DefaultStatefulReader);
 ```
 
 ```bash

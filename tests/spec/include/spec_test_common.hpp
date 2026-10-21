@@ -7,7 +7,7 @@
 
 namespace spec_test {
 
-using namespace rtps;
+using namespace rosette::rtps;
 
 struct TestCapture {
     int data_calls = 0;

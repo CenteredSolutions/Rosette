@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-using namespace rtps;
+using namespace rosette::rtps;
 
 namespace {
 

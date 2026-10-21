@@ -174,7 +174,7 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
  * the timeout elapses.
  *
  * The blocking primitive every executor builds its spin loop on, and the
- * place the RTPS state machine advances: rtps::ParticipantDriver drains
+ * place the RTPS state machine advances: rosette::rtps::ParticipantDriver drains
  * received datagrams, ticks, and checks readiness under the participant
  * lock, then sleeps until a datagram arrives, a guard condition is
  * triggered, or the participant's next timer is due.

@@ -24,6 +24,8 @@
 
 #include <cstring>
 
+namespace rtps = rosette::rtps;
+
 namespace {
 
 struct ServiceSlot {
@@ -45,7 +47,6 @@ ServiceSlot* slot_from(rmw_service_t* service) noexcept {
 void on_request(const rtps::CacheChange& change, void* user_data) noexcept {
     static_cast<rmw_rosette::Service*>(user_data)->requests.push(change);
 }
-
 
 }  // namespace
 

@@ -124,6 +124,11 @@ if (reader.is_reliable()
 }
 ```
 
+### Namespace aliases
+The RTPS stack is `rosette::rtps`. A `.cpp` file that uses it heavily (three or more references) may open with
+`namespace rtps = rosette::rtps;` after its includes, so call sites read `rtps::Guid`. Headers always spell out
+`rosette::rtps::`: an alias in a header leaks into every includer and reintroduces a top-level `rtps` name.
+
 ### Blocks and vertical whitespace
 - The body of every `if`, `else`, `for`, `while`, and `do` goes on its own line, indented, inside braces, even when
   it is a single statement. `if (done) return;` on one line is not used.

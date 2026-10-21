@@ -28,7 +28,7 @@
 
 #include "types.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 class SequenceNumberWindow {
 public:
@@ -151,4 +151,4 @@ private:
     uint64_t       resolved_ = 0u;  ///< Bit i: base_ + i is resolved; bit 0 is always clear.
 };
 
-}  // namespace rtps
+}  // namespace rosette::rtps

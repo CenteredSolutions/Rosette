@@ -79,14 +79,11 @@ enum class ServiceEndpointsStatus : uint8_t {
  * - ROS 2 design, "Topic and Service name mapping to DDS"
  * - rmw_fastrtps_shared_cpp (Humble), rmw_service.cpp / rmw_client.cpp
  */
-ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
-                                                const char* service,
-                                                const rmw_qos_profile_t& qos,
-                                                const MessageCodec& request,
-                                                const MessageCodec& response,
-                                                rtps::StatefulReader::OnChangeAvailable on_change,
-                                                void* user_data, rtps::StatefulWriter*& writer,
-                                                rtps::StatefulReader*& reader) noexcept;
+ServiceEndpointsStatus create_service_endpoints(
+    Node& node, ServiceRole role, const char* service, const rmw_qos_profile_t& qos,
+    const MessageCodec& request, const MessageCodec& response,
+    rosette::rtps::StatefulReader::OnChangeAvailable on_change, void* user_data,
+    rosette::rtps::StatefulWriter*& writer, rosette::rtps::StatefulReader*& reader) noexcept;
 
 /**
  * @brief Deletes a service's or client's endpoints from the participant.
@@ -98,7 +95,7 @@ ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
  * @param[in,out] writer Writer to delete; set to null.
  * @param[in,out] reader Reader to delete; set to null.
  */
-void destroy_service_endpoints(Node& node, rtps::StatefulWriter*& writer,
-                               rtps::StatefulReader*& reader) noexcept;
+void destroy_service_endpoints(Node& node, rosette::rtps::StatefulWriter*& writer,
+                               rosette::rtps::StatefulReader*& reader) noexcept;
 
 }  // namespace rmw_rosette

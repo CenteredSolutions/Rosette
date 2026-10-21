@@ -11,6 +11,8 @@
 
 #include <cstring>
 
+namespace rtps = rosette::rtps;
+
 namespace rmw_rosette {
 
 namespace {

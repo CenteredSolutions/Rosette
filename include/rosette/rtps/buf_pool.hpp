@@ -75,7 +75,7 @@
 
 #include "rosette/platform/platform.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 /// Guards every size class's free list and the debug counters. The critical
 /// sections are a few pointer moves long, so one lock for all classes costs
@@ -851,12 +851,12 @@ inline BufRef buf_alloc_with_headroom_dbg(uint32_t min_payload_size,
     return r;
 }
 
-#define RTPS_BUF_ALLOC_DBG(min_size) \
-    ::rtps::buf_alloc_dbg((min_size), RTPS_BUFPOOL_CALLER_PC())
+#  define RTPS_BUF_ALLOC_DBG(min_size) \
+      ::rosette::rtps::buf_alloc_dbg((min_size), RTPS_BUFPOOL_CALLER_PC())
 
-#define RTPS_BUF_ALLOC_WITH_HEADROOM_DBG(min_payload_size, headroom) \
-    ::rtps::buf_alloc_with_headroom_dbg((min_payload_size), (headroom), \
-                                        RTPS_BUFPOOL_CALLER_PC())
+#  define RTPS_BUF_ALLOC_WITH_HEADROOM_DBG(min_payload_size, headroom)             \
+      ::rosette::rtps::buf_alloc_with_headroom_dbg((min_payload_size), (headroom), \
+                                                   RTPS_BUFPOOL_CALLER_PC())
 #endif
 
 // ============================================================
@@ -901,4 +901,4 @@ inline constexpr uint32_t kTxScratchMinSize = RTPS_POOL_CLASS2_SIZE;
 /// Fragment reassembly — class 4 (2048 B).
 inline constexpr uint32_t kFragBufMinSize = RTPS_POOL_CLASS4_SIZE;
 
-} // namespace rtps
+}  // namespace rosette::rtps

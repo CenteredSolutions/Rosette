@@ -1,8 +1,8 @@
 /**
  * @file rmw_rosette/guid.hpp
- * @brief rtps::Guid <-> rmw_gid_t conversion.
+ * @brief rosette::rtps::Guid <-> rmw_gid_t conversion.
  *
- * rtps::Guid is exactly 16 bytes (12-octet GuidPrefix + 4-octet EntityId —
+ * rosette::rtps::Guid is exactly 16 bytes (12-octet GuidPrefix + 4-octet EntityId —
  * see rtps/types.hpp), which fits inside rmw_gid_t's 24-byte storage
  * (RMW_GID_STORAGE_SIZE) with room to spare. The remaining bytes are
  * zero-padded; only `implementation_identifier` distinguishes gids across
@@ -38,11 +38,12 @@ namespace rmw_rosette {
  * @param[out] out Destination gid; `implementation_identifier` is set to
  *   `rmw_rosette_identifier` and `data` is fully overwritten.
  */
-inline void guid_to_rmw_gid(const rtps::Guid& guid, rmw_gid_t& out) noexcept {
+inline void guid_to_rmw_gid(const rosette::rtps::Guid& guid, rmw_gid_t& out) noexcept {
     out.implementation_identifier = rmw_rosette_identifier;
     std::memset(out.data, 0, RMW_GID_STORAGE_SIZE);
-    static_assert(sizeof(rtps::GuidPrefix) + sizeof(rtps::EntityId) <= RMW_GID_STORAGE_SIZE,
-                  "rtps::Guid no longer fits in rmw_gid_t storage");
+    static_assert(
+        sizeof(rosette::rtps::GuidPrefix) + sizeof(rosette::rtps::EntityId) <= RMW_GID_STORAGE_SIZE,
+        "rosette::rtps::Guid no longer fits in rmw_gid_t storage");
     std::memcpy(out.data, guid.prefix.value, sizeof(guid.prefix.value));
     std::memcpy(out.data + sizeof(guid.prefix.value), guid.entityId.entityKey,
                 sizeof(guid.entityId.entityKey));
@@ -59,7 +60,7 @@ inline void guid_to_rmw_gid(const rtps::Guid& guid, rmw_gid_t& out) noexcept {
  * @param[in]  guid RTPS GUID.
  * @param[out] out  Destination `rmw_request_id_t::writer_guid`.
  */
-inline void guid_to_request_writer(const rtps::Guid& guid, int8_t out[16]) noexcept {
+inline void guid_to_request_writer(const rosette::rtps::Guid& guid, int8_t out[16]) noexcept {
     std::memcpy(out, guid.prefix.value, 12);
     std::memcpy(out + 12, guid.entityId.entityKey, 3);
     out[15] = static_cast<int8_t>(guid.entityId.entityKind);
@@ -71,11 +72,11 @@ inline void guid_to_request_writer(const rtps::Guid& guid, int8_t out[16]) noexc
  * @param[in] in `rmw_request_id_t::writer_guid`.
  * @return The GUID written by guid_to_request_writer().
  */
-inline rtps::Guid guid_from_request_writer(const int8_t in[16]) noexcept {
-    rtps::Guid g{};
+inline rosette::rtps::Guid guid_from_request_writer(const int8_t in[16]) noexcept {
+    rosette::rtps::Guid g{};
     std::memcpy(g.prefix.value, in, 12);
     std::memcpy(g.entityId.entityKey, in + 12, 3);
-    g.entityId.entityKind = static_cast<rtps::Octet>(in[15]);
+    g.entityId.entityKind = static_cast<rosette::rtps::Octet>(in[15]);
     return g;
 }
 
@@ -85,7 +86,7 @@ inline rtps::Guid guid_from_request_writer(const int8_t in[16]) noexcept {
  * @param[in] t RTPS time, as carried by INFO_TS (§9.3.2, Time_t).
  * @return Nanoseconds since the Unix epoch, or 0 for TIME_ZERO.
  */
-inline int64_t timestamp_to_ns(const rtps::Timestamp& t) noexcept {
+inline int64_t timestamp_to_ns(const rosette::rtps::Timestamp& t) noexcept {
     const int64_t frac_ns =
         static_cast<int64_t>((static_cast<uint64_t>(t.fraction) * 1000000000ull) >> 32);
     return static_cast<int64_t>(t.seconds) * 1000000000ll + frac_ns;

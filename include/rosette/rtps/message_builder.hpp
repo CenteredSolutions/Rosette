@@ -34,7 +34,7 @@
 #include "buf_pool.hpp"
 #include <string.h>
 
-namespace rtps {
+namespace rosette::rtps {
 
 // ============================================================
 // In-place framing alignment
@@ -625,4 +625,4 @@ private:
     }
 };
 
-} // namespace rtps
+}  // namespace rosette::rtps

@@ -6,7 +6,7 @@
 #include "persistence.hpp"
 #include <string.h>
 
-namespace rtps {
+namespace rosette::rtps {
 
 static bool ensure_parent_dirs(lfs_t *lfs, const char *path) noexcept
 {
@@ -201,4 +201,4 @@ bool LittleFsPersistenceBackend::store(const CacheChange& change) noexcept
     return lfs_file_close(lfs_, &file) == 0;
 }
 
-} // namespace rtps
+}  // namespace rosette::rtps

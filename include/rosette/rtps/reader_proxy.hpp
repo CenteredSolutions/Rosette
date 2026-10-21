@@ -101,7 +101,7 @@
 #include "history_cache.hpp"
 #include "types.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 /**
  * @brief A StatefulWriter's record of one matched remote reader (§8.4.1.1).
@@ -466,4 +466,4 @@ private:
     uint64_t requestedBits_ = 0u;
 };
 
-} // namespace rtps
+}  // namespace rosette::rtps

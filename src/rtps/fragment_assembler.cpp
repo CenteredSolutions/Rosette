@@ -5,7 +5,7 @@
 
 #include "fragment_assembler.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 namespace {
 
@@ -268,4 +268,4 @@ FragmentedChange* FragmentAssembler::alloc_slot(const Guid& wg, const SequenceNu
     return &change;
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

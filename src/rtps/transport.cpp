@@ -10,7 +10,7 @@
 
 #include <cstring>
 
-namespace rtps {
+namespace rosette::rtps {
 
 namespace {
 
@@ -406,4 +406,4 @@ void SocketTransportRuntime::spin_some(Octet*           rx_buffer,
     }
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

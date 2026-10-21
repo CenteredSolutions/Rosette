@@ -22,7 +22,7 @@
 
 namespace spec_test {
 
-using namespace rtps;
+using namespace rosette::rtps;
 
 /**
  * @brief Local endpoint data a test registers, served back as a LocalEndpointSource.

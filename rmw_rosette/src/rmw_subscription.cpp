@@ -51,7 +51,7 @@ SubscriptionSlot* slot_from(const rmw_subscription_t* sub) noexcept {
  * @param[in] user_data The owning `Subscription*`, passed as the reader's
  *   user data at `create_reader()` time.
  */
-void on_change_available(const rtps::CacheChange& change, void* user_data) noexcept {
+void on_change_available(const rosette::rtps::CacheChange& change, void* user_data) noexcept {
     auto* impl = static_cast<rmw_rosette::Subscription*>(user_data);
     impl->received.push(change);
 }
@@ -112,7 +112,7 @@ rmw_subscription_t* rmw_create_subscription(
         return nullptr;
     }
 
-    rtps::ReaderConfig cfg{};
+    rosette::rtps::ReaderConfig cfg{};
     rmw_rosette::fill_reader_config(cfg, *qos_policies);
     char type_name[RTPS_MAX_TOPIC_NAME_LEN];
     if (!rmw_rosette::compose_topic_name(slot->impl.mangled_topic_name,

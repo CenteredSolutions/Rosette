@@ -13,7 +13,7 @@
 
 #include "rosette/rtps/buf_pool.hpp"
 
-using namespace rtps;
+using namespace rosette::rtps;
 
 int main() {
     // Smallest fit.

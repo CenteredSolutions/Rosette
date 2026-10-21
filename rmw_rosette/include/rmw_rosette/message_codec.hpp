@@ -20,7 +20,7 @@
  *
  * Payload framing: every `CacheChange::payload` delivered by rosette::rtps
  * starts with the 4-byte encapsulation header that
- * `rtps::MessageBuilder::append_data()` prepends (TC-BLD-10.2-001).
+ * `rosette::rtps::MessageBuilder::append_data()` prepends (TC-BLD-10.2-001).
  * serialize_message() therefore emits only the CDR body, and
  * deserialize_message() checks and strips the header.
  */
@@ -177,7 +177,8 @@ uint32_t serialize_message(const MessageCodec& codec, const void* ros_message,
  * - Covered by: rmw_rosette/test/test_introspection_c_codec.cpp
  *   (SerializeToPoolFitsLargeMessages).
  */
-rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* ros_message) noexcept;
+rosette::rtps::BufRef serialize_to_pool(const MessageCodec& codec,
+                                        const void*         ros_message) noexcept;
 
 /**
  * @brief Decodes an RTPS serialized payload into a ROS message.

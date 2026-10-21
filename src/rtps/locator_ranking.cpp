@@ -5,7 +5,7 @@
 
 #include "locator_ranking.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 namespace {
 
@@ -226,4 +226,4 @@ bool LocalSubnets::offer(Locator* list, uint8_t& count, uint8_t cap,
     return true;
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

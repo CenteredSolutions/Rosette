@@ -15,7 +15,7 @@
 #include "rosette/rtps/gap_encoding.hpp"
 #include "rosette/rtps/log.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 namespace {
 
 /// Octets of the CDR encapsulation header (§10.2) prepended to samples that
@@ -1047,4 +1047,4 @@ bool StatefulWriter::requester_has_waiting_reader(const GuidPrefix& requester) c
            && waitingReaderQuery_.fn(waitingReaderQuery_.context, guid_, requester);
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

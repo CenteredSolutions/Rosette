@@ -38,7 +38,7 @@
 #include "history_cache.hpp"
 #include "types.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 struct LittleFsPersistenceHeader {
     static constexpr uint32_t kMagic   = 0x52545053u;
@@ -109,4 +109,4 @@ private:
 
 using FlashPersistenceBackend = LittleFsPersistenceBackend;
 
-} // namespace rtps
+}  // namespace rosette::rtps

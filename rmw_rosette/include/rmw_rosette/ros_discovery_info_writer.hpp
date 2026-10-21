@@ -70,7 +70,7 @@ public:
      * References:
      * - rmw_fastrtps_cpp/src/init_rmw_context_impl.cpp (Humble), `init_context_impl`
      */
-    bool create(rtps::RTPSParticipant& participant) noexcept;
+    bool create(rosette::rtps::RTPSParticipant& participant) noexcept;
 
     /**
      * @brief Records a new node and publishes the updated message.
@@ -116,8 +116,8 @@ public:
      * References:
      * - rmw_dds_common/graph_cache.hpp (Humble), `associate_reader`, `associate_writer`
      */
-    bool add_endpoints(const Node& node, const rtps::Guid* reader,
-                       const rtps::Guid* writer) noexcept;
+    bool add_endpoints(const Node& node, const rosette::rtps::Guid* reader,
+                       const rosette::rtps::Guid* writer) noexcept;
 
     /**
      * @brief Removes the endpoints of one rmw entity and publishes the updated message.
@@ -125,7 +125,8 @@ public:
      * @param[in] reader GUID of the entity's RTPS reader, or null.
      * @param[in] writer GUID of the entity's RTPS writer, or null.
      */
-    void remove_endpoints(const rtps::Guid* reader, const rtps::Guid* writer) noexcept;
+    void remove_endpoints(const rosette::rtps::Guid* reader,
+                          const rosette::rtps::Guid* writer) noexcept;
 
 private:
     /**
@@ -181,8 +182,8 @@ private:
      */
     static void on_reader_rematched(void* self) noexcept;
 
-    rtps::RTPSParticipant* participant_ = nullptr;
-    rtps::StatefulWriter*  writer_      = nullptr;
+    rosette::rtps::RTPSParticipant* participant_ = nullptr;
+    rosette::rtps::StatefulWriter*  writer_ = nullptr;
     LocalNodeEntities      entities_;
 };
 

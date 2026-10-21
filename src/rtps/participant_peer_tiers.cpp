@@ -41,7 +41,7 @@
 
 #include "log.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 bool RTPSParticipant::admit_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
     if (peer.active()) {
@@ -214,4 +214,4 @@ void RTPSParticipant::serve_owed_peer(uint32_t now_ms) noexcept {
     }
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

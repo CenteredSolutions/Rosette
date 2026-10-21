@@ -20,6 +20,8 @@
 #include "rmw_rosette/ros_discovery_info_writer.hpp"
 #include "rmw_rosette/types.hpp"
 
+namespace rtps = rosette::rtps;
+
 namespace {
 
 const rosidl_message_type_support_t* entities_ts() {

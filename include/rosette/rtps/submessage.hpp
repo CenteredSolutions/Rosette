@@ -37,7 +37,7 @@
 
 #include "types.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 // ============================================================
 // §9.4.1  RTPS Message Header
@@ -481,4 +481,4 @@ inline constexpr uint16_t nack_frag_payload_size(uint32_t num_bits) noexcept {
         4u);  // count field
 }
 
-} // namespace rtps
+}  // namespace rosette::rtps

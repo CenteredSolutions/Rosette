@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-using namespace rtps;
+using namespace rosette::rtps;
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     ParseOps ops{};

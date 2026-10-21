@@ -10,7 +10,7 @@
 #include "log.hpp"
 #include <string.h>     // memcpy
 
-namespace rtps {
+namespace rosette::rtps {
 
 // ============================================================
 // Internal: Reader — bounds-checked cursor over a byte buffer
@@ -755,4 +755,4 @@ ParseResult parse_message(const Octet*      buf,
     return ParseResult::OK;
 }
 
-} // namespace rtps
+}  // namespace rosette::rtps
