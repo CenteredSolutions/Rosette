@@ -19,7 +19,26 @@ bool time_synced() noexcept {
 }
 
 int64_t epoch_nanos() noexcept {
-    return platform::WallClock::synchronized() ? platform::WallClock::now_us() * 1000 : 0;
+    int64_t unix_us = 0;
+    return platform::WallClock::try_now_us(unix_us) ? unix_us * 1000 : 0;
+}
+
+int64_t epoch_millis() noexcept {
+    int64_t unix_us = 0;
+    return platform::WallClock::try_now_us(unix_us) ? unix_us / 1000 : 0;
+}
+
+Stamp time_stamp() noexcept {
+    int64_t unix_us = 0;
+    if (!platform::WallClock::try_now_us(unix_us) || unix_us < 0) {
+        return Stamp{0, 0u};
+    }
+
+    // One __aeabi_uldivmod on a 32-bit core: it returns the quotient and the
+    // remainder together, and the remainder fits 32 bits.
+    const uint64_t us = static_cast<uint64_t>(unix_us);
+    const uint32_t sub_us = static_cast<uint32_t>(us % 1000000u);
+    return Stamp{static_cast<int32_t>(us / 1000000u), sub_us * 1000u};
 }
 
 }  // namespace rosette::ros

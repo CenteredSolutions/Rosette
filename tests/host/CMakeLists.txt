@@ -109,6 +109,29 @@ add_host_test(agent_session_gate_test)
 target_sources(agent_session_gate_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/ros/agent_session_gate.cpp)
 
+# ros::time_stamp() and the epoch readers over WallClock, on a fake tick the test sets.
+add_host_test(ros_time_stamp_test)
+target_sources(ros_time_stamp_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/ros/time_sync.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform/wall_clock.cpp)
+
+# rtps::Timestamp::now() and its exact microsecond-to-fraction conversion, on a fake tick.
+add_host_test(rtps_timestamp_test)
+target_sources(rtps_timestamp_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform/wall_clock.cpp)
+
+# WallClock's tick and offset read together, with a time source setting the offset mid-read.
+add_host_test(wall_clock_tick_test)
+target_sources(wall_clock_tick_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform/wall_clock.cpp)
+
+# WallClock's lock-free reads under concurrent writers: no torn offset.
+find_package(Threads REQUIRED)
+add_host_test(wall_clock_concurrency_test)
+target_sources(wall_clock_concurrency_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform/wall_clock.cpp)
+target_link_libraries(wall_clock_concurrency_test PRIVATE Threads::Threads)
+
 # RTPS buffer pool size-class selection, on a pool of two blocks per class.
 add_executable(buf_pool_class_test
     buf_pool_class_test.cpp
