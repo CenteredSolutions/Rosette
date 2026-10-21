@@ -150,6 +150,7 @@ static bool tc_sedp_9_6_3_2_004(std::string& err) {
 
     std::vector<Octet> valid{};
     CHECK(build_writer_payload(true, false, valid), "payload build failed");
+    CHECK(valid.size() > 4u, "payload must hold a representation header and a parameter list");
 
     // Representation header, then the oversized parameter, then the list.
     const Octet        oversized[4] = {0x77u, 0x77u, 0xFDu, 0xFFu};
