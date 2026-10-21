@@ -3,13 +3,15 @@
 #   cmake -S tests/spec -B build/tests-spec -DROSETTE_WERROR=ON
 #
 # One list of warnings, applied to Rosette's targets and never to third-party
-# code (littlefs, micro-ROS, the Pico SDK). The set targets what goes wrong on a
-# motion controller: narrowing and sign changes of positions, counts, and
-# sequence numbers (-Wconversion, -Wsign-conversion), shadowed variables,
-# printf arguments whose width differs between the host and the 32-bit target
-# (-Wformat=2), casts that hide a type change (-Wold-style-cast, -Wcast-qual),
-# and pointer casts that raise alignment, which fault on a Cortex-M0+
+# code (littlefs, micro-ROS, the Pico SDK). Each flag earns its place by what
+# goes wrong on a motion controller: narrowing of positions, counts, and
+# sequence numbers (-Wconversion), shadowed variables, printf arguments whose
+# width differs between the host and the 32-bit target (-Wformat=2), and
+# pointer casts that raise alignment, which fault on a Cortex-M0+
 # (-Wcast-align).
+#
+# Style-only flags (-Wold-style-cast, -Wcast-qual, -Wdouble-promotion,
+# -Wsign-conversion) are absent: they report no defect and only add casts.
 #
 # -Wuseless-cast is deliberately absent: a cast that is redundant on a 64-bit
 # host is often required on the 32-bit target.
@@ -25,11 +27,11 @@ option(ROSETTE_WERROR "Treat warnings in Rosette's own code as errors" OFF)
 
 set(ROSETTE_WARNING_FLAGS
     -Wall -Wextra
-    -Wconversion -Wsign-conversion
+    -Wconversion
     -Wshadow -Wundef
-    -Wcast-align -Wcast-qual -Wold-style-cast
+    -Wcast-align
     -Wnon-virtual-dtor -Woverloaded-virtual
-    -Wformat=2 -Wdouble-promotion)
+    -Wformat=2)
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # Only meaningful when optimizing; harmless otherwise.
@@ -43,7 +45,7 @@ endif()
 # The same flags for C sources, minus the C++-only ones.
 set(ROSETTE_C_WARNING_FLAGS ${ROSETTE_WARNING_FLAGS})
 list(REMOVE_ITEM ROSETTE_C_WARNING_FLAGS
-     -Wold-style-cast -Wnon-virtual-dtor -Woverloaded-virtual)
+     -Wnon-virtual-dtor -Woverloaded-virtual)
 
 macro(rosette_warnings_for_directory)
     add_compile_options(

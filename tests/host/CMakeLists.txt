@@ -138,3 +138,49 @@ target_include_directories(sntp_config_default_agent_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
 target_compile_definitions(sntp_config_default_agent_test PRIVATE ROSETTE_ROS_BACKEND_AGENT)
 add_test(NAME sntp_config_default_agent_test COMMAND sntp_config_default_agent_test)
+
+# Fuzz targets for the parsers that read datagrams from the LAN. <name>_fuzz_replay feeds
+# fuzz/corpus/<name> to the harness under any compiler and the ROSETTE_SANITIZE sanitizers;
+# <name>_fuzz is the libFuzzer build, available with Clang. The harnesses share the replay driver
+# of the RTPS fuzz targets (tests/spec/fuzz).
+option(ROSETTE_HOST_ENABLE_FUZZ "Build fuzz targets for the DHCP, DNS, SNTP, and Router Advertisement parsers" OFF)
+
+if (ROSETTE_HOST_ENABLE_FUZZ)
+    function(rosette_host_add_fuzz name)
+        set(_harness ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/fuzz_${name}.cpp)
+        set(_replay ${CMAKE_CURRENT_SOURCE_DIR}/../spec/fuzz/replay_driver.cpp)
+        set(_includes ${CMAKE_CURRENT_SOURCE_DIR}/../../include ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+        add_executable(${name}_fuzz_replay ${_harness} ${_replay} ${ARGN})
+        target_include_directories(${name}_fuzz_replay PRIVATE ${_includes})
+
+        if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            add_executable(${name}_fuzz ${_harness} ${ARGN})
+            target_include_directories(${name}_fuzz PRIVATE ${_includes})
+            target_compile_options(${name}_fuzz PRIVATE
+                -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -g)
+            target_link_options(${name}_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+        endif()
+
+        find_package(Python3 QUIET COMPONENTS Interpreter)
+        if (Python3_Interpreter_FOUND)
+            set(_vectors ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/${name}_corpus_vectors.json)
+            set(_corpus ${CMAKE_CURRENT_BINARY_DIR}/fuzz/corpus/${name})
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_vectors})
+            execute_process(
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/../spec/tools/gen_fuzz_corpus.py
+                        --vectors ${_vectors} --out ${_corpus}
+                RESULT_VARIABLE _gen_result OUTPUT_QUIET)
+            if (NOT _gen_result EQUAL 0)
+                message(FATAL_ERROR "Generating the ${name} fuzz corpus failed")
+            endif()
+            add_test(NAME ${name}_fuzz_replay COMMAND ${name}_fuzz_replay ${_corpus})
+        endif()
+    endfunction()
+
+    rosette_host_add_fuzz(dhcp_wire ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/wiznet/dhcp_wire.cpp)
+    rosette_host_add_fuzz(dns_wire)
+    rosette_host_add_fuzz(sntp_wire ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/sntp_wire.cpp)
+    rosette_host_add_fuzz(router_advert)
+endif()
