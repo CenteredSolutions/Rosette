@@ -134,8 +134,8 @@ Select a board at configure time with `-DROSETTE_BOARD=<name>`.
 | `w6100-evb-pico2` | RP2350 | W6100 hardware UDP, IPv4 + IPv6, SPI | none | builds; not run on hardware | builds; not run on hardware |
 | `w6300-evb-pico2` | RP2350 | W6300 hardware UDP, single-lane QSPI | none | builds; not run on hardware | builds; not run on hardware |
 | `w5100s-evb-pico` | RP2040 | W5100S hardware UDP | none | builds (RP2040 C client stack); not run on hardware | builds |
-| `micromod-teensy-w5500` | i.MX RT1062 | W5500 hardware UDP, IPv4, SPI | none | – | –; `udp_echo` builds, not run on hardware |
-| `mimxrt1020-evk` | i.MX RT1021 | on-chip ENET + KSZ8081 PHY, FreeRTOS+TCP, IPv4 + IPv6 | FreeRTOS | – | –; `udp_echo` runs (IPv4 DHCP, IPv6 link-local) |
+| `micromod-teensy-w5500` | i.MX RT1062 | W5500 hardware UDP, IPv4, SPI | none | – | builds; `udp_echo` builds, not run on hardware |
+| `mimxrt1020-evk` | i.MX RT1021 | on-chip ENET + KSZ8081 PHY, FreeRTOS+TCP, IPv4 + IPv6 | FreeRTOS | – | needs the 128 KiB DTCM layout (`docs/design/imxrt_memory_budget.md`); `udp_echo` runs (IPv4 DHCP, IPv6 link-local) |
 
 `posix` is the default board on macOS; `w5100s-evb-pico2` elsewhere. "Runs"
 means verified on the board against stock ROS 2; "builds" means the image

@@ -2,15 +2,24 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # rtps_chatter — agentless ROS 2 talker/listener on the Rosette RTPS core over
-# WIZnet hardware UDP sockets (no micro-ROS, no agent). Built from the repo
-# root for a WIZnet Pico board:
+# the board's socket provider (no micro-ROS, no agent). It builds for any
+# board with a network (a rosette_bsp): the WIZnet boards' hardware sockets,
+# or FreeRTOS+TCP over the MIMXRT1020-EVK's ENET.
+#
+# W5100S-EVB-Pico2:
 #
 #   cmake -S . -B build-hw/pico2 -DROSETTE_BOARD=w5100s-evb-pico2 \
 #         -DROSETTE_MICRO_ROS_BOOTSTRAP_ON_BUILD=OFF
 #   cmake --build build-hw/pico2 --target rtps_chatter
 #   tools/pico_uf2_flash.py build-hw/pico2/examples/rtps_chatter/rtps_chatter.uf2 --monitor 60
-
-if(NOT ROSETTE_BOARD_ENABLE_WIZNET OR NOT ROSETTE_BOARD_ENABLE_PICO_SDK)
+#
+# MIMXRT1020-EVK, flashed through its on-board DAPLink:
+#
+#   cmake -S . -B build-hw/rt1020-evk -DROSETTE_BOARD=mimxrt1020-evk \
+#         -DROSETTE_ENABLE_MICRO_ROS=OFF
+#   cmake --build build-hw/rt1020-evk --target rtps_chatter
+#   pyocd flash -t mimxrt1020 build-hw/rt1020-evk/examples/rtps_chatter/rtps_chatter.hex
+if(NOT TARGET rosette_bsp)
     return()
 endif()
 

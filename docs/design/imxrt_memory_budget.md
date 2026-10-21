@@ -84,6 +84,10 @@ fuse-default DTCM has no room for RTPS beside the network; the part as a whole h
 | MSP | 4 KiB | 1.5 KiB peak measured |
 | **Total** | **about 111 KiB of 256 KiB (43 %)** | |
 
+The EVK's link of `rtps_chatter` confirms the DTCM share: 78,560 B (`.data` and `.bss` 66,272 B, of which
+`g_buf_pool` is 26,988, the network buffers 15,424, and the participant 13,664, plus the newlib heap and the
+MSP), 13,024 B more than the fuse-default 64 KiB DTCM holds and 60 % of the 128 KiB the layout below gives it.
+
 ## The layout
 
 Reallocate the FlexRAM banks at reset: **ITCM 0, DTCM 128 KiB (4 banks), OCRAM 128 KiB (4 banks)**.
