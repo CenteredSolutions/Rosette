@@ -109,6 +109,27 @@ static bool tc_spdp_9_6_2_002(std::string& err) {
     return true;
 }
 
+/// A parameter whose declared length (0xFFFD) pads to 0x10000 must be treated
+/// as running past the end of the payload, not as a zero-length parameter.
+/// The payload is allocated at its exact size so a sanitizer build reports any
+/// read beyond it.
+static bool tc_spdp_9_6_2_003(std::string& err) {
+    ReaderObs obs{};
+    SpdpReader r(on_new_peer, on_removed, &obs);
+
+    const std::vector<Octet> payload = {
+        0x00, 0x03, 0x00, 0x00,                      // PL_CDR_LE representation header
+        static_cast<Octet>(pid::PARTICIPANT_GUID & 0xFFu),
+        static_cast<Octet>(pid::PARTICIPANT_GUID >> 8u),
+        0xFD, 0xFF,                                  // parameter_length 0xFFFD
+        0x01, 0x02, 0x03, 0x04,                      // 4 octets of value
+    };
+    CHECK(!r.on_data(GuidPrefix{}, payload.data(), static_cast<uint32_t>(payload.size()), 100u),
+          "a parameter longer than the payload must be rejected");
+    CHECK(r.peer_count() == 0u, "an oversized parameter must not add a peer");
+    return true;
+}
+
 static bool tc_spdp_9_6_3_1_001(std::string& err) {
     ReaderObs obs{};
     SpdpReader r(on_new_peer, on_removed, &obs);
@@ -147,6 +168,9 @@ void append_spdp_tests_9_6_2_9_6_3_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SPDP-9.6.2-002",
                      "§9.6.2/§9.6.3.1: PID_PARTICIPANT_GUID is mandatory for SPDP participant identity; missing GUID causes parse rejection.",
                      tc_spdp_9_6_2_002});
+    tests.push_back({"TC-SPDP-9.6.2-003",
+                     "§9.6.2: a parameter whose padded length reaches 0x10000 is bounded by the payload and rejected; the reader never reads past the datagram.",
+                     tc_spdp_9_6_2_003});
     tests.push_back({"TC-SPDP-9.6.3.1-001",
                      "§9.6.3.1 robustness: if PID_PARTICIPANT_GUID carries unknown prefix, SPDP reader falls back to RTPS header senderGuidPrefix.",
                      tc_spdp_9_6_3_1_001});

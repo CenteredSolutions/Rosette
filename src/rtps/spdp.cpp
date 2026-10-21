@@ -299,8 +299,10 @@ bool SpdpReader::deserialise(const Octet* payload, uint32_t len, const LocalSubn
         const uint16_t param_len = read_u16_wire(payload + off + 2u, little_endian);
         off += 4u;
 
-        // Pad length to 4-byte boundary for next-PID alignment.
-        const uint16_t padded = static_cast<uint16_t>((param_len + 3u) & ~3u);
+        // Pad length to 4-byte boundary for next-PID alignment. 32 bits wide:
+        // a parameter_length of 0xFFFD..0xFFFF pads to 0x10000, which a
+        // 16-bit variable would wrap to 0 and slip past the bounds check.
+        const uint32_t padded = (param_len + 3u) & ~3u;
 
         if (off + padded > len && pid_val != pid::SENTINEL) break;
 

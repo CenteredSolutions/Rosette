@@ -167,6 +167,15 @@
       "test_ids": ["TC-SEDP-9.6.3.2-002"]
     },
     {
+      "id": "REQ-SEDP-9.6.2-PARAMETER-LENGTH-BOUNDED",
+      "section": "9.6.2",
+      "page": 256,
+      "normativity": "implementation-robustness",
+      "statement": "A parameter whose parameter_length extends past the end of the received payload, including one whose padded length reaches 0x10000, ends endpoint data parsing without reading past the payload.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-9.6.3.2-004"]
+    },
+    {
       "id": "REQ-SEDP-8.5.4.2-ENDPOINT-RELOCATION",
       "section": "8.5.4.2",
       "page": 166,

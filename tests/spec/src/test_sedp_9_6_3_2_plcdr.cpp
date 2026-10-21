@@ -133,6 +133,37 @@ static bool tc_sedp_9_6_3_2_001(std::string& err) {
     return true;
 }
 
+/// An unknown parameter declaring length 0xFFFD (padded 0x10000) ahead of a
+/// complete endpoint announcement must end parsing: it runs past the payload.
+/// A reader that wrapped the padded length to 0 would treat it as empty and
+/// parse the announcement behind it, matching an endpoint the payload does not
+/// legitimately describe.
+static bool tc_sedp_9_6_3_2_004(std::string& err) {
+    Obs obs{};
+    FakeTransport tx{};
+    EndpointMatchTable table(on_match, nullptr, &obs);
+    SedpReader reader(GuidPrefix{}, tx, table);
+
+    const Guid local_reader = make_guid(0x10u, 0x11u, 0x12u, make_entity(1u, 1u, 1u, 0xC7u));
+    table.set_local_prefix(local_reader.prefix);
+    table.add_reader(make_local_reader(local_reader));
+
+    std::vector<Octet> valid{};
+    CHECK(build_writer_payload(true, false, valid), "payload build failed");
+
+    // Representation header, then the oversized parameter, then the list.
+    std::vector<Octet> payload(valid.begin(), valid.begin() + 4);
+    const Octet oversized[4] = {0x77u, 0x77u, 0xFDu, 0xFFu};
+    payload.insert(payload.end(), oversized, oversized + 4);
+    payload.insert(payload.end(), valid.begin() + 4, valid.end());
+
+    const SedpPeer peer{GuidPrefix{}, make_udpv4_locator(0xC0A80101u, 7410u)};
+    peer.discover(reader);
+    peer.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, payload);
+    CHECK(obs.match_calls == 0, "a parameter longer than the payload must end parsing");
+    return true;
+}
+
 static bool tc_sedp_9_6_3_2_002(std::string& err) {
     Obs obs{};
     FakeTransport tx{};
@@ -206,6 +237,9 @@ void append_sedp_tests_9_6_3_2(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-9.6.3.2-001",
                      "§9.6.3.2: SEDP PL_CDR endpoint data parsing skips unknown PID entries while preserving mandatory-field processing.",
                      tc_sedp_9_6_3_2_001});
+    tests.push_back({"TC-SEDP-9.6.3.2-004",
+                     "§9.6.2: a parameter whose padded length reaches 0x10000 is bounded by the payload; endpoint data parsing never reads past it.",
+                     tc_sedp_9_6_3_2_004});
     tests.push_back({"TC-SEDP-9.6.3.2-002",
                      "§9.6.3.2: endpoint discovery payload without PID_ENDPOINT_GUID is rejected.",
                      tc_sedp_9_6_3_2_002});

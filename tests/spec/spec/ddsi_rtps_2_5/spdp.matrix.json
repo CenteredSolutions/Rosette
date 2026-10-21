@@ -114,6 +114,15 @@
       "test_ids": ["TC-SPDP-9.6.2-001"]
     },
     {
+      "id": "REQ-SPDP-9.6.2-PARAMETER-LENGTH-BOUNDED",
+      "section": "9.6.2",
+      "page": 256,
+      "normativity": "implementation-robustness",
+      "statement": "A parameter whose parameter_length extends past the end of the received payload, including one whose padded length reaches 0x10000, is rejected without reading past the payload.",
+      "status": "implemented",
+      "test_ids": ["TC-SPDP-9.6.2-003"]
+    },
+    {
       "id": "REQ-SPDP-9.6.3.1-PARTICIPANT-GUID",
       "section": "9.6.3.1",
       "page": 258,
