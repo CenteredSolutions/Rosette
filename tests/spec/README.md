@@ -68,65 +68,33 @@ cmake --build tests/spec/build --target participant_spec_report
 
 ## Fuzzing
 
-Build with fuzz target enabled (Clang required):
+Each fuzz target has one harness, `fuzz/fuzz_<name>.cpp`, defining
+`LLVMFuzzerTestOneInput`, for `message_parser`, `fragment_assembler`, `spdp`,
+`sedp`, and `endpoint_match`. With `-DROSETTE_SPEC_ENABLE_FUZZ=ON`, any
+compiler builds `<name>_fuzz_replay`, which runs the harness over every file of
+a corpus directory, and the seed corpus (`fuzz/<name>_corpus_vectors.json`) is
+generated at configure time and replayed by ctest (`<name>_fuzz_replay`).
+Clang also builds `<name>_fuzz`, the libFuzzer binary with ASan and UBSan.
 
 ```bash
-cmake -S tests/spec -B tests/spec/build-fuzz \
-  -DROSETTE_SPEC_ENABLE_FUZZ=ON \
+cmake -S tests/spec -B build/tests-spec-fuzz -DROSETTE_SPEC_ENABLE_FUZZ=ON -DROSETTE_SANITIZE=ON
+cmake --build build/tests-spec-fuzz -j
+ctest --test-dir build/tests-spec-fuzz -R fuzz_replay --output-on-failure
+```
+
+Explore beyond the seeds with libFuzzer (Clang):
+
+```bash
+cmake -S tests/spec -B build/tests-spec-fuzz -DROSETTE_SPEC_ENABLE_FUZZ=ON \
   -DCMAKE_CXX_COMPILER=clang++
-cmake --build tests/spec/build-fuzz -j
-cmake --build tests/spec/build-fuzz --target \
-  message_parser_fuzz_corpus \
-  fragment_assembler_fuzz_corpus \
-  spdp_fuzz_corpus \
-  sedp_fuzz_corpus \
-  endpoint_match_fuzz_corpus
+cmake --build build/tests-spec-fuzz -j
+ASAN_OPTIONS=detect_leaks=0 build/tests-spec-fuzz/sedp_fuzz \
+  -max_total_time=300 build/tests-spec-fuzz/fuzz/corpus/sedp
 ```
 
-Run with generated corpus:
-
-```bash
-tests/spec/build-fuzz/message_parser_fuzz \
-  tests/spec/build-fuzz/fuzz/corpus/message_parser
-tests/spec/build-fuzz/fragment_assembler_fuzz \
-  tests/spec/build-fuzz/fuzz/corpus/fragment_assembler
-tests/spec/build-fuzz/spdp_fuzz \
-  tests/spec/build-fuzz/fuzz/corpus/spdp
-tests/spec/build-fuzz/sedp_fuzz \
-  tests/spec/build-fuzz/fuzz/corpus/sedp
-tests/spec/build-fuzz/endpoint_match_fuzz \
-  tests/spec/build-fuzz/fuzz/corpus/endpoint_match
-```
-
-Convenience smoke pass over all replay harnesses:
-
-```bash
-cmake --build tests/spec/build-fuzz --target fuzz_smoke_all
-```
-
-Recommended longer fuzz campaigns (example 5-minute runs each):
-
-```bash
-ASAN_OPTIONS=detect_leaks=0 tests/spec/build-fuzz/message_parser_fuzz -max_total_time=300 tests/spec/build-fuzz/fuzz/corpus/message_parser
-ASAN_OPTIONS=detect_leaks=0 tests/spec/build-fuzz/fragment_assembler_fuzz -max_total_time=300 tests/spec/build-fuzz/fuzz/corpus/fragment_assembler
-ASAN_OPTIONS=detect_leaks=0 tests/spec/build-fuzz/spdp_fuzz -max_total_time=300 tests/spec/build-fuzz/fuzz/corpus/spdp
-ASAN_OPTIONS=detect_leaks=0 tests/spec/build-fuzz/sedp_fuzz -max_total_time=300 tests/spec/build-fuzz/fuzz/corpus/sedp
-ASAN_OPTIONS=detect_leaks=0 tests/spec/build-fuzz/endpoint_match_fuzz -max_total_time=300 tests/spec/build-fuzz/fuzz/corpus/endpoint_match
-```
-
-If Clang/libFuzzer is unavailable, you can still run corpus replay smoke tests:
-
-```bash
-cmake -S tests/spec -B tests/spec/build-fuzz \
-  -DROSETTE_SPEC_ENABLE_FUZZ=ON
-cmake --build tests/spec/build-fuzz -j \
-  --target \
-  message_parser_fuzz_replay message_parser_fuzz_corpus message_parser_fuzz_smoke \
-  fragment_assembler_fuzz_replay fragment_assembler_fuzz_corpus fragment_assembler_fuzz_smoke \
-  spdp_fuzz_replay spdp_fuzz_corpus spdp_fuzz_smoke \
-  sedp_fuzz_replay sedp_fuzz_corpus sedp_fuzz_smoke \
-  endpoint_match_fuzz_replay endpoint_match_fuzz_corpus endpoint_match_fuzz_smoke
-```
+`-DROSETTE_SANITIZE=ON` builds any suite with AddressSanitizer and
+UndefinedBehaviorSanitizer (`ROSETTE_SANITIZE_THREAD=ON` for ThreadSanitizer);
+the `sanitizers` CI job does this for `tests/spec` and `tests/host`.
 
 ## Scope Notes
 

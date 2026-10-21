@@ -1,0 +1,64 @@
+# libFuzzer campaigns over the RTPS parsers and discovery code (tests/spec/fuzz).
+# Each target builds with Clang, AddressSanitizer, and UndefinedBehaviorSanitizer
+# and starts from the seed corpus plus the corpus earlier runs found. Pull
+# requests get a short run; the nightly run searches longer. A crash or
+# sanitizer report fails the job and uploads its reproducer.
+name: fuzz
+
+on:
+  pull_request:
+    paths:
+      - 'src/rtps/**'
+      - 'include/rosette/rtps/**'
+      - 'tests/spec/**'
+      - 'tools/fuzz/**'
+      - '.github/workflows/fuzz.yml'
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds to fuzz each target
+        default: '300'
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Configure
+        run: >
+          cmake -S tests/spec -B build/tests-spec-fuzz
+          -DCMAKE_CXX_COMPILER=clang++
+          -DROSETTE_SPEC_ENABLE_FUZZ=ON
+
+      - name: Build
+        run: cmake --build build/tests-spec-fuzz -j "$(nproc)"
+
+      - name: Replay the seed corpus
+        run: ctest --test-dir build/tests-spec-fuzz -R fuzz_replay --output-on-failure
+
+      - name: Restore the discovered corpus
+        uses: actions/cache@v4
+        with:
+          path: build/tests-spec-fuzz/fuzz/work
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+
+      - name: Fuzz
+        run: >
+          tools/fuzz/run_fuzz_campaign.sh build/tests-spec-fuzz
+          ${{ github.event_name == 'schedule' && '600' || github.event.inputs.seconds || '45' }}
+
+      - name: Upload reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: build/tests-spec-fuzz/fuzz/crashes

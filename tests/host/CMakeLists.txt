@@ -12,6 +12,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 enable_testing()
 
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/rosette_sanitizers.cmake)
+
 # Host tests run on the POSIX platform port (include/rosette/platform/platform.hpp):
 # its OS layer is ports/os/posix/rosette_os_port.hpp.
 add_compile_definitions(ROSETTE_OS_POSIX ROSETTE_CHIP_HOST)

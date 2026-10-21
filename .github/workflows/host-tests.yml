@@ -1,7 +1,9 @@
 # Build and run the host test suites, which need nothing but a C++ compiler
 # and CMake: tests/spec checks DDSI-RTPS statements by spec section
 # (TC-<AREA>-<section>-<seq>), tests/host checks the portable and port code
-# that has no spec section of its own.
+# that has no spec section of its own. The sanitizers job runs the same suites,
+# plus the fuzz corpus replays, under AddressSanitizer and UndefinedBehaviorSanitizer
+# (cmake/rosette_sanitizers.cmake); an undefined-behavior finding fails the test.
 name: host-tests
 
 on:
@@ -26,3 +28,23 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/tests-${{ matrix.suite }} --output-on-failure
+
+  sanitizers:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        suite: [spec, host]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S tests/${{ matrix.suite }} -B build/tests-${{ matrix.suite }}-san
+          -DROSETTE_SANITIZE=ON
+          ${{ matrix.suite == 'spec' && '-DROSETTE_SPEC_ENABLE_FUZZ=ON' || '' }}
+
+      - name: Build
+        run: cmake --build build/tests-${{ matrix.suite }}-san -j "$(nproc)"
+
+      - name: Test
+        run: ctest --test-dir build/tests-${{ matrix.suite }}-san --output-on-failure
