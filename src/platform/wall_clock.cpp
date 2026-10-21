@@ -12,6 +12,12 @@
  * offset when both readings match and are even. Readers take no lock, so a
  * read costs a few loads and barriers instead of a Mutex round trip.
  *
+ * A reader that wants the time samples monotonic_us() between its two
+ * sequence loads, so the tick and the offset it adds them to come from one
+ * interval in which no writer stored. Sampled after the check, a reader
+ * preempted between the two could add an offset already replaced to a later
+ * tick and return a time the clock never showed.
+ *
  * Writers (set_offset_us() and the seeding from the realtime hint) still
  * serialize on a Mutex. A reader that sees a write overlap its read
  * kReadAttempts times in a row takes that Mutex instead: on a single-core
@@ -54,10 +60,11 @@ struct PublishedClock {
 
 PublishedClock g_clock;
 
-/// One consistent reading of the published state.
+/// One consistent reading of the published state, and the tick it applies to.
 struct ClockSnapshot {
     int64_t  offset_us;
     uint32_t flags;
+    uint64_t tick_us;  ///< monotonic_us() inside the reading; 0 when not sampled.
 };
 
 /// Serializes writers, and readers that gave up on the lock-free path.
@@ -76,8 +83,9 @@ Mutex& writer_mutex() noexcept {
 ClockSnapshot load_fields() noexcept {
     const uint32_t low = g_clock.offset_low.load(std::memory_order_acquire);
     const uint32_t high = g_clock.offset_high.load(std::memory_order_acquire);
+    const uint32_t flags = g_clock.flags.load(std::memory_order_acquire);
     const uint64_t bits = (static_cast<uint64_t>(high) << 32) | low;
-    return ClockSnapshot{static_cast<int64_t>(bits), g_clock.flags.load(std::memory_order_acquire)};
+    return ClockSnapshot{static_cast<int64_t>(bits), flags, 0u};
 }
 
 /**
@@ -120,44 +128,59 @@ void seed_locked() noexcept {
  * @brief Reads the published offset and flags, seeding them on first use.
  *
  * Tries the lock-free read kReadAttempts times; each attempt is kept when
- * the sequence number is even and unchanged across the field loads, and the
- * state is seeded. Otherwise it takes writer_mutex(), which also seeds an
- * unseeded clock.
+ * the sequence number is even and unchanged across the tick and field loads,
+ * and the state is seeded. Otherwise it takes writer_mutex(), which also
+ * seeds an unseeded clock, and samples the tick under it.
+ *
+ * @param[in] sample_tick True to sample monotonic_us() inside the reading,
+ *   for a caller that adds the offset to it; false leaves tick_us at 0.
+ * @return The offset and flags from one interval with no write, and the tick
+ *   sampled in that interval.
+ *
+ * Verification:
+ * - Correct means: the offset and tick of a reading were current together:
+ *   a write that lands between them makes the reading retry.
+ * - Covered by: tests/host/wall_clock_tick_test.cpp (TC-PLAT-WC-003);
+ *   tests/host/wall_clock_concurrency_test.cpp (TC-PLAT-WC-001, TC-PLAT-WC-002).
  */
-ClockSnapshot read_clock() noexcept {
+ClockSnapshot read_clock(bool sample_tick) noexcept {
     for (int attempt = 0; attempt < kReadAttempts; ++attempt) {
-        const uint32_t      before = g_clock.sequence.load(std::memory_order_acquire);
-        const ClockSnapshot snapshot = load_fields();
-        const uint32_t      after = g_clock.sequence.load(std::memory_order_relaxed);
+        const uint32_t before = g_clock.sequence.load(std::memory_order_acquire);
+        const uint64_t tick_us = sample_tick ? monotonic_us() : 0u;
+        ClockSnapshot  snapshot = load_fields();
+        const uint32_t after = g_clock.sequence.load(std::memory_order_relaxed);
         if (before == after && (before & 1u) == 0u && (snapshot.flags & kSeeded) != 0u) {
+            snapshot.tick_us = tick_us;
             return snapshot;
         }
     }
 
     LockGuard guard(writer_mutex());
     seed_locked();
-    return load_fields();
+    ClockSnapshot snapshot = load_fields();
+    snapshot.tick_us = sample_tick ? monotonic_us() : 0u;
+    return snapshot;
 }
 
 }  // namespace
 
 int64_t WallClock::now_us() noexcept {
-    const ClockSnapshot clock = read_clock();
-    return static_cast<int64_t>(monotonic_us()) + clock.offset_us;
+    const ClockSnapshot clock = read_clock(true);
+    return static_cast<int64_t>(clock.tick_us) + clock.offset_us;
 }
 
 bool WallClock::try_now_us(int64_t& unix_us) noexcept {
-    const ClockSnapshot clock = read_clock();
+    const ClockSnapshot clock = read_clock(true);
     if ((clock.flags & kSynchronized) == 0u) {
         return false;
     }
 
-    unix_us = static_cast<int64_t>(monotonic_us()) + clock.offset_us;
+    unix_us = static_cast<int64_t>(clock.tick_us) + clock.offset_us;
     return true;
 }
 
 int64_t WallClock::offset_us() noexcept {
-    return read_clock().offset_us;
+    return read_clock(false).offset_us;
 }
 
 void WallClock::set_offset_us(int64_t offset_us) noexcept {
@@ -166,7 +189,7 @@ void WallClock::set_offset_us(int64_t offset_us) noexcept {
 }
 
 bool WallClock::synchronized() noexcept {
-    return (read_clock().flags & kSynchronized) != 0u;
+    return (read_clock(false).flags & kSynchronized) != 0u;
 }
 
 }  // namespace rosette::platform

@@ -33,9 +33,12 @@ public:
      * @return Current wall-clock time in microseconds.
      *
      * Verification:
-     * - Correct means: equals monotonic_us() + offset_us() at the instant of
-     *   the call; on hosts, within a millisecond of CLOCK_REALTIME.
-     * - Covered by: tests/platform/platform_contract_test.cpp (WallClock).
+     * - Correct means: equals monotonic_us() + offset_us() at one instant
+     *   during the call, the tick and the offset read together, so a time
+     *   source that sets the offset mid-call never yields a time the clock
+     *   did not show; on hosts, within a millisecond of CLOCK_REALTIME.
+     * - Covered by: tests/platform/platform_contract_test.cpp (WallClock);
+     *   tests/host/wall_clock_tick_test.cpp (TC-PLAT-WC-003).
      */
     static int64_t now_us() noexcept;
 
@@ -56,9 +59,10 @@ public:
      *
      * Verification:
      * - Correct means: returns synchronized() and, when true, now_us() as one
-     *   reading of the offset.
+     *   reading of the offset and the tick.
      * - Covered by: tests/host/ros_time_stamp_test.cpp (TC-ROS-TIME-001);
-     *   tests/host/wall_clock_concurrency_test.cpp (TC-PLAT-WC-002).
+     *   tests/host/wall_clock_concurrency_test.cpp (TC-PLAT-WC-002);
+     *   tests/host/wall_clock_tick_test.cpp (TC-PLAT-WC-003).
      */
     static bool try_now_us(int64_t& unix_us) noexcept;
 
