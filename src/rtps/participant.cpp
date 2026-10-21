@@ -364,7 +364,8 @@ bool RTPSParticipant::reserve_endpoint_floor(ProxyPool& pool, uint8_t requested_
     const uint8_t above_slot = static_cast<uint8_t>(floor - RTPS_MIN_MATCHES_PER_ENDPOINT);
     if (!pool.reserve(above_slot)) {
         RTPS_LOG_E("participant", "proxy pool cannot reserve a floor of %u (free=%u reserved=%u)",
-                   (unsigned)floor, (unsigned)pool.free_count(), (unsigned)pool.reserved());
+                   static_cast<unsigned>(floor), static_cast<unsigned>(pool.free_count()),
+                   static_cast<unsigned>(pool.reserved()));
         return false;
     }
 
@@ -445,8 +446,8 @@ ParseResult RTPSParticipant::parse_received(const Octet* buf,
     const ParseResult r = parse_message(buf, len, participant_guid_.prefix,
                                         parse_ops_, this);
     if (r != ParseResult::OK) {
-        RTPS_LOG_W("participant", "parse_message failed: result=%d len=%lu",
-                   (int)r, (unsigned long)len);
+        RTPS_LOG_W("participant", "parse_message failed: result=%d len=%lu", static_cast<int>(r),
+                   static_cast<unsigned long>(len));
     }
     return r;
 }
@@ -653,9 +654,9 @@ void RTPSParticipant::on_endpoints_changed(void* self) noexcept
     static_cast<RTPSParticipant*>(self)->notify_graph_change();
 }
 
-bool RTPSParticipant::on_endpoint_match(const MatchedEndpoint& writer,
-                                        const MatchedEndpoint& reader, const char* topic,
-                                        void* self) noexcept {
+bool RTPSParticipant::on_endpoint_match(const MatchedEndpoint&       writer,
+                                        const MatchedEndpoint&       reader,
+                                        [[maybe_unused]] const char* topic, void* self) noexcept {
     auto* p = static_cast<RTPSParticipant*>(self);
     bool bound = true;
 
@@ -890,8 +891,8 @@ void RTPSParticipant::dispatch_heartbeat(const ParseContext&    ctx,
     RTPS_LOG_T("participant", "HEARTBEAT writer=%02x%02x%02x%02x first=%d:%lu last=%d:%lu",
                ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
                ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3],
-               msg.firstSN.high, (unsigned long)msg.firstSN.low,
-               msg.lastSN.high,  (unsigned long)msg.lastSN.low);
+               static_cast<int>(msg.firstSN.high), static_cast<unsigned long>(msg.firstSN.low),
+               static_cast<int>(msg.lastSN.high), static_cast<unsigned long>(msg.lastSN.low));
     if (is_sedp_announcer(msg.writerId)) {
         p->on_announcer_traffic(ctx.senderGuidPrefix, msg.writerId, msg.lastSN, false,
                                 rosette::platform::monotonic_ms());
@@ -918,9 +919,9 @@ void RTPSParticipant::dispatch_acknack(const ParseContext&  ctx,
     RTPS_LOG_T("participant", "ACKNACK reader=%02x%02x%02x%02x base=%d:%lu count=%lu",
                ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
                ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3],
-               msg.readerSNState.bitmapBase.high,
-               (unsigned long)msg.readerSNState.bitmapBase.low,
-               (unsigned long)msg.count);
+               static_cast<int>(msg.readerSNState.bitmapBase.high),
+               static_cast<unsigned long>(msg.readerSNState.bitmapBase.low),
+               static_cast<unsigned long>(msg.count));
     StatefulWriter* iw = p->find_writer(msg.writerId);
     if (iw) iw->on_acknack(ctx, msg);
 }
@@ -959,8 +960,9 @@ bool RTPSParticipant::local_endpoint_fits(const TopicName& topic, const TopicNam
                    "%s topic=%s refused: no %s record (RTPS_MAX_LOCAL_%s) or name room "
                    "(RTPS_LOCAL_NAME_BYTES=%lu, %lu used) in the match table",
                    is_writer ? "writer" : "reader", topic.str, is_writer ? "writer" : "reader",
-                   is_writer ? "WRITERS" : "READERS", (unsigned long)RTPS_LOCAL_NAME_BYTES,
-                   (unsigned long)match_table_.local_name_bytes_used());
+                   is_writer ? "WRITERS" : "READERS",
+                   static_cast<unsigned long>(RTPS_LOCAL_NAME_BYTES),
+                   static_cast<unsigned long>(match_table_.local_name_bytes_used()));
         return false;
     }
 

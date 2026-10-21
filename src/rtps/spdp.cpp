@@ -20,8 +20,8 @@ inline bool decode_plcdr_rep_id(const uint8_t* payload,
         return false;
     }
 
-    const uint16_t rep_id_be = (static_cast<uint16_t>(payload[0]) << 8u) |
-                               static_cast<uint16_t>(payload[1]);
+    const uint16_t rep_id_be = static_cast<uint16_t>((static_cast<uint16_t>(payload[0]) << 8u)
+                                                     | static_cast<uint16_t>(payload[1]));
     switch (rep_id_be) {
     case 0x0003u: little_endian = true;  return true;   // PL_CDR_LE (canonical)
     case 0x0002u: little_endian = false; return true;   // PL_CDR_BE (canonical)
@@ -34,11 +34,11 @@ inline bool decode_plcdr_rep_id(const uint8_t* payload,
 inline uint16_t read_u16_wire(const uint8_t* p, bool little_endian) noexcept
 {
     if (little_endian) {
-        return static_cast<uint16_t>(p[0]) |
-               static_cast<uint16_t>(p[1] << 8u);
+        return static_cast<uint16_t>(static_cast<uint16_t>(p[0])
+                                     | static_cast<uint16_t>(p[1] << 8u));
     }
-    return static_cast<uint16_t>(p[0] << 8u) |
-           static_cast<uint16_t>(p[1]);
+
+    return static_cast<uint16_t>(static_cast<uint16_t>(p[0] << 8u) | static_cast<uint16_t>(p[1]));
 }
 
 } // namespace
@@ -192,7 +192,7 @@ void SpdpWriter::do_announce(const Locator& dest, bool use_unicast) noexcept {
 
     if (serialised_len == 0) {
         RTPS_LOG_E("spdp", "participant data serialisation failed (capacity=%lu)",
-                   (unsigned long)payload_buf.capacity());
+                   static_cast<unsigned long>(payload_buf.capacity()));
         payload_buf.reset();
         return;
     }
@@ -216,16 +216,14 @@ void SpdpWriter::do_announce(const Locator& dest, bool use_unicast) noexcept {
         // than the last one seen from this writer, which would hide any
         // later change to this participant's data.
         ++next_sn_;
-        RTPS_LOG_D("spdp", "%s participant (%lu bytes)",
-                   use_unicast ? "unicasting" : "announcing",
-                   (unsigned long)serialised_len);
+        RTPS_LOG_D("spdp", "%s participant (%lu bytes)", use_unicast ? "unicasting" : "announcing",
+                   static_cast<unsigned long>(serialised_len));
         BufRef msg = builder_.finish();
         const bool sent = use_unicast ? transport_.send_unicast(msg, dest)
                                       : transport_.send_multicast(msg, dest);
         if (!sent) {
             RTPS_LOG_W("spdp", "announce send failed: kind=%ld port=%lu",
-                       (long)dest.kind,
-                       (unsigned long)dest.port);
+                       static_cast<long>(dest.kind), static_cast<unsigned long>(dest.port));
         }
         msg.reset();
     } else {
@@ -475,7 +473,7 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
     SPDPdiscoveredParticipantData parsed{};
     if (!deserialise(payload, payload_len, *subnets_, parsed)) {
         RTPS_LOG_W("spdp", "failed to deserialise participant data (%lu bytes)",
-                   (unsigned long)payload_len);
+                   static_cast<unsigned long>(payload_len));
         return false;
     }
 
@@ -509,7 +507,8 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
         RTPS_LOG_I("spdp", "new participant %02x%02x%02x%02x%02x%02x lease=%lums",
                    parsed.guidPrefix.value[0], parsed.guidPrefix.value[1],
                    parsed.guidPrefix.value[2], parsed.guidPrefix.value[3],
-                   parsed.guidPrefix.value[4], parsed.guidPrefix.value[5], (unsigned long)lease_ms);
+                   parsed.guidPrefix.value[4], parsed.guidPrefix.value[5],
+                   static_cast<unsigned long>(lease_ms));
     }
 
     record->remember(announced);

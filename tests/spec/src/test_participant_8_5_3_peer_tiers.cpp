@@ -236,7 +236,9 @@ static bool tc_part_8_5_3_013(std::string& err) {
     CHECK(!record(p, a)->owed, "a peer is owed nothing when it is parked");
 
     p.discovery_info_changed();
-    CHECK(record(p, a)->owed, "a change of the discovery writer's contents is owed to A");
+    const PeerEntry* owed_peer = record(p, a);
+    CHECK(owed_peer != nullptr, "peer A keeps its record");
+    CHECK(owed_peer->owed, "a change of the discovery writer's contents is owed to A");
 
     CHECK(acknowledge_sedp(p, c, true, 1) && acknowledge_sedp(p, c, false, 0),
           "peer C acknowledges the announcement");
@@ -279,7 +281,9 @@ static bool tc_part_8_5_3_014(std::string& err) {
                              make_udpv4_locator(0xC0A80114u, 7410u), foreign),
           "SPDP payload build failed");
 
-    const uint32_t expiry = record(p, a)->leaseExpiryMs;
+    const PeerEntry* expiring = record(p, a);
+    CHECK(expiring != nullptr, "peer A keeps its record");
+    const uint32_t expiry = expiring->leaseExpiryMs;
     SpdpReader& reader = p.spdp_reader();
     CHECK(!reader.on_data(a, nullptr, 0u, 1300u), "an empty payload is rejected");
     CHECK(!reader.on_data(a, bad_representation.data(),

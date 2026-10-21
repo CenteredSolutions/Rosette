@@ -20,10 +20,10 @@ std::array<uint8_t, 48> reply(net::NtpTimestamp sent, int64_t t2_us, int64_t t3_
     std::array<uint8_t, 48> r{};
     r[0] = 0x24u;
     r[1] = 2u;
-    auto put = [&r](int at, net::NtpTimestamp ts) {
+    auto put = [&r](std::size_t at, net::NtpTimestamp ts) {
         const uint32_t words[2] = {ts.seconds, ts.fraction};
-        for (int w = 0; w < 2; ++w) {
-            for (int b = 0; b < 4; ++b) {
+        for (std::size_t w = 0; w < 2; ++w) {
+            for (std::size_t b = 0; b < 4; ++b) {
                 r[at + w * 4 + b] = static_cast<uint8_t>(words[w] >> (24 - 8 * b));
             }
         }
@@ -101,7 +101,7 @@ void reply_checks() {
               == net::SntpReplyError::unsynchronized,
           "TC-NET-SNTP-5-003 stratum 16 is rejected");
     bad = good;
-    for (int i = 40; i < 48; ++i) {
+    for (std::size_t i = 40; i < 48; ++i) {
         bad[i] = 0u;
     }
 

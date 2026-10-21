@@ -36,6 +36,38 @@
 
 namespace rtps {
 
+// ============================================================
+// In-place framing alignment
+//
+// prepend_data_message() and StatefulWriter::send_data_in_place() write the
+// DATA submessage into the headroom of a pool block, in front of the payload,
+// by viewing the bytes as wire structs (aligned_as<T>()). A Cortex-M0+ faults
+// on a word access to an unaligned address, so the structs must land aligned.
+// They do, because:
+//
+//   - a block's payload starts sizeof(BufBlock) after a block header that is
+//     aligned to alignof(BufBlock), the slot-struct alignment;
+//   - the headroom is a multiple of the widest wire struct alignment, so the
+//     payload and the DATA fixed fields stay aligned;
+//   - inline QoS is built from parameters padded to four octets, so the
+//     fixed fields stay aligned in front of it.
+//
+// The asserts below pin those numbers; changing a size that breaks the chain
+// fails the build on every host, not at run time on the target.
+// ============================================================
+
+static_assert(alignof(DataSubmessageFixed) <= alignof(BufBlock),
+              "a block payload must be aligned for the DATA fixed fields");
+static_assert(sizeof(BufBlock) % alignof(DataSubmessageFixed) == 0,
+              "a block payload must start aligned for the DATA fixed fields");
+static_assert(kRtpsDataHeadroom % alignof(DataSubmessageFixed) == 0,
+              "the DATA headroom must keep the payload aligned for the DATA fixed fields");
+static_assert(kMaxInlineQosSize % alignof(DataSubmessageFixed) == 0,
+              "inline QoS must keep the DATA fixed fields aligned");
+static_assert(sizeof(DataSubmessageFixed) % alignof(DataSubmessageFixed) == 0
+                  && sizeof(SubmessageHeader) % alignof(SubmessageHeader) == 0,
+              "wire struct sizes must be multiples of their alignment");
+
 class MessageBuilder {
 public:
 
@@ -141,8 +173,7 @@ public:
         if (!inline_qos.empty()) return false;
         if (buf_.headroom_available() < kRtpsDataHeadroom) return false;
 
-        auto* sm = reinterpret_cast<DataSubmessageFixed*>(
-            buf_.prepend(sizeof(DataSubmessageFixed)));
+        auto* sm = aligned_as<DataSubmessageFixed>(buf_.prepend(sizeof(DataSubmessageFixed)));
         if (!sm) return false;
         sm->extraFlags        = 0;
         sm->octetsToInlineQos = 16u;
@@ -150,8 +181,7 @@ public:
         sm->writerId          = writer_id;
         sm->writerSN          = writer_sn;
 
-        auto* smh = reinterpret_cast<SubmessageHeader*>(
-            buf_.prepend(sizeof(SubmessageHeader)));
+        auto* smh = aligned_as<SubmessageHeader>(buf_.prepend(sizeof(SubmessageHeader)));
         if (!smh) return false;
         smh->submessageId = SubmessageKind::DATA;
         smh->flags        = FLAG_E | (key_flag ? data_flags::K : data_flags::D);
@@ -312,7 +342,8 @@ public:
                      const InlineQos&      inline_qos = {},
                      bool                  pad_to_boundary = false) noexcept
     {
-        const uint16_t payload_bytes = payload.valid() ? payload.size : 0u;
+        const uint16_t payload_bytes =
+            payload.valid() ? static_cast<uint16_t>(payload.size) : static_cast<uint16_t>(0u);
         const uint16_t encap_size    = 4u;
         const uint16_t pad_bytes =
             pad_to_boundary ? static_cast<uint16_t>((4u - (payload_bytes & 3u)) & 3u) : 0u;
@@ -426,7 +457,8 @@ public:
                                 const InlineQos&      inline_qos = {}) noexcept
     {
         const uint16_t iq = inline_qos_serialized_size(inline_qos);
-        const uint32_t body_total = sizeof(DataFragSubmessageFixed) + iq + prefix_len + body_len;
+        const uint32_t body_total =
+            static_cast<uint32_t>(sizeof(DataFragSubmessageFixed)) + iq + prefix_len + body_len;
         if (body_total > 0xFFFFu) return false;
 
         SubmessageHeader smhdr{};

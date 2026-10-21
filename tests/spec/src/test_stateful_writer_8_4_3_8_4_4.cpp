@@ -135,12 +135,12 @@ static bool tc_swr_8_4_4_001(std::string& err) {
     for (const auto& pkt : tx.unicast_msgs) {
         PacketCap cap{};
         ParseOps ops{};
-        ops.on_data = [](const ParseContext& ctx, const ParsedData&) noexcept {
-            auto* c = static_cast<PacketCap*>(ctx.user_data);
+        ops.on_data = [](const ParseContext& parse_ctx, const ParsedData&) noexcept {
+            auto* c = static_cast<PacketCap*>(parse_ctx.user_data);
             c->data_calls++;
         };
-        ops.on_heartbeat = [](const ParseContext& ctx, const ParsedHeartbeat& hb) noexcept {
-            auto* c = static_cast<PacketCap*>(ctx.user_data);
+        ops.on_heartbeat = [](const ParseContext& parse_ctx, const ParsedHeartbeat& hb) noexcept {
+            auto* c = static_cast<PacketCap*>(parse_ctx.user_data);
             c->hb_calls++;
             c->hb = hb;
         };
@@ -168,8 +168,8 @@ static int count_heartbeats(const CaptureTransport& tx, ParsedHeartbeat* last) {
     for (const auto& msg : tx.unicast_msgs) {
         PacketCap cap{};
         ParseOps ops{};
-        ops.on_heartbeat = [](const ParseContext& ctx, const ParsedHeartbeat& hb) noexcept {
-            auto* c = static_cast<PacketCap*>(ctx.user_data);
+        ops.on_heartbeat = [](const ParseContext& parse_ctx, const ParsedHeartbeat& hb) noexcept {
+            auto* c = static_cast<PacketCap*>(parse_ctx.user_data);
             c->hb = hb;
             c->hb_calls++;
         };

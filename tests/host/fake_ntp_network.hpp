@@ -83,7 +83,7 @@ public:
             r[15] = 'E';
         }
 
-        for (int i = 0; i < 8; ++i) {
+        for (std::size_t i = 0; i < 8; ++i) {
             r[24 + i] = request[40 + i];
         }
 
@@ -100,10 +100,10 @@ public:
     }
 
 private:
-    static void put(std::array<uint8_t, 48>& r, int at, net::NtpTimestamp ts) {
+    static void put(std::array<uint8_t, 48>& r, std::size_t at, net::NtpTimestamp ts) {
         const uint32_t words[2] = {ts.seconds, ts.fraction};
-        for (int w = 0; w < 2; ++w) {
-            for (int b = 0; b < 4; ++b) {
+        for (std::size_t w = 0; w < 2; ++w) {
+            for (std::size_t b = 0; b < 4; ++b) {
                 r[at + w * 4 + b] = static_cast<uint8_t>(words[w] >> (24 - 8 * b));
             }
         }
@@ -206,8 +206,8 @@ private:
     FakeNtpNetwork& network_;
     net::SocketAddress server_{};
     std::array<Datagram, 2> datagrams_{};
-    int queued_ = 0;
-    int next_ = 0;
+    std::size_t             queued_ = 0;
+    std::size_t             next_ = 0;
     uint32_t timeout_ms_ = 0u;
     bool open_ = true;
     net::SocketError error_ = net::SocketError::none;

@@ -54,7 +54,7 @@ CacheChange* StatefulWriter::new_change(ChangeKind kind, BufRef& out_payload,
     if (staging_.payload.valid())
         staging_.payload.reset();
 
-    out_payload = buf_alloc(payload_size);
+    out_payload = buf_alloc(static_cast<uint32_t>(payload_size));
     if (!out_payload.valid()) {
         RTPS_LOG_E("writer", "buf_alloc failed (%zu) for new_change (pool exhausted)", payload_size);
         return nullptr;
@@ -85,13 +85,13 @@ bool StatefulWriter::add_change(CacheChange&& change) noexcept {
     CacheChange* inserted = writer_cache_.add_change(static_cast<CacheChange&&>(change));
     if (!inserted) {
         RTPS_LOG_E("writer", "cache add_change failed (SN=%ld:%lu)", change.sequenceNumber.high,
-                   (unsigned long)change.sequenceNumber.low);
+                   static_cast<unsigned long>(change.sequenceNumber.low));
         return false;
     }
 
     RTPS_LOG_D("writer", "add_change SN=%ld:%lu size=%lu depth=%d", inserted->sequenceNumber.high,
-               (unsigned long)inserted->sequenceNumber.low, (unsigned long)inserted->payload.size,
-               writer_cache_.size());
+               static_cast<unsigned long>(inserted->sequenceNumber.low),
+               static_cast<unsigned long>(inserted->payload.size), writer_cache_.size());
     if (reliability_ == ReliabilityKind::RELIABLE) {
         ++writesSinceHb_;
     }
@@ -227,8 +227,9 @@ bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* 
     const ProxyIndex index = pool_.bind(readers_);
     if (index == kNoProxy) {
         RTPS_LOG_W("writer", "no reader proxy (matched=%u cap=%u pool free=%u reserved=%u)",
-                   (unsigned)readers_.count, (unsigned)readers_.cap, (unsigned)pool_.free_count(),
-                   (unsigned)pool_.reserved());
+                   static_cast<unsigned>(readers_.count), static_cast<unsigned>(readers_.cap),
+                   static_cast<unsigned>(pool_.free_count()),
+                   static_cast<unsigned>(pool_.reserved()));
         return false;
     }
 
@@ -333,8 +334,8 @@ void StatefulWriter::send_heartbeat_to(const EntityId& reader_id, const Locator&
 
 void StatefulWriter::send_heartbeat(bool final_flag, const Guid directed_to) noexcept {
     ++heartbeatCount_;
-    RTPS_LOG_D("writer", "HEARTBEAT count=%lu final=%d", (unsigned long)heartbeatCount_,
-               (int)final_flag);
+    RTPS_LOG_D("writer", "HEARTBEAT count=%lu final=%d",
+               static_cast<unsigned long>(heartbeatCount_), static_cast<int>(final_flag));
     for (ReaderProxy& proxy : matched()) {
         if (!serves_reliably(proxy)
             || (directed_to != GUID_UNKNOWN && proxy.remoteReaderGuid != directed_to)) {
@@ -396,8 +397,9 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
     }
 
     RTPS_LOG_D("writer", "ACKNACK base=%d:%lu count=%lu from %02x%02x%02x%02x",
-               msg.readerSNState.bitmapBase.high, (unsigned long)msg.readerSNState.bitmapBase.low,
-               (unsigned long)msg.count, ctx.senderGuidPrefix.value[0],
+               static_cast<int>(msg.readerSNState.bitmapBase.high),
+               static_cast<unsigned long>(msg.readerSNState.bitmapBase.low),
+               static_cast<unsigned long>(msg.count), ctx.senderGuidPrefix.value[0],
                ctx.senderGuidPrefix.value[1], ctx.senderGuidPrefix.value[2],
                ctx.senderGuidPrefix.value[3]);
 
@@ -630,7 +632,7 @@ SequenceNumber StatefulWriter::first_relevant_for_new_reader() const noexcept {
 }
 
 void StatefulWriter::rematch_reader(ReaderProxy& proxy) noexcept {
-    const Guid& g = proxy.remoteReaderGuid;
+    [[maybe_unused]] const Guid& g = proxy.remoteReaderGuid;
     RTPS_LOG_I("writer", "reader %02x%02x%02x%02x entity=%02x%02x%02x%02x started over, rematched",
                g.prefix.value[0], g.prefix.value[1], g.prefix.value[2], g.prefix.value[3],
                g.entityId.entityKey[0], g.entityId.entityKey[1], g.entityId.entityKey[2],
@@ -667,9 +669,9 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
     // A sample whose DATA message would exceed the transport's datagram limit
     // goes out as DATA_FRAG submessages instead (§8.4.14.1).
     const uint16_t inline_qos_size = inline_qos_serialized_size(ch.inlineQos);
-    const uint32_t data_datagram = sizeof(RTPSMessageHeader) + sizeof(SubmessageHeader) +
-                                   sizeof(DataSubmessageFixed) + inline_qos_size +
-                                   (ch.preframed ? 0u : kEncapsulationSize) + ch.payload.size;
+    const uint32_t data_datagram = static_cast<uint32_t>(
+        sizeof(RTPSMessageHeader) + sizeof(SubmessageHeader) + sizeof(DataSubmessageFixed)
+        + inline_qos_size + (ch.preframed ? 0u : kEncapsulationSize) + ch.payload.size);
     const uint32_t limit = transport_.max_datagram_size();
     if (data_datagram > limit) {
         return send_fragments_to(ch, proxy, dest, heartbeat, only_fragments);
@@ -736,7 +738,7 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
     built.payload = payloadBuilder_(payloadBuilderUser_, ch);
     if (!built.payload.valid()) {
         RTPS_LOG_W("writer", "payload of SN=%ld:%lu could not be built; left for repair",
-                   ch.sequenceNumber.high, (unsigned long)ch.sequenceNumber.low);
+                   ch.sequenceNumber.high, static_cast<unsigned long>(ch.sequenceNumber.low));
         const Locator& dest = proxy.best_locator();
         if (heartbeat && dest != LOCATOR_INVALID) {
             send_heartbeat_to(proxy.remoteReaderGuid.entityId, dest, /*final=*/false);
@@ -769,8 +771,8 @@ bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& prox
         serialize_inline_qos(iq, ch.inlineQos);
     }
 
-    auto* sm = reinterpret_cast<DataSubmessageFixed*>(view.prepend(sizeof(DataSubmessageFixed)));
-    auto* smh = reinterpret_cast<SubmessageHeader*>(view.prepend(sizeof(SubmessageHeader)));
+    auto*  sm = aligned_as<DataSubmessageFixed>(view.prepend(sizeof(DataSubmessageFixed)));
+    auto*  smh = aligned_as<SubmessageHeader>(view.prepend(sizeof(SubmessageHeader)));
     auto* mh = reinterpret_cast<RTPSMessageHeader*>(view.prepend(sizeof(RTPSMessageHeader)));
     Octet* hb = heartbeat ? view.append(kRtpsHeartbeatTailroom) : nullptr;
     if ((inline_qos_size > 0u && !iq) || !sm || !smh || !mh || (heartbeat && !hb)) {
@@ -815,7 +817,8 @@ bool StatefulWriter::send_fragments_to(const CacheChange& ch, ReaderProxy& proxy
                               inline_qos_serialized_size(ch.inlineQos);
     const uint32_t limit = transport_.max_datagram_size();
     if (limit < overhead + 64u) {
-        RTPS_LOG_E("writer", "datagram limit %lu leaves no room for fragments", (unsigned long)limit);
+        RTPS_LOG_E("writer", "datagram limit %lu leaves no room for fragments",
+                   static_cast<unsigned long>(limit));
         return false;
     }
 
@@ -960,13 +963,14 @@ void StatefulWriter::note_eviction() noexcept {
     // flood a serial console while the count stays exact.
     ++evictedUnacknowledged_;
     if ((evictedUnacknowledged_ & (evictedUnacknowledged_ - 1u)) == 0u) {
-        const EntityId& id = guid_.entityId;
+        [[maybe_unused]] const EntityId& id = guid_.entityId;
         RTPS_LOG_W(
             "writer",
             "%02x%02x%02x%02x evicted unacknowledged SN=%lu from %u-deep history (%lu so far)",
             id.entityKey[0], id.entityKey[1], id.entityKey[2], id.entityKind,
-            (unsigned long)oldest_sn.low, (unsigned)writer_cache_.capacity(),
-            (unsigned long)evictedUnacknowledged_);
+            static_cast<unsigned long>(oldest_sn.low),
+            static_cast<unsigned>(writer_cache_.capacity()),
+            static_cast<unsigned long>(evictedUnacknowledged_));
     }
 }
 

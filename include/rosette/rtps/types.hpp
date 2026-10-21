@@ -67,16 +67,52 @@ static inline int32_t bswap32s(int32_t v) noexcept {
     return static_cast<int32_t>(bswap32(static_cast<uint32_t>(v)));
 }
 
-static void fixup_u16(uint16_t& v, bool need_swap) noexcept {
+static inline void fixup_u16(uint16_t& v, bool need_swap) noexcept {
     if (need_swap) v = bswap16(v);
 }
 
-static void fixup_u32(uint32_t& v, bool need_swap) noexcept {
+static inline void fixup_u32(uint32_t& v, bool need_swap) noexcept {
     if (need_swap) v = bswap32(v);
 }
 
-static void fixup_i32(int32_t& v, bool need_swap) noexcept {
+static inline void fixup_i32(int32_t& v, bool need_swap) noexcept {
     if (need_swap) v = bswap32s(v);
+}
+
+/**
+ * @brief Views storage as a `T` the caller has already aligned for `T`.
+ *
+ * Wire structs are written in place into pool blocks, and readers are built in
+ * `alignas`-ed slot storage. Both are aligned for `T` by construction, but the
+ * compiler cannot see that through an `Octet*`, and a plain cast to `T*` makes
+ * -Wcast-align report it. Casting through `void*` states that the caller owns
+ * the alignment guarantee; each call site names the invariant (see
+ * "In-place framing alignment" in message_builder.hpp) and the CI sanitizer
+ * build checks it at run time (-fsanitize=alignment).
+ *
+ * @tparam T Object type the storage holds.
+ * @param[in] p Storage aligned to alignof(T) and at least sizeof(T) octets
+ *   long; ownership and lifetime stay with the caller.
+ * @return `p` as a pointer to `T`.
+ *
+ * Verification:
+ * - Correct means: every caller passes storage aligned to alignof(T), which
+ *   is what a Cortex-M0+ needs to avoid a HardFault on a word access.
+ * - Covered by: the static_asserts in message_builder.hpp and the
+ *   ROSETTE_SANITIZE spec-test run, which prepends framing in place.
+ *
+ * References:
+ * - ARMv6-M Architecture Reference Manual, A3.2 (unaligned accesses fault)
+ */
+template <typename T>
+inline T* aligned_as(Octet* p) noexcept {
+    return static_cast<T*>(static_cast<void*>(p));
+}
+
+/// @brief As above, for read-only storage.
+template <typename T>
+inline const T* aligned_as(const Octet* p) noexcept {
+    return static_cast<const T*>(static_cast<const void*>(p));
 }
 
 static inline bool host_is_little_endian() noexcept {
@@ -125,8 +161,8 @@ struct SequenceNumber {
      * - OMG DDSI-RTPS 2.5 §9.4.2.6 (SequenceNumber_t)
      */
     int64_t to_int64() const noexcept {
-        const uint64_t joined = (static_cast<uint64_t>(static_cast<uint32_t>(high)) << 32)
-                                | static_cast<uint64_t>(low);
+        const uint64_t joined =
+            (static_cast<uint64_t>(static_cast<uint32_t>(high)) << 32) | static_cast<uint64_t>(low);
         return static_cast<int64_t>(joined);
     }
 

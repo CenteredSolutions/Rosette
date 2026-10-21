@@ -85,7 +85,6 @@ bool FragmentAssembler::on_data_frag(const Guid& writer_guid, const SequenceNumb
         }
 
         // The last fragment may be shorter than frag_size (§9.4.5.4).
-        const uint32_t frag_byte_offset = (frag_num - 1u) * static_cast<uint32_t>(frag_size);
         const uint32_t frag_byte_len = fragment_length(frag_num, frag_size, data_size, total_frags);
         const uint32_t src_off = i * static_cast<uint32_t>(frag_size);
         if (src_off + frag_byte_len > payload_len) {
@@ -224,7 +223,7 @@ AssemblySlot* FragmentAssembler::select_slot(const Guid& wg, const SequenceNumbe
 
     if (oldest == nullptr) {
         RTPS_LOG_D("frag", "assembly pool full (%u slots), fragmented sample refused",
-                   (unsigned)pool_.capacity_);
+                   static_cast<unsigned>(pool_.capacity_));
     }
 
     return oldest;
@@ -249,7 +248,7 @@ FragmentedChange* FragmentAssembler::alloc_slot(const Guid& wg, const SequenceNu
         FragmentedChange& victim = slot->change;
         if (!victim.is_active() || !victim.buffer.valid() || victim.buffer.capacity() < data_size) {
             RTPS_LOG_W("frag", "no pool block for a %lu-octet fragmented sample",
-                       (unsigned long)data_size);
+                       static_cast<unsigned long>(data_size));
             return nullptr;
         }
 

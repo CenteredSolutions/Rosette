@@ -720,10 +720,8 @@ public:
 
         uint8_t header[Chip::macraw_rx_header_bytes()] = {0};
         uint16_t pointer = socket_rx_read_pointer(socket);
-        pointer = ring_read(socket,
-                            pointer,
-                            header,
-                            static_cast<uint16_t>(sizeof(header)));
+        pointer = static_cast<uint16_t>(
+            ring_read(socket, pointer, header, static_cast<uint16_t>(sizeof(header))));
 
         const uint16_t total_len =
             static_cast<uint16_t>((static_cast<uint16_t>(header[0]) << 8) | header[1]);
@@ -736,13 +734,13 @@ public:
         const uint16_t frame_len =
             static_cast<uint16_t>(total_len - Chip::macraw_rx_header_bytes());
         if ((frame_len == 0u) || (frame_len > capacity)) {
-            pointer = ring_skip(pointer, frame_len);
+            pointer = static_cast<uint16_t>(ring_skip(pointer, frame_len));
             set_socket_rx_read_pointer(socket, pointer);
             issue_socket_command(socket, Chip::command_receive_done());
             return 0u;
         }
 
-        pointer = ring_read(socket, pointer, frame, frame_len);
+        pointer = static_cast<uint16_t>(ring_read(socket, pointer, frame, frame_len));
         set_socket_rx_read_pointer(socket, pointer);
         issue_socket_command(socket, Chip::command_receive_done());
         return frame_len;
@@ -766,7 +764,7 @@ public:
         wait_pending_send(socket);
 
         uint16_t pointer = socket_tx_write_pointer(socket);
-        pointer = ring_write(socket, pointer, frame, required);
+        pointer = static_cast<uint16_t>(ring_write(socket, pointer, frame, required));
         set_socket_tx_write_pointer(socket, pointer);
         issue_socket_command(socket, Chip::command_send());
         send_pending_[socket] = true;
@@ -989,7 +987,7 @@ public:
         }
 
         uint16_t pointer = socket_tx_write_pointer(socket);
-        pointer = ring_write(socket, pointer, data, required);
+        pointer = static_cast<uint16_t>(ring_write(socket, pointer, data, required));
         set_socket_tx_write_pointer(socket, pointer);
         // A multicast destination has no ARP answer; SEND_MAC uses the group
         // MAC configure_udp_peer() wrote to Sn_DHAR instead.
@@ -1169,21 +1167,23 @@ private:
         uint16_t pointer = socket_rx_read_pointer(socket);
         UdpEndpoint sender{};
         const uint16_t payload_len = read_header(
-            [&](uint8_t* out, uint16_t n) { pointer = ring_read(socket, pointer, out, n); },
+            [&](uint8_t* out, uint16_t n) {
+                pointer = static_cast<uint16_t>(ring_read(socket, pointer, out, n));
+            },
             sender);
         if (source != nullptr) {
             *source = sender;
         }
 
         if ((payload_len == 0u) || (payload_len > capacity)) {
-            pointer = ring_skip(pointer, payload_len);
+            pointer = static_cast<uint16_t>(ring_skip(pointer, payload_len));
             set_socket_rx_read_pointer(socket, pointer);
             issue_socket_command(socket, Chip::command_receive_done());
             ack_socket_rx_interrupt(socket);
             return -1;
         }
 
-        pointer = ring_read(socket, pointer, data, payload_len);
+        pointer = static_cast<uint16_t>(ring_read(socket, pointer, data, payload_len));
         set_socket_rx_read_pointer(socket, pointer);
         issue_socket_command(socket, Chip::command_receive_done());
         ack_socket_rx_interrupt(socket);

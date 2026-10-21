@@ -49,14 +49,16 @@ void fuzz_match_table(const uint8_t* data, size_t size) {
 
     size_t off = 0u;
     while (off < size) {
-        const uint8_t op = data[off++] % 6u;
+        const uint8_t op = static_cast<uint8_t>(data[off++] % 6u);
         const uint8_t a = (off < size) ? data[off++] : 0u;
         const uint8_t b = (off < size) ? data[off++] : 0u;
         const uint8_t c = (off < size) ? data[off++] : 0u;
-        const uint8_t topic_idx = (off < size) ? (data[off++] % kTopicCount) : 0u;
-        const uint8_t type_idx = (off < size) ? (data[off++] % kTopicCount) : 0u;
-        const uint8_t rel = (off < size) ? (data[off++] % 2u) : 0u;
-        const uint8_t dur = (off < size) ? (data[off++] % 2u) : 0u;
+        const uint8_t topic_idx =
+            static_cast<uint8_t>((off < size) ? data[off++] % kTopicCount : 0u);
+        const uint8_t type_idx =
+            static_cast<uint8_t>((off < size) ? data[off++] % kTopicCount : 0u);
+        const uint8_t rel = static_cast<uint8_t>((off < size) ? data[off++] % 2u : 0u);
+        const uint8_t dur = static_cast<uint8_t>((off < size) ? data[off++] % 2u : 0u);
 
         if (op == 0u || op == 1u) {
             DiscoveredWriterData wd{};

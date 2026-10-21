@@ -553,7 +553,7 @@ ParseResult parse_message(const Octet*      buf,
     // 1. Validate RTPS message header — §9.4.2, p. 222.
     // --------------------------------------------------------
     if (len < sizeof(RTPSMessageHeader)) {
-        RTPS_LOG_W("parser", "message too short: %lu bytes", (unsigned long)len);
+        RTPS_LOG_W("parser", "message too short: %lu bytes", static_cast<unsigned long>(len));
         return ParseResult::BAD_HEADER;
     }
 
@@ -573,8 +573,7 @@ ParseResult parse_message(const Octet*      buf,
         return ParseResult::VERSION_MISMATCH;
     }
 
-    RTPS_LOG_T("parser", "rx %lu bytes from %02x%02x%02x%02x...",
-               (unsigned long)len,
+    RTPS_LOG_T("parser", "rx %lu bytes from %02x%02x%02x%02x...", static_cast<unsigned long>(len),
                msg_hdr.guidPrefix.value[0], msg_hdr.guidPrefix.value[1],
                msg_hdr.guidPrefix.value[2], msg_hdr.guidPrefix.value[3]);
 
@@ -597,7 +596,7 @@ ParseResult parse_message(const Octet*      buf,
         // Read 4-byte SubmessageHeader — §9.4.5.1, p. 226.
         if (cursor + sizeof(SubmessageHeader) > len) {
             RTPS_LOG_W("parser", "truncated submessage header at offset %lu",
-                       (unsigned long)cursor);
+                       static_cast<unsigned long>(cursor));
             return ParseResult::MALFORMED;
         }
 
@@ -626,13 +625,13 @@ ParseResult parse_message(const Octet*      buf,
 
         if (cursor + extent > len) {
             RTPS_LOG_W("parser", "submsg 0x%02x extent %lu overflows message",
-                       (unsigned)smh.submessageId, (unsigned long)extent);
+                       static_cast<unsigned>(smh.submessageId), static_cast<unsigned long>(extent));
             return ParseResult::MALFORMED;
         }
 
         RTPS_LOG_T("parser", "submsg 0x%02x flags=0x%02x extent=%lu",
-                   (unsigned)smh.submessageId, (unsigned)smh.flags,
-                   (unsigned long)extent);
+                   static_cast<unsigned>(smh.submessageId), static_cast<unsigned>(smh.flags),
+                   static_cast<unsigned long>(extent));
 
         // Build a Reader window limited to this submessage's payload.
         Reader r(buf, cursor, cursor + extent);
@@ -737,7 +736,7 @@ ParseResult parse_message(const Octet*      buf,
 
         if (!ok) {
             RTPS_LOG_W("parser", "submsg 0x%02x parse failed (malformed)",
-                       (unsigned)smh.submessageId);
+                       static_cast<unsigned>(smh.submessageId));
             return ParseResult::MALFORMED;
         }
 
