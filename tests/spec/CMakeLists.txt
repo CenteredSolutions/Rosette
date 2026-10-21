@@ -7,6 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 enable_testing()
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/rosette_sanitizers.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/rosette_warnings.cmake)
+rosette_warnings_for_directory()
 
 # Every target below builds src/rtps/*.cpp directly (bare #include
 # "foo.hpp" style, relative to include/rosette/rtps) alongside test code

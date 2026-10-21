@@ -13,6 +13,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 enable_testing()
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/rosette_sanitizers.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/rosette_warnings.cmake)
+rosette_warnings_for_directory()
 
 # Host tests run on the POSIX platform port (include/rosette/platform/platform.hpp):
 # its OS layer is ports/os/posix/rosette_os_port.hpp.
@@ -34,7 +36,6 @@ add_library(rosette_host_address STATIC
 target_include_directories(rosette_host_address PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../..)
-target_compile_options(rosette_host_address PRIVATE -Wall -Wextra)
 
 # add_host_test(<name>) — one .cpp against include/ and the port headers, linking only rosette_host_address.
 function(add_host_test name)
@@ -44,14 +45,12 @@ function(add_host_test name)
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/../../include
         ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/net)
-    target_compile_options(${name} PRIVATE -Wall -Wextra)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
 add_executable(mdns_wire_test mdns_wire_test.cpp)
 target_include_directories(mdns_wire_test
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
-target_compile_options(mdns_wire_test PRIVATE -Wall -Wextra)
 add_test(NAME mdns_wire_test COMMAND mdns_wire_test)
 
 # WIZnet chip-trait SPI frame encoding + the conflict / socket-less ARP traits.
@@ -122,7 +121,6 @@ target_compile_definitions(buf_pool_class_test PRIVATE
     RTPS_LOG_LEVEL=0
     RTPS_POOL_CLASS0_COUNT=2u RTPS_POOL_CLASS1_COUNT=2u RTPS_POOL_CLASS2_COUNT=2u
     RTPS_POOL_CLASS3_COUNT=2u RTPS_POOL_CLASS4_COUNT=2u)
-target_compile_options(buf_pool_class_test PRIVATE -Wall -Wextra)
 add_test(NAME buf_pool_class_test COMMAND buf_pool_class_test)
 
 # SNTP: the NTPv4 wire format, and the client against a simulated server, path, and tick.
@@ -139,5 +137,4 @@ add_executable(sntp_config_default_agent_test sntp_config_default_test.cpp)
 target_include_directories(sntp_config_default_agent_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../include)
 target_compile_definitions(sntp_config_default_agent_test PRIVATE ROSETTE_ROS_BACKEND_AGENT)
-target_compile_options(sntp_config_default_agent_test PRIVATE -Wall -Wextra)
 add_test(NAME sntp_config_default_agent_test COMMAND sntp_config_default_agent_test)
