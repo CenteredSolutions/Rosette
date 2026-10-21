@@ -851,12 +851,12 @@ inline BufRef buf_alloc_with_headroom_dbg(uint32_t min_payload_size,
     return r;
 }
 
-#define RTPS_BUF_ALLOC_DBG(min_size) \
-    ::rtps::buf_alloc_dbg((min_size), RTPS_BUFPOOL_CALLER_PC())
+#  define RTPS_BUF_ALLOC_DBG(min_size) \
+      ::rosette::rtps::buf_alloc_dbg((min_size), RTPS_BUFPOOL_CALLER_PC())
 
-#define RTPS_BUF_ALLOC_WITH_HEADROOM_DBG(min_payload_size, headroom) \
-    ::rtps::buf_alloc_with_headroom_dbg((min_payload_size), (headroom), \
-                                        RTPS_BUFPOOL_CALLER_PC())
+#  define RTPS_BUF_ALLOC_WITH_HEADROOM_DBG(min_payload_size, headroom)             \
+      ::rosette::rtps::buf_alloc_with_headroom_dbg((min_payload_size), (headroom), \
+                                                   RTPS_BUFPOOL_CALLER_PC())
 #endif
 
 // ============================================================
