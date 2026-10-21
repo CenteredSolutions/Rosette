@@ -15,6 +15,8 @@
 #include "rmw_rosette/introspection_c_codec.hpp"
 #include "rmw_rosette/topic_naming.hpp"
 
+namespace rtps = rosette::rtps;
+
 #ifdef RMW_ROSETTE_HAVE_MICROXRCEDDS_TYPESUPPORT
 #  include <rosidl_typesupport_microxrcedds_c/identifier.h>
 #  include <rosidl_typesupport_microxrcedds_c/message_type_support.h>
@@ -145,7 +147,10 @@ rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* ros_messag
         }
         // Did not fit (or failed to encode): retry one pool class up, until
         // the largest class has been tried.
-        if (buf.capacity() >= rtps::kPoolMaxBlockSize) return {};
+        if (buf.capacity() >= rtps::kPoolMaxBlockSize) {
+            return {};
+        }
+
         request = buf.capacity() + 1u;
     }
 }

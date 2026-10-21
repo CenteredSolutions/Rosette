@@ -8,6 +8,8 @@
 
 #include "rosette/rtps/buf_pool.hpp"
 
+namespace rtps = rosette::rtps;
+
 namespace rmw_rosette {
 
 bool RosDiscoveryInfoWriter::create(rtps::RTPSParticipant& participant) noexcept {
@@ -113,7 +115,11 @@ bool RosDiscoveryInfoWriter::publish() noexcept {
             return writer_->write_async_owned(rtps::ChangeKind::ALIVE,
                                               static_cast<rtps::BufRef&&>(buf));
         }
-        if (buf.capacity() >= rtps::kPoolMaxBlockSize) return false;
+
+        if (buf.capacity() >= rtps::kPoolMaxBlockSize) {
+            return false;
+        }
+
         request = buf.capacity() + 1u;
     }
 }

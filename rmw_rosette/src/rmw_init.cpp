@@ -17,6 +17,8 @@
 #include <cstdio>
 #include <cstdlib>
 
+namespace rtps = rosette::rtps;
+
 // rmw_context_impl_s is defined in types.hpp, not here: rmw_node.cpp and
 // rmw_wait_set.cpp also dereference context->impl->rosette_context, and
 // rmw/init.h only forward-declares the type (`typedef struct
@@ -125,12 +127,10 @@ rmw_rosette::Pool<rmw_context_impl_s, RMW_ROSETTE_MAX_CONTEXTS>& context_pool() 
  */
 bool open_transport_on_free_ports(rmw_rosette::Context& ctx, uint8_t& participant_id) noexcept {
     for (uint8_t id = 0; id <= kMaxParticipantId; ++id) {
-        ctx.transport = new (ctx.transport_storage) rtps::SocketUdpTransport(
-            *ctx.provider,
-            metatraffic_unicast_port(ctx.domain_id, id),
-            default_unicast_port(ctx.domain_id, id),
-            kSpdpMulticastAddr,
-            spdp_multicast_port(ctx.domain_id));
+        ctx.transport = new (ctx.transport_storage)
+            rtps::SocketUdpTransport(*ctx.provider, metatraffic_unicast_port(ctx.domain_id, id),
+                                     default_unicast_port(ctx.domain_id, id), kSpdpMulticastAddr,
+                                     spdp_multicast_port(ctx.domain_id));
         if (ctx.transport->open()) {
             participant_id = id;
             return true;
@@ -462,8 +462,8 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
         return RMW_RET_ERROR;
     }
 
-    ctx.participant = new (ctx.participant_storage) rtps::RTPSParticipant(
-        ctx.domain_id, participant_id, *ctx.transport);
+    ctx.participant = new (ctx.participant_storage)
+        rtps::RTPSParticipant(ctx.domain_id, participant_id, *ctx.transport);
 
     // Writers fragment against this limit; peers must respect it too. The
     // environment may lower it (never raise it) for a link with a smaller

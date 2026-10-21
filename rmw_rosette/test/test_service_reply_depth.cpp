@@ -90,7 +90,7 @@ protected:
         return static_cast<int>(service->requests.depth());
     }
 
-    const rtps::HistoryCache& reply_history() const {
+    const rosette::rtps::HistoryCache& reply_history() const {
         return static_cast<const rmw_rosette::Service*>(service_->data)->reply_writer->cache();
     }
 

@@ -91,7 +91,7 @@
 #include "transport.hpp"
 #include "types.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 // ============================================================
 // Configuration defaults
@@ -1336,13 +1336,13 @@ struct SharedPoolWriterSlots {
  *
  * Example:
  * @code{.cpp}
- * rtps::ProxyPoolStorage<rtps::ReaderProxy, 16> pool;
+ * rosette::rtps::ProxyPoolStorage<rosette::rtps::ReaderProxy, 16> pool;
  * (void)pool.reserve(1);                 // this writer's floor
- * rtps::SharedPoolStatefulWriter<8> writer(guid, rtps::ReliabilityKind::RELIABLE,
- *                                          rtps::DurabilityKind::VOLATILE, transport,
+ * rosette::rtps::SharedPoolStatefulWriter<8> writer(guid, rosette::rtps::ReliabilityKind::RELIABLE,
+ *                                          rosette::rtps::DurabilityKind::VOLATILE, transport,
  *                                          pool, 1, 8);
  * if (writer.matched_reader_add(reader_guid, &locator, 1u)) {
- *     writer.write_async(rtps::ChangeKind::ALIVE, data, size);
+ *     writer.write_async(rosette::rtps::ChangeKind::ALIVE, data, size);
  * }
  * @endcode
  * Full program: tests/spec/src/test_stateful_writer_8_4_1_4.cpp (TC-SWR-8.4.1.4-009)
@@ -1377,4 +1377,4 @@ public:
                          max_readers, nack_delay_ms, hb_period_ms) {}
 };
 
-} // namespace rtps
+}  // namespace rosette::rtps

@@ -13,7 +13,7 @@
 
 #include "buf_pool.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 #ifdef ROSETTE_RTPS_MAX_DATAGRAM_SIZE
 // Class 3 holds one datagram: a received DATA payload, a built message, or
@@ -25,4 +25,4 @@ static_assert(RTPS_POOL_CLASS3_SIZE >= ROSETTE_RTPS_MAX_DATAGRAM_SIZE + kRtpsDat
 
 MultiBufPool g_buf_pool;
 
-} // namespace rtps
+}  // namespace rosette::rtps

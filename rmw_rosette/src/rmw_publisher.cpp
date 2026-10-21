@@ -16,6 +16,8 @@
 #include <rmw/error_handling.h>
 #include <rmw/get_network_flow_endpoints.h>
 
+namespace rtps = rosette::rtps;
+
 namespace {
 
 struct PublisherSlot {
@@ -257,9 +259,8 @@ rmw_ret_t rmw_publish_serialized_message(const rmw_publisher_t* publisher,
 
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
-    const bool ok = impl->writer->write_async(
-        rtps::ChangeKind::ALIVE,
-        reinterpret_cast<const rtps::Octet*>(buf + hdr),
+    const bool               ok = impl->writer->write_async(
+        rtps::ChangeKind::ALIVE, reinterpret_cast<const rtps::Octet*>(buf + hdr),
         static_cast<uint32_t>(serialized_message->buffer_length - hdr));
     if (!ok) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_publish_serialized_message: write_async failed");
@@ -375,6 +376,7 @@ rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher,
         timeout_ms = ms >= rosette::platform::kWaitForever
             ? rosette::platform::kWaitForever - 1u : static_cast<uint32_t>(ms);
     }
+
     rtps::StatefulWriter* writer = impl->writer;
     const bool acked = impl->node->context->driver->spin_until(
         [writer]() noexcept { return writer->acknowledged_by_all(); }, timeout_ms);

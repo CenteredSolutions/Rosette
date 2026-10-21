@@ -7,7 +7,7 @@
 
 #include "gap_encoding.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 void WriterProxy::init(const Guid& writer_guid, const Locator* unicast_locs,
                        uint8_t unicast_count) noexcept {
@@ -55,4 +55,4 @@ bool WriterProxy::on_heartbeat(const SequenceNumber& first_sn,
     return must_reply;
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

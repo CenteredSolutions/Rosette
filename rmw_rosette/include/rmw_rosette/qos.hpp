@@ -1,6 +1,6 @@
 /**
  * @file rmw_rosette/qos.hpp
- * @brief rmw_qos_profile_t <-> rtps::{WriterConfig,ReaderConfig} translation.
+ * @brief rmw_qos_profile_t <-> rosette::rtps::{WriterConfig,ReaderConfig} translation.
  *
  * rosette::rtps implements two QoS axes — ReliabilityKind (BEST_EFFORT/
  * RELIABLE) and DurabilityKind (VOLATILE/TRANSIENT_LOCAL/TRANSIENT/
@@ -24,7 +24,7 @@
 namespace rmw_rosette {
 
 /**
- * @brief Maps an rmw reliability policy onto the closest rtps::ReliabilityKind.
+ * @brief Maps an rmw reliability policy onto the closest rosette::rtps::ReliabilityKind.
  *
  * fill_writer_config()/fill_reader_config() call this while translating
  * an `rmw_qos_profile_t` into the config structs `RTPSParticipant::
@@ -36,12 +36,13 @@ namespace rmw_rosette {
  * matching `rmw_microxrcedds_c`'s own default profile.
  *
  * @param[in] policy Reliability policy from an `rmw_qos_profile_t`.
- * @return The corresponding `rtps::ReliabilityKind`.
+ * @return The corresponding `rosette::rtps::ReliabilityKind`.
  */
-inline rtps::ReliabilityKind to_rtps_reliability(rmw_qos_reliability_policy_t policy) noexcept {
+inline rosette::rtps::ReliabilityKind to_rtps_reliability(
+    rmw_qos_reliability_policy_t policy) noexcept {
     switch (policy) {
         case RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT:
-            return rtps::ReliabilityKind::BEST_EFFORT;
+            return rosette::rtps::ReliabilityKind::BEST_EFFORT;
         case RMW_QOS_POLICY_RELIABILITY_RELIABLE:
         case RMW_QOS_POLICY_RELIABILITY_SYSTEM_DEFAULT:
 #ifdef RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE
@@ -49,12 +50,12 @@ inline rtps::ReliabilityKind to_rtps_reliability(rmw_qos_reliability_policy_t po
 #endif
         case RMW_QOS_POLICY_RELIABILITY_UNKNOWN:
         default:
-            return rtps::ReliabilityKind::RELIABLE;
+            return rosette::rtps::ReliabilityKind::RELIABLE;
     }
 }
 
 /**
- * @brief Maps an rmw durability policy onto the closest rtps::DurabilityKind.
+ * @brief Maps an rmw durability policy onto the closest rosette::rtps::DurabilityKind.
  *
  * Used the same way as to_rtps_reliability(), and by
  * qos_profiles_compatible() when checking a publisher/subscription pair.
@@ -65,12 +66,13 @@ inline rtps::ReliabilityKind to_rtps_reliability(rmw_qos_reliability_policy_t po
  * so they are unreachable from this translation direction.
  *
  * @param[in] policy Durability policy from an `rmw_qos_profile_t`.
- * @return The corresponding `rtps::DurabilityKind`.
+ * @return The corresponding `rosette::rtps::DurabilityKind`.
  */
-inline rtps::DurabilityKind to_rtps_durability(rmw_qos_durability_policy_t policy) noexcept {
+inline rosette::rtps::DurabilityKind to_rtps_durability(
+    rmw_qos_durability_policy_t policy) noexcept {
     switch (policy) {
         case RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL:
-            return rtps::DurabilityKind::TRANSIENT_LOCAL;
+            return rosette::rtps::DurabilityKind::TRANSIENT_LOCAL;
         case RMW_QOS_POLICY_DURABILITY_VOLATILE:
         case RMW_QOS_POLICY_DURABILITY_SYSTEM_DEFAULT:
 #ifdef RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE
@@ -78,7 +80,7 @@ inline rtps::DurabilityKind to_rtps_durability(rmw_qos_durability_policy_t polic
 #endif
         case RMW_QOS_POLICY_DURABILITY_UNKNOWN:
         default:
-            return rtps::DurabilityKind::VOLATILE;
+            return rosette::rtps::DurabilityKind::VOLATILE;
     }
 }
 
@@ -148,9 +150,9 @@ inline uint8_t select_writer_depth(const rmw_qos_profile_t& qos) noexcept {
  * @return The new writer, or `nullptr` if the participant's writer table
  *   is full.
  */
-inline rtps::StatefulWriter* create_writer_for_qos(rtps::RTPSParticipant& participant,
-                                                   const rtps::WriterConfig& cfg,
-                                                   const rmw_qos_profile_t& qos) noexcept {
+inline rosette::rtps::StatefulWriter* create_writer_for_qos(
+    rosette::rtps::RTPSParticipant& participant, const rosette::rtps::WriterConfig& cfg,
+    const rmw_qos_profile_t& qos) noexcept {
     switch (select_writer_depth(qos)) {
         case 1:                  return participant.create_writer<1>(cfg);
         case kMidWriterDepth:    return participant.create_writer<kMidWriterDepth>(cfg);
@@ -172,7 +174,8 @@ inline rtps::StatefulWriter* create_writer_for_qos(rtps::RTPSParticipant& partic
  *   left untouched.
  * @param[in] qos Requested QoS profile.
  */
-inline void fill_writer_config(rtps::WriterConfig& cfg, const rmw_qos_profile_t& qos) noexcept {
+inline void fill_writer_config(rosette::rtps::WriterConfig& cfg,
+                               const rmw_qos_profile_t&     qos) noexcept {
     cfg.reliability = to_rtps_reliability(qos.reliability);
     cfg.durability  = to_rtps_durability(qos.durability);
 }
@@ -188,7 +191,8 @@ inline void fill_writer_config(rtps::WriterConfig& cfg, const rmw_qos_profile_t&
  *   left untouched.
  * @param[in] qos Requested QoS profile.
  */
-inline void fill_reader_config(rtps::ReaderConfig& cfg, const rmw_qos_profile_t& qos) noexcept {
+inline void fill_reader_config(rosette::rtps::ReaderConfig& cfg,
+                               const rmw_qos_profile_t&     qos) noexcept {
     cfg.reliability = to_rtps_reliability(qos.reliability);
     cfg.durability  = to_rtps_durability(qos.durability);
 }
@@ -202,7 +206,7 @@ inline void fill_reader_config(rtps::ReaderConfig& cfg, const rmw_qos_profile_t&
  * applications can detect an incompatible QoS combination up front
  * rather than discovering it as silent non-delivery.
  *
- * Mirrors `rtps::qos_compatible()` (endpoint_match_table.hpp) in terms of
+ * Mirrors `rosette::rtps::qos_compatible()` (endpoint_match_table.hpp) in terms of
  * `rmw_qos_profile_t`: a `RELIABLE` subscription requires a `RELIABLE`
  * publisher, and the publisher's durability must be at least as strong
  * as the subscription's (`VOLATILE < TRANSIENT_LOCAL < TRANSIENT <
@@ -257,11 +261,12 @@ inline bool qos_profiles_compatible(const rmw_qos_profile_t& publisher,
 inline rmw_qos_profile_t effective_qos(const rmw_qos_profile_t& requested, bool is_writer,
                                        uint32_t reader_depth) noexcept {
     rmw_qos_profile_t qos = requested;
-    qos.reliability = to_rtps_reliability(requested.reliability) == rtps::ReliabilityKind::RELIABLE
-                          ? RMW_QOS_POLICY_RELIABILITY_RELIABLE
-                          : RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
+    qos.reliability =
+        to_rtps_reliability(requested.reliability) == rosette::rtps::ReliabilityKind::RELIABLE
+            ? RMW_QOS_POLICY_RELIABILITY_RELIABLE
+            : RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT;
     switch (to_rtps_durability(requested.durability)) {
-        case rtps::DurabilityKind::VOLATILE:
+        case rosette::rtps::DurabilityKind::VOLATILE:
             qos.durability = RMW_QOS_POLICY_DURABILITY_VOLATILE;
             break;
         default:

@@ -70,7 +70,7 @@
 #include "types.hpp"
 #include "writer_proxy.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 struct ITransport;
 
@@ -622,12 +622,12 @@ using DefaultStatefulReader = BoundedStatefulReader<RTPS_MAX_MATCHED_WRITERS>;
  *
  * Example:
  * @code{.cpp}
- * rtps::ProxyPoolStorage<rtps::WriterProxy, 16> pool;
- * rtps::FragmentAssemblyPoolStorage<6> assembly;
+ * rosette::rtps::ProxyPoolStorage<rosette::rtps::WriterProxy, 16> pool;
+ * rosette::rtps::FragmentAssemblyPoolStorage<6> assembly;
  * (void)pool.reserve(1);                 // this reader's floor
- * rtps::SharedPoolStatefulReader reader(guid, rtps::ReliabilityKind::RELIABLE, transport,
- *                                       pool, 1, 8, assembly, 5, on_change, &app);
- * if (reader.matched_writer_add(writer_guid, &locator, 1u, rtps::VENDORID_UNKNOWN)) {
+ * rosette::rtps::SharedPoolStatefulReader reader(guid, rosette::rtps::ReliabilityKind::RELIABLE,
+ * transport, pool, 1, 8, assembly, 5, on_change, &app); if (reader.matched_writer_add(writer_guid,
+ * &locator, 1u, rosette::rtps::VENDORID_UNKNOWN)) {
  *     // DATA from that writer now reaches on_change.
  * }
  * @endcode
@@ -662,4 +662,4 @@ public:
                          hb_response_ms) {}
 };
 
-} // namespace rtps
+}  // namespace rosette::rtps

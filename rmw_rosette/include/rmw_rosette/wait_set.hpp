@@ -4,7 +4,7 @@
  *
  * Executors call `rmw_wait()` with a mix of subscriptions, services,
  * clients, guard conditions, and events and expect it to return as soon as
- * any is ready, or on timeout. The wait itself is rtps::ParticipantDriver's
+ * any is ready, or on timeout. The wait itself is rosette::rtps::ParticipantDriver's
  * spin_until(): it runs the protocol and sleeps between passes on the
  * platform Event and the transport's sockets, so a wait set carries only the
  * context whose driver to use.

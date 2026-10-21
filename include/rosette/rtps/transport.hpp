@@ -19,7 +19,7 @@
 #include "types.hpp"
 #include "rosette/net/socket.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 class RTPSParticipant;
 
@@ -361,4 +361,4 @@ private:
 
 #endif
 
-}  // namespace rtps
+}  // namespace rosette::rtps

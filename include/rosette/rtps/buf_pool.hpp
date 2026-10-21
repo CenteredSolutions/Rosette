@@ -75,7 +75,7 @@
 
 #include "rosette/platform/platform.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 /// Guards every size class's free list and the debug counters. The critical
 /// sections are a few pointer moves long, so one lock for all classes costs
@@ -901,4 +901,4 @@ inline constexpr uint32_t kTxScratchMinSize = RTPS_POOL_CLASS2_SIZE;
 /// Fragment reassembly — class 4 (2048 B).
 inline constexpr uint32_t kFragBufMinSize = RTPS_POOL_CLASS4_SIZE;
 
-} // namespace rtps
+}  // namespace rosette::rtps

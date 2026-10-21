@@ -9,7 +9,7 @@
 #include "log.hpp"
 #include "rosette/support/fnv1a.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 const LocalSubnets EndpointMatchTable::kNoSubnets{};
 
@@ -1052,4 +1052,4 @@ uint32_t EndpointMatchTable::count(const char* topic, bool writers) const noexce
     return false;
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

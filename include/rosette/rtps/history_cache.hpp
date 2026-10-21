@@ -30,7 +30,7 @@
 
 #include "buf_pool.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 // ============================================================
 // §8.2.9  CacheChange
@@ -311,4 +311,4 @@ public:
     HistoryCacheStorage() noexcept : HistoryCache(this->slots, N) {}
 };
 
-} // namespace rtps
+}  // namespace rosette::rtps

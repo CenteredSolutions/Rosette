@@ -16,6 +16,8 @@
 
 #include <vector>
 
+namespace rtps = rosette::rtps;
+
 namespace spec_test {
 
 #define CHECK(COND, MSG)  \

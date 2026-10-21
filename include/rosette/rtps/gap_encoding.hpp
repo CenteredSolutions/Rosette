@@ -19,7 +19,7 @@
 
 #include "types.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 /**
  * @brief Returns one past the last sequence number of a GAP's contiguous run.
@@ -85,4 +85,4 @@ inline bool encode_gap(const SequenceNumberSet& irrelevant,
     return true;
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

@@ -20,6 +20,8 @@
 #include <cstring>
 #include <vector>
 
+namespace rtps = rosette::rtps;
+
 namespace {
 
 uint32_t g_now_ms = 0;

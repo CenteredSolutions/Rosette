@@ -9,8 +9,7 @@
 #include "log.hpp"
 #include <string.h>
 
-
-namespace rtps {
+namespace rosette::rtps {
 
 namespace {
 
@@ -647,4 +646,4 @@ void StatefulReader::deliver(const CacheChange& change) noexcept
     if (on_change_avail_) on_change_avail_(change, user_data_);
 }
 
-} // namespace rtps
+}  // namespace rosette::rtps

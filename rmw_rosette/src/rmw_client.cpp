@@ -25,6 +25,8 @@
 
 #include <cstring>
 
+namespace rtps = rosette::rtps;
+
 namespace {
 
 struct ClientSlot {
@@ -53,11 +55,11 @@ void on_reply(const rtps::CacheChange& change, void* user_data) noexcept {
         !change.inlineQos.hasRelatedSampleIdentity) {
         return;
     }
+
     const rtps::Guid& target = change.inlineQos.relatedSampleIdentity.writerGuid;
     if (target != impl->request_writer->guid() && target != impl->reply_reader->guid()) return;
     impl->replies.push(change);
 }
-
 
 }  // namespace
 

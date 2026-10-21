@@ -8,7 +8,7 @@
 #include "log.hpp"
 #include <string.h>
 
-namespace rtps {
+namespace rosette::rtps {
 
 namespace {
 
@@ -598,4 +598,4 @@ void SpdpReader::tick(uint32_t now_ms) noexcept {
     }
 }
 
-} // namespace rtps
+}  // namespace rosette::rtps
