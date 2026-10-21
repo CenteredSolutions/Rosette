@@ -11,7 +11,7 @@
 #include "log.hpp"
 #include "rosette/support/fnv1a.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 namespace {
 
@@ -1131,4 +1131,4 @@ void RTPSParticipant::refresh_spdp_multicast_locator() noexcept
     spdp_writer_.set_dest(spdp_multicast_locator_);
 }
 
-} // namespace rtps
+}  // namespace rosette::rtps

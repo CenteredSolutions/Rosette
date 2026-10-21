@@ -26,7 +26,7 @@
 
 #pragma once
 
-#include "rosette/rtps/endpoint_match_table.hpp"  // rtps::TopicName, RTPS_MAX_TOPIC_NAME_LEN
+#include "rosette/rtps/endpoint_match_table.hpp"  // rosette::rtps::TopicName, RTPS_MAX_TOPIC_NAME_LEN
 
 #include <cstddef>
 #include <cstring>

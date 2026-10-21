@@ -36,6 +36,8 @@
 
 #include "pico/stdlib.h"
 
+namespace rtps = rosette::rtps;
+
 namespace {
 
 namespace net = rosette::net;
@@ -150,6 +152,7 @@ int main() {
             sleep_ms(2000);
         }
     }
+
     static rtps::RTPSParticipant participant(kDomainId, kParticipantId, transport);
     participant.add_ipv4_address(addr, net::board_address_snapshot().v4.primary().prefix_len);
     static rtps::ParticipantDriver driver(participant, transport, sockets, g_rx_buffer,
@@ -159,7 +162,8 @@ int main() {
     rtps::StatefulReader* reader = nullptr;
     {
         pf::LockGuard guard(driver.mutex());
-        writer = participant.create_writer<4>(string_topic<rtps::WriterConfig>("rt/rosette/chatter"));
+        writer =
+            participant.create_writer<4>(string_topic<rtps::WriterConfig>("rt/rosette/chatter"));
         reader = participant.create_reader(string_topic<rtps::ReaderConfig>("rt/rosette/command"),
                                            on_command, nullptr);
     }

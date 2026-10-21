@@ -21,7 +21,7 @@
 
 #include <string.h>
 
-namespace rtps {
+namespace rosette::rtps {
 
 namespace {
 
@@ -106,4 +106,4 @@ void SpdpReader::deactivate(PeerEntry& peer) noexcept {
     peer.activeSlot = PeerEntry::kNoActiveSlot;
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

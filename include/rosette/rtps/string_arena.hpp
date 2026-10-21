@@ -35,7 +35,7 @@
 #include <stdint.h>
 #include <string.h>
 
-namespace rtps {
+namespace rosette::rtps {
 
 /**
  * @brief An arena of interned NUL-terminated strings addressed by 16-bit offsets.
@@ -168,4 +168,4 @@ private:
     uint32_t used_ = 0u;
 };
 
-}  // namespace rtps
+}  // namespace rosette::rtps

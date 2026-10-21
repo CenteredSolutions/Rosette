@@ -18,7 +18,7 @@
 
 namespace spec_test {
 
-using namespace rtps;
+using namespace rosette::rtps;
 
 /// A remote participant whose SEDP announcers talk to one SedpReader.
 struct SedpPeer {

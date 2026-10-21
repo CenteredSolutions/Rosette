@@ -9,7 +9,7 @@
 
 #include "rosette/rtps/history_cache.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 CacheChange* HistoryCache::add_change(CacheChange&& change) noexcept {
     for (uint8_t i = 0; i < capacity_; ++i) {
@@ -101,4 +101,4 @@ CacheChange* HistoryCache::find_globally_oldest() noexcept {
     return oldest;
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

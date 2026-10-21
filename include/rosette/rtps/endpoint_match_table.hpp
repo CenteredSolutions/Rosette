@@ -154,7 +154,7 @@
 #include "string_arena.hpp"
 #include "types.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 // ============================================================
 // Topic / type name storage
@@ -1248,4 +1248,4 @@ private:
     bool       has_local_prefix_ = false;
 };
 
-} // namespace rtps
+}  // namespace rosette::rtps

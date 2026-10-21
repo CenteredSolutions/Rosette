@@ -490,6 +490,27 @@ add_test(
     COMMAND writer_slot_class_spec_tests
 )
 
+# The buffer pool's debug build, which no other program compiles: the
+# RTPS_BUF_ALLOC*_DBG macros and the per-class statistics firmware sizes its
+# pool classes from.
+add_executable(buf_pool_debug_spec_tests
+    src/test_buf_pool_debug_alloc.cpp
+    src/spec_test_common.cpp
+    ../../src/rtps/buf_pool.cpp
+)
+target_include_directories(buf_pool_debug_spec_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+)
+target_compile_definitions(buf_pool_debug_spec_tests PRIVATE
+    RTPS_LOG_LEVEL=0
+    RTPS_BUFPOOL_DEBUG=1
+)
+add_test(
+    NAME buf_pool_debug_spec_conformance
+    COMMAND buf_pool_debug_spec_tests
+)
+
 # The peer-tier tests need an active tier smaller than the network: two
 # active slots among six known peers, and a short settle time.
 set(PARTICIPANT_TIER_SPEC_TEST_SOURCES ${PARTICIPANT_SPEC_TEST_SOURCES})
@@ -677,7 +698,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
 endif()
 
 # Every spec and fuzz target runs on the platform port.
-foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests sedp_spec_tests_rebuild history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_spec_tests_rebuild participant_tier_spec_tests local_name_limit_spec_tests writer_slot_class_spec_tests)
+foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests sedp_spec_tests_rebuild history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_spec_tests_rebuild participant_tier_spec_tests local_name_limit_spec_tests writer_slot_class_spec_tests buf_pool_debug_spec_tests)
     if(TARGET ${_t})
         rosette_spec_use_platform(${_t})
     endif()

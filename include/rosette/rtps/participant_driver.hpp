@@ -40,7 +40,7 @@
 
 #include <cstdint>
 
-namespace rtps {
+namespace rosette::rtps {
 
 class ParticipantDriver {
 public:
@@ -131,4 +131,4 @@ private:
     rosette::platform::Event      wake_;
 };
 
-}  // namespace rtps
+}  // namespace rosette::rtps

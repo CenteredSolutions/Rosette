@@ -51,7 +51,7 @@
 #include "types.hpp"
 #include "submessage.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 // ============================================================
 // ParseResult
@@ -262,4 +262,4 @@ ParseResult parse_message(const Octet*      buf,
                           const ParseOps&   ops,
                           void*             user_data = nullptr) noexcept;
 
-} // namespace rtps
+}  // namespace rosette::rtps

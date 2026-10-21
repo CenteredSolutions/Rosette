@@ -63,7 +63,7 @@
 #include "submessage.hpp"   // FragmentNumberSet
 #include "history_cache.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 // ============================================================
 // FragmentedChange
@@ -408,10 +408,10 @@ public:
  *
  * Example:
  * @code{.cpp}
- * rtps::FragmentAssemblyPoolStorage<6> pool;
- * rtps::FragmentAssembler motion(pool, 5);
- * rtps::FragmentAssembler map(pool, 5);
- * rtps::CacheChange done{};
+ * rosette::rtps::FragmentAssemblyPoolStorage<6> pool;
+ * rosette::rtps::FragmentAssembler motion(pool, 5);
+ * rosette::rtps::FragmentAssembler map(pool, 5);
+ * rosette::rtps::CacheChange done{};
  * if (map.on_data_frag(writer, sn, 1u, 1u, 1024u, 2000u, bytes, 1024u, ts, done)) {
  *     // `done` holds the whole sample.
  * }
@@ -583,4 +583,4 @@ public:
     BoundedFragmentAssembler() noexcept : FragmentAssembler(this->assembly_pool, N) {}
 };
 
-} // namespace rtps
+}  // namespace rosette::rtps

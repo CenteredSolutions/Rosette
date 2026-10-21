@@ -5,7 +5,7 @@
 
 #include "sn_window.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 bool SequenceNumberWindow::is_resolved(const SequenceNumber& sn) const noexcept {
     if (sn < base_) return true;
@@ -65,4 +65,4 @@ void SequenceNumberWindow::advance_base() noexcept {
     }
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

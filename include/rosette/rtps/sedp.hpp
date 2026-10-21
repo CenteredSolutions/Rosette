@@ -51,7 +51,7 @@
 #include "spdp.hpp"   // pid namespace, plcdr_write_param
 #include "stateful_writer.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 struct ITransport;
 
@@ -586,4 +586,4 @@ private:
     BuiltinReader       subscriptions_reader_;
 };
 
-} // namespace rtps
+}  // namespace rosette::rtps

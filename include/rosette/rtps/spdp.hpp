@@ -73,7 +73,7 @@
 #include "message_builder.hpp"
 #include "types.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 struct ITransport;   // Forward — declared in stateful_writer.hpp.
 
@@ -863,4 +863,4 @@ private:
                                  const GuidPrefix& prefix) noexcept;
 };
 
-} // namespace rtps
+}  // namespace rosette::rtps

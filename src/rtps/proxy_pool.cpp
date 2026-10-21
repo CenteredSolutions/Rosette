@@ -9,7 +9,7 @@
 
 #include "rosette/rtps/proxy_pool.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 ProxyPool::ProxyPool(ProxyIndex* links, uint16_t capacity) noexcept
     : links_(links), capacity_(capacity), free_head_(0u), free_count_(capacity) {
@@ -96,4 +96,4 @@ bool ProxyPool::release(ProxyList& list, ProxyIndex index) noexcept {
     return true;
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

@@ -52,7 +52,7 @@
 #include "sn_window.hpp"
 #include "types.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 class WriterProxy {
 public:
@@ -309,4 +309,4 @@ private:
     SequenceNumber       last_available_ = SEQUENCENUMBER_ZERO;  ///< Highest SN the writer holds.
 };
 
-} // namespace rtps
+}  // namespace rosette::rtps

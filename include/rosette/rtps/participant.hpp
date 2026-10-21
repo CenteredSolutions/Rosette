@@ -90,7 +90,7 @@
 #include "message_parser.hpp"
 #include <new>
 
-namespace rtps {
+namespace rosette::rtps {
 
 // ============================================================
 // GUID prefix
@@ -356,14 +356,14 @@ public:
      *
      * Example:
      * @code{.cpp}
-     * rtps::WriterConfig cfg{};
+     * rosette::rtps::WriterConfig cfg{};
      * cfg.topicName.assign("rt/chatter");
      * cfg.typeName.assign("std_msgs::msg::dds_::String_");
-     * rtps::StatefulWriter* writer = participant.create_writer<4>(cfg);
+     * rosette::rtps::StatefulWriter* writer = participant.create_writer<4>(cfg);
      * if (writer == nullptr) {
      *     return;  // slot table full, or a floor the pool cannot reserve
      * }
-     * writer->write_async(rtps::ChangeKind::ALIVE, cdr, cdr_size);
+     * writer->write_async(rosette::rtps::ChangeKind::ALIVE, cdr, cdr_size);
      * participant.delete_writer(writer);
      * @endcode
      * Full program: examples/rtps_chatter/main.cpp
@@ -1170,4 +1170,4 @@ private:
     void release_replies_to_bound_readers() noexcept;
 };
 
-} // namespace rtps
+}  // namespace rosette::rtps

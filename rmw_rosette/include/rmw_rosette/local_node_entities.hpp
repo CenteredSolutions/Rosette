@@ -88,14 +88,14 @@ public:
      * @return `true` when recorded; `false` when `node` is not recorded or the
      *   endpoint table is full.
      */
-    bool associate(const Node& node, const rtps::Guid& guid, bool is_reader) noexcept;
+    bool associate(const Node& node, const rosette::rtps::Guid& guid, bool is_reader) noexcept;
 
     /**
      * @brief Removes an endpoint association.
      *
      * @param[in] guid RTPS GUID previously passed to associate(); unknown GUIDs are ignored.
      */
-    void dissociate(const rtps::Guid& guid) noexcept;
+    void dissociate(const rosette::rtps::Guid& guid) noexcept;
 
     /**
      * @brief Encodes the table as a ParticipantEntitiesInfo CDR body.
@@ -121,12 +121,13 @@ public:
      *   Gid.msg (Humble)
      * - OMG DDS-XTypes 1.3 §7.4.1 (XCDR1 encoding of strings and sequences)
      */
-    uint32_t encode(const rtps::Guid& participant, uint8_t* out, uint32_t cap) const noexcept;
+    uint32_t encode(const rosette::rtps::Guid& participant, uint8_t* out,
+                    uint32_t cap) const noexcept;
 
 private:
     struct EndpointEntry {
         const Node* node      = nullptr;
-        rtps::Guid  guid{};
+        rosette::rtps::Guid guid{};
         bool        is_reader = false;
     };
 

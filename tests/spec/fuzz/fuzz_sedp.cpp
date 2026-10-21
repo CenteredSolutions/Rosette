@@ -19,7 +19,7 @@
 
 #include <vector>
 
-using namespace rtps;
+using namespace rosette::rtps;
 
 namespace {
 

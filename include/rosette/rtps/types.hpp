@@ -26,7 +26,7 @@
 #include "rosette/platform/platform.hpp"
 #include "rosette/platform/wall_clock.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 // ============================================================
 // §8.2.1  Primitive types
@@ -962,4 +962,4 @@ namespace builtin_endpoint {
     inline constexpr uint32_t BUILTIN_ENDPOINT_PARTICIPANT_MESSAGE_DATA_READER  = (1u << 11);
 }
 
-} // namespace rtps
+}  // namespace rosette::rtps

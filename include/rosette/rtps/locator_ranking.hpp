@@ -55,7 +55,7 @@
 
 #include "types.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 /// Reachability class of a remote locator; lower is better (see the file comment).
 enum class LocatorReach : uint8_t {
@@ -83,9 +83,9 @@ enum class LocatorReach : uint8_t {
  *
  * Example:
  * @code{.cpp}
- * rtps::LocalSubnets subnets;
- * subnets.add(rtps::make_udpv4_locator(0xC0A80105u, 0u), 24u);  // 192.168.1.5/24
- * rtps::Locator kept[RTPS_MAX_PEER_LOCATORS];
+ * rosette::rtps::LocalSubnets subnets;
+ * subnets.add(rosette::rtps::make_udpv4_locator(0xC0A80105u, 0u), 24u);  // 192.168.1.5/24
+ * rosette::rtps::Locator kept[RTPS_MAX_PEER_LOCATORS];
  * const uint8_t n = subnets.select(kept, RTPS_MAX_PEER_LOCATORS,
  *                                  announced.defaultUnicastLocatorList,
  *                                  announced.defaultUnicastLocatorCount);
@@ -223,4 +223,4 @@ private:
     uint8_t count_ = 0u;
 };
 
-}  // namespace rtps
+}  // namespace rosette::rtps

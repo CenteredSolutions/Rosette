@@ -55,7 +55,7 @@
 
 #include <stdint.h>
 
-namespace rtps {
+namespace rosette::rtps {
 
 // ============================================================
 // Configuration defaults
@@ -319,11 +319,11 @@ struct ProxyPoolSlots {
  *
  * Example:
  * @code{.cpp}
- * rtps::ProxyPoolStorage<rtps::ReaderProxy, 16> pool;
+ * rosette::rtps::ProxyPoolStorage<rosette::rtps::ReaderProxy, 16> pool;
  * pool.reserve(4);                       // one floor for each of 4 writers
- * rtps::ProxyList list{rtps::kNoProxy, 0, 1, 8};
- * const rtps::ProxyIndex i = pool.bind(list);
- * if (i != rtps::kNoProxy) {
+ * rosette::rtps::ProxyList list{rosette::rtps::kNoProxy, 0, 1, 8};
+ * const rosette::rtps::ProxyIndex i = pool.bind(list);
+ * if (i != rosette::rtps::kNoProxy) {
  *     pool[i].init(reader_guid, locators, 1, false, first_sn, true);
  *     // ... later, on unmatch:
  *     pool[i].clear();
@@ -340,4 +340,4 @@ public:
     ProxyPoolStorage() noexcept : TypedProxyPool<Proxy>(this->proxies, this->links, N) {}
 };
 
-}  // namespace rtps
+}  // namespace rosette::rtps

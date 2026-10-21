@@ -9,7 +9,7 @@
 #include "stateful_writer.hpp"   // ITransport
 #include <string.h>
 
-namespace rtps {
+namespace rosette::rtps {
 
 namespace {
 
@@ -832,4 +832,4 @@ bool SedpReader::deserialise_reader(const Octet* payload, uint32_t len,
     return true;
 }
 
-} // namespace rtps
+}  // namespace rosette::rtps

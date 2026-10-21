@@ -10,7 +10,7 @@
 
 #include "rosette/rtps/reader_proxy.hpp"
 
-namespace rtps {
+namespace rosette::rtps {
 
 void ReaderProxy::init(const Guid& reader_guid, const Locator* unicast_locs, uint8_t unicast_count,
                        bool expects_inline_qos, const SequenceNumber& first_relevant_sn,
@@ -128,4 +128,4 @@ SequenceNumber ReaderProxy::next_requested_change() const noexcept {
     return requestedBase_ + static_cast<int64_t>(__builtin_ctzll(requestedBits_));
 }
 
-}  // namespace rtps
+}  // namespace rosette::rtps

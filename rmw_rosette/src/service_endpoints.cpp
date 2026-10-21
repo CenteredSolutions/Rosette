@@ -9,13 +9,14 @@
 #include "rmw_rosette/qos.hpp"
 #include "rmw_rosette/topic_naming.hpp"
 
+namespace rtps = rosette::rtps;
+
 namespace rmw_rosette {
 
-ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role,
-                                                const char* service,
-                                                const rmw_qos_profile_t& qos,
-                                                const MessageCodec& request,
-                                                const MessageCodec& response,
+ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role, const char* service,
+                                                const rmw_qos_profile_t&                qos,
+                                                const MessageCodec&                     request,
+                                                const MessageCodec&                     response,
                                                 rtps::StatefulReader::OnChangeAvailable on_change,
                                                 void* user_data, rtps::StatefulWriter*& writer,
                                                 rtps::StatefulReader*& reader) noexcept {

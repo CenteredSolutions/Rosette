@@ -196,7 +196,7 @@ TEST(MessageCodec, SerializeToPoolFitsLargeMessages) {
             codec, &img, reference.data(), static_cast<uint32_t>(reference.size()));
         ASSERT_GT(ref_len, 0u);
 
-        rtps::BufRef pooled = rmw_rosette::serialize_to_pool(codec, &img);
+        rosette::rtps::BufRef pooled = rmw_rosette::serialize_to_pool(codec, &img);
         ASSERT_TRUE(pooled.valid()) << "size " << size;
         ASSERT_EQ(pooled.size, ref_len);
         EXPECT_EQ(std::memcmp(pooled.data, reference.data(), ref_len), 0);

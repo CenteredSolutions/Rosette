@@ -9,7 +9,7 @@
  * time, heap allocation buys nothing but fragmentation risk — so every
  * rmw_rosette entity lives in one of these instead: a fixed array plus a
  * parallel "in use" flag, linear-scanned on acquire/release. This mirrors
- * the pattern rtps::RTPSParticipant itself already uses for its writer/
+ * the pattern rosette::rtps::RTPSParticipant itself already uses for its writer/
  * reader storage tables (see participant.hpp's writer_storage_/
  * writer_alive_).
  */
