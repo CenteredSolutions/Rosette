@@ -115,6 +115,11 @@ target_sources(ros_time_stamp_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/ros/time_sync.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform/wall_clock.cpp)
 
+# rtps::Timestamp::now() and its exact microsecond-to-fraction conversion, on a fake tick.
+add_host_test(rtps_timestamp_test)
+target_sources(rtps_timestamp_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform/wall_clock.cpp)
+
 # WallClock's lock-free reads under concurrent writers: no torn offset.
 find_package(Threads REQUIRED)
 add_host_test(wall_clock_concurrency_test)

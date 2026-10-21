@@ -707,14 +707,66 @@ struct Timestamp {
         return seconds == o.seconds && fraction == o.fraction;
     }
 
-    /// Current wall-clock time as an RTPS Time_t (§9.3.2: seconds and
-    /// 2^-32 fractions since the Unix epoch), from the single platform clock.
+    /**
+     * @brief The current wall-clock time as an RTPS Time_t, for a DATA's INFO_TS.
+     *
+     * The RTPS counterpart of ros::time_stamp(): one lock-free read of the
+     * single platform clock (WallClock::now_us()), split with one 64-bit
+     * divide by 10^6 that yields the quotient and the remainder together.
+     * The sub-second microseconds become 2^-32 fractions by
+     * fraction_of_microseconds(), a multiply rather than a second divide.
+     * Before the clock is synchronized this is the monotonic time itself,
+     * near 1970, which peers read as unsynchronized.
+     *
+     * @return Seconds and 2^-32 fractions since the Unix epoch; zero (the spec's TIME_ZERO) for
+     *   an instant before the epoch, which no time source sets.
+     *
+     * Verification:
+     * - Correct means: seconds is the wall clock's whole seconds and fraction
+     *   is floor(sub-second microseconds * 2^32 / 10^6).
+     * - Covered by: tests/host/rtps_timestamp_test.cpp (TC-RTPS-TIME-001,
+     *   TC-RTPS-TIME-002).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.7.9.8 (INFO_TS), §9.3.2 (Time_t mapping)
+     */
     static Timestamp now() noexcept {
-        const int64_t us = rosette::platform::WallClock::now_us();
-        const int64_t sec = us / 1000000;
-        const uint64_t rem_us = static_cast<uint64_t>(us - sec * 1000000);
-        return { static_cast<Long>(sec),
-                 static_cast<ULong>((rem_us << 32) / 1000000u) };
+        const int64_t unix_us = rosette::platform::WallClock::now_us();
+        if (unix_us < 0) {
+            return {};
+        }
+
+        const uint64_t us = static_cast<uint64_t>(unix_us);
+        const uint32_t sub_us = static_cast<uint32_t>(us % 1000000u);
+        return {static_cast<Long>(us / 1000000u), fraction_of_microseconds(sub_us)};
+    }
+
+    /**
+     * @brief Converts microseconds within a second to 2^-32 fractions of a second, exactly.
+     *
+     * floor(sub_us * 2^32 / 10^6) without a 64-bit divide. The product with
+     * ceil(2^64 / 10^6), shifted down 32 bits, is never below the exact
+     * fraction and at most one above it (no reciprocal that fits 64 bits is
+     * exact for every input); one 32x32-to-64 multiply then detects the case
+     * that is one above and corrects it.
+     *
+     * @param[in] sub_us Microseconds past the whole second, below 10^6.
+     * @return The fraction, in 2^-32 seconds.
+     *
+     * Verification:
+     * - Correct means: equals floor(sub_us * 2^32 / 10^6) for every sub_us
+     *   in [0, 10^6).
+     * - Covered by: tests/host/rtps_timestamp_test.cpp (TC-RTPS-TIME-001,
+     *   all 10^6 inputs).
+     */
+    static constexpr ULong fraction_of_microseconds(uint32_t sub_us) noexcept {
+        constexpr uint64_t kCeilTwo64PerMillion = 18446744073710u;  // ceil(2^64 / 10^6)
+        uint64_t           fraction = (static_cast<uint64_t>(sub_us) * kCeilTwo64PerMillion) >> 32;
+        if (fraction * 1000000u > (static_cast<uint64_t>(sub_us) << 32)) {
+            --fraction;
+        }
+
+        return static_cast<ULong>(fraction);
     }
 
     static bool read_from(Timestamp& self,
