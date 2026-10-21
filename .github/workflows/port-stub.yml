@@ -29,7 +29,19 @@ jobs:
         run: |
           cmake -S tests/port_stub -B build-port-stub \
                 -DCMAKE_TOOLCHAIN_FILE="$PWD/tests/port_stub/arm-none-eabi.cmake" \
-                -DROSETTE_OS=${{ matrix.os }}
+                -DROSETTE_OS=${{ matrix.os }} \
+                -DROSETTE_WERROR=ON
 
       - name: Build and link
         run: cmake --build build-port-stub -j "$(nproc)"
+
+      # Log calls above the default WARN level are compiled out of the build
+      # above, so their printf formats are only checked here.
+      - name: Build with every log call compiled in
+        run: |
+          cmake -S tests/port_stub -B build-port-stub-trace \
+                -DCMAKE_TOOLCHAIN_FILE="$PWD/tests/port_stub/arm-none-eabi.cmake" \
+                -DROSETTE_OS=${{ matrix.os }} \
+                -DROSETTE_WERROR=ON \
+                -DROSETTE_RTPS_LOG_LEVEL=5
+          cmake --build build-port-stub-trace -j "$(nproc)"

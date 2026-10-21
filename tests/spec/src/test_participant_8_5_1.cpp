@@ -377,11 +377,11 @@ static bool tc_part_8_3_4_002(std::string& err) {
     for (const auto& pkt : tx.packets) {
         PacketCounts pkt_counts{};
         ParseOps ops{};
-        ops.on_data = [](const ParseContext& ctx, const ParsedData& d) noexcept {
+        ops.on_data = [](const ParseContext& ctx, const ParsedData&) noexcept {
             auto* counts = static_cast<PacketCounts*>(ctx.user_data);
             counts->data_calls++;
         };
-        ops.on_heartbeat = [](const ParseContext& ctx, const ParsedHeartbeat& hb) noexcept {
+        ops.on_heartbeat = [](const ParseContext& ctx, const ParsedHeartbeat&) noexcept {
             auto* counts = static_cast<PacketCounts*>(ctx.user_data);
             counts->hb_calls++;
         };

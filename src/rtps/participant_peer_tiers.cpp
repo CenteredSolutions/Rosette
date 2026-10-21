@@ -125,7 +125,8 @@ void RTPSParticipant::park_peer(PeerEntry& peer) noexcept {
     (void)sedp_reader_.caught_up_with(prefix, publications, subscriptions);
     RTPS_LOG_I("participant", "peer parked %02x%02x%02x%02x%02x%02x at SEDP %lu/%lu",
                prefix.value[0], prefix.value[1], prefix.value[2], prefix.value[3], prefix.value[4],
-               prefix.value[5], (unsigned long)publications.low, (unsigned long)subscriptions.low);
+               prefix.value[5], static_cast<unsigned long>(publications.low),
+               static_cast<unsigned long>(subscriptions.low));
 
     // A number that does not fit the record's 32 bits is kept as the
     // largest that does; any announcement above it still reactivates.

@@ -68,7 +68,7 @@ static bool tc_swr_8_4_1_4_001(std::string& err) {
                            DurabilityKind::VOLATILE,
                            tx);
 
-    for (int i = 0; i < 3; ++i) {
+    for (uint32_t i = 0; i < 3u; ++i) {
         BufRef payload{};
         CacheChange* ch = w.new_change(ChangeKind::ALIVE, payload, 32u);
         CHECK(ch != nullptr, "new_change should allocate staging change");

@@ -1,4 +1,5 @@
-# libFuzzer campaigns over the RTPS parsers and discovery code (tests/spec/fuzz).
+# libFuzzer campaigns over the RTPS parsers and discovery code (tests/spec/fuzz) and the
+# DHCP, DNS, SNTP, and Router Advertisement parsers (tests/host/fuzz).
 # Each target builds with Clang, AddressSanitizer, and UndefinedBehaviorSanitizer
 # and starts from the seed corpus plus the corpus earlier runs found. Pull
 # requests get a short run; the nightly run searches longer. A crash or
@@ -11,6 +12,10 @@ on:
       - 'src/rtps/**'
       - 'include/rosette/rtps/**'
       - 'tests/spec/**'
+      - 'tests/host/fuzz/**'
+      - 'src/net/**'
+      - 'include/rosette/net/**'
+      - 'ports/net/wiznet/dhcp_wire.*'
       - 'tools/fuzz/**'
       - '.github/workflows/fuzz.yml'
   push:
@@ -38,27 +43,42 @@ jobs:
           -DCMAKE_CXX_COMPILER=clang++
           -DROSETTE_SPEC_ENABLE_FUZZ=ON
 
+      - name: Configure the network parsers
+        run: >
+          cmake -S tests/host -B build/tests-host-fuzz
+          -DCMAKE_CXX_COMPILER=clang++
+          -DROSETTE_HOST_ENABLE_FUZZ=ON
+
       - name: Build
-        run: cmake --build build/tests-spec-fuzz -j "$(nproc)"
+        run: |
+          cmake --build build/tests-spec-fuzz -j "$(nproc)"
+          cmake --build build/tests-host-fuzz -j "$(nproc)"
 
       - name: Replay the seed corpus
-        run: ctest --test-dir build/tests-spec-fuzz -R fuzz_replay --output-on-failure
+        run: |
+          ctest --test-dir build/tests-spec-fuzz -R fuzz_replay --output-on-failure
+          ctest --test-dir build/tests-host-fuzz -R fuzz_replay --output-on-failure
 
       - name: Restore the discovered corpus
         uses: actions/cache@v4
         with:
-          path: build/tests-spec-fuzz/fuzz/work
+          path: |
+            build/tests-spec-fuzz/fuzz/work
+            build/tests-host-fuzz/fuzz/work
           key: fuzz-corpus-${{ github.run_id }}
           restore-keys: fuzz-corpus-
 
       - name: Fuzz
-        run: >
-          tools/fuzz/run_fuzz_campaign.sh build/tests-spec-fuzz
-          ${{ github.event_name == 'schedule' && '600' || github.event.inputs.seconds || '45' }}
+        run: |
+          seconds=${{ github.event_name == 'schedule' && '600' || github.event.inputs.seconds || '45' }}
+          tools/fuzz/run_fuzz_campaign.sh build/tests-spec-fuzz "$seconds"
+          tools/fuzz/run_fuzz_campaign.sh build/tests-host-fuzz "$seconds"
 
       - name: Upload reproducers
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-crashes
-          path: build/tests-spec-fuzz/fuzz/crashes
+          path: |
+            build/tests-spec-fuzz/fuzz/crashes
+            build/tests-host-fuzz/fuzz/crashes

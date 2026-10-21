@@ -4,6 +4,8 @@
 # that has no spec section of its own. The sanitizers job runs the same suites,
 # plus the fuzz corpus replays, under AddressSanitizer and UndefinedBehaviorSanitizer
 # (cmake/rosette_sanitizers.cmake); an undefined-behavior finding fails the test.
+# The warnings job builds them with GCC and Clang, optimized, with every warning
+# of cmake/rosette_warnings.cmake an error.
 name: host-tests
 
 on:
@@ -48,3 +50,26 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/tests-${{ matrix.suite }}-san --output-on-failure
+
+  warnings:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [spec, host]
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S tests/${{ matrix.suite }} -B build/tests-${{ matrix.suite }}-warn
+          -DCMAKE_CXX_COMPILER=${{ matrix.compiler }}
+          -DCMAKE_BUILD_TYPE=Release
+          -DROSETTE_WERROR=ON
+
+      - name: Build
+        run: cmake --build build/tests-${{ matrix.suite }}-warn -j "$(nproc)"
+
+      - name: Test
+        run: ctest --test-dir build/tests-${{ matrix.suite }}-warn --output-on-failure

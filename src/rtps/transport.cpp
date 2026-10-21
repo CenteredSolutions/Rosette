@@ -103,11 +103,12 @@ std::unique_ptr<rosette::net::Socket> SocketUdpTransport::open_bound(uint16_t po
     if (receive_bytes > 0u && socket->set_receive_buffer_size(receive_bytes) == 0) {
         const std::size_t granted = socket->receive_buffer_size();
         if (granted < receive_bytes) {
-            RTPS_LOG_W("transport", "port %u receive buffer %lu of %lu asked", (unsigned)port,
-                       (unsigned long)granted, (unsigned long)receive_bytes);
+            RTPS_LOG_W("transport", "port %u receive buffer %lu of %lu asked",
+                       static_cast<unsigned>(port), static_cast<unsigned long>(granted),
+                       static_cast<unsigned long>(receive_bytes));
         } else {
-            RTPS_LOG_I("transport", "port %u receive buffer %lu", (unsigned)port,
-                       (unsigned long)granted);
+            RTPS_LOG_I("transport", "port %u receive buffer %lu", static_cast<unsigned>(port),
+                       static_cast<unsigned long>(granted));
         }
     }
 
@@ -115,7 +116,7 @@ std::unique_ptr<rosette::net::Socket> SocketUdpTransport::open_bound(uint16_t po
     // backends enable port sharing for group sockets at join time.
     if (join_group &&
         socket->join_multicast(locator_to_multicast_membership(multicast_locator_)) != 0) {
-        RTPS_LOG_E("transport", "multicast join failed: port=%u", (unsigned)port);
+        RTPS_LOG_E("transport", "multicast join failed: port=%u", static_cast<unsigned>(port));
         socket->close();
         return nullptr;
     }
@@ -145,7 +146,7 @@ bool SocketUdpTransport::open() noexcept
     user_socket_ = open_bound(user_port_, false, RTPS_USER_SOCKET_RECEIVE_BUFFER);
     if (!meta_socket_ || !user_socket_) {
         RTPS_LOG_D("transport", "bind failed: meta_port=%u user_port=%u",
-                   (unsigned)meta_port_, (unsigned)user_port_);
+                   static_cast<unsigned>(meta_port_), static_cast<unsigned>(user_port_));
         close();
         return false;
     }
@@ -153,7 +154,8 @@ bool SocketUdpTransport::open() noexcept
     if (!shared_meta) {
         spdp_socket_ = open_bound(multicast_port, true, 0u);
         if (!spdp_socket_) {
-            RTPS_LOG_E("transport", "bind failed: spdp_port=%u", (unsigned)multicast_port);
+            RTPS_LOG_E("transport", "bind failed: spdp_port=%u",
+                       static_cast<unsigned>(multicast_port));
             close();
             return false;
         }
@@ -214,7 +216,7 @@ uint32_t SocketUdpTransport::receive_from(rosette::net::Socket* socket,
         // are still parsed; the rest is lost, so count it for diagnosis.
         ++stats_.truncated_rx;
         RTPS_LOG_W("transport", "datagram of %ld octets truncated to %lu",
-                   (long)received, (unsigned long)buf_size);
+                   static_cast<long>(received), static_cast<unsigned long>(buf_size));
         return buf_size;
     }
 
@@ -261,16 +263,15 @@ bool SocketUdpTransport::send_unicast(const BufRef& buf,
 {
     if (!buf.valid() || (buf.size == 0u) || !locator_is_udp(dest)) {
         RTPS_LOG_W("transport", "drop send_unicast: valid=%d size=%lu kind=%ld",
-                   (int)buf.valid(),
-                   (unsigned long)buf.size,
-                   (long)dest.kind);
+                   static_cast<int>(buf.valid()), static_cast<unsigned long>(buf.size),
+                   static_cast<long>(dest.kind));
         return false;
     }
 
     rosette::net::Socket* socket = socket_for(dest);
     if (socket == nullptr) {
         RTPS_LOG_W("transport", "drop send_unicast: no socket for port=%lu",
-                   (unsigned long)dest.port);
+                   static_cast<unsigned long>(dest.port));
         return false;
     }
 
@@ -280,31 +281,24 @@ bool SocketUdpTransport::send_unicast(const BufRef& buf,
     if (buf.size > max_datagram_) {
         ++stats_.oversize_tx;
         RTPS_LOG_W("transport", "datagram of %lu octets exceeds the %lu-octet limit",
-                   (unsigned long)buf.size, (unsigned long)max_datagram_);
+                   static_cast<unsigned long>(buf.size), static_cast<unsigned long>(max_datagram_));
     }
     const std::ptrdiff_t sent = socket->send_to(buf.data, buf.size, address);
     if (sent != static_cast<std::ptrdiff_t>(buf.size)) {
-        RTPS_LOG_W("transport", "send_to failed: kind=%ld dst=%u.%u.%u.%u:%u len=%lu sent=%ld err=%d",
-                   (long)dest.kind,
-                   (unsigned)address.address[0],
-                   (unsigned)address.address[1],
-                   (unsigned)address.address[2],
-                   (unsigned)address.address[3],
-                   (unsigned)address.port,
-                   (unsigned long)buf.size,
-                   (long)sent,
-                   (int)socket->last_error());
+        RTPS_LOG_W(
+            "transport", "send_to failed: kind=%ld dst=%u.%u.%u.%u:%u len=%lu sent=%ld err=%d",
+            static_cast<long>(dest.kind), static_cast<unsigned>(address.address[0]),
+            static_cast<unsigned>(address.address[1]), static_cast<unsigned>(address.address[2]),
+            static_cast<unsigned>(address.address[3]), static_cast<unsigned>(address.port),
+            static_cast<unsigned long>(buf.size), static_cast<long>(sent),
+            static_cast<int>(socket->last_error()));
         return false;
     }
 
-    RTPS_LOG_D("transport", "tx kind=%ld dst=%u.%u.%u.%u:%u len=%lu",
-               (long)dest.kind,
-               (unsigned)address.address[0],
-               (unsigned)address.address[1],
-               (unsigned)address.address[2],
-               (unsigned)address.address[3],
-               (unsigned)address.port,
-               (unsigned long)buf.size);
+    RTPS_LOG_D("transport", "tx kind=%ld dst=%u.%u.%u.%u:%u len=%lu", static_cast<long>(dest.kind),
+               static_cast<unsigned>(address.address[0]), static_cast<unsigned>(address.address[1]),
+               static_cast<unsigned>(address.address[2]), static_cast<unsigned>(address.address[3]),
+               static_cast<unsigned>(address.port), static_cast<unsigned long>(buf.size));
     return true;
 }
 

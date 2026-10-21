@@ -1084,11 +1084,11 @@ private:
 
     /// @brief The user reader in slot `i`; valid only while reader_alive_[i].
     SharedPoolStatefulReader* user_reader(int i) noexcept {
-        return reinterpret_cast<SharedPoolStatefulReader*>(reader_storage_[i]);
+        return aligned_as<SharedPoolStatefulReader>(reader_storage_[i]);
     }
 
     const SharedPoolStatefulReader* user_reader(int i) const noexcept {
-        return reinterpret_cast<const SharedPoolStatefulReader*>(reader_storage_[i]);
+        return aligned_as<SharedPoolStatefulReader>(reader_storage_[i]);
     }
 
     void register_writer_endpoint(const Guid& guid, const WriterConfig& cfg) noexcept;

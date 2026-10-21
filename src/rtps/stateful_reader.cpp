@@ -85,8 +85,9 @@ bool StatefulReader::matched_writer_add(const Guid& writer_guid, const Locator* 
     const ProxyIndex index = pool_.bind(writers_);
     if (index == kNoProxy) {
         RTPS_LOG_W("reader", "no writer proxy (matched=%u cap=%u pool free=%u reserved=%u)",
-                   (unsigned)writers_.count, (unsigned)writers_.cap, (unsigned)pool_.free_count(),
-                   (unsigned)pool_.reserved());
+                   static_cast<unsigned>(writers_.count), static_cast<unsigned>(writers_.cap),
+                   static_cast<unsigned>(pool_.free_count()),
+                   static_cast<unsigned>(pool_.reserved()));
         return false;
     }
 
@@ -162,9 +163,10 @@ void StatefulReader::on_data(const ParseContext& ctx,
 
     if (proxy && !is_new_change(*proxy, msg.writerSN)) {
         RTPS_LOG_T("reader", "DATA SN=%d:%lu from %02x%02x%02x%02x not new, dropped",
-                   msg.writerSN.high, (unsigned long)msg.writerSN.low,
-                   ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
-                   ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
+                   static_cast<int>(msg.writerSN.high),
+                   static_cast<unsigned long>(msg.writerSN.low), ctx.senderGuidPrefix.value[0],
+                   ctx.senderGuidPrefix.value[1], ctx.senderGuidPrefix.value[2],
+                   ctx.senderGuidPrefix.value[3]);
         return;
     }
 
@@ -182,8 +184,9 @@ void StatefulReader::on_data(const ParseContext& ctx,
     // account_undelivered().
     if (msg.serializedPayloadSize > kPoolMaxBlockSize) {
         RTPS_LOG_W("reader", "DATA SN=%d:%lu of %lu octets exceeds the largest pool block, lost",
-                   msg.writerSN.high, (unsigned long)msg.writerSN.low,
-                   (unsigned long)msg.serializedPayloadSize);
+                   static_cast<int>(msg.writerSN.high),
+                   static_cast<unsigned long>(msg.writerSN.low),
+                   static_cast<unsigned long>(msg.serializedPayloadSize));
         if (proxy) account_undelivered(*proxy, msg.writerSN);
         return;
     }
@@ -196,7 +199,7 @@ void StatefulReader::on_data(const ParseContext& ctx,
         payload = buf_alloc(msg.serializedPayloadSize);
         if (!payload.valid()) {
             RTPS_LOG_E("reader", "buf_alloc failed for DATA payload size=%lu",
-                       (unsigned long)msg.serializedPayloadSize);
+                       static_cast<unsigned long>(msg.serializedPayloadSize));
             return;
         }
         copy_size = (msg.serializedPayloadSize <= payload.capacity())
@@ -215,10 +218,10 @@ void StatefulReader::on_data(const ParseContext& ctx,
     change.payload         = static_cast<BufRef&&>(payload);
 
     RTPS_LOG_D("reader", "DATA accepted SN=%d:%lu from %02x%02x%02x%02x size=%lu",
-               msg.writerSN.high, (unsigned long)msg.writerSN.low,
+               static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
                ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
                ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3],
-               (unsigned long)copy_size);
+               static_cast<unsigned long>(copy_size));
 
     if (proxy) {
         const bool repair = proxy->is_missing(msg.writerSN);
@@ -254,9 +257,9 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     if (msg.fragmentStartingNum == 0 || msg.fragmentSize == 0 ||
         msg.dataSize == 0) {
         RTPS_LOG_W("reader", "DATA_FRAG invalid fields: startFrag=%lu fragSize=%lu dataSize=%lu",
-                   (unsigned long)msg.fragmentStartingNum,
-                   (unsigned long)msg.fragmentSize,
-                   (unsigned long)msg.dataSize);
+                   static_cast<unsigned long>(msg.fragmentStartingNum),
+                   static_cast<unsigned long>(msg.fragmentSize),
+                   static_cast<unsigned long>(msg.dataSize));
         return;
     }
 
@@ -270,18 +273,19 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     // Every fragment carries the sample's total size, so a sample no pool
     // block can hold is recognized on the first fragment that arrives.
     if (msg.dataSize > kPoolMaxBlockSize) {
-        RTPS_LOG_W("reader", "DATA_FRAG SN=%d:%lu of %lu octets exceeds the largest pool block, lost",
-                   msg.writerSN.high, (unsigned long)msg.writerSN.low,
-                   (unsigned long)msg.dataSize);
+        RTPS_LOG_W(
+            "reader", "DATA_FRAG SN=%d:%lu of %lu octets exceeds the largest pool block, lost",
+            static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
+            static_cast<unsigned long>(msg.dataSize));
         if (proxy) account_undelivered(*proxy, msg.writerSN);
         return;
     }
 
     RTPS_LOG_T("reader", "DATA_FRAG SN=%d:%lu frag=%lu/%lu size=%lu",
-               msg.writerSN.high, (unsigned long)msg.writerSN.low,
-               (unsigned long)msg.fragmentStartingNum,
-               (unsigned long)msg.fragmentsInSubmessage,
-               (unsigned long)msg.dataSize);
+               static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
+               static_cast<unsigned long>(msg.fragmentStartingNum),
+               static_cast<unsigned long>(msg.fragmentsInSubmessage),
+               static_cast<unsigned long>(msg.dataSize));
 
     // Attempt to deliver this fragment to the assembler.
     // §8.4.14, p. 156: on_data_frag() returns true when the sample
@@ -345,9 +349,9 @@ void StatefulReader::on_heartbeat(const ParseContext&    ctx,
         msg.finalFlag, now_ms, hb_response_ms_);
 
     RTPS_LOG_D("reader", "HEARTBEAT first=%d:%lu last=%d:%lu final=%d needs_ack=%d",
-               msg.firstSN.high, (unsigned long)msg.firstSN.low,
-               msg.lastSN.high,  (unsigned long)msg.lastSN.low,
-               (int)msg.finalFlag, (int)needs_acknack);
+               static_cast<int>(msg.firstSN.high), static_cast<unsigned long>(msg.firstSN.low),
+               static_cast<int>(msg.lastSN.high), static_cast<unsigned long>(msg.lastSN.low),
+               static_cast<int>(msg.finalFlag), static_cast<int>(needs_acknack));
 
     if (needs_acknack && hb_response_ms_ == 0) {
         send_acknack(*proxy, !proxy->has_missing_changes());
@@ -436,7 +440,7 @@ void StatefulReader::on_gap(const ParseContext& ctx,
         msg.readerId != guid_.entityId) return;
 
     RTPS_LOG_D("reader", "GAP start=%d:%lu from %02x%02x%02x%02x",
-               msg.gapStart.high, (unsigned long)msg.gapStart.low,
+               static_cast<int>(msg.gapStart.high), static_cast<unsigned long>(msg.gapStart.low),
                ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
                ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3]);
 
@@ -518,8 +522,9 @@ void StatefulReader::send_acknack(WriterProxy& proxy,
 
     if (ok) {
         RTPS_LOG_D("reader", "ACKNACK sent base=%d:%lu final=%d",
-                   sn_state.bitmapBase.high, (unsigned long)sn_state.bitmapBase.low,
-                   (int)final_flag);
+                   static_cast<int>(sn_state.bitmapBase.high),
+                   static_cast<unsigned long>(sn_state.bitmapBase.low),
+                   static_cast<int>(final_flag));
         BufRef buf = builder_.finish();
         transport_.send_unicast(buf, dest);
         buf.reset();

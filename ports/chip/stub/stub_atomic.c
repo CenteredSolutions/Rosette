@@ -60,6 +60,11 @@
         return false;                                                                    \
     }
 
+/* The compiler declares the 4-octet built-ins with `unsigned int`; uint32_t is
+ * `unsigned long` on arm-none-eabi, which would redeclare them with another
+ * type. */
+_Static_assert(sizeof(unsigned int) == 4, "the 4-octet built-ins take a 32-bit unsigned int");
+
 STUB_ATOMIC_SIZE(1, uint8_t)
 STUB_ATOMIC_SIZE(2, uint16_t)
-STUB_ATOMIC_SIZE(4, uint32_t)
+STUB_ATOMIC_SIZE(4, unsigned int)

@@ -500,7 +500,8 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
                        "(RTPS_MAX_LOCAL_WRITERS=%d) or name arena (RTPS_LOCAL_NAME_BYTES=%lu, "
                        "%lu used) full",
                        wd.topicName.str, RTPS_MAX_LOCAL_WRITERS,
-                       (unsigned long)RTPS_LOCAL_NAME_BYTES, (unsigned long)names_.used());
+                       static_cast<unsigned long>(RTPS_LOCAL_NAME_BYTES),
+                       static_cast<unsigned long>(names_.used()));
             return;
         }
         if (is_change) changed();
@@ -581,7 +582,8 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
                        "(RTPS_MAX_LOCAL_READERS=%d) or name arena (RTPS_LOCAL_NAME_BYTES=%lu, "
                        "%lu used) full",
                        rd.topicName.str, RTPS_MAX_LOCAL_READERS,
-                       (unsigned long)RTPS_LOCAL_NAME_BYTES, (unsigned long)names_.used());
+                       static_cast<unsigned long>(RTPS_LOCAL_NAME_BYTES),
+                       static_cast<unsigned long>(names_.used()));
             return;
         }
         if (is_change) changed();
@@ -656,7 +658,7 @@ bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
     // match has a matching unmatch.
     if (!free_slot) {
         RTPS_LOG_W("match", "match record table full (RTPS_MAX_MATCH_RECORDS=%lu)",
-                   (unsigned long)kMaxMatches);
+                   static_cast<unsigned long>(kMaxMatches));
         turned_away_ = true;
         return false;
     }
@@ -670,7 +672,7 @@ bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
         && (may_match_ == nullptr || may_match_(writer.guid, reader.guid, user_data_));
     if (!may_bind && waiting >= RTPS_MAX_WAITING_MATCHES) {
         RTPS_LOG_W("match", "waiting matches full (RTPS_MAX_WAITING_MATCHES=%lu): topic=%s",
-                   (unsigned long)RTPS_MAX_WAITING_MATCHES, topic);
+                   static_cast<unsigned long>(RTPS_MAX_WAITING_MATCHES), topic);
         turned_away_ = true;
         return false;
     }

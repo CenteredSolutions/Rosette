@@ -754,7 +754,7 @@ public:
     uint8_t active_count() const noexcept {
         uint8_t n = 0;
         for (bool used : slot_used_) {
-            n += used ? 1u : 0u;
+            n = static_cast<uint8_t>(n + (used ? 1u : 0u));
         }
 
         return n;

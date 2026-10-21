@@ -39,21 +39,6 @@ static void on_data_capture(const ParseContext& ctx, const ParsedData& d) noexce
     cap->payload.assign(d.serializedPayload, d.serializedPayload + d.serializedPayloadSize);
 }
 
-static bool parse_data_from_message(const std::vector<Octet>& msg,
-                                    DataCapture&              cap,
-                                    std::string&              err) {
-    ParseOps ops{};
-    ops.on_data = on_data_capture;
-    CHECK(parse_message(msg.data(),
-                        static_cast<uint32_t>(msg.size()),
-                        GuidPrefix{},
-                        ops,
-                        &cap) == ParseResult::OK,
-          "sent SEDP message should parse");
-    CHECK(cap.calls == 1, "each SEDP send should contain one DATA");
-    return true;
-}
-
 static bool try_parse_data_from_message(const std::vector<Octet>& msg,
                                         DataCapture&              cap) {
     ParseOps ops{};

@@ -21,8 +21,8 @@ inline bool decode_plcdr_rep_id(const uint8_t* payload,
         return false;
     }
 
-    const uint16_t rep_id_be = (static_cast<uint16_t>(payload[0]) << 8u) |
-                               static_cast<uint16_t>(payload[1]);
+    const uint16_t rep_id_be = static_cast<uint16_t>((static_cast<uint16_t>(payload[0]) << 8u)
+                                                     | static_cast<uint16_t>(payload[1]));
     switch (rep_id_be) {
     case 0x0003u: little_endian = true;  return true;   // PL_CDR_LE (canonical)
     case 0x0002u: little_endian = false; return true;   // PL_CDR_BE (canonical)
@@ -35,11 +35,11 @@ inline bool decode_plcdr_rep_id(const uint8_t* payload,
 inline uint16_t read_u16_wire(const uint8_t* p, bool little_endian) noexcept
 {
     if (little_endian) {
-        return static_cast<uint16_t>(p[0]) |
-               static_cast<uint16_t>(p[1] << 8u);
+        return static_cast<uint16_t>(static_cast<uint16_t>(p[0])
+                                     | static_cast<uint16_t>(p[1] << 8u));
     }
-    return static_cast<uint16_t>(p[0] << 8u) |
-           static_cast<uint16_t>(p[1]);
+
+    return static_cast<uint16_t>(static_cast<uint16_t>(p[0] << 8u) | static_cast<uint16_t>(p[1]));
 }
 
 inline uint32_t read_u32_wire(const uint8_t* p, bool little_endian) noexcept

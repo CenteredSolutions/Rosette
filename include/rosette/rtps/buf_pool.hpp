@@ -507,8 +507,8 @@ public:
      *   largest class for requests a smaller class can hold.
      * - Covered by: tests/host/buf_pool_class_test.cpp.
      */
-    BufRef alloc(uint32_t min_size = RTPS_POOL_CLASS0_SIZE,
-                 uintptr_t caller_pc = 0u) noexcept {
+    BufRef alloc(uint32_t                   min_size = RTPS_POOL_CLASS0_SIZE,
+                 [[maybe_unused]] uintptr_t caller_pc = 0u) noexcept {
         constexpr uint8_t kLargest = kPoolClassCount - 1u;
         const bool fits_smaller_class = min_size <= class_sizes_[kLargest - 1u];
         for (uint8_t c = 0; c < kPoolClassCount; ++c) {
@@ -761,7 +761,7 @@ extern MultiBufPool g_buf_pool;
 // ============================================================
 
 inline void BufRef::retain() const noexcept {
-    const int prev = MultiBufPool::retain(block);
+    [[maybe_unused]] const int prev = MultiBufPool::retain(block);
 #ifdef RTPS_BUFPOOL_DEBUG
     g_buf_pool.debug_mark_retain(block, prev, RTPS_BUFPOOL_CALLER_PC());
 #endif

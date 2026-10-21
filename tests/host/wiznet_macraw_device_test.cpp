@@ -38,8 +38,10 @@ const rosette::net::MacAddress kMac2{0x02, 0x08, 0xDC, 0x44, 0x55, 0x66};
 /// the frame.
 std::vector<uint8_t> macraw_record(const std::vector<uint8_t>& frame) {
     const auto total = static_cast<uint16_t>(frame.size() + 2u);
-    std::vector<uint8_t> r{static_cast<uint8_t>(total >> 8), static_cast<uint8_t>(total)};
-    r.insert(r.end(), frame.begin(), frame.end());
+    std::vector<uint8_t> r(frame.size() + 2u);
+    r[0] = static_cast<uint8_t>(total >> 8);
+    r[1] = static_cast<uint8_t>(total);
+    std::copy(frame.begin(), frame.end(), r.begin() + 2);
     return r;
 }
 

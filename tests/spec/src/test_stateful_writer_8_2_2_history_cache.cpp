@@ -189,12 +189,12 @@ static bool tc_swr_8_2_2_003(std::string& err) {
     for (const auto& pkt : tx.unicast_msgs) {
         PacketCap cap{};
         ParseOps ops{};
-        ops.on_data = [](const ParseContext& ctx, const ParsedData&) noexcept {
-            auto* c = static_cast<PacketCap*>(ctx.user_data);
+        ops.on_data = [](const ParseContext& parse_ctx, const ParsedData&) noexcept {
+            auto* c = static_cast<PacketCap*>(parse_ctx.user_data);
             c->data_calls++;
         };
-        ops.on_heartbeat = [](const ParseContext& ctx, const ParsedHeartbeat&) noexcept {
-            auto* c = static_cast<PacketCap*>(ctx.user_data);
+        ops.on_heartbeat = [](const ParseContext& parse_ctx, const ParsedHeartbeat&) noexcept {
+            auto* c = static_cast<PacketCap*>(parse_ctx.user_data);
             c->hb_calls++;
         };
         CHECK(parse_message(pkt.data(),

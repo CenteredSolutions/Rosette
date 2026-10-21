@@ -39,7 +39,7 @@ include(${ROSETTE_ROOT}/cmake/littlefs.cmake)
 add_library(rosette_fs STATIC
   ${ROSETTE_LITTLEFS_DIR}/lfs.c
   ${ROSETTE_LITTLEFS_DIR}/lfs_util.c)
-target_include_directories(rosette_fs PUBLIC ${ROSETTE_LITTLEFS_DIR})
+target_include_directories(rosette_fs SYSTEM PUBLIC ${ROSETTE_LITTLEFS_DIR})
 
 add_library(rosette_storage STATIC
   ${ROSETTE_ROOT}/src/storage/volume.cpp
@@ -65,3 +65,8 @@ foreach(_library IN LISTS _stub_libraries)
   target_sources(rosette_port_stub_image PRIVATE $<TARGET_OBJECTS:${_library}>)
 endforeach()
 target_link_libraries(rosette_port_stub_image PRIVATE ${_stub_libraries})
+
+# Warnings apply to Rosette's code; rosette_fs is the fetched littlefs.
+include(${ROSETTE_ROOT}/cmake/rosette_warnings.cmake)
+rosette_enable_warnings(rosette_platform rosette_net rosette_rtps rosette_storage
+                        rosette_session rosette_port_stub_image)

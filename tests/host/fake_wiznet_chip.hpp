@@ -163,7 +163,7 @@ private:
             return (static_cast<address_type>(p[0]) << 16) | (static_cast<address_type>(p[1]) << 8) |
                    (p[2] >> 3);
         } else {
-            return (static_cast<address_type>(p[1]) << 8) | p[2];
+            return static_cast<address_type>((static_cast<address_type>(p[1]) << 8) | p[2]);
         }
     }
 

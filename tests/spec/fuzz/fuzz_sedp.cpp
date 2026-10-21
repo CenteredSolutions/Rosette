@@ -25,6 +25,7 @@ namespace {
 
 struct NullTransport : ITransport {
     bool send_unicast(const BufRef&, const Locator&) noexcept override { return true; }
+
     bool send_multicast(const BufRef&, const Locator&) noexcept override { return false; }
 };
 
@@ -80,7 +81,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         return 0;
     }
 
-    NullTransport transport;
+    NullTransport      transport;
     EndpointMatchTable table(on_match, nullptr, nullptr);
     seed_local_endpoints(table);
     SedpReader reader(GuidPrefix{}, transport, table);
@@ -94,10 +95,10 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     peer.discover(reader);
 
     int64_t sn = 1;
-    size_t off = kPrefixOctets;
+    size_t  off = kPrefixOctets;
     while (off + 2u <= size) {
         const uint8_t op = data[off++] & 0x3u;
-        size_t len = data[off++];
+        size_t        len = data[off++];
         if (len > size - off) {
             len = size - off;
         }
@@ -106,23 +107,25 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         off += len;
 
         switch (op) {
-        case 0:
-            peer.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, sn++, payload);
-            break;
+            case 0:
+                peer.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, sn++,
+                              payload);
+                break;
 
-        case 1:
-            peer.announce(reader, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER, sn++, payload);
-            break;
+            case 1:
+                peer.announce(reader, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER, sn++,
+                              payload);
+                break;
 
-        case 2:
-            peer.heartbeat(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, sn,
-                           static_cast<int32_t>(sn));
-            break;
+            case 2:
+                peer.heartbeat(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, sn,
+                               static_cast<int32_t>(sn));
+                break;
 
-        default:
-            reader.on_peer_removed(peer.prefix);
-            peer.discover(reader);
-            break;
+            default:
+                reader.on_peer_removed(peer.prefix);
+                peer.discover(reader);
+                break;
         }
     }
 
