@@ -108,9 +108,26 @@ struct SequenceNumber {
                  static_cast<ULong>(v & 0xFFFFFFFFu) };
     }
 
+    /**
+     * @brief The sequence number as one signed 64-bit value.
+     *
+     * `high` is signed on the wire (SEQUENCENUMBER_UNKNOWN is {-1, 0}), so the
+     * halves are joined in unsigned arithmetic, where the shift is defined for
+     * every `high`, and the result is reinterpreted as two's complement.
+     *
+     * Verification:
+     * - Correct means: from_int64(v).to_int64() == v for every int64 v,
+     *   including negative values.
+     * - Covered by: TC-SWR-8.4.1.4-007 (an ACKNACK compared against
+     *   SEQUENCENUMBER_UNKNOWN), run under ROSETTE_SANITIZE.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §9.4.2.6 (SequenceNumber_t)
+     */
     int64_t to_int64() const noexcept {
-        return (static_cast<int64_t>(high) << 32) |
-               static_cast<int64_t>(low);
+        const uint64_t joined = (static_cast<uint64_t>(static_cast<uint32_t>(high)) << 32)
+                                | static_cast<uint64_t>(low);
+        return static_cast<int64_t>(joined);
     }
 
     bool operator==(const SequenceNumber& o) const noexcept {

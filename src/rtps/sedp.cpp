@@ -596,7 +596,9 @@ bool SedpReader::read_plcdr_fields(const Octet* payload, uint32_t len, TopicName
         const uint16_t param_len = read_u16_wire(payload + off + 2u, little_endian);
         off += 4u;
 
-        const uint16_t padded = static_cast<uint16_t>((param_len + 3u) & ~3u);
+        // 32 bits wide so that a parameter_length of 0xFFFD..0xFFFF, which
+        // pads to 0x10000, cannot wrap to 0 and pass the bounds check below.
+        const uint32_t padded = (param_len + 3u) & ~3u;
         if (pid_val == pid::SENTINEL) break;
         if (off + padded > len) break;
 

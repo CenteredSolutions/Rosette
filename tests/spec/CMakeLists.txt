@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 enable_testing()
 
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/rosette_sanitizers.cmake)
+
 # Every target below builds src/rtps/*.cpp directly (bare #include
 # "foo.hpp" style, relative to include/rosette/rtps) alongside test code
 # that includes the same headers via "rosette/rtps/foo.hpp" (relative to
@@ -613,285 +615,67 @@ if (Python3_Interpreter_FOUND)
     )
 endif()
 
-option(ROSETTE_SPEC_ENABLE_FUZZ "Build libFuzzer targets for parser, fragment assembler, SPDP, SEDP, and endpoint matching" OFF)
+option(ROSETTE_SPEC_ENABLE_FUZZ "Build fuzz targets (corpus replay always; libFuzzer with Clang) for the parser, fragment assembler, SPDP, SEDP, and endpoint matching" OFF)
 
 if (ROSETTE_SPEC_ENABLE_FUZZ)
-    add_executable(message_parser_fuzz_replay
-        fuzz/replay_corpus.cpp
-        ../../src/rtps/message_parser.cpp
-    )
-    target_include_directories(message_parser_fuzz_replay PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../..
-    )
-    target_compile_definitions(message_parser_fuzz_replay PRIVATE
-        RTPS_LOG_LEVEL=0
-    )
+    # Each fuzz target has one harness, fuzz/fuzz_<name>.cpp, defining
+    # LLVMFuzzerTestOneInput. <name>_fuzz_replay links that harness with
+    # fuzz/replay_driver.cpp, which feeds it every file of a corpus directory,
+    # so the replay and the libFuzzer build run the same code. <name>_fuzz is
+    # the libFuzzer build, available with Clang.
+    function(rosette_spec_add_fuzz name harness)
+        set(_sources ${ARGN})
+        list(TRANSFORM _sources PREPEND ../../src/rtps/)
 
-    add_executable(fragment_assembler_fuzz_replay
-        fuzz/replay_fragment_corpus.cpp
-        ../../src/rtps/buf_pool.cpp
-        ../../src/rtps/fragment_assembler.cpp
-    )
-    target_include_directories(fragment_assembler_fuzz_replay PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../..
-    )
-    target_compile_definitions(fragment_assembler_fuzz_replay PRIVATE
-        RTPS_LOG_LEVEL=0
-    )
+        add_executable(${name}_fuzz_replay ${harness} fuzz/replay_driver.cpp ${_sources})
+        target_include_directories(${name}_fuzz_replay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../.. ${CMAKE_CURRENT_SOURCE_DIR}/include)
+        target_compile_definitions(${name}_fuzz_replay PRIVATE RTPS_LOG_LEVEL=0)
+        rosette_spec_use_platform(${name}_fuzz_replay)
 
-    add_executable(spdp_fuzz_replay
-        fuzz/replay_spdp_corpus.cpp
-        ../../src/rtps/spdp.cpp
-        ../../src/rtps/spdp_peer_records.cpp
-        ../../src/rtps/locator_ranking.cpp
-        ../../src/rtps/buf_pool.cpp
-    )
-    target_include_directories(spdp_fuzz_replay PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../..
-    )
-    target_compile_definitions(spdp_fuzz_replay PRIVATE
-        RTPS_LOG_LEVEL=0
-    )
+        if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            add_executable(${name}_fuzz ${harness} ${_sources})
+            target_include_directories(${name}_fuzz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../.. ${CMAKE_CURRENT_SOURCE_DIR}/include)
+            target_compile_definitions(${name}_fuzz PRIVATE RTPS_LOG_LEVEL=0)
+            target_compile_options(${name}_fuzz PRIVATE
+                -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -g)
+            target_link_options(${name}_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+            rosette_spec_use_platform(${name}_fuzz)
+        endif()
 
-    add_executable(sedp_fuzz_replay
-        fuzz/replay_sedp_corpus.cpp
-        ../../src/rtps/sedp.cpp
-        ../../src/rtps/endpoint_match_table.cpp
-        ../../src/rtps/locator_ranking.cpp
-        ../../src/rtps/sn_window.cpp
-        ../../src/rtps/history_cache.cpp
-        ../../src/rtps/reader_proxy.cpp
-        ../../src/rtps/stateful_writer.cpp
-        ../../src/rtps/proxy_pool.cpp
-    ../../src/rtps/history_cache.cpp
-    ../../src/rtps/reader_proxy.cpp
-    ../../src/rtps/stateful_writer.cpp
-    ../../src/rtps/proxy_pool.cpp
-        ../../src/rtps/buf_pool.cpp
-    )
-    target_include_directories(sedp_fuzz_replay PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../..
-    )
-    target_compile_definitions(sedp_fuzz_replay PRIVATE
-        RTPS_LOG_LEVEL=0
-    )
+        # The seed corpus is generated at configure time so ctest can replay it.
+        if (Python3_Interpreter_FOUND)
+            set(_vectors ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/${name}_corpus_vectors.json)
+            set(_corpus ${CMAKE_CURRENT_BINARY_DIR}/fuzz/corpus/${name})
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${_vectors})
+            execute_process(
+                COMMAND ${Python3_EXECUTABLE}
+                        ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_fuzz_corpus.py
+                        --vectors ${_vectors} --out ${_corpus}
+                RESULT_VARIABLE _gen_result)
+            if (NOT _gen_result EQUAL 0)
+                message(FATAL_ERROR "Generating the ${name} fuzz corpus failed")
+            endif()
+            add_test(NAME ${name}_fuzz_replay COMMAND ${name}_fuzz_replay ${_corpus})
+        endif()
+    endfunction()
 
-    add_executable(endpoint_match_fuzz_replay
-        fuzz/replay_endpoint_match_corpus.cpp
-    )
-    target_include_directories(endpoint_match_fuzz_replay PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../..
-    )
-    target_compile_definitions(endpoint_match_fuzz_replay PRIVATE
-        RTPS_LOG_LEVEL=0
-    )
+    rosette_spec_add_fuzz(message_parser fuzz/fuzz_parse_message.cpp
+        message_parser.cpp)
+    rosette_spec_add_fuzz(fragment_assembler fuzz/fuzz_fragment_assembler.cpp
+        buf_pool.cpp fragment_assembler.cpp)
+    rosette_spec_add_fuzz(spdp fuzz/fuzz_spdp.cpp
+        spdp.cpp spdp_peer_records.cpp locator_ranking.cpp buf_pool.cpp)
+    rosette_spec_add_fuzz(sedp fuzz/fuzz_sedp.cpp
+        sedp.cpp endpoint_match_table.cpp locator_ranking.cpp stateful_reader.cpp
+        fragment_assembler.cpp writer_proxy.cpp sn_window.cpp history_cache.cpp
+        reader_proxy.cpp stateful_writer.cpp proxy_pool.cpp message_parser.cpp buf_pool.cpp)
+    rosette_spec_add_fuzz(endpoint_match fuzz/fuzz_endpoint_match_table.cpp
+        endpoint_match_table.cpp locator_ranking.cpp)
 
-    if (Python3_Interpreter_FOUND)
-        set(MESSAGE_PARSER_FUZZ_CORPUS_DIR
-            ${CMAKE_CURRENT_BINARY_DIR}/fuzz/corpus/message_parser)
-        add_custom_target(message_parser_fuzz_corpus
-            COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_fuzz_corpus.py
-                    --vectors ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus_vectors.json
-                    --out ${MESSAGE_PARSER_FUZZ_CORPUS_DIR}
-            COMMENT "Generating fuzz corpus from canonical RTPS vectors"
-        )
-        add_custom_target(message_parser_fuzz_smoke
-            COMMAND message_parser_fuzz_replay ${MESSAGE_PARSER_FUZZ_CORPUS_DIR}
-            DEPENDS message_parser_fuzz_replay message_parser_fuzz_corpus
-            COMMENT "Running parser corpus replay smoke test"
-        )
-
-        set(FRAGMENT_ASSEMBLER_FUZZ_CORPUS_DIR
-            ${CMAKE_CURRENT_BINARY_DIR}/fuzz/corpus/fragment_assembler)
-        add_custom_target(fragment_assembler_fuzz_corpus
-            COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_fuzz_corpus.py
-                    --vectors ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/fragment_assembler_corpus_vectors.json
-                    --out ${FRAGMENT_ASSEMBLER_FUZZ_CORPUS_DIR}
-            COMMENT "Generating fragment assembler fuzz corpus from seed vectors"
-        )
-        add_custom_target(fragment_assembler_fuzz_smoke
-            COMMAND fragment_assembler_fuzz_replay ${FRAGMENT_ASSEMBLER_FUZZ_CORPUS_DIR}
-            DEPENDS fragment_assembler_fuzz_replay fragment_assembler_fuzz_corpus
-            COMMENT "Running fragment assembler corpus replay smoke test"
-        )
-
-        set(SPDP_FUZZ_CORPUS_DIR
-            ${CMAKE_CURRENT_BINARY_DIR}/fuzz/corpus/spdp)
-        add_custom_target(spdp_fuzz_corpus
-            COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_fuzz_corpus.py
-                    --vectors ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/spdp_corpus_vectors.json
-                    --out ${SPDP_FUZZ_CORPUS_DIR}
-            COMMENT "Generating SPDP fuzz corpus from seed vectors"
-        )
-        add_custom_target(spdp_fuzz_smoke
-            COMMAND spdp_fuzz_replay ${SPDP_FUZZ_CORPUS_DIR}
-            DEPENDS spdp_fuzz_replay spdp_fuzz_corpus
-            COMMENT "Running SPDP corpus replay smoke test"
-        )
-
-        set(SEDP_FUZZ_CORPUS_DIR
-            ${CMAKE_CURRENT_BINARY_DIR}/fuzz/corpus/sedp)
-        add_custom_target(sedp_fuzz_corpus
-            COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_fuzz_corpus.py
-                    --vectors ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/sedp_corpus_vectors.json
-                    --out ${SEDP_FUZZ_CORPUS_DIR}
-            COMMENT "Generating SEDP fuzz corpus from seed vectors"
-        )
-        add_custom_target(sedp_fuzz_smoke
-            COMMAND sedp_fuzz_replay ${SEDP_FUZZ_CORPUS_DIR}
-            DEPENDS sedp_fuzz_replay sedp_fuzz_corpus
-            COMMENT "Running SEDP corpus replay smoke test"
-        )
-
-        set(ENDPOINT_MATCH_FUZZ_CORPUS_DIR
-            ${CMAKE_CURRENT_BINARY_DIR}/fuzz/corpus/endpoint_match)
-        add_custom_target(endpoint_match_fuzz_corpus
-            COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_fuzz_corpus.py
-                    --vectors ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/endpoint_match_corpus_vectors.json
-                    --out ${ENDPOINT_MATCH_FUZZ_CORPUS_DIR}
-            COMMENT "Generating endpoint-match fuzz corpus from seed vectors"
-        )
-        add_custom_target(endpoint_match_fuzz_smoke
-            COMMAND endpoint_match_fuzz_replay ${ENDPOINT_MATCH_FUZZ_CORPUS_DIR}
-            DEPENDS endpoint_match_fuzz_replay endpoint_match_fuzz_corpus
-            COMMENT "Running endpoint-match corpus replay smoke test"
-        )
-
-        add_custom_target(fuzz_smoke_all
-            DEPENDS
-                message_parser_fuzz_smoke
-                fragment_assembler_fuzz_smoke
-                spdp_fuzz_smoke
-                sedp_fuzz_smoke
-                endpoint_match_fuzz_smoke
-            COMMENT "Running all fuzz corpus replay smoke tests"
-        )
-    endif()
-
-    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        add_executable(message_parser_fuzz
-            fuzz/fuzz_parse_message.cpp
-            ../../src/rtps/message_parser.cpp
-        )
-        target_include_directories(message_parser_fuzz PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/../..
-        )
-        target_compile_definitions(message_parser_fuzz PRIVATE
-            RTPS_LOG_LEVEL=0
-        )
-        target_compile_options(message_parser_fuzz PRIVATE
-            -fsanitize=fuzzer,address
-            -fno-omit-frame-pointer
-            -g
-        )
-        target_link_options(message_parser_fuzz PRIVATE
-            -fsanitize=fuzzer,address
-        )
-
-        add_executable(fragment_assembler_fuzz
-            fuzz/fuzz_fragment_assembler.cpp
-            ../../src/rtps/buf_pool.cpp
-            ../../src/rtps/fragment_assembler.cpp
-        )
-        target_include_directories(fragment_assembler_fuzz PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/../..
-        )
-        target_compile_definitions(fragment_assembler_fuzz PRIVATE
-            RTPS_LOG_LEVEL=0
-        )
-        target_compile_options(fragment_assembler_fuzz PRIVATE
-            -fsanitize=fuzzer,address
-            -fno-omit-frame-pointer
-            -g
-        )
-        target_link_options(fragment_assembler_fuzz PRIVATE
-            -fsanitize=fuzzer,address
-        )
-
-        add_executable(spdp_fuzz
-            fuzz/fuzz_spdp.cpp
-            ../../src/rtps/spdp.cpp
-            ../../src/rtps/spdp_peer_records.cpp
-            ../../src/rtps/locator_ranking.cpp
-            ../../src/rtps/buf_pool.cpp
-        )
-        target_include_directories(spdp_fuzz PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/../..
-        )
-        target_compile_definitions(spdp_fuzz PRIVATE
-            RTPS_LOG_LEVEL=0
-        )
-        target_compile_options(spdp_fuzz PRIVATE
-            -fsanitize=fuzzer,address
-            -fno-omit-frame-pointer
-            -g
-        )
-        target_link_options(spdp_fuzz PRIVATE
-            -fsanitize=fuzzer,address
-        )
-
-        add_executable(sedp_fuzz
-            fuzz/fuzz_sedp.cpp
-            ../../src/rtps/sedp.cpp
-            ../../src/rtps/endpoint_match_table.cpp
-            ../../src/rtps/locator_ranking.cpp
-            ../../src/rtps/sn_window.cpp
-        ../../src/rtps/history_cache.cpp
-        ../../src/rtps/reader_proxy.cpp
-        ../../src/rtps/stateful_writer.cpp
-        ../../src/rtps/proxy_pool.cpp
-    ../../src/rtps/history_cache.cpp
-    ../../src/rtps/reader_proxy.cpp
-    ../../src/rtps/stateful_writer.cpp
-    ../../src/rtps/proxy_pool.cpp
-            ../../src/rtps/buf_pool.cpp
-        )
-        target_include_directories(sedp_fuzz PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/../..
-        )
-        target_compile_definitions(sedp_fuzz PRIVATE
-            RTPS_LOG_LEVEL=0
-        )
-        target_compile_options(sedp_fuzz PRIVATE
-            -fsanitize=fuzzer,address
-            -fno-omit-frame-pointer
-            -g
-        )
-        target_link_options(sedp_fuzz PRIVATE
-            -fsanitize=fuzzer,address
-        )
-
-        add_executable(endpoint_match_fuzz
-            fuzz/fuzz_endpoint_match_table.cpp
-            ../../src/rtps/endpoint_match_table.cpp
-            ../../src/rtps/locator_ranking.cpp
-        )
-        target_include_directories(endpoint_match_fuzz PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/../..
-        )
-        target_compile_definitions(endpoint_match_fuzz PRIVATE
-            RTPS_LOG_LEVEL=0
-        )
-        target_compile_options(endpoint_match_fuzz PRIVATE
-            -fsanitize=fuzzer,address
-            -fno-omit-frame-pointer
-            -g
-        )
-        target_link_options(endpoint_match_fuzz PRIVATE
-            -fsanitize=fuzzer,address
-        )
-    else()
-        message(WARNING "ROSETTE_SPEC_ENABLE_FUZZ is ON, but compiler is not Clang; libFuzzer targets skipped. Use *_fuzz_replay/*_fuzz_smoke targets.")
-    endif()
 endif()
 
 # Every spec and fuzz target runs on the platform port.
-foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests sedp_spec_tests_rebuild history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_spec_tests_rebuild participant_tier_spec_tests local_name_limit_spec_tests writer_slot_class_spec_tests message_parser_fuzz_replay fragment_assembler_fuzz_replay spdp_fuzz_replay sedp_fuzz_replay endpoint_match_fuzz_replay message_parser_fuzz fragment_assembler_fuzz spdp_fuzz sedp_fuzz endpoint_match_fuzz)
+foreach(_t message_parser_spec_tests message_builder_spec_tests fragment_assembler_spec_tests spdp_spec_tests sedp_spec_tests sedp_spec_tests_rebuild history_cache_spec_tests stateful_writer_spec_tests stateful_reader_spec_tests participant_spec_tests participant_spec_tests_rebuild participant_tier_spec_tests local_name_limit_spec_tests writer_slot_class_spec_tests)
     if(TARGET ${_t})
         rosette_spec_use_platform(${_t})
     endif()
