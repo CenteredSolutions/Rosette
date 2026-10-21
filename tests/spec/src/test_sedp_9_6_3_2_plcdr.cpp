@@ -155,6 +155,7 @@ static bool tc_sedp_9_6_3_2_004(std::string& err) {
     // Representation header, then the oversized parameter, then the list.
     const Octet        oversized[4] = {0x77u, 0x77u, 0xFDu, 0xFFu};
     std::vector<Octet> payload(valid.size() + sizeof(oversized));
+    CHECK(payload.data() != nullptr, "payload allocation failed");
     memcpy(payload.data(), valid.data(), 4u);
     memcpy(payload.data() + 4u, oversized, sizeof(oversized));
     memcpy(payload.data() + 4u + sizeof(oversized), valid.data() + 4u, valid.size() - 4u);
