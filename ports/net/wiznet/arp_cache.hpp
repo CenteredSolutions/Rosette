@@ -161,22 +161,54 @@ public:
      * The entry becomes the most recently used and is refreshed when due, as
      * if lookup() had been called for it. A slot that is empty is left alone.
      *
+     * Uses are reported in batches, so recency within one batch is the order
+     * of the calls, not of the sends. This is the use-bit approximation of
+     * LRU that CLOCK replacement makes: it can misorder only next hops that
+     * were all used since the last batch, and keeping exact order would put
+     * an atomic read-modify-write on every send.
+     *
      * @param[in] slot Index lookup() wrote on the hit; below capacity().
      *
      * Verification:
      * - Correct means: an entry used only through cached hits is not the
      *   one a new next hop displaces.
      * - Covered by: TC-NET-WIZ-ARP-020.
+     *
+     * References:
+     * - F. J. Corbató, "A Paging Experiment with the Multics System", MIT
+     *   Project MAC Report MAC-M-384, 1968 (CLOCK, use-bit approximation of LRU)
      */
     void record_use(std::size_t slot) noexcept;
+
+    /**
+     * @brief Settles every `resolved` entry whose answer is `expire_ms` old.
+     *
+     * lookup(), next_query(), and unanswered() settle the entries they look
+     * at, but a caller that reuses hits without lookup() needs expiry
+     * settled on a schedule of its own, including while a query is in flight
+     * and next_query() is not called. An entry with failed queries becomes
+     * `unreachable` and one without becomes `stale`, each advancing
+     * version().
+     *
+     * @param[in] now_ms Monotonic milliseconds.
+     *
+     * Verification:
+     * - Correct means: after the call no `resolved` entry is past
+     *   `expire_ms`, and version() has advanced if any entry settled.
+     * - Covered by: TC-NET-WIZ-ARP-021.
+     *
+     * References:
+     * - RFC 1122 §2.3.2.1 (cache timeout of an unconfirmed entry)
+     */
+    void settle_expired(uint32_t now_ms) noexcept;
 
     /**
      * @brief Changes so far that can end a hit; a cached hit holds while this is unchanged.
      *
      * Advances when an entry settles to `stale` or `unreachable`, leaves the
      * table, is answered, or the table is cleared. A `resolved` entry passing
-     * `expire_ms` advances it only when lookup(), next_query(), or
-     * unanswered() next looks at that entry.
+     * `expire_ms` advances it when settle_expired(), lookup(), next_query(),
+     * or unanswered() next looks at that entry.
      */
     uint32_t version() const noexcept { return version_; }
 

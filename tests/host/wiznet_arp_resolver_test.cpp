@@ -428,6 +428,36 @@ void cached_route_abandoned(const char* name) {
           tag(name, "ARP-019: a new board address ends the cached route").c_str());
 }
 
+// TC-NET-WIZ-ARP-021: poll() settles an expired entry while another next hop's probe is still
+// pending, so a cached route ends within one poll period of the entry's expiry.
+template <typename Chip>
+void cached_route_expires_during_probe(const char* name) {
+    const std::array<uint8_t, 4> kOther{192, 168, 1, 20};
+    Rig<Chip>                    rig;
+    auto                         socket = rig.open();
+    rig.send(*socket, kHost);
+    rig.poll();  // the host answers; its MAC expires 120 s from now
+    rig.chip.arp_hosts.erase(kHost);
+    rig.send(*socket, kHost);  // a use, so the entry is refreshed when due
+    fake::advance(60000u);
+    rig.poll();  // start the refresh
+    rig.poll();  // the refresh goes unanswered
+
+    fake::advance(59950u);  // 50 ms before the host's MAC expires
+    rig.chip.arp_reply_reads = 1000000u;
+    rig.send(*socket, kOther);  // a probe that is still pending at the expiry
+    rig.send(*socket, kHost);
+    check(rig.chip.sent.size() == 2u && rig.chip.sent.back().dest_mac == v(kHostMac),
+          tag(name, "ARP-021: a failing refresh keeps the MAC in use").c_str());
+
+    fake::advance(100u);
+    rig.poll();
+    rig.send(*socket, kHost);
+    check(rig.chip.sent.size() == 2u,
+          tag(name, "ARP-021: an entry expiring under a pending probe ends the cached route")
+              .c_str());
+}
+
 // TC-NET-WIZ-ARP-020: sends through a cached route count as uses, so a busy next hop is not
 // the one a new next hop displaces.
 template <typename Chip>
@@ -493,5 +523,7 @@ int main() {
     cached_route_abandoned<wiz::W6100>("W6100");
     cached_route_uses<wiz::W5100S>("W5100S");
     cached_route_uses<wiz::W6100>("W6100");
+    cached_route_expires_during_probe<wiz::W5100S>("W5100S");
+    cached_route_expires_during_probe<wiz::W6100>("W6100");
     return test_summary();
 }

@@ -154,7 +154,7 @@ public:
      *   entry is answered with another MAC, settles, leaves the table, or the
      *   board's address changes.
      * - Covered by: TC-NET-WIZ-ARP-010 through TC-NET-WIZ-ARP-013,
-     *   TC-NET-WIZ-ARP-019, TC-NET-WIZ-ARP-020.
+     *   TC-NET-WIZ-ARP-019 through TC-NET-WIZ-ARP-021.
      *
      * References:
      * - RFC 1122 §3.3.1.1 (local/remote decision), §2.3.2.2 (dropping while
@@ -255,7 +255,9 @@ public:
      * Called from the board network's periodic step. Costs one SLIR read
      * while a probe is in flight and nothing otherwise, unless a probe is due.
      * It also hands the uses of cached routes to the cache and settles
-     * expired entries, which ends the routes cached for them.
+     * expired entries, which ends the routes cached for them; the settling
+     * runs on every call, also while a probe is pending, so a cached MAC
+     * outlives its entry's expiry by at most one poll period.
      *
      * @param[in] now_ms Monotonic milliseconds.
      *
@@ -263,12 +265,14 @@ public:
      * - Correct means: an answer becomes a cache hit, a timeout a negative
      *   entry; refreshes and retries start when due; a change of the board's
      *   IPv4 configuration empties the cache.
-     * - Covered by: TC-NET-WIZ-ARP-010, TC-NET-WIZ-ARP-016, TC-NET-WIZ-ARP-020.
+     * - Covered by: TC-NET-WIZ-ARP-010, TC-NET-WIZ-ARP-016, TC-NET-WIZ-ARP-020,
+     *   TC-NET-WIZ-ARP-021.
      */
     void poll(uint32_t now_ms) noexcept {
         rosette::platform::LockGuard guard(lock_);
         sync_config_locked();
         collect_route_uses_locked();
+        cache_.settle_expired(now_ms);
         service_locked(now_ms);
         publish_locked();
     }

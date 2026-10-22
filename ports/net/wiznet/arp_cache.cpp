@@ -170,6 +170,12 @@ void ArpCache::record_use(std::size_t slot) noexcept {
     }
 }
 
+void ArpCache::settle_expired(uint32_t now_ms) noexcept {
+    for (std::size_t i = 0; i < capacity_; ++i) {
+        settle_expired(entries_[i], now_ms);
+    }
+}
+
 bool ArpCache::any_failures() const noexcept {
     for (std::size_t i = 0; i < capacity_; ++i) {
         if (entries_[i].state != State::empty && entries_[i].failures != 0u) {
