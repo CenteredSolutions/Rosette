@@ -173,6 +173,7 @@ public:
         }
 
         arp_ = resolves_mac ? arp : nullptr;
+        cached_route_ = {};
         open_ = true;
         last_error_ = SocketError::none;
         return 0;
@@ -252,7 +253,7 @@ public:
         const std::array<uint8_t, 6>* dest_mac = nullptr;
         if (arp_ != nullptr) {
             using Route = typename arp_resolver_type::Route;
-            const Route route = arp_->route(peer, mac);
+            const Route route = arp_->route(peer, mac, cached_route_);
             // Dropped while the next hop is resolved: to the caller it is a datagram
             // lost on the wire, and would_block tells one that cares it never left.
             if (route == Route::drop) {
@@ -386,6 +387,8 @@ private:
     bool open_ = false;
     /// The resolver this socket's sends route through, fixed at bind(); null when the chip ARPs.
     arp_resolver_type* arp_ = nullptr;
+    /// This socket's last unicast route through `arp_`, reused while the cache is unchanged.
+    typename arp_resolver_type::CachedRoute cached_route_{};
     bool claimed_ = true;
     bool multicast_joined_ = false;
 };
