@@ -2,7 +2,8 @@
  * @file wiznet_arp_resolver_test.cpp
  * @brief IPv4 sends through the ARP cache on the W5100S and the W6100: no
  *        inline ARP, next-hop choice, group and broadcast MACs, the W6x00's
- *        Sn_MR2 mode, and sharing the socket-less engine with SLAAC.
+ *        Sn_MR2 mode, sharing the socket-less engine with SLAAC, and each
+ *        socket's cached route.
  *
  * Each case opens sockets through WiznetSocketProvider with a
  * WiznetArpResolver attached and runs on `fake::FakeWiznetChip`, whose
@@ -78,11 +79,12 @@ struct Rig {
         chip.arp_hosts[kGateway] = kGatewayMac;
     }
 
-    std::unique_ptr<net::Socket> open(net::SocketDomain domain = net::SocketDomain::ipv4) {
+    std::unique_ptr<net::Socket> open(net::SocketDomain domain = net::SocketDomain::ipv4,
+                                      uint16_t          port = 7400u) {
         auto socket = sockets.open(domain);
         net::SocketAddress local{};
         local.domain = domain;
-        local.port = 7400u;
+        local.port = port;
         (void)socket->bind(local);
         return socket;
     }
@@ -373,6 +375,131 @@ void detach_after_bind(const char* name) {
     }
 }
 
+// TC-NET-WIZ-ARP-019: a socket reuses its last route only while the cache entry and the board's
+// address are unchanged.
+template <typename Chip>
+void cached_route_abandoned(const char* name) {
+    const std::array<uint8_t, 6> kNewMac{0x02, 0x00, 0x00, 0x00, 0x00, 0x11};
+    Rig<Chip>                    rig;
+    auto                         socket = rig.open();
+    rig.send(*socket, kHost);
+    rig.poll();
+    for (int i = 0; i < 3; ++i) {
+        rig.send(*socket, kHost);
+    }
+
+    const bool all_to_host =
+        rig.chip.sent.size() == 3u
+        && std::all_of(rig.chip.sent.begin(), rig.chip.sent.end(),
+                       [](const auto& d) { return d.dest_mac == v(kHostMac); });
+    check(all_to_host, tag(name, "ARP-019: repeated sends go to the host's MAC").c_str());
+
+    rig.chip.arp_hosts[kHost] = kNewMac;
+    fake::advance(60000u);
+    rig.poll();  // start the refresh
+    rig.poll();  // collect the answer
+    rig.send(*socket, kHost);
+    check(rig.chip.sent.size() == 4u && rig.chip.sent.back().dest_mac == v(kNewMac),
+          tag(name, "ARP-019: a refresh answered with a new MAC replaces the cached one").c_str());
+
+    rig.chip.arp_hosts.erase(kHost);
+    rig.send(*socket, kHost);  // a use, so the entry is refreshed when due
+    fake::advance(60000u);
+    rig.poll();
+    rig.poll();
+    rig.send(*socket, kHost);
+    check(rig.chip.sent.size() == 6u && rig.chip.sent.back().dest_mac == v(kNewMac),
+          tag(name, "ARP-019: a failing refresh keeps the MAC in use").c_str());
+
+    fake::advance(60000u);
+    rig.poll();
+    rig.send(*socket, kHost);
+    check(rig.chip.sent.size() == 6u,
+          tag(name, "ARP-019: an entry settled unreachable ends the cached route").c_str());
+
+    Rig<Chip> moved;
+    auto      other = moved.open();
+    moved.send(*other, kHost);
+    moved.poll();
+    moved.send(*other, kHost);
+    moved.device.configure_ipv4({192, 168, 7, 2}, kMask, {});
+    moved.send(*other, kHost);
+    check(moved.chip.sent.size() == 1u && moved.arp.drops() == 2u,
+          tag(name, "ARP-019: a new board address ends the cached route").c_str());
+}
+
+// TC-NET-WIZ-ARP-021: poll() settles an expired entry while another next hop's probe is still
+// pending, so a cached route ends within one poll period of the entry's expiry.
+template <typename Chip>
+void cached_route_expires_during_probe(const char* name) {
+    const std::array<uint8_t, 4> kOther{192, 168, 1, 20};
+    Rig<Chip>                    rig;
+    auto                         socket = rig.open();
+    rig.send(*socket, kHost);
+    rig.poll();  // the host answers; its MAC expires 120 s from now
+    rig.chip.arp_hosts.erase(kHost);
+    rig.send(*socket, kHost);  // a use, so the entry is refreshed when due
+    fake::advance(60000u);
+    rig.poll();  // start the refresh
+    rig.poll();  // the refresh goes unanswered
+
+    fake::advance(59950u);  // 50 ms before the host's MAC expires
+    rig.chip.arp_reply_reads = 1000000u;
+    rig.send(*socket, kOther);  // a probe that is still pending at the expiry
+    rig.send(*socket, kHost);
+    check(rig.chip.sent.size() == 2u && rig.chip.sent.back().dest_mac == v(kHostMac),
+          tag(name, "ARP-021: a failing refresh keeps the MAC in use").c_str());
+
+    fake::advance(100u);
+    rig.poll();
+    rig.send(*socket, kHost);
+    check(rig.chip.sent.size() == 2u,
+          tag(name, "ARP-021: an entry expiring under a pending probe ends the cached route")
+              .c_str());
+}
+
+// TC-NET-WIZ-ARP-020: sends through a cached route count as uses, so a busy next hop is not
+// the one a new next hop displaces.
+template <typename Chip>
+void cached_route_uses(const char* name) {
+    Rig<Chip> rig;
+
+    std::vector<std::array<uint8_t, 4>> others;
+    for (uint8_t i = 0; i < 8u; ++i) {
+        const std::array<uint8_t, 4> ip{192, 168, 1, static_cast<uint8_t>(20u + i)};
+        others.push_back(ip);
+        rig.chip.arp_hosts[ip] = {0x02, 0x00, 0x00, 0x00, 0x00, static_cast<uint8_t>(20u + i)};
+    }
+
+    auto busy = rig.open(net::SocketDomain::ipv4, 7400u);
+    auto other = rig.open(net::SocketDomain::ipv4, 7401u);
+    rig.send(*busy, kHost);
+    rig.poll();
+    for (std::size_t i = 0; i < 7u; ++i) {
+        rig.send(*other, others[i]);
+        rig.poll();
+    }
+
+    check(rig.table.size() == 8u, tag(name, "ARP-020: eight next hops fill the table").c_str());
+
+    rig.send(*busy, kHost);  // caches the route
+    for (std::size_t i = 0; i < 7u; ++i) {
+        rig.send(*other, others[i]);  // each is now used more recently than the host
+    }
+
+    rig.chip.sent.clear();
+    for (int i = 0; i < 3; ++i) {
+        rig.send(*busy, kHost);
+    }
+
+    rig.poll();
+    rig.send(*other, others[7]);
+    check(rig.chip.sent.size() == 3u && rig.table.find(kHost) != nullptr
+              && rig.table.find(others[0]) == nullptr,
+          tag(name, "ARP-020: the host with a cached route stays; the least recently used goes")
+              .c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -392,5 +519,11 @@ int main() {
     zero_octet_gateway<wiz::W6100>("W6100");
     detach_after_bind<wiz::W5100S>("W5100S");
     detach_after_bind<wiz::W6100>("W6100");
+    cached_route_abandoned<wiz::W5100S>("W5100S");
+    cached_route_abandoned<wiz::W6100>("W6100");
+    cached_route_uses<wiz::W5100S>("W5100S");
+    cached_route_uses<wiz::W6100>("W6100");
+    cached_route_expires_during_probe<wiz::W5100S>("W5100S");
+    cached_route_expires_during_probe<wiz::W6100>("W6100");
     return test_summary();
 }

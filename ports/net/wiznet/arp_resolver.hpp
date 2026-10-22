@@ -30,6 +30,22 @@
  * mutex guards the cache, the probe in flight, and the drop count, and is
  * always taken before the bus lock.
  *
+ * The common send repeats its socket's last destination, so each socket
+ * caches the route of its last unicast hit (CachedRoute), as a Linux socket
+ * caches its destination entry in `sk_dst_cache` and revalidates it with
+ * dst_check() against a route generation. route() reuses the cached route,
+ * without the mutex, a table scan, or a clock read, while the cache's
+ * version() and the board's IPv4 generation are those it was cached under;
+ * both are published as atomics at the end of every locked call. The point
+ * is a send whose cost does not vary: a hit never waits behind poll(),
+ * another socket's lookup, or a probe being started, and does the same
+ * work however full the table is. A reused
+ * hit marks its slot used, and poll() hands those marks to the cache, so
+ * refresh and eviction see the entry as in use. Expiry is settled by poll(),
+ * so a cached MAC is used at most one poll period past `expire_ms`.
+ * heard_from() likewise skips the mutex unless some entry has failures, the
+ * only case in which it acts.
+ *
  *     ArpCacheStorage<8> table;
  *     WiznetArpResolver<Chip, Bus> arp{device, table};
  *     sockets.attach_arp_resolver(&arp);    // before the first socket opens
@@ -37,6 +53,8 @@
  */
 
 #include <array>
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 
 #include "rosette/platform/platform.hpp"
@@ -69,6 +87,25 @@ public:
     };
 
     /**
+     * @brief A socket's last unicast hit, which route() reuses while it still holds.
+     *
+     * Owned by one socket and passed to every route() call it makes; a
+     * default-constructed CachedRoute holds nothing. It stays valid only
+     * while the cache's version() and the board's IPv4 generation match the
+     * values stamped into it, so any change that could end the hit forces
+     * the next route() back to the locked lookup. Only route() reads or writes
+     * the fields.
+     */
+    struct CachedRoute {
+        Ipv4     dst{};
+        Mac      mac{};
+        uint32_t cache_version = 0u;
+        uint32_t config_generation = 0u;
+        uint8_t  slot = 0u;
+        bool     valid = false;
+    };
+
+    /**
      * @brief Binds the resolver to a chip and a table.
      *
      * @param[in] device The chip; must outlive the resolver.
@@ -95,11 +132,17 @@ public:
     /**
      * @brief Chooses the destination MAC for one datagram, or that it is dropped.
      *
-     * Runs on every send. The cost is the cache lookup, plus one probe start
-     * (a few register writes, no waiting) on a miss while the engine is free.
+     * Runs on every send. A unicast destination equal to `cached`'s, while
+     * the cache's version and the board's IPv4 generation are those it was
+     * cached under, reuses its MAC with two atomic loads and no lock.
+     * Otherwise the mutex is taken and the next hop looked up; a hit is
+     * cached in `cached`, and a miss starts a probe (a few register writes,
+     * no waiting) when the engine is free.
      *
-     * @param[in]  peer Destination of the datagram.
-     * @param[out] mac  The destination MAC, written on Route::to_mac.
+     * @param[in]     peer Destination of the datagram.
+     * @param[out]    mac  The destination MAC, written on Route::to_mac.
+     * @param[in,out] cached The sending socket's cached route; the socket's
+     *   sends must not run concurrently with each other.
      * @return Route::chip for IPv6; Route::to_mac with `mac` for multicast,
      *   broadcast, and a resolved next hop; Route::drop otherwise, counted by
      *   drops().
@@ -107,14 +150,19 @@ public:
      * Verification:
      * - Correct means: a unicast datagram is sent only to the MAC its next hop
      *   answered with; an off-subnet destination uses the gateway's MAC; no
-     *   datagram waits for ARP.
-     * - Covered by: TC-NET-WIZ-ARP-010 through TC-NET-WIZ-ARP-013.
+     *   datagram waits for ARP; a reused MAC is abandoned as soon as the
+     *   entry is answered with another MAC, settles, leaves the table, or the
+     *   board's address changes.
+     * - Covered by: TC-NET-WIZ-ARP-010 through TC-NET-WIZ-ARP-013,
+     *   TC-NET-WIZ-ARP-019 through TC-NET-WIZ-ARP-021.
      *
      * References:
      * - RFC 1122 §3.3.1.1 (local/remote decision), §2.3.2.2 (dropping while
      *   unresolved); RFC 1112 §6.4 (group MAC); RFC 919 (broadcast)
+     * - Linux net/core/dst.c and include/net/sock.h: the per-socket
+     *   destination cache (`sk_dst_cache`, __sk_dst_check()) this mirrors
      */
-    Route route(const UdpEndpoint& peer, Mac& mac) noexcept {
+    Route route(const UdpEndpoint& peer, Mac& mac, CachedRoute& cached) noexcept {
         if (peer.ipv6) {
             return Route::chip;
         }
@@ -125,22 +173,42 @@ public:
             return Route::to_mac;
         }
 
+        if (cached.valid && cached.dst == dst
+            && cached.cache_version == cache_version_.load(std::memory_order_acquire)
+            && cached.config_generation == device_.ipv4_generation()) {
+            route_used_[cached.slot].store(true, std::memory_order_relaxed);
+            mac = cached.mac;
+            return Route::to_mac;
+        }
+
+        cached.valid = false;
         rosette::platform::LockGuard guard(lock_);
         sync_config_locked();
+        collect_route_uses_locked();
         if (is_broadcast(dst)) {
             mac = kBroadcastMac;
             return Route::to_mac;
         }
 
         Ipv4 hop{};
+        std::size_t    slot = 0u;
         const uint32_t now_ms = rosette::platform::monotonic_ms();
-        if (next_hop(dst, hop) && cache_.lookup(hop, now_ms, mac) == ArpCache::Lookup::hit) {
-            return Route::to_mac;
+        Route          route = Route::drop;
+        if (next_hop(dst, hop) && cache_.lookup(hop, now_ms, mac, &slot) == ArpCache::Lookup::hit) {
+            route = Route::to_mac;
+            cached = CachedRoute{dst,
+                                 mac,
+                                 cache_.version(),
+                                 generation_,
+                                 static_cast<uint8_t>(slot),
+                                 slot < kCachedRouteSlots};
+        } else {
+            ++drops_;
+            service_locked(now_ms);
         }
 
-        ++drops_;
-        service_locked(now_ms);
-        return Route::drop;
+        publish_locked();
+        return route;
     }
 
     /**
@@ -153,6 +221,9 @@ public:
      * whose refresh failed is retried soon after traffic from beyond it
      * arrives.
      *
+     * Runs on every receive, so while no entry has failures it returns after
+     * one atomic load.
+     *
      * @param[in] source Sender of a received datagram; IPv6 senders are ignored.
      *
      * Verification:
@@ -164,7 +235,7 @@ public:
      * - RFC 1122 §3.3.1.1 (local/remote decision); RFC 1122 §2.3.2.1
      */
     void heard_from(const UdpEndpoint& source) noexcept {
-        if (source.ipv6) {
+        if (source.ipv6 || !failing_.load(std::memory_order_acquire)) {
             return;
         }
 
@@ -174,6 +245,8 @@ public:
         if (next_hop(source.ipv4(), hop)) {
             cache_.heard_from(hop, rosette::platform::monotonic_ms());
         }
+
+        publish_locked();
     }
 
     /**
@@ -181,6 +254,10 @@ public:
      *
      * Called from the board network's periodic step. Costs one SLIR read
      * while a probe is in flight and nothing otherwise, unless a probe is due.
+     * It also hands the uses of cached routes to the cache and settles
+     * expired entries, which ends the routes cached for them; the settling
+     * runs on every call, also while a probe is pending, so a cached MAC
+     * outlives its entry's expiry by at most one poll period.
      *
      * @param[in] now_ms Monotonic milliseconds.
      *
@@ -188,12 +265,16 @@ public:
      * - Correct means: an answer becomes a cache hit, a timeout a negative
      *   entry; refreshes and retries start when due; a change of the board's
      *   IPv4 configuration empties the cache.
-     * - Covered by: TC-NET-WIZ-ARP-010, TC-NET-WIZ-ARP-016.
+     * - Covered by: TC-NET-WIZ-ARP-010, TC-NET-WIZ-ARP-016, TC-NET-WIZ-ARP-020,
+     *   TC-NET-WIZ-ARP-021.
      */
     void poll(uint32_t now_ms) noexcept {
         rosette::platform::LockGuard guard(lock_);
         sync_config_locked();
+        collect_route_uses_locked();
+        cache_.settle_expired(now_ms);
         service_locked(now_ms);
+        publish_locked();
     }
 
     /// @brief Datagrams dropped because their next hop was unresolved, unreachable, or unroutable.
@@ -208,6 +289,34 @@ public:
 private:
     static constexpr Mac kBroadcastMac{0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu};
 
+    /// Cache slots whose hits a CachedRoute may hold; hits on later slots always take the mutex.
+    static constexpr std::size_t kCachedRouteSlots = 32u;
+
+    /**
+     * @brief Makes the cache's version and failure state visible to the lock-free paths.
+     *
+     * Called at the end of every locked call that can change the cache, so
+     * a CachedRoute recorded under the mutex matches the published version
+     * until the cache next changes.
+     */
+    void publish_locked() noexcept {
+        cache_version_.store(cache_.version(), std::memory_order_release);
+        failing_.store(cache_.any_failures(), std::memory_order_release);
+    }
+
+    /// @brief Hands the slots that cached routes used since the last call to
+    /// ArpCache::record_use().
+    void collect_route_uses_locked() noexcept {
+        const std::size_t slots =
+            cache_.capacity() < kCachedRouteSlots ? cache_.capacity() : kCachedRouteSlots;
+        for (std::size_t slot = 0; slot < slots; ++slot) {
+            if (route_used_[slot].load(std::memory_order_relaxed)) {
+                route_used_[slot].store(false, std::memory_order_relaxed);
+                cache_.record_use(slot);
+            }
+        }
+    }
+
     /**
      * @brief Empties the cache when configure_ipv4() has run since the last look.
      *
@@ -215,14 +324,28 @@ private:
      * destination needs it, and resolving it before the first such send
      * spares one-shot exchanges (an SNTP request to a remote server) their
      * dropped first datagram.
+     *
+     * Every send and receive runs this check, so it reads the device's
+     * generation without the bus lock and copies the configuration under
+     * the lock only when that changed; a send never waits behind another
+     * socket's datagram transfer to learn that the address is unchanged.
+     *
+     * Verification:
+     * - Correct means: the first route() or heard_from() after
+     *   configure_ipv4() sees the new address, mask, and gateway, and finds
+     *   the cache empty but for the new gateway.
+     * - Covered by: TC-NET-WIZ-ARP-011, TC-NET-WIZ-ARP-012,
+     *   TC-NET-WIZ-ARP-016.
+     *
+     * References:
+     * - RFC 1122 §3.3.1.1 (next-hop choice from the board's own address and mask)
      */
     void sync_config_locked() noexcept {
-        const uint32_t generation = device_.ipv4_route(config_);
-        if (generation == generation_) {
+        if (device_.ipv4_generation() == generation_) {
             return;
         }
 
-        generation_ = generation;
+        generation_ = device_.ipv4_route(config_);
         cache_.clear();
         if (config_.gateway != Ipv4{}) {
             Mac unused{};
@@ -315,6 +438,9 @@ private:
     bool probing_ = false;
     Ipv4 probe_ip_{};
     uint32_t drops_ = 0u;
+    std::atomic<uint32_t>                            cache_version_{0u};
+    std::atomic<bool>                                failing_{false};
+    std::array<std::atomic<bool>, kCachedRouteSlots> route_used_{};
 };
 
 }  // namespace rosette::net::wiznet

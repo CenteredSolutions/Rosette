@@ -50,6 +50,12 @@
  * actually sending to. A full table evicts its least recently used entry that
  * has no query in flight, which is usually a `stale` one.
  *
+ * version() counts the changes that can end a hit: an entry settling,
+ * leaving the table, or taking a new MAC. A caller that caches a hit
+ * (WiznetArpResolver's per-socket CachedRoute) reuses it while the version
+ * is unchanged and reports the uses with record_use(), so the cached
+ * entry still counts as used for refresh and eviction.
+ *
  * Access is not synchronized; WiznetArpResolver serializes it.
  *
  *     ArpCacheStorage<8> table;
@@ -131,6 +137,8 @@ public:
      * @param[in]  ip     Next-hop IPv4 address, network byte order.
      * @param[in]  now_ms Monotonic milliseconds.
      * @param[out] mac    The MAC, written only on `hit`.
+     * @param[out] slot   When not null, the entry's index, written only on
+     *   `hit`; record_use() takes it.
      * @return `hit`, `miss`, or `unreachable`; see Lookup.
      *
      * Verification:
@@ -145,7 +153,67 @@ public:
      * - RFC 826 (ARP); RFC 1122 §2.3.2.1 (cache, flooding limits);
      *   RFC 4861 §7.3.2-7.3.3 (STALE, revalidation on use)
      */
-    Lookup lookup(const Ipv4& ip, uint32_t now_ms, Mac& mac) noexcept;
+    Lookup lookup(const Ipv4& ip, uint32_t now_ms, Mac& mac, std::size_t* slot = nullptr) noexcept;
+
+    /**
+     * @brief Counts a send that reused an earlier hit on entry `slot` as a use.
+     *
+     * The entry becomes the most recently used and is refreshed when due, as
+     * if lookup() had been called for it. A slot that is empty is left alone.
+     *
+     * Uses are reported in batches, so recency within one batch is the order
+     * of the calls, not of the sends. This is the use-bit approximation of
+     * LRU that CLOCK replacement makes: it can misorder only next hops that
+     * were all used since the last batch, and keeping exact order would put
+     * an atomic read-modify-write on every send.
+     *
+     * @param[in] slot Index lookup() wrote on the hit; below capacity().
+     *
+     * Verification:
+     * - Correct means: an entry used only through cached hits is not the
+     *   one a new next hop displaces.
+     * - Covered by: TC-NET-WIZ-ARP-020.
+     *
+     * References:
+     * - F. J. Corbató, "A Paging Experiment with the Multics System", MIT
+     *   Project MAC Report MAC-M-384, 1968 (CLOCK, use-bit approximation of LRU)
+     */
+    void record_use(std::size_t slot) noexcept;
+
+    /**
+     * @brief Settles every `resolved` entry whose answer is `expire_ms` old.
+     *
+     * lookup(), next_query(), and unanswered() settle the entries they look
+     * at, but a caller that reuses hits without lookup() needs expiry
+     * settled on a schedule of its own, including while a query is in flight
+     * and next_query() is not called. An entry with failed queries becomes
+     * `unreachable` and one without becomes `stale`, each advancing
+     * version().
+     *
+     * @param[in] now_ms Monotonic milliseconds.
+     *
+     * Verification:
+     * - Correct means: after the call no `resolved` entry is past
+     *   `expire_ms`, and version() has advanced if any entry settled.
+     * - Covered by: TC-NET-WIZ-ARP-021.
+     *
+     * References:
+     * - RFC 1122 §2.3.2.1 (cache timeout of an unconfirmed entry)
+     */
+    void settle_expired(uint32_t now_ms) noexcept;
+
+    /**
+     * @brief Changes so far that can end a hit; a cached hit holds while this is unchanged.
+     *
+     * Advances when an entry settles to `stale` or `unreachable`, leaves the
+     * table, is answered, or the table is cleared. A `resolved` entry passing
+     * `expire_ms` advances it when settle_expired(), lookup(), next_query(),
+     * or unanswered() next looks at that entry.
+     */
+    uint32_t version() const noexcept { return version_; }
+
+    /// @brief True when some entry has unanswered queries, the only case heard_from() acts on.
+    bool any_failures() const noexcept;
 
     /**
      * @brief Chooses the next hop the chip should ARP for now, if any.
@@ -259,7 +327,7 @@ private:
     Entry* find_mutable(const Ipv4& ip) noexcept;
     Entry* allocate() noexcept;
     uint32_t backoff_ms(uint8_t failures) const noexcept;
-    void settle_expired(Entry& entry, uint32_t now_ms) const noexcept;
+    void     settle_expired(Entry& entry, uint32_t now_ms) noexcept;
     void revalidate(Entry& entry, uint32_t now_ms) const noexcept;
     void complete(Entry& entry) noexcept;
 
@@ -267,6 +335,7 @@ private:
     std::size_t capacity_;
     ArpCachePolicy policy_;
     uint32_t use_counter_ = 0u;
+    uint32_t       version_ = 0u;
 };
 
 /// @brief The entries an ArpCacheStorage owns, as a base so they exist before its ArpCache.

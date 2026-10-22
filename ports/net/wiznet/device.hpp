@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -325,7 +326,23 @@ public:
         write(Chip::common_subnet(), subnet.data(), subnet.size());
         write(Chip::common_ip_address(), ip.data(), ip.size());
         ipv4_ = Ipv4Config{ip, subnet, gateway};
-        ++ipv4_generation_;
+        ipv4_generation_.store(ipv4_generation_.load(std::memory_order_relaxed) + 1u,
+                               std::memory_order_release);
+    }
+
+    /**
+     * @brief The count of configure_ipv4() calls, read without the bus lock.
+     *
+     * The ARP resolver checks it on every send and receive, and copies the
+     * configuration with ipv4_route() only when it differs from the count it
+     * last saw. A send therefore never waits on the bus lock, held for a
+     * whole datagram transfer by another socket, just to learn that the
+     * address is unchanged.
+     *
+     * @return The same count ipv4_route() returns.
+     */
+    uint32_t ipv4_generation() const noexcept {
+        return ipv4_generation_.load(std::memory_order_acquire);
     }
 
     /**
@@ -338,7 +355,7 @@ public:
     uint32_t ipv4_route(Ipv4Config& config) noexcept {
         const auto lock = bus_.acquire();
         config = ipv4_;
-        return ipv4_generation_;
+        return ipv4_generation_.load(std::memory_order_relaxed);
     }
 
     Ipv4Config ipv4_config() noexcept
@@ -1485,7 +1502,7 @@ private:
     // The last configure_ipv4() values and a count of the calls, so the ARP
     // resolver computes next hops without reading SIPR/SUBR/GAR over SPI.
     Ipv4Config ipv4_{};
-    uint32_t ipv4_generation_ = 0u;
+    std::atomic<uint32_t> ipv4_generation_{0u};
 
     // Who the single socket-less engine (SLCR/SLIR) is running a command for.
     // `host` is start_socketless_command() (SLAAC); `arp_probe` is

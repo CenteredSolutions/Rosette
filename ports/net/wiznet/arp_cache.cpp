@@ -26,7 +26,8 @@ int urgency(ArpCache::State state) noexcept {
 
 }  // namespace
 
-ArpCache::Lookup ArpCache::lookup(const Ipv4& ip, uint32_t now_ms, Mac& mac) noexcept {
+ArpCache::Lookup ArpCache::lookup(const Ipv4& ip, uint32_t now_ms, Mac& mac,
+                                  std::size_t* slot) noexcept {
     Entry* entry = find_mutable(ip);
     if (entry == nullptr) {
         entry = allocate();
@@ -34,6 +35,7 @@ ArpCache::Lookup ArpCache::lookup(const Ipv4& ip, uint32_t now_ms, Mac& mac) noe
             return Lookup::miss;
         }
 
+        ++version_;
         *entry = Entry{};
         entry->ip = ip;
         entry->state = State::wanted;
@@ -46,16 +48,21 @@ ArpCache::Lookup ArpCache::lookup(const Ipv4& ip, uint32_t now_ms, Mac& mac) noe
     switch (entry->state) {
         case State::stale:
             revalidate(*entry, now_ms);
-            mac = entry->mac;
-            return Lookup::hit;
+            break;
         case State::resolved:
-            mac = entry->mac;
-            return Lookup::hit;
+            break;
         case State::unreachable:
             return Lookup::unreachable;
         default:
             return Lookup::miss;
     }
+
+    mac = entry->mac;
+    if (slot != nullptr) {
+        *slot = static_cast<std::size_t>(entry - entries_);
+    }
+
+    return Lookup::hit;
 }
 
 bool ArpCache::next_query(uint32_t now_ms, Ipv4& ip) noexcept {
@@ -71,6 +78,7 @@ bool ArpCache::next_query(uint32_t now_ms, Ipv4& ip) noexcept {
         // Nobody sent to it since its last query: a confirmed MAC is kept for
         // the next send to revalidate, anything else leaves the table.
         if (!entry.used) {
+            ++version_;
             if (entry.state == State::resolved) {
                 entry.state = State::stale;
             } else {
@@ -103,6 +111,7 @@ void ArpCache::answered(const Ipv4& ip, const Mac& mac, uint32_t now_ms) noexcep
         return;
     }
 
+    ++version_;
     complete(*entry);
     entry->state = State::resolved;
     entry->mac = mac;
@@ -131,6 +140,7 @@ void ArpCache::unanswered(const Ipv4& ip, uint32_t now_ms) noexcept {
         return;
     }
 
+    ++version_;
     complete(*entry);
     entry->state = State::unreachable;
 }
@@ -152,6 +162,30 @@ void ArpCache::heard_from(const Ipv4& ip, uint32_t now_ms) noexcept {
     entry->used = true;
 }
 
+void ArpCache::record_use(std::size_t slot) noexcept {
+    Entry& entry = entries_[slot];
+    if (entry.state != State::empty) {
+        entry.used = true;
+        entry.last_use = ++use_counter_;
+    }
+}
+
+void ArpCache::settle_expired(uint32_t now_ms) noexcept {
+    for (std::size_t i = 0; i < capacity_; ++i) {
+        settle_expired(entries_[i], now_ms);
+    }
+}
+
+bool ArpCache::any_failures() const noexcept {
+    for (std::size_t i = 0; i < capacity_; ++i) {
+        if (entries_[i].state != State::empty && entries_[i].failures != 0u) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void ArpCache::requeue(const Ipv4& ip) noexcept {
     Entry* entry = find_mutable(ip);
     if (entry != nullptr) {
@@ -160,6 +194,7 @@ void ArpCache::requeue(const Ipv4& ip) noexcept {
 }
 
 void ArpCache::clear() noexcept {
+    ++version_;
     for (std::size_t i = 0; i < capacity_; ++i) {
         entries_[i] = Entry{};
     }
@@ -230,11 +265,12 @@ uint32_t ArpCache::backoff_ms(uint8_t failures) const noexcept {
  * @param[in,out] entry  The entry; unchanged unless `resolved` and expired.
  * @param[in]     now_ms Monotonic milliseconds.
  */
-void ArpCache::settle_expired(Entry& entry, uint32_t now_ms) const noexcept {
+void ArpCache::settle_expired(Entry& entry, uint32_t now_ms) noexcept {
     if (entry.state != State::resolved || !due(now_ms, entry.expires_ms)) {
         return;
     }
 
+    ++version_;
     entry.state = entry.failures == 0u ? State::stale : State::unreachable;
 }
 
