@@ -215,14 +215,28 @@ private:
      * destination needs it, and resolving it before the first such send
      * spares one-shot exchanges (an SNTP request to a remote server) their
      * dropped first datagram.
+     *
+     * Every send and receive runs this check, so it reads the device's
+     * generation without the bus lock and copies the configuration under
+     * the lock only when that changed; a send never waits behind another
+     * socket's datagram transfer to learn that the address is unchanged.
+     *
+     * Verification:
+     * - Correct means: the first route() or heard_from() after
+     *   configure_ipv4() sees the new address, mask, and gateway, and finds
+     *   the cache empty but for the new gateway.
+     * - Covered by: TC-NET-WIZ-ARP-011, TC-NET-WIZ-ARP-012,
+     *   TC-NET-WIZ-ARP-016.
+     *
+     * References:
+     * - RFC 1122 §3.3.1.1 (next-hop choice from the board's own address and mask)
      */
     void sync_config_locked() noexcept {
-        const uint32_t generation = device_.ipv4_route(config_);
-        if (generation == generation_) {
+        if (device_.ipv4_generation() == generation_) {
             return;
         }
 
-        generation_ = generation;
+        generation_ = device_.ipv4_route(config_);
         cache_.clear();
         if (config_.gateway != Ipv4{}) {
             Mac unused{};
