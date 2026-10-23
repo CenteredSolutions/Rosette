@@ -142,8 +142,12 @@ two cannot disagree; a board that keeps the fuse default (the Teensy MicroMod) c
 4. **`rtps_chatter` on the wire.** Against `rmw_fastrtps_cpp` and `rmw_cyclonedds_cpp`: `ros2 topic echo
    /rosette/chatter` receives the board's samples, and samples published on `/rosette/command` reach the board. The
    writer, the reader, and their names fit the participant sized for them (no `RTPS_LOCAL_NAME_BYTES` or table-full
-   log line). SPDP multicast is the first real test of the ENET's hash filter and IGMP. Record the measured budget in
-   this document.
+   log line). SPDP multicast is the first real test of the ENET's hash filter and IGMP. Measured on the EVK under
+   both: the board matches each host endpoint and drops it when the host exits, 24 samples arrive in a 25 s echo, the
+   commands published at 2 Hz after the match all arrive, and no capacity line is logged. The budget: DTCM 78,552 of
+   131,072 B (60 %), OCRAM 32 of 128 KiB (the FreeRTOS heap, peak 16,352 B); main stack peak 1,568 of 4,096 B,
+   newlib heap 3,368 of 8,192 B; main task 3,816 of 8,188 B, IP task 928 of 2,044 B, ENET receive task 344 of
+   2,044 B; the largest datagram sent 248 octets and received 516, and all 10 network buffers free between bursts.
 5. **Guard the budget.** Each region keeps a stated headroom (DTCM and OCRAM at least 16 KiB free), enforced by an
    `ASSERT` in the generated linker script, so an image that eats the margin fails to link instead of failing on
    the bench.
