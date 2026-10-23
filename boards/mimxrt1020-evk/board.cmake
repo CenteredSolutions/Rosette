@@ -21,6 +21,15 @@ set(ROSETTE_IMXRT_CPU              "MIMXRT1021DAG5A" PARENT_SCOPE)
 set(ROSETTE_IMXRT_SDK_BOARD        "evkmimxrt1020"   PARENT_SCOPE)
 set(ROSETTE_IMXRT_FLASH_SIZE_BYTES "0x800000"        PARENT_SCOPE)
 
+# FlexRAM: the RT1021's 256 KiB as DTCM 128 KiB and OCRAM 128 KiB, with no
+# ITCM (the fuses give ITCM 64, DTCM 64, OCRAM 128). Everything the linker
+# places by default lands in the DTCM: fast, not cached, and reachable by the
+# ENET's DMA. The OCRAM holds the FreeRTOS heap. Code executes in place from
+# flash through the I-cache (docs/design/imxrt_memory_budget.md).
+set(ROSETTE_IMXRT_FLEXRAM_ITCM_KIB  0   PARENT_SCOPE)
+set(ROSETTE_IMXRT_FLEXRAM_DTCM_KIB  128 PARENT_SCOPE)
+set(ROSETTE_IMXRT_FLEXRAM_OCRAM_KIB 128 PARENT_SCOPE)
+
 # The DTCM's newlib heap and main stack, at about two and a half times what
 # udp_echo used through a ping flood and a UDP blast (3,168 and 1,568 octets;
 # docs/design/imxrt_memory_budget.md). The main stack serves main() until the

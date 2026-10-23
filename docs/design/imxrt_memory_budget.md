@@ -112,13 +112,18 @@ The fuse default also holds this image, with RTPS moved to the OCRAM by a linker
 OCRAM about 73 of 128 KiB. It needs no reset hook, but it leaves the ITCM idle and makes the linker script name
 Rosette's libraries, so it is the fallback rather than the plan.
 
-The reallocation's cost is a port-owned reset hook. The boot ROM applies the fuse layout, and `Reset_Handler` loads
-the stack pointer from the vector table before any code runs, so the new layout must be in place before the stack
-is used: the hook writes `IOMUXC_GPR17` (`FLEXRAM_BANK_CFG`), `GPR16` (`FLEXRAM_BANK_CFG_SEL` = 1, `INIT_ITCM_EN`,
-`INIT_DTCM_EN`), and `GPR14` (`CM7_CFGITCMSZ`, `CM7_CFGDTCMSZ`) using registers alone, then sets the MSP, then runs
-the startup's data copy and `.bss` clear. The Teensy 4 core's `ResetHandler()` does the same on the RT1062. The
-layout becomes a board parameter in `board.cmake`, so the port generates the matching linker `MEMORY` regions and a
-board that keeps the fuse default (the Teensy MicroMod) changes nothing.
+The reallocation's cost is a port-owned reset handler (`ports/chip/imxrt/flexram_reset_handler.S`). The boot ROM
+applies the fuse layout and enters `Reset_Handler` with the stack pointer loaded from the vector table, which is the
+top of the board's 128 KiB DTCM and so lies past the fuse layout's 64 KiB; the new layout must be in place before
+the stack is used. The handler writes `IOMUXC_GPR17` (`FLEXRAM_BANK_CFG`, `0xAA55`: banks 0 to 3 OCRAM, 4 to 7 DTCM)
+and sets `GPR16.FLEXRAM_BANK_CFG_SEL` using registers alone, the same two writes as the SDK's
+`FLEXRAM_AllocateRam()` for the RT1021, then runs the SDK startup's sequence: VTOR and the MSP, `SystemInit()`,
+the `.data` copy, and the `.bss` clear. The RT1021 sizes its TCM interfaces from the bank assignment, so it has no
+`GPR14` TCM-size fields to write; the RT1062 does, which the Teensy 4 core's `ResetHandler()` writes. The SDK
+defines its `Reset_Handler` weak, so the port's strong one replaces it only in a board that sets a layout. The
+layout is a board parameter in `board.cmake` (`ROSETTE_IMXRT_FLEXRAM_ITCM_KIB`, `_DTCM_KIB`, `_OCRAM_KIB`), from
+which `ports/chip/imxrt/flexram_layout.cmake` derives both the `GPR17` value and the linker `MEMORY` lengths, so the
+two cannot disagree; a board that keeps the fuse default (the Teensy MicroMod) changes nothing.
 
 ## Order of work
 
@@ -129,10 +134,11 @@ board that keeps the fuse default (the Teensy MicroMod) changes nothing.
    a board network rather than on WIZnet and the Pico SDK. It must still build and run on the W5100S-EVB-Pico2. On
    the EVK it links only once step 3 lands; the overflow the linker reports is the budget's first check.
 3. **FlexRAM layout as a board parameter.** The reset hook and the generated `MEMORY` regions in
-   `ports/chip/imxrt/`, and the EVK set to ITCM 0, DTCM 128, OCRAM 128. Verified on the bench: `GPR14`, `GPR16`, and
-   `GPR17` read back as written; a pattern test over all 128 KiB of DTCM and 128 KiB of OCRAM passes;
-   `rosette_platform_contract` and the `udp_echo` probe and ping flood still pass. If the part refuses a zero-size
-   ITCM, the fallback is ITCM 32, DTCM 128, OCRAM 96.
+   `ports/chip/imxrt/`, and the EVK set to ITCM 0, DTCM 128, OCRAM 128. Verified on the bench
+   (`tools/imxrt_flexram_check.py`): `GPR16` and `GPR17` read back as written (`0x00200007`, `0xAA55`); an
+   address-tagged pattern in both polarities over all 128 KiB of DTCM and 128 KiB of OCRAM passes, and the word past
+   the DTCM's end faults; `rosette_platform_contract` and the `udp_echo` probe and ping flood still pass. The part
+   accepts a zero-size ITCM; the fallback, if a hot path wants ITCM, is ITCM 32, DTCM 128, OCRAM 96.
 4. **`rtps_chatter` on the wire.** Against `rmw_fastrtps_cpp` and `rmw_cyclonedds_cpp`: `ros2 topic echo
    /rosette/chatter` receives the board's samples, and samples published on `/rosette/command` reach the board. The
    writer, the reader, and their names fit the participant sized for them (no `RTPS_LOCAL_NAME_BYTES` or table-full
@@ -159,7 +165,7 @@ planning that step.
 
 ## References
 
-- i.MX RT1020 Processor Reference Manual: system memory map; FlexRAM chapter; IOMUXC_GPR `GPR14`, `GPR16`, `GPR17`.
+- i.MX RT1020 Processor Reference Manual: system memory map; FlexRAM chapter; IOMUXC_GPR `GPR16`, `GPR17`.
 - NXP AN12077, "Using the i.MX RT FlexRAM".
 - MCUXpresso SDK `devices/MIMXRT1021/drivers/fsl_flexram_allocate.h` (`FLEXRAM_AllocateRam()`); bank size and count
   from `MIMXRT1021_features.h` (`FSL_FEATURE_FLEXRAM_INTERNAL_RAM_BANK_SIZE`, `..._TOTAL_BANK_NUMBERS`).

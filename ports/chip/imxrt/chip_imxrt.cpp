@@ -54,6 +54,15 @@
 #include "fsl_trng.h"
 #include "imxrt_gpio_pin.h"
 
+#ifdef ROSETTE_IMXRT_FLEXRAM_BANK_CFG
+// flexram_reset_handler.S runs before any C, so it spells these out; they
+// must be the device header's.
+static_assert(IOMUXC_GPR_BASE + offsetof(IOMUXC_GPR_Type, GPR16) == 0x400AC040u);
+static_assert(IOMUXC_GPR_BASE + offsetof(IOMUXC_GPR_Type, GPR17) == 0x400AC044u);
+static_assert(IOMUXC_GPR_GPR16_FLEXRAM_BANK_CFG_SEL_MASK == 0x4u);
+static_assert((ROSETTE_IMXRT_FLEXRAM_BANK_CFG & ~IOMUXC_GPR_GPR17_FLEXRAM_BANK_CFG_MASK) == 0u);
+#endif
+
 namespace rosette::platform {
 
 namespace {
