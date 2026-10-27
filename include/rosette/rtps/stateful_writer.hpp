@@ -289,11 +289,24 @@ public:
      * @return A complete serializedPayload (encapsulation header included)
      *   in a pool block the writer releases after the send. Allocating it
      *   with buf_alloc_with_headroom(size + kRtpsHeartbeatTailroom,
-     *   kRtpsDataHeadroom + kMaxInlineQosSize) lets the DATA be framed in
-     *   place. An invalid BufRef means the payload cannot be built now; the
-     *   send is then a lost datagram.
+     *   kRtpsDataHeadroom + inline_qos_serialized_size(change.inlineQos))
+     *   lets the DATA be framed in place. An invalid BufRef means the payload
+     *   cannot be built now; the send is then a lost datagram.
      */
     using PayloadBuilder = BufRef (*)(void* user, const CacheChange& change) noexcept;
+
+    /**
+     * @brief Reports how many octets the PayloadBuilder would build for a change.
+     *
+     * Lets a replay decide whether the next change fits in the datagram
+     * being packed before paying for the build (send_replay_datagram()).
+     *
+     * @param[in] user   The pointer given to set_payload_builder().
+     * @param[in] change The stored change; its payload is empty.
+     * @return The serializedPayload size in octets, never less than the
+     *   builder produces for the same change; 0 when it cannot be built.
+     */
+    using PayloadSizer = uint32_t (*)(void* user, const CacheChange& change) noexcept;
 
     /**
      * @brief Installs the builder that supplies payloads for write_on_demand_async() changes.
@@ -304,17 +317,24 @@ public:
      * bytes for each send instead, trading a serialization per send for the
      * pool block the history would otherwise hold for the change's lifetime.
      *
+     * A sizer lets a TRANSIENT_LOCAL replay pack several built changes per
+     * datagram; without one each goes in a datagram of its own.
+     *
      * @param[in] builder Builder, or null to remove it.
-     * @param[in] user    Passed back to `builder`; must outlive the writer.
+     * @param[in] user    Passed back to `builder` and `sizer`; must outlive
+     *   the writer.
+     * @param[in] sizer   Size of what `builder` builds, or null.
      *
      * Verification:
      * - Correct means: a change stored without a payload goes on the wire
      *   exactly as if its built payload had been stored.
-     * - Covered by: TC-SEDP-8.5.4-015, TC-SEDP-8.5.4-016.
+     * - Covered by: TC-SEDP-8.5.4-015, TC-SEDP-8.5.4-016, TC-SWR-8.4.1.4-011.
      */
-    void set_payload_builder(PayloadBuilder builder, void* user) noexcept {
+    void set_payload_builder(PayloadBuilder builder, void* user,
+                             PayloadSizer sizer = nullptr) noexcept {
         payloadBuilder_ = builder;
         payloadBuilderUser_ = user;
+        payloadSizer_ = sizer;
     }
 
     /**
@@ -1156,10 +1176,9 @@ private:
      * left UNSENT stops replaying; the writer's replay is pending while any
      * proxy still is.
      *
-     * A change built for a datagram it did not fit in is carried to the next
-     * datagram for the same proxy, so it is built once; a carry left when the
-     * budget runs out is dropped, the change stays UNSENT, and the next
-     * tick() builds it again.
+     * Packing sizes each following change before building it, so every
+     * change built is sent in the datagram it was built for and nothing is
+     * held between datagrams or ticks.
      *
      * Verification:
      * - Correct means: a tick() sends at most the budget in datagrams; every
@@ -1176,13 +1195,6 @@ private:
      */
     void drain_replays() noexcept;
 
-    /// A replayed change whose payload was built for a datagram it did not
-    /// fit in; drain_replays() sends it first in the proxy's next datagram.
-    struct ReplayCarry {
-        SequenceNumber sn = SEQUENCENUMBER_UNKNOWN;
-        BufRef         payload{};
-    };
-
     /**
      * @brief Sends one replay datagram to @p proxy: its lowest UNSENT change,
      *   and after it as many of the next ones as fit in the same block.
@@ -1190,21 +1202,16 @@ private:
      * A change with a stored payload, or one too large for one datagram,
      * goes alone through send_data_to(). A writer that builds payloads on
      * demand (set_payload_builder(), the SEDP announcers) frames the first
-     * change in its own block, as send_data_in_place() does, moves the framed
-     * message to the start of the block (reclaiming the headroom reserved for
-     * the largest inline QoS), then appends
+     * change in its own block, as send_data_in_place() does, then appends
      * each following change's DATA submessage into the space left in that
-     * block for as long as the next one fits, the block being whatever size
-     * class the first payload needed: nothing larger is taken to make room.
-     * Every DATA starts on a 4-octet boundary (§9.4.1), so packing stops at a
-     * payload whose length is not a multiple of 4. The change that did not
-     * fit is left in @p carry. The datagram holding the newest change takes
-     * the replay's HEARTBEAT when the writer serves the reader reliably, in
-     * the same block when it fits and in a datagram of its own when not.
+     * block for as long as the next one fits (pack_following_changes()), the
+     * block being whatever size class the first payload needed: nothing
+     * larger is taken to make room. The datagram holding the newest change
+     * takes the replay's HEARTBEAT when the writer serves the reader
+     * reliably, in the same block when it fits and in a datagram of its own
+     * when not.
      *
      * @param[in,out] proxy A replaying reader.
-     * @param[in,out] carry A built payload not yet sent; taken first when it
-     *   holds one, and refilled with the change that did not fit.
      * @return true when a datagram was sent or attempted (a change left
      *   UNSENT); false when the proxy had nothing UNSENT.
      *
@@ -1218,7 +1225,7 @@ private:
      * - OMG DDSI-RTPS 2.5 §8.3.3 (a message carries several submessages),
      *   §9.4.1, §9.4.5.3 (DATA), §8.4.15.4
      */
-    bool send_replay_datagram(ReaderProxy& proxy, ReplayCarry& carry) noexcept;
+    bool send_replay_datagram(ReaderProxy& proxy) noexcept;
 
     /// @brief Frames @p view, which holds @p ch's payload (@p payload_size
     ///   octets) with headroom, as an RTPS message with one DATA for
@@ -1233,25 +1240,27 @@ private:
      *   @p proxy's following UNSENT changes, each as one more DATA submessage.
      *
      * Moves the framed message to the start of its block first, so the room
-     * left is the whole rest of the block rather than what follows the
-     * headroom reserved for the largest inline QoS. Then builds each next
-     * UNSENT change and appends it (append_built_data()) while it fits,
-     * marking it sent; the first that does not fit is left in @p carry.
-     * Stops at a change with a stored payload, a payload that cannot be
-     * built, or after a payload whose length is not a multiple of 4, since
-     * every submessage starts on a 4-octet boundary (§9.4.1).
+     * left is the whole rest of the block even when the builder reserved
+     * more headroom than the change used. Then, for each next UNSENT change,
+     * asks the PayloadSizer for its size and, when its DATA submessage fits
+     * in what is left, builds it, appends it (append_built_data()), and marks
+     * it sent. Stops at the first change that does not fit, a change with a
+     * stored payload, a payload that cannot be built, a writer with no
+     * sizer, or after a payload whose length is not a multiple of 4, since
+     * every submessage starts on a 4-octet boundary (§9.4.1). A payload
+     * built larger than its size said is released unsent, the change left
+     * UNSENT for the next datagram.
      *
      * @param[in,out] proxy    The reader the datagram is for.
      * @param[in,out] datagram Its framed message, in the first change's block.
      * @param[in]     aligned  The message ends on a 4-octet boundary.
      * @param[out]    last     The newest change the datagram now holds; left
      *   unchanged when nothing was appended.
-     * @param[out]    carry    The built change that did not fit, if any.
      * @return Whether the message still ends on a 4-octet boundary, so a
      *   HEARTBEAT may follow it.
      */
     bool pack_following_changes(ReaderProxy& proxy, BufRef& datagram, bool aligned,
-                                SequenceNumber& last, ReplayCarry& carry) noexcept;
+                                SequenceNumber& last) noexcept;
 
     /// @brief Appends a DATA submessage for @p ch, whose built payload is
     ///   @p payload, after the region of @p datagram; false, changing nothing,
@@ -1403,6 +1412,7 @@ private:
     } waitingReaderQuery_;
     PayloadBuilder payloadBuilder_ = nullptr;  ///< Builds payloads of on-demand changes.
     void* payloadBuilderUser_ = nullptr;
+    PayloadSizer   payloadSizer_ = nullptr;  ///< Sizes them, for replay packing.
     MessageBuilder builder_;
 };
 

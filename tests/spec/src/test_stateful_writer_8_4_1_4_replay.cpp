@@ -136,6 +136,10 @@ BufRef build_payload(void* /*user*/, const CacheChange& change) noexcept {
     return payload;
 }
 
+uint32_t size_payload(void* /*user*/, const CacheChange& /*change*/) noexcept {
+    return kBuiltPayload;
+}
+
 }  // namespace
 
 // TC-SWR-8.4.1.4-010: matching sends nothing; each tick() sends at most the
@@ -202,7 +206,7 @@ static bool tc_swr_8_4_1_4_011(std::string& err) {
     const Locator               loc = make_udpv4_locator(0xC0A80191u, 7410u);
     StatefulWriterStorage<8, 1> w(writer, ReliabilityKind::RELIABLE,
                                   DurabilityKind::TRANSIENT_LOCAL, tx, 5u, 1000u);
-    w.set_payload_builder(&build_payload, nullptr);
+    w.set_payload_builder(&build_payload, nullptr, &size_payload);
 
     const uint32_t changes = 5u;
     for (uint32_t i = 0; i < changes; ++i) {

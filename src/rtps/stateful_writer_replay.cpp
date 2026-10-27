@@ -15,8 +15,9 @@
  * the replay: each datagram is the first change's own block, framed in place,
  * with as many of the following changes appended as fit in what is left of
  * that block. The block is whatever size class the first payload needed;
- * packing never takes a larger one. See rtps/stateful_writer.hpp
- * (drain_replays(), send_replay_datagram()).
+ * packing never takes a larger one. Each following change is sized before it
+ * is built, so a change is built only for the datagram that sends it. See
+ * rtps/stateful_writer.hpp (drain_replays(), send_replay_datagram()).
  */
 
 #include "rosette/rtps/stateful_writer.hpp"
@@ -33,13 +34,10 @@ void StatefulWriter::drain_replays() noexcept {
             continue;
         }
 
-        ReplayCarry carry{};
-        while (budget > 0u && send_replay_datagram(proxy, carry)) {
+        while (budget > 0u && send_replay_datagram(proxy)) {
             --budget;
         }
 
-        // A carry still held here is dropped with its payload; the change is
-        // UNSENT and the next tick() builds it again.
         if (proxy.has_unsent_changes(writer_cache_)) {
             pending = true;
         } else {
@@ -51,16 +49,9 @@ void StatefulWriter::drain_replays() noexcept {
     release_finished_changes();
 }
 
-bool StatefulWriter::send_replay_datagram(ReaderProxy& proxy, ReplayCarry& carry) noexcept {
-    SequenceNumber sn = carry.payload.valid() ? carry.sn : proxy.next_unsent_change(writer_cache_);
-    const CacheChange* ch = sn == SEQUENCENUMBER_UNKNOWN ? nullptr : writer_cache_.get_change(sn);
-    if (ch == nullptr && carry.payload.valid()) {
-        // The carried change left the history since it was built.
-        carry = ReplayCarry{};
-        sn = proxy.next_unsent_change(writer_cache_);
-        ch = sn == SEQUENCENUMBER_UNKNOWN ? nullptr : writer_cache_.get_change(sn);
-    }
-
+bool StatefulWriter::send_replay_datagram(ReaderProxy& proxy) noexcept {
+    const SequenceNumber sn = proxy.next_unsent_change(writer_cache_);
+    const CacheChange*   ch = sn == SEQUENCENUMBER_UNKNOWN ? nullptr : writer_cache_.get_change(sn);
     if (ch == nullptr) {
         return false;
     }
@@ -84,9 +75,7 @@ bool StatefulWriter::send_replay_datagram(ReaderProxy& proxy, ReplayCarry& carry
         return true;
     }
 
-    BufRef datagram = carry.payload.valid() ? static_cast<BufRef&&>(carry.payload)
-                                            : payloadBuilder_(payloadBuilderUser_, *ch);
-    carry = ReplayCarry{};
+    BufRef datagram = payloadBuilder_(payloadBuilderUser_, *ch);
 
     // In place only when the block has the headroom and the DATA fits one
     // datagram; otherwise send_data_to() frames it by copy or as DATA_FRAG.
@@ -131,8 +120,7 @@ bool StatefulWriter::send_replay_datagram(ReaderProxy& proxy, ReplayCarry& carry
     }
 
     SequenceNumber last = sn;
-    const bool     aligned =
-        pack_following_changes(proxy, datagram, (first_payload & 3u) == 0u, last, carry);
+    const bool aligned = pack_following_changes(proxy, datagram, (first_payload & 3u) == 0u, last);
 
     const bool heartbeat = heartbeat_with(last);
     Octet*     hb = heartbeat && aligned
@@ -153,22 +141,24 @@ bool StatefulWriter::send_replay_datagram(ReaderProxy& proxy, ReplayCarry& carry
 }
 
 bool StatefulWriter::pack_following_changes(ReaderProxy& proxy, BufRef& datagram, bool aligned,
-                                            SequenceNumber& last, ReplayCarry& carry) noexcept {
-    // The block was allocated with headroom for the largest inline QoS; move
-    // the framed message to the start of the block, so the room left for the
-    // following changes is the whole rest of the block rather than what
-    // follows the unused headroom.
+                                            SequenceNumber& last) noexcept {
+    // A builder may reserve more headroom than the change's inline QoS took;
+    // move the framed message to the start of the block, so the room left
+    // for the following changes is the whole rest of the block.
     Octet* const block_start = datagram.block->payload();
     if (datagram.data != block_start) {
         memmove(block_start, datagram.data, datagram.size);
         datagram.data = block_start;
     }
 
-    // Append the following changes while each fits in the block in hand.
-    // Every submessage starts on a 4-octet boundary (§9.4.1), and in-place
-    // payloads are not padded, so packing stops after one whose length is
-    // not a multiple of 4.
-    while (aligned) {
+    // Append the following changes while each fits in the block in hand,
+    // sizing each before building it. Every submessage starts on a 4-octet
+    // boundary (§9.4.1), and in-place payloads are not padded, so packing
+    // stops after one whose length is not a multiple of 4.
+    const uint32_t room = datagram.capacity() < transport_.max_datagram_size()
+                              ? datagram.capacity()
+                              : transport_.max_datagram_size();
+    while (aligned && payloadSizer_ != nullptr) {
         const SequenceNumber next = proxy.next_unsent_change(writer_cache_);
         const CacheChange*   next_ch =
             next == SEQUENCENUMBER_UNKNOWN ? nullptr : writer_cache_.get_change(next);
@@ -176,14 +166,17 @@ bool StatefulWriter::pack_following_changes(ReaderProxy& proxy, BufRef& datagram
             break;
         }
 
-        BufRef payload = payloadBuilder_(payloadBuilderUser_, *next_ch);
-        if (!payload.valid()) {
+        const uint32_t size = payloadSizer_(payloadBuilderUser_, *next_ch);
+        if (size == 0u
+            || datagram.size + sizeof(SubmessageHeader) + sizeof(DataSubmessageFixed)
+                       + inline_qos_serialized_size(next_ch->inlineQos) + size
+                   > room) {
             break;
         }
 
-        if (!append_built_data(datagram, *next_ch, payload, proxy.remoteReaderGuid.entityId)) {
-            carry.sn = next;
-            carry.payload = static_cast<BufRef&&>(payload);
+        BufRef payload = payloadBuilder_(payloadBuilderUser_, *next_ch);
+        if (!payload.valid()
+            || !append_built_data(datagram, *next_ch, payload, proxy.remoteReaderGuid.entityId)) {
             break;
         }
 
@@ -199,8 +192,9 @@ bool StatefulWriter::append_built_data(BufRef& datagram, const CacheChange& ch,
                                        const BufRef&   payload,
                                        const EntityId& reader_id) const noexcept {
     const uint16_t inline_qos_size = inline_qos_serialized_size(ch.inlineQos);
-    const uint32_t body = sizeof(DataSubmessageFixed) + inline_qos_size + payload.size;
-    const uint32_t need = sizeof(SubmessageHeader) + body;
+    const uint32_t body =
+        static_cast<uint32_t>(sizeof(DataSubmessageFixed)) + inline_qos_size + payload.size;
+    const uint32_t need = static_cast<uint32_t>(sizeof(SubmessageHeader)) + body;
     if (body > 0xFFFFu || datagram.size + need > transport_.max_datagram_size()) {
         return false;
     }

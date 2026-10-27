@@ -152,11 +152,12 @@ bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* seriali
     if (!serialized_payload || payload_size == 0) return false;
     if (staging_.payload.valid()) staging_.payload.reset();
 
-    // Headroom covers the RTPS/DATA headers plus the largest inline QoS, and
-    // tailroom one HEARTBEAT, so send_data_to() can always frame this change
-    // in place with a piggybacked HEARTBEAT.
-    BufRef payload_buf = buf_alloc_with_headroom(payload_size + kRtpsHeartbeatTailroom,
-                                                 kRtpsDataHeadroom + kMaxInlineQosSize);
+    // Headroom covers the RTPS/DATA headers plus this change's inline QoS,
+    // and tailroom one HEARTBEAT, so send_data_to() can always frame this
+    // change in place with a piggybacked HEARTBEAT.
+    BufRef payload_buf =
+        buf_alloc_with_headroom(payload_size + kRtpsHeartbeatTailroom,
+                                kRtpsDataHeadroom + inline_qos_serialized_size(inline_qos));
     if (!payload_buf.valid()) {
         RTPS_LOG_E("writer", "write_preframed_async: buf_alloc_with_headroom failed");
         return false;

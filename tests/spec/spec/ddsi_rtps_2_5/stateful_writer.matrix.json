@@ -105,9 +105,9 @@
       "section": "8.3.3",
       "page": 68,
       "normativity": "implementation-behavior",
-      "statement": "A writer that builds payloads on demand packs its replay: each datagram holds its first change, framed in that change's own pool block, and as many following changes as fit in the rest of that block, never a larger block; the HEARTBEAT follows the newest change.",
+      "statement": "A writer that builds payloads on demand packs its replay: each datagram holds its first change, framed in that change's own pool block, and as many following changes as fit in the rest of that block, never a larger block; each following change is sized before it is built, so every change built is sent in that datagram; the HEARTBEAT follows the newest change.",
       "status": "implemented",
-      "test_ids": ["TC-SWR-8.4.1.4-011"]
+      "test_ids": ["TC-SWR-8.4.1.4-011", "TC-SEDP-8.5.4-019"]
     },
     {
       "id": "REQ-SWR-8.4.1.4-REMATCHED-READER",
