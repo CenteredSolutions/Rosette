@@ -676,10 +676,13 @@ public:
      * interface sizes its receive buffer from this call, so it decodes the
      * head frame's header rather than returning the queue total.
      *
-     * A header that cannot describe a frame (shorter than itself, or longer
-     * than `Chip::max_frame_bytes()`) means the ring is not at a frame
-     * boundary; that record is discarded here, exactly as read_frame() would,
-     * so the caller is never asked to allocate for it.
+     * A header shorter than itself, or longer than Sn_RX_RSR, means the ring
+     * is not at a frame boundary (the chip counts a frame in Sn_RX_RSR only
+     * once all of it is stored). Everything queued is then dropped by moving
+     * Sn_RX_RD to Sn_RX_WR, as udp_receive_from() does, and counted in
+     * rx_resyncs(). A well-formed frame longer than `Chip::max_frame_bytes()`
+     * is skipped whole. Either way the caller is never asked to allocate for
+     * it.
      *
      * @return Frame length in octets, without the length header, at most
      *   `Chip::max_frame_bytes()`; 0 when no complete header is queued or the
@@ -688,18 +691,20 @@ public:
      * Verification:
      * - Correct means: with frames of lengths a and b queued, the call returns
      *   a, read_frame() then returns a, the call returns b, and the ring is
-     *   unchanged by the call itself.
+     *   unchanged by the call itself; after a header longer than the received
+     *   size the ring is empty and the next frame reads intact.
      * - Covered by: tests/host/wiznet_macraw_device_test.cpp
-     *   (TC-NET-WIZ-MACRAW-003, TC-NET-WIZ-MACRAW-004).
+     *   (TC-NET-WIZ-MACRAW-003, TC-NET-WIZ-MACRAW-004, TC-NET-WIZ-MACRAW-006).
      *
      * References:
-     * - W5100S datasheet §Sn_RX_RSR, §Sn_RX_RD, and the MACRAW receive data format
-     * - W6100 / W6300 datasheets §Sn_RX_RSR, §Sn_RX_RD, and the MACRAW PACKET INFO
+     * - W5100S datasheet §Sn_RX_RSR, §Sn_RX_RD, §Sn_RX_WR, and the MACRAW receive data format
+     * - W6100 / W6300 datasheets §Sn_RX_RSR, §Sn_RX_RD, §Sn_RX_WR, and the MACRAW PACKET INFO
      */
     std::size_t peek_frame_size() noexcept {
         const auto lock = bus_.acquire();
         const socket_type socket = Chip::macraw_socket();
-        if (socket_rx_received_size(socket) < Chip::macraw_rx_header_bytes()) {
+        const uint16_t    available = socket_rx_received_size(socket);
+        if (available < Chip::macraw_rx_header_bytes()) {
             return 0u;
         }
 
@@ -709,19 +714,49 @@ public:
             ring_read(socket, start, header, static_cast<uint16_t>(sizeof(header))));
         const uint16_t total_len =
             static_cast<uint16_t>((static_cast<uint16_t>(header[0]) << 8) | header[1]);
+        if ((total_len < Chip::macraw_rx_header_bytes()) || (total_len > available)) {
+            resync_rx_ring_locked(socket);
+            return 0u;
+        }
+
         const uint16_t frame_len =
             static_cast<uint16_t>(total_len - Chip::macraw_rx_header_bytes());
-        if ((total_len > Chip::macraw_rx_header_bytes())
-            && (frame_len <= Chip::max_frame_bytes())) {
+        if ((frame_len > 0u) && (frame_len <= Chip::max_frame_bytes())) {
             return frame_len;
         }
 
-        const uint16_t skip = total_len > Chip::macraw_rx_header_bytes() ? frame_len : 0u;
-        set_socket_rx_read_pointer(socket, static_cast<uint16_t>(ring_skip(after_header, skip)));
+        set_socket_rx_read_pointer(socket,
+                                   static_cast<uint16_t>(ring_skip(after_header, frame_len)));
         issue_socket_command(socket, Chip::command_receive_done());
         return 0u;
     }
 
+    /**
+     * @brief Copies the MACRAW frame at the head of the receive ring into @p frame and frees its
+     * space.
+     *
+     * The network interface calls this after peek_frame_size() has sized the
+     * buffer. The RECV interrupt is cleared before the received size is read,
+     * so a frame that lands afterwards raises a fresh INT edge. A frame larger
+     * than @p capacity is skipped whole; a length header shorter than itself
+     * or longer than Sn_RX_RSR drops everything queued, as peek_frame_size()
+     * describes.
+     *
+     * @param[out] frame    Destination for the frame, without the length header.
+     * @param[in]  capacity Size of @p frame in octets.
+     * @return Frame length in octets; 0 when nothing is queued, or when the head
+     *   record was skipped or the ring was resynchronised.
+     *
+     * Verification:
+     * - Correct means: queued frames come back in order and intact, each call
+     *   consumes exactly one record, and a misaligned ring is emptied.
+     * - Covered by: tests/host/wiznet_macraw_device_test.cpp
+     *   (TC-NET-WIZ-MACRAW-003, TC-NET-WIZ-MACRAW-006).
+     *
+     * References:
+     * - W5100S datasheet §Sn_RX_RSR, §Sn_RX_RD, §Sn_RX_WR, and the MACRAW receive data format
+     * - W6100 / W6300 datasheets §Sn_RX_RSR, §Sn_RX_RD, §Sn_RX_WR, and the MACRAW PACKET INFO
+     */
     std::size_t read_frame(uint8_t* frame, std::size_t capacity) noexcept
     {
         const auto lock = bus_.acquire();
@@ -742,9 +777,9 @@ public:
 
         const uint16_t total_len =
             static_cast<uint16_t>((static_cast<uint16_t>(header[0]) << 8) | header[1]);
-        if (total_len < Chip::macraw_rx_header_bytes()) {
-            set_socket_rx_read_pointer(socket, pointer);
-            issue_socket_command(socket, Chip::command_receive_done());
+        // Off a frame boundary: see peek_frame_size().
+        if ((total_len < Chip::macraw_rx_header_bytes()) || (total_len > available)) {
+            resync_rx_ring_locked(socket);
             return 0u;
         }
 
@@ -1034,22 +1069,36 @@ public:
      * read pointer advanced past the whole datagram, and RECV issued so the chip
      * frees the space.
      *
+     * The chip counts a datagram in Sn_RX_RSR only once all of it is stored, so
+     * the header and payload of the datagram at the read pointer always fit in
+     * the received size. A header that claims more is not at a datagram
+     * boundary (a corrupted read, or the ring misaligned some other way), and
+     * every later header would be payload octets. The ring is then put back on
+     * a boundary by moving Sn_RX_RD to Sn_RX_WR, which drops whatever is
+     * queued, and the event is counted in rx_resyncs().
+     *
      * @param[in]  socket   Hardware socket opened by open_udp_socket().
      * @param[out] data     Payload destination, `capacity` bytes.
      * @param[in]  capacity Size of `data`.
      * @param[out] source   Sender address and port; may be null.
      * @return Payload length (>0); 0 when no datagram is waiting; -1 when the
      *   datagram was larger than `capacity` or empty, in which case it has been
-     *   discarded.
+     *   discarded, or when its header did not fit the received size, in which
+     *   case everything queued has been discarded.
      *
      * Verification:
      * - Correct means: the payload, sender address, family, and port equal the
-     *   datagram the peer sent, and the ring is left at the next datagram.
-     * - Covered by: tests/host/wiznet_udp_rx_test.cpp (W5100S and W6100 layouts,
-     *   IPv4 and IPv6 senders, oversize discard).
+     *   datagram the peer sent, and the ring is left at the next datagram; after
+     *   a header longer than the received size, the next call returns 0 and the
+     *   next datagram the chip stores reads intact.
+     * - Covered by: tests/host/wiznet_udp_socket_test.cpp (W5100S and W6100 /
+     *   W6300 layouts, IPv4 and IPv6 senders, oversize discard,
+     *   TC-NET-WIZ-RX-004 resync).
      *
      * References:
-     * - W5100S datasheet §5 (UDP receive, packet-info header)
+     * - W5100S datasheet v1.2.8 §5 (UDP receive, packet-info header),
+     *   §3.2.18 Sn_RX_RSR (= Sn_RX_WR - Sn_RX_RD), §3.2.20 Sn_RX_WR
+     * - W6100 datasheet §Sn_RX_RSR, §Sn_RX_WR
      * - WIZnet io6Library Ethernet/socket.c recvfrom() (W6100 PACK_INFO layout)
      */
     std::ptrdiff_t udp_receive_from(socket_type socket,
@@ -1064,6 +1113,10 @@ public:
 
     /// @brief UDP/MACRAW SENDs that ended in Sn_IR.TIMEOUT (ARP failure) since start-up.
     uint32_t send_timeouts() const noexcept { return send_timeouts_; }
+
+    /// @brief Receives that found a record header larger than Sn_RX_RSR and moved Sn_RX_RD to
+    /// Sn_RX_WR, since start-up.
+    uint32_t rx_resyncs() const noexcept { return rx_resyncs_; }
 
     /**
      * @brief Clears the RECV interrupt of every socket the chip has flagged, so INT deasserts.
@@ -1168,8 +1221,9 @@ private:
     }
 
     // One datagram out of a socket's RX ring: `read_header` decodes the
-    // chip's packet-info header (UDP or IPRAW layout), the payload is copied
-    // or skipped when it does not fit, and RECV frees the space.
+    // chip's packet-info header (UDP or IPRAW layout), the record is checked
+    // against the received size (udp_receive_from() says why), the payload is
+    // copied or skipped when it does not fit, and RECV frees the space.
     template<typename ReadHeader>
     std::ptrdiff_t receive_datagram(socket_type socket, uint8_t* data, std::size_t capacity,
                                     UdpEndpoint* source, ReadHeader&& read_header) noexcept
@@ -1181,13 +1235,20 @@ private:
             return 0;
         }
 
-        uint16_t pointer = socket_rx_read_pointer(socket);
+        const uint16_t start = socket_rx_read_pointer(socket);
+        uint16_t       pointer = start;
         UdpEndpoint sender{};
         const uint16_t payload_len = read_header(
             [&](uint8_t* out, uint16_t n) {
                 pointer = static_cast<uint16_t>(ring_read(socket, pointer, out, n));
             },
             sender);
+        const uint16_t header_len = static_cast<uint16_t>(pointer - start);
+        if (static_cast<uint32_t>(header_len) + payload_len > available) {
+            resync_rx_ring_locked(socket);
+            return -1;
+        }
+
         if (source != nullptr) {
             *source = sender;
         }
@@ -1205,6 +1266,35 @@ private:
         issue_socket_command(socket, Chip::command_receive_done());
         ack_socket_rx_interrupt(socket);
         return payload_len;
+    }
+
+    /**
+     * @brief Puts a socket's RX ring back on a record boundary by dropping everything queued.
+     *
+     * Called when the header at Sn_RX_RD claims a record larger than Sn_RX_RSR.
+     * Sn_RX_WR is always where the chip will store its next record, so setting
+     * Sn_RX_RD to it and issuing RECV leaves the ring empty and aligned. A
+     * record that lands between the read of Sn_RX_WR and the write of Sn_RX_RD
+     * starts at the value written, so it is kept and reads intact. The caller
+     * holds the bus lock.
+     *
+     * @param[in] socket Socket whose ring is misaligned.
+     *
+     * Verification:
+     * - Correct means: afterwards Sn_RX_RSR reads 0 and the next record the
+     *   chip stores is returned intact; rx_resyncs() has grown by one.
+     * - Covered by: tests/host/wiznet_udp_socket_test.cpp (TC-NET-WIZ-RX-004),
+     *   tests/host/wiznet_macraw_device_test.cpp (TC-NET-WIZ-MACRAW-006).
+     *
+     * References:
+     * - W5100S datasheet v1.2.8 §3.2.16 Sn_RX_RD, §3.2.18 Sn_RX_RSR, §3.2.20 Sn_RX_WR
+     * - W6100 datasheet §Sn_RX_RD, §Sn_RX_WR
+     */
+    void resync_rx_ring_locked(socket_type socket) noexcept {
+        set_socket_rx_read_pointer(socket, socket_rx_write_pointer(socket));
+        issue_socket_command(socket, Chip::command_receive_done());
+        ack_socket_rx_interrupt(socket);
+        ++rx_resyncs_;
     }
 
     // SLIRCLR (SLIR itself on the W5100S) is write-1-to-clear; the caller holds the bus lock.
@@ -1368,6 +1458,11 @@ private:
         return read_u16(Chip::socket_rx_read_pointer(socket));
     }
 
+    // Sn_RX_WR moves as the chip stores records, so it is read like Sn_RX_RSR.
+    uint16_t socket_rx_write_pointer(socket_type socket) noexcept {
+        return read_u16_stable(Chip::socket_rx_write_pointer(socket));
+    }
+
     uint16_t socket_tx_write_pointer(socket_type socket) noexcept
     {
         return read_u16(Chip::socket_tx_write_pointer(socket));
@@ -1493,6 +1588,7 @@ private:
     // drained yet; see wait_pending_send().
     std::array<bool, Chip::socket_count()> send_pending_{};
     uint32_t send_timeouts_ = 0u;
+    uint32_t                               rx_resyncs_ = 0u;
 
     // The chip has flagged an IPv4 address conflict (its own SIPR seen in an
     // ARP from another MAC). Latched under the bus lock by poll_common_interrupt();
