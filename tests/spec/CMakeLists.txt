@@ -193,6 +193,7 @@ set(SEDP_SPEC_TEST_SOURCES
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
@@ -234,6 +235,7 @@ add_executable(history_cache_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/buf_pool.cpp
 )
@@ -264,12 +266,14 @@ add_executable(stateful_writer_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     src/test_stateful_writer_8_4_1_1_locator_reference.cpp
     ../../src/rtps/fragment_assembler.cpp
     src/test_proxy_pool_admission.cpp
     src/test_stateful_writer_8_4_1_4.cpp
     src/test_stateful_writer_8_4_1_4_rematch.cpp
+    src/test_stateful_writer_8_4_1_4_replay.cpp
     src/test_stateful_writer_8_4_2_2.cpp
     src/test_stateful_writer_8_4_3_8_4_4.cpp
     src/test_stateful_writer_8_4_6_requested_window.cpp
@@ -318,6 +322,7 @@ add_executable(stateful_reader_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/message_parser.cpp
@@ -360,6 +365,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/spdp.cpp
@@ -428,6 +434,7 @@ add_executable(local_name_limit_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/spdp.cpp
@@ -465,6 +472,7 @@ add_executable(writer_slot_class_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/spdp.cpp

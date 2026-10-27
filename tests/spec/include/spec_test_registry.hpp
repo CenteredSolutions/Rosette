@@ -57,6 +57,7 @@ void register_all_history_cache_tests(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_1_1_locator_reference(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_1_4(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_1_4_rematch(std::vector<TestCase>& tests);
+void append_stateful_writer_tests_8_4_1_4_replay(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_2_2(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_3_8_4_4(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_2_2(std::vector<TestCase>& tests);

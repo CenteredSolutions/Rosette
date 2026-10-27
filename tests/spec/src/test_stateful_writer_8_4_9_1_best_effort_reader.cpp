@@ -190,6 +190,7 @@ static bool tc_swr_8_4_9_1_003(std::string& err) {
     CHECK(w.matched_reader_add(kBestEffortReader, &kLocBestEffort, 1u, false,
                                ReliabilityKind::BEST_EFFORT),
           "match the best-effort reader");
+    finish_replay(w, 0u);
     CHECK(tx.best_effort.data == 3, "the history is replayed to it");
     CHECK(tx.best_effort.heartbeats == 0, "with no HEARTBEAT");
     CHECK(w.cache().size() == 3u, "the history stays for readers that match later");

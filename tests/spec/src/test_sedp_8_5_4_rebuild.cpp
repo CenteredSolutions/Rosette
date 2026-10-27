@@ -142,7 +142,10 @@ static bool tc_sedp_8_5_4_015(std::string& err) {
     CHECK(live_blocks() - live_before == stored_held, "a rebuilt announcement holds no block");
 
     stored.announce_to_peer(peer, dest);
+
+    finish_replay(stored, 0u);
     rebuilt.announce_to_peer(peer, dest);
+    finish_replay(rebuilt, 0u);
     CHECK(!stored_tx.sent.empty(), "the stored writer announces to the peer");
     CHECK(rebuilt_tx.sent == stored_tx.sent, "rebuilt datagrams equal stored ones byte for byte");
     CHECK(live_blocks() - live_before == stored_held,
@@ -153,7 +156,9 @@ static bool tc_sedp_8_5_4_015(std::string& err) {
     stored_tx.sent.clear();
     rebuilt_tx.sent.clear();
     stored.announce_to_peer(late, dest);
+    finish_replay(stored, 0u);
     rebuilt.announce_to_peer(late, dest);
+    finish_replay(rebuilt, 0u);
     CHECK(!rebuilt_tx.sent.empty() && rebuilt_tx.sent == stored_tx.sent,
           "TRANSIENT_LOCAL replay to a late peer is identical");
     return true;
@@ -173,6 +178,7 @@ static bool tc_sedp_8_5_4_016(std::string& err) {
     SedpWriter w(local, tx, endpoints.source());
     CHECK(w.register_writer(wd), "registration");
     w.announce_to_peer(peer, dest);
+    finish_replay(w, 0u);
     const std::vector<std::vector<Octet>> first = data_payloads(tx.sent);
     CHECK(first.size() == 1u, "the peer is sent the announcement once");
 

@@ -7,6 +7,7 @@ void register_all_stateful_writer_tests(std::vector<TestCase>& tests) {
     append_stateful_writer_tests_8_4_1_1_locator_reference(tests);
     append_stateful_writer_tests_8_4_1_4(tests);
     append_stateful_writer_tests_8_4_1_4_rematch(tests);
+    append_stateful_writer_tests_8_4_1_4_replay(tests);
     append_stateful_writer_tests_8_4_2_2(tests);
     append_stateful_writer_tests_8_4_3_8_4_4(tests);
     append_stateful_writer_tests_8_4_6_requested_window(tests);

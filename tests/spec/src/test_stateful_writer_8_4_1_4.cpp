@@ -159,8 +159,14 @@ static bool tc_swr_8_4_1_4_003(std::string& err) {
           "matched_reader_add should succeed");
     auto* proxy = w.matched_reader_lookup(reader_guid);
     CHECK(proxy != nullptr, "matched_reader_lookup should find added proxy");
+    CHECK(tx.unicast_msgs.empty() && proxy->replaying && w.replay_pending(),
+          "matching sends nothing itself: the replay is left to tick()");
+    CHECK(w.ms_until_next_timer(0u) == 0u, "and the writer asks to be ticked at once");
+
+    w.tick(0u);
     CHECK(proxy->next_unsent_change(w.cache()) == SEQUENCENUMBER_UNKNOWN,
-          "TRANSIENT_LOCAL replay should be sent at match time, leaving nothing unsent");
+          "the next tick() sends the replay, leaving nothing unsent");
+    CHECK(!proxy->replaying && !w.replay_pending(), "and ends it");
     CHECK(tx.unicast_msgs.size() == 1u && tx.unicast_dests[0] == loc,
           "the cached change should be replayed to the new reader's locator");
 
@@ -185,6 +191,7 @@ static bool tc_swr_8_4_1_4_008(std::string& err) {
     CHECK(tx.unicast_msgs.empty(), "no reader is matched yet, so nothing is sent");
 
     CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+    finish_replay(w, 0u);
 
     std::vector<int64_t> data_sns{};
     std::vector<ParsedHeartbeat> heartbeats{};
@@ -273,7 +280,8 @@ void append_stateful_writer_tests_8_4_1_4(std::vector<TestCase>& tests) {
                      "§8.4.1.4: matched_reader_add plus write_async sends DATA to the matched reader locator with writer-assigned SN.",
                      tc_swr_8_4_1_4_002});
     tests.push_back({"TC-SWR-8.4.1.4-003",
-                     "§8.7.2.2: a TRANSIENT_LOCAL writer replays its cached changes to a newly matched reader immediately.",
+                     "§8.7.2.2: a TRANSIENT_LOCAL writer replays its cached changes to a newly "
+                     "matched reader from the next tick(), not from matched_reader_add().",
                      tc_swr_8_4_1_4_003});
     tests.push_back(
         {"TC-SWR-8.4.1.4-008",

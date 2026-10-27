@@ -245,14 +245,11 @@ bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* 
                reader_guid.entityId.entityKey[2], reader_guid.entityId.entityKind,
                reader_reliable ? "" : " (best-effort)");
 
-    // TRANSIENT_LOCAL: push the cached changes now rather than waiting for
-    // the next write (§8.7.2.2). A reliable replay piggybacks a HEARTBEAT
-    // on its newest change so the reader immediately acknowledges the replay
-    // or requests any missing cached changes instead of waiting for the
-    // periodic HEARTBEAT; send_unsent_changes() leaves it off for readers
-    // served best-effort.
-    if (durability_ == DurabilityKind::TRANSIENT_LOCAL) {
-        send_unsent_changes(reliability_ == ReliabilityKind::RELIABLE);
+    // TRANSIENT_LOCAL: the cached changes go to the new reader from tick(),
+    // a budget at a time, rather than waiting for the next write (§8.7.2.2).
+    if (durability_ == DurabilityKind::TRANSIENT_LOCAL && slot->has_unsent_changes(writer_cache_)) {
+        slot->replaying = true;
+        replayPending_ = true;
     }
 
     return true;
@@ -405,8 +402,10 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
 
     // A TRANSIENT_LOCAL writer replays its history to a reader that started
     // over, as matched_reader_add() does for a new one (§8.7.2.2).
-    if (started_over && durability_ == DurabilityKind::TRANSIENT_LOCAL) {
-        send_unsent_changes();
+    if (started_over && durability_ == DurabilityKind::TRANSIENT_LOCAL
+        && proxy->has_unsent_changes(writer_cache_)) {
+        proxy->replaying = true;
+        replayPending_ = true;
     }
 
     // NACKed SNs: repair what the reader can have after nackResponseDelay,
@@ -486,6 +485,11 @@ void StatefulWriter::record_fragment_repair(const ReaderProxy& proxy, const Sequ
 }
 
 void StatefulWriter::tick(uint32_t now_ms) noexcept {
+    // Phase 0: the next part of any TRANSIENT_LOCAL replay.
+    if (replayPending_) {
+        drain_replays();
+    }
+
     // Phase 1: repair what readers NACKed, once nackResponseDelay has passed.
     for (ReaderProxy& proxy : matched()) {
         if (!proxy.nack_delay_elapsed(now_ms, nack_delay_ms_)) continue;
@@ -575,6 +579,10 @@ bool StatefulWriter::acknowledged_by_participant(const GuidPrefix& prefix) const
 }
 
 uint32_t StatefulWriter::ms_until_next_timer(uint32_t now_ms) const noexcept {
+    if (replayPending_) {
+        return 0u;
+    }
+
     uint32_t next = UINT32_MAX;
     bool any_announcing = false;
     for (const ReaderProxy& proxy : matched()) {
@@ -616,7 +624,12 @@ void StatefulWriter::answer_nack(ReaderProxy& proxy, const SequenceNumberSet& re
     SequenceNumberSet repairable{};
     SequenceNumberSet irrelevant{};
     requested.for_each([&](const SequenceNumber& sn) noexcept {
-        if (!(sn < nextSN_)) return;
+        // Beyond the history, or not yet sent to this reader: the send already
+        // due (a write in progress, a replay) answers it.
+        if (!(sn < nextSN_) || proxy.is_unsent(sn)) {
+            return;
+        }
+
         if (proxy.is_relevant(sn) && writer_cache_.get_change(sn)) {
             (void)repairable.add(sn);
         } else {
@@ -751,18 +764,8 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
     return send_data_to(built, proxy, heartbeat, only_fragments);
 }
 
-bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& proxy,
-                                        const Locator& dest, bool heartbeat) noexcept {
-    // Work on a non-owning view; retain the block first so the CacheChange
-    // keeps its own reference. The view's prepends and append only write
-    // outside [payload.data, payload.data + payload.size), so the stored
-    // change is unchanged for the next reader or a repair.
-    ch.payload.retain();
-    BufRef view{};
-    view.block = ch.payload.block;
-    view.data  = ch.payload.data;
-    view.size  = ch.payload.size;
-
+bool StatefulWriter::frame_data_in_place(BufRef& view, const CacheChange& ch, uint32_t payload_size,
+                                         const EntityId& reader_id) const noexcept {
     // Inline QoS sits between the fixed DATA fields and the
     // serializedPayload — §9.4.5.3, Table 9.14.
     const uint16_t inline_qos_size = inline_qos_serialized_size(ch.inlineQos);
@@ -774,15 +777,13 @@ bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& prox
     auto*  sm = aligned_as<DataSubmessageFixed>(view.prepend(sizeof(DataSubmessageFixed)));
     auto*  smh = aligned_as<SubmessageHeader>(view.prepend(sizeof(SubmessageHeader)));
     auto* mh = reinterpret_cast<RTPSMessageHeader*>(view.prepend(sizeof(RTPSMessageHeader)));
-    Octet* hb = heartbeat ? view.append(kRtpsHeartbeatTailroom) : nullptr;
-    if ((inline_qos_size > 0u && !iq) || !sm || !smh || !mh || (heartbeat && !hb)) {
-        view.reset();
+    if ((inline_qos_size > 0u && !iq) || !sm || !smh || !mh) {
         return false;
     }
 
     sm->extraFlags        = 0;
     sm->octetsToInlineQos = 16u;  // Fixed DATA fields after this one — §9.4.5.3.
-    sm->readerId          = proxy.remoteReaderGuid.entityId;
+    sm->readerId = reader_id;
     sm->writerId          = guid_.entityId;
     sm->writerSN          = ch.sequenceNumber;
 
@@ -790,12 +791,34 @@ bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& prox
     smh->flags = static_cast<Octet>(FLAG_E |
                                     (ch.kind == ChangeKind::ALIVE ? data_flags::D : data_flags::K) |
                                     (inline_qos_size > 0u ? data_flags::Q : 0u));
-    smh->submessageLength = static_cast<uint16_t>(sizeof(DataSubmessageFixed) + inline_qos_size
-                                                  + ch.payload.size);
+    smh->submessageLength =
+        static_cast<uint16_t>(sizeof(DataSubmessageFixed) + inline_qos_size + payload_size);
 
     *mh = RTPSMessageHeader{};
     mh->guidPrefix = guid_.prefix;
     mh->vendorId   = VENDORID_THIS_IMPL;
+    return true;
+}
+
+bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& proxy,
+                                        const Locator& dest, bool heartbeat) noexcept {
+    // Work on a non-owning view; retain the block first so the CacheChange
+    // keeps its own reference. The view's prepends and append only write
+    // outside [payload.data, payload.data + payload.size), so the stored
+    // change is unchanged for the next reader or a repair.
+    ch.payload.retain();
+    BufRef view{};
+    view.block = ch.payload.block;
+    view.data = ch.payload.data;
+    view.size = ch.payload.size;
+
+    const bool framed =
+        frame_data_in_place(view, ch, ch.payload.size, proxy.remoteReaderGuid.entityId);
+    Octet* hb = framed && heartbeat ? view.append(kRtpsHeartbeatTailroom) : nullptr;
+    if (!framed || (heartbeat && !hb)) {
+        view.reset();
+        return false;
+    }
 
     if (hb) {
         encode_heartbeat(hb, proxy.remoteReaderGuid.entityId);
@@ -894,6 +917,10 @@ void StatefulWriter::send_unsent_changes(bool with_heartbeat) noexcept {
 
     const SequenceNumber newest = writer_cache_.get_seq_num_max();
     for (ReaderProxy& proxy : matched()) {
+        if (proxy.replaying) {
+            continue;
+        }
+
         while (true) {
             const SequenceNumber sn = proxy.next_unsent_change(writer_cache_);
             if (sn == SEQUENCENUMBER_UNKNOWN) break;

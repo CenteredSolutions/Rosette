@@ -307,8 +307,15 @@ public:
     /// the participant routes ACKNACK and NACK_FRAG through it.
     StatefulWriter* find_writer(const EntityId& writer_id) noexcept;
 
-    // Drive builtin writer periodic maintenance.
+    // Drive builtin writer periodic maintenance, and the announcement replay
+    // to newly discovered peers (StatefulWriter::drain_replays()).
     void tick(uint32_t now_ms) noexcept;
+
+    /// @brief True while either builtin writer is still replaying its
+    ///   announcements to a newly discovered peer from tick().
+    bool replay_pending() const noexcept {
+        return publications_writer_.replay_pending() || subscriptions_writer_.replay_pending();
+    }
 
     // Soonest timed action of the two builtin writers (heartbeat or repair).
     uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept {

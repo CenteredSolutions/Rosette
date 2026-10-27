@@ -128,6 +128,11 @@ public:
     /// The reader announced RELIABLE; see "Reader reliability" above. Kept
     /// beside the other flags, where it costs no padding.
     bool    isReliable = true;
+    /// A TRANSIENT_LOCAL writer is replaying its history to this reader from
+    /// tick(), a budget at a time (StatefulWriter::drain_replays()), so the
+    /// write paths leave its UNSENT changes to the replay. Fills the padding
+    /// after the other flags.
+    bool    replaying = false;
 
     /// The entry of this reader's unicastLocatorList it is addressed at
     /// (§8.4.1.1), owned by the record the proxy was matched from; null
@@ -372,6 +377,10 @@ public:
     bool has_unsent_changes(const HistoryCache& history) const noexcept {
         return next_unsent_change(history) != SEQUENCENUMBER_UNKNOWN;
     }
+
+    /// @brief True when the change `sn` has not been sent to this reader yet:
+    ///   it is UNSENT, so a request for it is answered by the send already due.
+    bool is_unsent(const SequenceNumber& sn) const noexcept { return highestSentSN_ < sn; }
 
     /**
      * @brief True while some relevant change is not yet acknowledged by this reader.

@@ -136,8 +136,11 @@ static bool tc_swr_8_4_1_4_004(std::string& err) {
 
     acknack(w, reader, writer, 1, 2);
     CHECK(listener.calls == 1, "the rematch listener runs once for the reader that started over");
-    CHECK(tx.data == 2 && tx.last_data_sn == 4,
-          "the reader is replayed SN 3, then sent the change the listener wrote");
+    CHECK(tx.data == 0, "the replay waits for tick(), and so does the change written meanwhile");
+    finish_replay(w, 1000u);
+    CHECK(tx.data == 1 && tx.last_data_sn == 4,
+          "the replay sends the history as it stands: the listener's SN 4 evicted SN 3 from "
+          "this KEEP_LAST(1) history, so the reader gets SN 4");
     CHECK(tx.heartbeats >= 1, "and told the range it can request");
     const ReaderProxy* proxy = w.matched_reader_lookup(reader);
     CHECK(proxy != nullptr && proxy->highestAckedSN == SEQUENCENUMBER_ZERO,
@@ -183,6 +186,7 @@ static bool tc_swr_8_4_1_4_005(std::string& err) {
     acknack(w, reader, writer, 1, 1);
     CHECK(proxy->highestAckedSN == SEQUENCENUMBER_ZERO,
           "an ACKNACK acknowledging nothing re-matches the reader whatever its count");
+    finish_replay(w, 0u);
     CHECK(tx.data == 3, "and replays every cached change");
     return true;
 }
