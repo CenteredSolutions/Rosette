@@ -173,18 +173,28 @@ endif()
 #             class 2  2 KiB       DATA/DATA_FRAG framing; small samples
 #             class 3  16 KiB      medium samples
 #             class 4  MAX_SAMPLE  large samples
-#   firmware  class 0  256 B       control messages and short samples
-#             class 1  512 B       SPDP's announcement, each SEDP
+#   firmware  class 0  256 B  x16  control messages being sent, short
+#                                  samples a writer holds until acknowledged
+#                                  or a reader holds until taken
+#             class 1  512 B  x8   SPDP's announcement, each SEDP
 #                                  announcement while it is rebuilt and sent,
 #                                  received discovery data while it is
 #                                  applied, samples of 257-512 octets
-#             class 2  1 KiB       received discovery data, mid-size samples
-#             class 3  datagram    one datagram plus its RTPS headers (44
+#             class 2  1 KiB  x2   samples of 513-1024 octets; more spill
+#                                  into the datagram class
+#             class 3  datagram x6 one datagram plus its RTPS headers (44
 #                                  octets), rounded to 8: received DATA,
-#                                  built messages, unfragmented samples
+#                                  built messages, unfragmented samples, and
+#                                  ros_discovery_info once its node table
+#                                  passes 1 KiB, held for the context's life
 #             class 4  MAX_SAMPLE  samples larger than one datagram
-#   The firmware counts follow what a board holds at once; the host counts
-#   leave room for many peers and deep histories.
+#   The firmware counts follow what a board holds at once, which tracks the
+#   samples in flight rather than the endpoints declared: a 35-endpoint
+#   board among 90 participants peaked at 7 class 0, 2 class 1, and 2
+#   datagram blocks (ROSETTE_RTPS_POOL_STATS). A datagram block serves any
+#   request a 1 KiB block does, so the mid-size class stays small and the
+#   datagram class carries the overflow. The host counts leave room for many
+#   peers and deep histories.
 #
 # SEDP announcements (RTPS_SEDP_REBUILD_ANNOUNCEMENTS, rosette/rtps/sedp.hpp)
 # follow the profile too. The firmware profile rebuilds each announcement
@@ -240,14 +250,14 @@ elseif(RMW_ROSETTE_POOL_PROFILE STREQUAL "firmware")
     message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_MAX_SAMPLE_SIZE (${RMW_ROSETTE_MAX_SAMPLE_SIZE}) must "
                         "exceed the datagram class (${_rr_size3} octets) in the firmware profile")
   endif()
-  math(EXPR _rr_pool0 "16 + ${_rr_local_endpoints}")
+  set(_rr_pool0 16)
   if(_rr_sedp_rebuild)
     set(_rr_pool1 8)
   else()
     math(EXPR _rr_pool1 "2 * (${_rr_local_endpoints} + 1)")
   endif()
-  set(_rr_pool2 8)
-  set(_rr_pool3 4)
+  set(_rr_pool2 2)
+  set(_rr_pool3 6)
 else()
   message(FATAL_ERROR "RMW_ROSETTE_POOL_PROFILE='${RMW_ROSETTE_POOL_PROFILE}' is not host or firmware")
 endif()
