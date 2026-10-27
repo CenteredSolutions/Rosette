@@ -43,6 +43,7 @@
 namespace rmw_rosette {
 
 struct Node;
+class CdrWriter;
 
 /// Octets in an `rmw_dds_common/msg/Gid` (Humble: `char[24] data`).
 constexpr uint32_t kGidSize = 24;
@@ -124,7 +125,35 @@ public:
     uint32_t encode(const rosette::rtps::Guid& participant, uint8_t* out,
                     uint32_t cap) const noexcept;
 
+    /**
+     * @brief Octets encode() writes for the table as it stands.
+     *
+     * The ros_discovery_info writer allocates its pool block at exactly this
+     * size, so the message lands in the smallest class that holds it with
+     * one encoding pass.
+     *
+     * @param[in] participant GUID of the local participant, as passed to encode().
+     * @return The body length encode() returns given enough capacity.
+     *
+     * Verification:
+     * - Correct means: encode() into a buffer of encoded_size() octets
+     *   succeeds and returns encoded_size(); one octet fewer returns 0.
+     * - Covered by: rmw_rosette/test/test_local_node_entities.cpp.
+     *
+     * References:
+     * - OMG DDS-XTypes 1.3 §7.4.1 (XCDR1 encoding of strings and sequences)
+     */
+    uint32_t encoded_size(const rosette::rtps::Guid& participant) const noexcept;
+
 private:
+    /**
+     * @brief Writes the ParticipantEntitiesInfo body that encode() documents.
+     *
+     * @param[in]     participant GUID of the local participant.
+     * @param[in,out] cdr         Writer over the destination, or a measuring writer.
+     */
+    void write(const rosette::rtps::Guid& participant, CdrWriter& cdr) const noexcept;
+
     struct EndpointEntry {
         const Node* node      = nullptr;
         rosette::rtps::Guid guid{};

@@ -33,6 +33,9 @@ namespace rmw_rosette {
  *
  * Alignment is computed from the start of `buf`, so `buf` must point at the
  * first byte of the CDR body (immediately after the encapsulation header).
+ * A writer over a null buffer measures: it stores nothing, and length()
+ * reports the octets the same writes take in a real buffer, so an encoder
+ * can size its buffer exactly before encoding into it.
  */
 class CdrWriter {
 public:
@@ -40,7 +43,8 @@ public:
      * @brief Creates a writer over a caller-owned buffer.
      *
      * @param[out] buf Destination; must stay valid for the writer's lifetime.
-     * @param[in]  cap Capacity of `buf` in bytes.
+     *                 Null measures instead of writing.
+     * @param[in]  cap Capacity of `buf` in bytes; SIZE_MAX when measuring.
      */
     CdrWriter(uint8_t* buf, size_t cap) noexcept : buf_(buf), cap_(cap) {}
 
@@ -68,7 +72,10 @@ public:
      */
     void put_bytes(const void* src, size_t len) noexcept {
         if (!ok_ || len > cap_ - pos_) { ok_ = false; return; }
-        if (len) std::memcpy(buf_ + pos_, src, len);
+        if (len && buf_) {
+            std::memcpy(buf_ + pos_, src, len);
+        }
+
         pos_ += len;
     }
 

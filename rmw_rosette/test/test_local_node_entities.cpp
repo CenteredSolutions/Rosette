@@ -167,3 +167,24 @@ TEST(LocalNodeEntities, ReportsABufferTooSmall) {
     EXPECT_EQ(table.encode(participant, buf, n - 1), 0u);
     EXPECT_EQ(table.encode(participant, buf, n), n);
 }
+
+TEST(LocalNodeEntities, MeasuresExactlyWhatItEncodes) {
+    rmw_rosette::Node nodes[2] = {};
+    set_node(nodes[0], "/mach", "b_67751d2a");
+    set_node(nodes[1], "/", "n");
+    rmw_rosette::LocalNodeEntities table;
+    const rtps::Guid               participant = make_guid(0x50, 0x01, 0xC1);
+    uint8_t                        buf[2048];
+    EXPECT_EQ(table.encoded_size(participant), table.encode(participant, buf, sizeof(buf)));
+
+    ASSERT_TRUE(table.add_node(nodes[0]));
+    ASSERT_TRUE(table.add_node(nodes[1]));
+    for (uint8_t i = 0; i < 40; ++i) {
+        ASSERT_TRUE(table.associate(nodes[i % 2], make_guid(0x50, i, 0x03), i % 3 == 0));
+    }
+
+    const uint32_t n = table.encoded_size(participant);
+    ASSERT_GT(n, 1024u);
+    EXPECT_EQ(table.encode(participant, buf, n), n);
+    EXPECT_EQ(table.encode(participant, buf, n - 1), 0u);
+}

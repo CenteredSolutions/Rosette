@@ -103,25 +103,22 @@ bool RosDiscoveryInfoWriter::publish_change() noexcept {
 }
 
 bool RosDiscoveryInfoWriter::publish() noexcept {
-    if (!writer_) return false;
-    uint32_t request = RTPS_POOL_CLASS0_SIZE;
-    for (;;) {
-        rtps::BufRef buf = rtps::buf_alloc(request);
-        if (!buf.valid()) return false;
-        const uint32_t len =
-            entities_.encode(participant_->participant_guid(), buf.data, buf.capacity());
-        if (len > 0u) {
-            buf.size = len;
-            return writer_->write_async_owned(rtps::ChangeKind::ALIVE,
-                                              static_cast<rtps::BufRef&&>(buf));
-        }
-
-        if (buf.capacity() >= rtps::kPoolMaxBlockSize) {
-            return false;
-        }
-
-        request = buf.capacity() + 1u;
+    if (!writer_) {
+        return false;
     }
+
+    const rtps::Guid participant = participant_->participant_guid();
+    rtps::BufRef     buf = rtps::buf_alloc(entities_.encoded_size(participant));
+    if (!buf.valid()) {
+        return false;
+    }
+
+    buf.size = entities_.encode(participant, buf.data, buf.capacity());
+    if (buf.size == 0u) {
+        return false;
+    }
+
+    return writer_->write_async_owned(rtps::ChangeKind::ALIVE, static_cast<rtps::BufRef&&>(buf));
 }
 
 }  // namespace rmw_rosette

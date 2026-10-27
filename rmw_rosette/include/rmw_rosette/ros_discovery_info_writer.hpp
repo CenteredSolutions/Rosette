@@ -132,8 +132,9 @@ private:
     /**
      * @brief Encodes the current table into a pool buffer and writes it.
      *
-     * Starts from the smallest pool class and moves up one class whenever the
-     * message does not fit, as serialize_to_pool() does for user messages.
+     * Measures the message first (LocalNodeEntities::encoded_size()) and
+     * allocates a block of exactly that size, so the message takes the
+     * smallest pool class that holds it and is encoded once.
      *
      * @return `true` when the writer accepted the change; `false` when no
      *   pool block could hold the message or create() never succeeded.
