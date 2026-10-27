@@ -519,6 +519,30 @@ add_test(
     COMMAND buf_pool_debug_spec_tests
 )
 
+# The buffer pool's usage statistics, with two blocks per class so a class
+# runs out in a few allocations, and a log sink of the test's own.
+add_executable(buf_pool_stats_spec_tests
+    src/test_buf_pool_stats.cpp
+    src/spec_test_common.cpp
+    ../../src/rtps/buf_pool.cpp
+    ../../src/rtps/buf_pool_stats_log.cpp
+)
+target_include_directories(buf_pool_stats_spec_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+target_compile_definitions(buf_pool_stats_spec_tests PRIVATE
+    RTPS_LOG_LEVEL=2
+    RTPS_BUFPOOL_STATS=1
+    RTPS_POOL_CLASS0_COUNT=2u RTPS_POOL_CLASS1_COUNT=2u RTPS_POOL_CLASS2_COUNT=2u
+    RTPS_POOL_CLASS3_COUNT=2u RTPS_POOL_CLASS4_COUNT=2u
+)
+add_test(
+    NAME buf_pool_stats_spec_conformance
+    COMMAND buf_pool_stats_spec_tests
+)
+
 # The peer-tier tests need an active tier smaller than the network: two
 # active slots among six known peers, and a short settle time.
 set(PARTICIPANT_TIER_SPEC_TEST_SOURCES ${PARTICIPANT_SPEC_TEST_SOURCES})

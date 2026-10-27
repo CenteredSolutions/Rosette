@@ -198,6 +198,12 @@ set(RMW_ROSETTE_POOL_PROFILE host CACHE STRING
     "Buffer-pool layout: host (large, many peers) or firmware (sized by role for a microcontroller)")
 set_property(CACHE RMW_ROSETTE_POOL_PROFILE PROPERTY STRINGS host firmware)
 
+# ROSETTE_RTPS_POOL_STATS=ON counts buffer pool use per class and warns when a
+# request gets no block (rosette/rtps/buf_pool_stats.hpp,
+# docs/mcu_memory_model.md "Pool pressure"): the measurements the class sizes
+# and counts above are chosen from.
+option(ROSETTE_RTPS_POOL_STATS "Count buffer pool use per class and warn on refusals" OFF)
+
 function(_rr_clamp_count out value)
   if(value GREATER 255)
     set(value 255)
@@ -338,4 +344,7 @@ function(rmw_rosette_apply_capacity target)
     RTPS_POOL_CLASS4_COUNT=${_rr_pool4}u
     RTPS_ASSEMBLY_SLOTS=${_rr_assembly_slots}u
   )
+  if(ROSETTE_RTPS_POOL_STATS)
+    target_compile_definitions(${target} PRIVATE RTPS_BUFPOOL_STATS=1)
+  endif()
 endfunction()
