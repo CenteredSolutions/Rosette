@@ -1077,6 +1077,13 @@ public:
      * a boundary by moving Sn_RX_RD to Sn_RX_WR, which drops whatever is
      * queued, and the event is counted in rx_resyncs().
      *
+     * The socket's RECV interrupt flag is cleared before Sn_RX_RSR is read, so
+     * a datagram stored after that read raises the flag again and wakes the
+     * RX task even while the earlier one is still being read. Datagrams
+     * already queued when the flag was cleared raise no further edge, so a
+     * caller reads before it waits (the socket's receive loop in
+     * socket_provider.hpp does) and finds them on its next call.
+     *
      * @param[in]  socket   Hardware socket opened by open_udp_socket().
      * @param[out] data     Payload destination, `capacity` bytes.
      * @param[in]  capacity Size of `data`.
@@ -1090,10 +1097,12 @@ public:
      * - Correct means: the payload, sender address, family, and port equal the
      *   datagram the peer sent, and the ring is left at the next datagram; after
      *   a header longer than the received size, the next call returns 0 and the
-     *   next datagram the chip stores reads intact.
+     *   next datagram the chip stores reads intact; a datagram stored after
+     *   Sn_RX_RSR was read leaves the RECV flag set.
      * - Covered by: tests/host/wiznet_udp_socket_test.cpp (W5100S and W6100 /
      *   W6300 layouts, IPv4 and IPv6 senders, oversize discard,
-     *   TC-NET-WIZ-RX-004 resync).
+     *   TC-NET-WIZ-RX-004 resync, TC-NET-WIZ-RX-005 and TC-NET-WIZ-RX-006
+     *   interrupt flag).
      *
      * References:
      * - W5100S datasheet v1.2.8 §5 (UDP receive, packet-info header),
@@ -1224,14 +1233,26 @@ private:
     // chip's packet-info header (UDP or IPRAW layout), the record is checked
     // against the received size (udp_receive_from() says why), the payload is
     // copied or skipped when it does not fit, and RECV frees the space.
+    //
+    // The RECV flag is cleared before Sn_RX_RSR is sampled, never after the
+    // datagram is consumed: a datagram stored once RSR has been read raises
+    // the flag afresh, and the interrupt edge that wakes the RX task is not
+    // lost to an acknowledgement that lands after it. A datagram stored
+    // before the sample is in RSR and is read now. Datagrams still queued
+    // when this returns raise no further edge: the caller reads before it
+    // waits, so its next call finds them.
     template<typename ReadHeader>
     std::ptrdiff_t receive_datagram(socket_type socket, uint8_t* data, std::size_t capacity,
                                     UdpEndpoint* source, ReadHeader&& read_header) noexcept
     {
         const auto lock = bus_.acquire();
+        if ((data == nullptr) || (capacity == 0u)) {
+            return 0;
+        }
+
+        ack_socket_rx_interrupt(socket);
         const uint16_t available = socket_rx_received_size(socket);
-        if ((data == nullptr) || (capacity == 0u) ||
-            (available < Chip::udp_rx_header_bytes())) {
+        if (available < Chip::udp_rx_header_bytes()) {
             return 0;
         }
 
@@ -1257,14 +1278,12 @@ private:
             pointer = static_cast<uint16_t>(ring_skip(pointer, payload_len));
             set_socket_rx_read_pointer(socket, pointer);
             issue_socket_command(socket, Chip::command_receive_done());
-            ack_socket_rx_interrupt(socket);
             return -1;
         }
 
         pointer = static_cast<uint16_t>(ring_read(socket, pointer, data, payload_len));
         set_socket_rx_read_pointer(socket, pointer);
         issue_socket_command(socket, Chip::command_receive_done());
-        ack_socket_rx_interrupt(socket);
         return payload_len;
     }
 
@@ -1275,25 +1294,31 @@ private:
      * Sn_RX_WR is always where the chip will store its next record, so setting
      * Sn_RX_RD to it and issuing RECV leaves the ring empty and aligned. A
      * record that lands between the read of Sn_RX_WR and the write of Sn_RX_RD
-     * starts at the value written, so it is kept and reads intact. The caller
-     * holds the bus lock.
+     * starts at the value written, so it is kept and reads intact. The RECV
+     * flag is cleared before Sn_RX_WR is sampled, so that kept record also
+     * raises the flag afresh and the RX task is woken for it; clearing the
+     * flag after the sample would swallow the edge. The caller holds the bus
+     * lock.
      *
      * @param[in] socket Socket whose ring is misaligned.
      *
      * Verification:
      * - Correct means: afterwards Sn_RX_RSR reads 0 and the next record the
-     *   chip stores is returned intact; rx_resyncs() has grown by one.
-     * - Covered by: tests/host/wiznet_udp_socket_test.cpp (TC-NET-WIZ-RX-004),
-     *   tests/host/wiznet_macraw_device_test.cpp (TC-NET-WIZ-MACRAW-006).
+     *   chip stores is returned intact; rx_resyncs() has grown by one; a
+     *   record stored after the Sn_RX_WR sample is kept and leaves the RECV
+     *   flag set.
+     * - Covered by: tests/host/wiznet_udp_socket_test.cpp (TC-NET-WIZ-RX-004,
+     *   TC-NET-WIZ-RX-005), tests/host/wiznet_macraw_device_test.cpp
+     *   (TC-NET-WIZ-MACRAW-006).
      *
      * References:
      * - W5100S datasheet v1.2.8 §3.2.16 Sn_RX_RD, §3.2.18 Sn_RX_RSR, §3.2.20 Sn_RX_WR
      * - W6100 datasheet §Sn_RX_RD, §Sn_RX_WR
      */
     void resync_rx_ring_locked(socket_type socket) noexcept {
+        ack_socket_rx_interrupt(socket);
         set_socket_rx_read_pointer(socket, socket_rx_write_pointer(socket));
         issue_socket_command(socket, Chip::command_receive_done());
-        ack_socket_rx_interrupt(socket);
         ++rx_resyncs_;
     }
 
