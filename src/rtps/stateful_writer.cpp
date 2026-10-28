@@ -323,7 +323,7 @@ void StatefulWriter::send_heartbeat_to(const EntityId& reader_id, const Locator&
     if (!builder_.begin(guid_.prefix)) return;
     if (builder_.append_heartbeat(reader_id, guid_.entityId, fsn, lsn, heartbeatCount_, final_flag)) {
         BufRef buf = builder_.finish();
-        transport_.send_unicast(buf, dest);
+        send_counted(buf, dest);
         buf.reset();
     } else {
         builder_.abort();
@@ -613,7 +613,7 @@ void StatefulWriter::send_gap(const ReaderProxy& proxy, const SequenceNumberSet&
     if (dest == LOCATOR_INVALID || !builder_.begin(guid_.prefix)) return;
     if (builder_.append_gap(proxy.remoteReaderGuid.entityId, guid_.entityId, gap_start, gap_list)) {
         BufRef buf = builder_.finish();
-        transport_.send_unicast(buf, dest);
+        send_counted(buf, dest);
         buf.reset();
     } else {
         builder_.abort();
@@ -625,9 +625,11 @@ void StatefulWriter::answer_nack(ReaderProxy& proxy, const SequenceNumberSet& re
     SequenceNumberSet repairable{};
     SequenceNumberSet irrelevant{};
     requested.for_each([&](const SequenceNumber& sn) noexcept {
-        // Beyond the history, or not yet sent to this reader: the send already
-        // due (a write in progress, a replay) answers it.
-        if (!(sn < nextSN_) || proxy.is_unsent(sn)) {
+        // Beyond the history, or not yet replayed to this reader: the replay
+        // that is due answers it. A change merely UNSENT to a reader that is
+        // not replaying has no send scheduled, so it is repaired like any
+        // other.
+        if (!(sn < nextSN_) || (proxy.replaying && proxy.is_unsent(sn))) {
             return;
         }
 
@@ -724,7 +726,7 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
                                                       heartbeatCount_, /*final=*/false));
         if (ok) {
             BufRef buf = builder_.finish();
-            sent = transport_.send_unicast(buf, dest);
+            sent = send_counted(buf, dest);
             buf.reset();
         } else {
             builder_.abort();
@@ -825,7 +827,7 @@ bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& prox
         encode_heartbeat(hb, proxy.remoteReaderGuid.entityId);
     }
 
-    const bool sent = transport_.send_unicast(view, dest);
+    const bool sent = send_counted(view, dest);
     view.reset();  // Release the extra retain() taken above.
     return sent;
 }
@@ -898,7 +900,7 @@ bool StatefulWriter::send_fragments_to(const CacheChange& ch, ReaderProxy& proxy
         }
 
         BufRef buf = builder_.finish();
-        all_sent = transport_.send_unicast(buf, dest) && all_sent;
+        all_sent = send_counted(buf, dest) && all_sent;
         buf.reset();
         hb_sent = hb_sent || with_hb;
     }

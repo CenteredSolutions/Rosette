@@ -96,9 +96,18 @@
       "section": "8.7.2.2",
       "page": 196,
       "normativity": "implementation-behavior",
-      "statement": "A TRANSIENT_LOCAL writer replays its history to a newly matched or re-matched reader from tick(), at most RTPS_REPLAY_DATAGRAMS_PER_TICK datagrams per call, each change once and in sequence order, including changes written during the replay; a NACK for a change not yet sent to the reader is left to the send already due.",
+      "statement": "A TRANSIENT_LOCAL writer replays its history to a newly matched or re-matched reader from tick(), spending at most RTPS_REPLAY_DATAGRAMS_PER_TICK datagrams per call (fragments and HEARTBEATs included, finishing only the change in progress), each change once and in sequence order, including changes written during the replay; a NACK from a replaying reader for a change not yet replayed to it is left to the replay, and any other NACK is repaired.",
       "status": "implemented",
-      "test_ids": ["TC-SWR-8.4.1.4-003", "TC-SWR-8.4.1.4-010"]
+      "test_ids": ["TC-SWR-8.4.1.4-003", "TC-SWR-8.4.1.4-010", "TC-SWR-8.4.1.4-012", "TC-SWR-8.4.1.4-014"]
+    },
+    {
+      "id": "REQ-SWR-8.7.2.2-REPLAY-FAIRNESS",
+      "section": "8.7.2.2",
+      "page": 196,
+      "normativity": "implementation-behavior",
+      "statement": "Readers replaying from the same writer share the per-tick budget: each tick() starts at the reader after the last one served, so a reader that keeps receiving new changes cannot keep the budget from the readers matched after it.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.4-013"]
     },
     {
       "id": "REQ-SWR-8.3.3-REPLAY-PACKING",

@@ -37,6 +37,7 @@ namespace {
 /// One datagram the writer sent: its size and the submessages in it.
 struct Datagram {
     uint32_t             size = 0u;
+    Locator              dest{};
     std::vector<int64_t> data_sns{};
     int                  heartbeats = 0;
 };
@@ -44,10 +45,14 @@ struct Datagram {
 /// Records every datagram, parsed.
 struct RecordingTransport : ITransport {
     std::vector<Datagram> sent{};
+    uint32_t              limit = 65507u;  ///< max_datagram_size() reported to the writer.
 
-    bool send_unicast(const BufRef& buf, const Locator&) noexcept override {
+    uint32_t max_datagram_size() const noexcept override { return limit; }
+
+    bool send_unicast(const BufRef& buf, const Locator& dest) noexcept override {
         Datagram d{};
         d.size = buf.size;
+        d.dest = dest;
         ParseOps ops{};
         ops.on_data = [](const ParseContext& c, const ParsedData& data) noexcept {
             static_cast<Datagram*>(c.user_data)->data_sns.push_back(data.writerSN.to_int64());
@@ -244,6 +249,114 @@ static bool tc_swr_8_4_1_4_011(std::string& err) {
     return true;
 }
 
+// TC-SWR-8.4.1.4-012: the replay budget is charged in datagrams sent, not in
+// changes: a fragmented sample costs one datagram per fragment, so a tick()
+// stops starting changes once the budget is spent and overshoots by at most
+// the rest of the change in progress.
+static bool tc_swr_8_4_1_4_012(std::string& err) {
+    RecordingTransport tx{};
+    tx.limit = 200u;
+    const Guid                  writer = make_guid(0x50u, make_entity(1u, 2u, 3u, 0x02u));
+    const Guid                  reader = make_guid(0x60u, make_entity(4u, 5u, 6u, 0x07u));
+    const Locator               loc = make_udpv4_locator(0xC0A80192u, 7411u);
+    StatefulWriterStorage<8, 1> w(writer, ReliabilityKind::RELIABLE,
+                                  DurabilityKind::TRANSIENT_LOCAL, tx, 5u, 1000u);
+    const std::vector<Octet>    payload(400u, 0x5Au);
+    const uint32_t              samples = 3u;
+    for (uint32_t i = 0; i < samples; ++i) {
+        CHECK(w.write_async(ChangeKind::ALIVE, payload.data(), 400u), "write a fragmented sample");
+    }
+
+    CHECK(tx.sent.empty(), "no reader is matched, so nothing is sent");
+    CHECK(w.matched_reader_add(reader, &loc, 1u, false), "match");
+
+    w.tick(0u);
+    const uint32_t fragments_per_sample = 3u;
+    CHECK(tx.sent.size() >= RTPS_REPLAY_DATAGRAMS_PER_TICK
+              && tx.sent.size() < RTPS_REPLAY_DATAGRAMS_PER_TICK + fragments_per_sample,
+          "a tick() sends the budget in datagrams, plus the rest of the sample in progress");
+    CHECK(tx.sent.size() < samples * fragments_per_sample,
+          "the budget stops the replay before every fragment has gone out");
+    CHECK(w.replay_pending(), "the rest of the replay waits for the next tick()");
+
+    const size_t first_tick = tx.sent.size();
+    finish_replay(w, 0u);
+    CHECK(tx.sent.size() >= samples * fragments_per_sample && tx.sent.size() > first_tick,
+          "later ticks send every fragment of every sample");
+    return true;
+}
+
+// TC-SWR-8.4.1.4-013: replaying readers share the budget: a pass starts at
+// the reader after the last one served, so a reader that keeps receiving new
+// changes cannot keep the budget from the readers matched after it.
+static bool tc_swr_8_4_1_4_013(std::string& err) {
+    RecordingTransport           tx{};
+    const Guid                   writer = make_guid(0x70u, make_entity(1u, 2u, 3u, 0x02u));
+    const Guid                   first = make_guid(0x80u, make_entity(4u, 5u, 6u, 0x07u));
+    const Guid                   second = make_guid(0x90u, make_entity(4u, 5u, 6u, 0x07u));
+    const Locator                first_loc = make_udpv4_locator(0xC0A80193u, 7411u);
+    const Locator                second_loc = make_udpv4_locator(0xC0A80194u, 7411u);
+    StatefulWriterStorage<32, 2> w(writer, ReliabilityKind::RELIABLE,
+                                   DurabilityKind::TRANSIENT_LOCAL, tx, 5u, 1000u);
+    const Octet                  payload[4] = {1u, 2u, 3u, 4u};
+    const uint32_t               budget = RTPS_REPLAY_DATAGRAMS_PER_TICK;
+    for (uint32_t i = 0; i < budget + 2u; ++i) {
+        CHECK(w.write_async(ChangeKind::ALIVE, payload, 4u), "write before the readers match");
+    }
+
+    CHECK(w.matched_reader_add(first, &first_loc, 1u, false), "match the first reader");
+    CHECK(w.matched_reader_add(second, &second_loc, 1u, false), "match the second reader");
+
+    // As many new changes arrive between ticks as a tick() can send, so the
+    // first reader always has changes UNSENT.
+    for (uint32_t tick = 0u; tick < 2u; ++tick) {
+        for (uint32_t i = 0; i < budget; ++i) {
+            CHECK(w.write_async(ChangeKind::ALIVE, payload, 4u), "write during the replay");
+        }
+
+        w.tick(0u);
+    }
+
+    uint32_t to_second = 0u;
+    for (const Datagram& d : tx.sent) {
+        to_second += d.dest == second_loc ? 1u : 0u;
+    }
+
+    CHECK(to_second > 0u, "the reader matched second is served while the first has more to send");
+    CHECK(w.replay_pending(), "both readers still have changes to replay");
+    return true;
+}
+
+// TC-SWR-8.4.1.4-014: a NACK for a change that is UNSENT to a reader that is
+// not replaying is repaired; only a replaying reader's NACK is left to the
+// replay.
+static bool tc_swr_8_4_1_4_014(std::string& err) {
+    RecordingTransport          tx{};
+    const Guid                  writer = make_guid(0xA0u, make_entity(1u, 2u, 3u, 0x02u));
+    const Guid                  reader = make_guid(0xB0u, make_entity(4u, 5u, 6u, 0x07u));
+    const Locator               loc = make_udpv4_locator(0xC0A80195u, 7411u);
+    StatefulWriterStorage<8, 1> w(writer, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx,
+                                  5u, 1000u);
+    g_stateful_writer_test_now_ms = 0u;
+    CHECK(w.matched_reader_add(reader, &loc, 1u, false), "match");
+    CHECK(!w.replay_pending(), "a VOLATILE writer has nothing to replay");
+
+    // add_change() alone sends nothing: the change stays UNSENT with no send due.
+    BufRef       buf{};
+    CacheChange* change = w.new_change(ChangeKind::ALIVE, buf, 4u);
+    CHECK(change != nullptr, "stage a change");
+    memset(buf.data, 0x11, 4u);
+    buf.size = 4u;
+    change->payload.size = 4u;
+    CHECK(w.add_change(static_cast<CacheChange&&>(*change)), "add the change without sending it");
+    CHECK(tx.sent.empty(), "add_change() sends nothing");
+
+    acknack(w, reader, writer, 1, 1, {1});
+    w.tick(10u);  // nackResponseDelay (5 ms) has passed
+    CHECK(count_of(tx.all_data_sns(), 1) == 1, "the NACKed change is repaired");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_1_4_replay(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.1.4-010",
                      "§8.7.2.2/§8.4.1.4: a TRANSIENT_LOCAL replay goes out from tick(), at most "
@@ -255,6 +368,18 @@ void append_stateful_writer_tests_8_4_1_4_replay(std::vector<TestCase>& tests) {
                      "replay into the first payload's block, several DATA per datagram in order, "
                      "with one HEARTBEAT after the newest.",
                      tc_swr_8_4_1_4_011});
+    tests.push_back({"TC-SWR-8.4.1.4-012",
+                     "§8.7.2.2: a replay tick() charges its budget in datagrams sent, fragments "
+                     "included, and overshoots by at most the rest of the change in progress.",
+                     tc_swr_8_4_1_4_012});
+    tests.push_back({"TC-SWR-8.4.1.4-013",
+                     "§8.7.2.2: replaying readers share the per-tick budget; a reader with a "
+                     "steady supply of new changes does not keep it from the readers after it.",
+                     tc_swr_8_4_1_4_013});
+    tests.push_back({"TC-SWR-8.4.1.4-014",
+                     "§8.4.7.1/§8.4.9.2: a NACK for a change UNSENT to a reader that is not "
+                     "replaying is repaired; only a replaying reader's NACK is left to the replay.",
+                     tc_swr_8_4_1_4_014});
 }
 
 }  // namespace spec_test

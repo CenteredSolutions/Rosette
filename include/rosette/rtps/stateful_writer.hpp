@@ -1165,29 +1165,36 @@ private:
     void send_unsent_changes(bool with_heartbeat = false) noexcept;
 
     /**
-     * @brief Sends the next part of each pending TRANSIENT_LOCAL replay: at
-     *   most RTPS_REPLAY_DATAGRAMS_PER_TICK datagrams for the whole writer.
+     * @brief Sends the next part of each pending TRANSIENT_LOCAL replay,
+     *   spending RTPS_REPLAY_DATAGRAMS_PER_TICK datagrams for the whole writer.
      *
      * matched_reader_add(), and on_acknack() for a reader that started over,
      * mark the proxy replaying instead of sending its history at once. This
      * runs from tick() and walks the replaying proxies in match order,
-     * sending each its UNSENT changes in sequence order
-     * (send_replay_datagram()) until the budget is spent. A proxy with nothing
-     * left UNSENT stops replaying; the writer's replay is pending while any
-     * proxy still is.
+     * starting where the previous pass stopped, sending each its UNSENT
+     * changes in sequence order (send_replay_datagram()) until the budget is
+     * spent. The budget is charged in datagrams actually sent, fragments and
+     * HEARTBEATs included; a change already being sent is not split, so a
+     * pass overshoots by at most the rest of one change's datagrams. The next
+     * pass starts at the proxy after the last one served, so a reader that
+     * keeps receiving new changes cannot hold the budget against the others.
+     * A proxy with nothing left UNSENT stops replaying; the writer's replay
+     * is pending while any proxy still is.
      *
      * Packing sizes each following change before building it, so every
      * change built is sent in the datagram it was built for and nothing is
      * held between datagrams or ticks.
      *
      * Verification:
-     * - Correct means: a tick() sends at most the budget in datagrams; every
-     *   cached change reaches every replaying reader exactly once, in
-     *   sequence order, the newest with the replay's HEARTBEAT when the
-     *   writer serves the reader reliably; once nothing is UNSENT the writer
-     *   reports no pending replay.
+     * - Correct means: a tick() stops sending once the budget of datagrams
+     *   is spent, finishing at most the change in progress; every cached
+     *   change reaches every replaying reader exactly once, in sequence
+     *   order, the newest with the replay's HEARTBEAT when the writer serves
+     *   the reader reliably; every replaying reader is served within as many
+     *   passes as there are replaying readers; once nothing is UNSENT the
+     *   writer reports no pending replay.
      * - Covered by: TC-SWR-8.4.1.4-003, TC-SWR-8.4.1.4-008, TC-SWR-8.4.1.4-010,
-     *   TC-SWR-8.4.1.4-011.
+     *   TC-SWR-8.4.1.4-011, TC-SWR-8.4.1.4-012, TC-SWR-8.4.1.4-013.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.7.2.2 (TRANSIENT_LOCAL replay), §8.4.9.2,
@@ -1271,6 +1278,14 @@ private:
     /// @brief The range a HEARTBEAT advertises: the history's oldest and
     ///   newest change, or lastSN + 1 and lastSN when it is empty (§8.4.2.2).
     void heartbeat_range(SequenceNumber& first, SequenceNumber& last) const noexcept;
+
+    /// @brief Sends one datagram through the transport and counts it, so
+    ///   drain_replays() charges the datagrams a send actually put on the wire
+    ///   (a fragmented sample is many, a HEARTBEAT alone is one).
+    bool send_counted(const BufRef& datagram, const Locator& dest) noexcept {
+        ++datagramsSent_;
+        return transport_.send_unicast(datagram, dest);
+    }
 
     /// @brief Sends a HEARTBEAT for the current history range to one locator.
     void send_heartbeat_to(const EntityId& reader_id, const Locator& dest, bool final_flag) noexcept;
@@ -1398,6 +1413,8 @@ private:
     uint32_t       evictedUnacknowledged_ = 0;         ///< See evicted_unacknowledged().
     FragmentRepair fragRepair_{};                      ///< Pending NACK_FRAG repair.
     bool           replayPending_ = false;  ///< Some proxy is replaying (drain_replays()).
+    uint32_t       replayCursor_ = 0;   ///< Match-order index where the next replay pass starts.
+    uint32_t       datagramsSent_ = 0;  ///< Datagrams sent so far (send_counted()); wraps.
 
     /// Called when a matched reader started over (set_rematch_listener()).
     struct {

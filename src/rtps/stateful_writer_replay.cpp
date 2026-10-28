@@ -27,15 +27,20 @@
 namespace rosette::rtps {
 
 void StatefulWriter::drain_replays() noexcept {
-    uint32_t budget = RTPS_REPLAY_DATAGRAMS_PER_TICK;
-    bool     pending = false;
-    for (ReaderProxy& proxy : matched()) {
+    const uint32_t first_datagram = datagramsSent_;
+    bool           pending = false;
+    uint32_t       resume = replayCursor_;
+
+    // Sends one replaying proxy datagrams until the budget is spent, and
+    // records where the next pass starts: just after the last proxy served.
+    const auto serve = [&](ReaderProxy& proxy, uint32_t index) noexcept {
         if (!proxy.replaying) {
-            continue;
+            return;
         }
 
-        while (budget > 0u && send_replay_datagram(proxy)) {
-            --budget;
+        while (datagramsSent_ - first_datagram < RTPS_REPLAY_DATAGRAMS_PER_TICK
+               && send_replay_datagram(proxy)) {
+            resume = index + 1u;
         }
 
         if (proxy.has_unsent_changes(writer_cache_)) {
@@ -43,8 +48,22 @@ void StatefulWriter::drain_replays() noexcept {
         } else {
             proxy.replaying = false;
         }
+    };
+
+    // The proxies from the cursor on, then those before it: a rotation of
+    // match order.
+    for (const bool from_cursor : {true, false}) {
+        uint32_t index = 0;
+        for (ReaderProxy& proxy : matched()) {
+            if ((index >= replayCursor_) == from_cursor) {
+                serve(proxy, index);
+            }
+
+            ++index;
+        }
     }
 
+    replayCursor_ = resume;
     replayPending_ = pending;
     release_finished_changes();
 }
@@ -131,7 +150,7 @@ bool StatefulWriter::send_replay_datagram(ReaderProxy& proxy) noexcept {
         encode_heartbeat(hb, reader_id);
     }
 
-    transport_.send_unicast(datagram, dest);
+    send_counted(datagram, dest);
     datagram.reset();
     if (heartbeat && !hb) {
         send_heartbeat_to(reader_id, dest, /*final=*/false);

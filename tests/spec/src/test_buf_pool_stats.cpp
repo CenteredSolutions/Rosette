@@ -1,6 +1,6 @@
 /**
  * @file test_buf_pool_stats.cpp
- * @brief The buffer pool's usage statistics (rtps/buf_pool_stats.hpp): TC-BUF-STATS-001 to 003.
+ * @brief The buffer pool's usage statistics (rtps/buf_pool_stats.hpp): TC-BUF-STATS-001 to 004.
  *
  * Built as buf_pool_stats_spec_tests with RTPS_BUFPOOL_STATS, the library's default class sizes
  * (128, 256, 512, 1024, 2048) and two blocks per class, so a class runs out in a few allocations.
@@ -151,6 +151,29 @@ bool tc_buf_stats_003(std::string& err) {
     return true;
 }
 
+/**
+ * @brief TC-BUF-STATS-004: the summed request size does not wrap with the request count.
+ *
+ * Verification:
+ * - Correct means: after 70,000 requests of 65,532 octets (more than the 65,541 a 32-bit sum
+ *   holds), the class records the exact sum and a mean of 65,532 octets.
+ */
+bool tc_buf_stats_004(std::string& err) {
+    static constexpr uint16_t kSizes[2] = {256u, 65532u};
+    rtps::BufPoolStats<2>     stats(kSizes);
+    constexpr uint32_t        kRequests = 70000u;
+    for (uint32_t i = 0; i < kRequests; ++i) {
+        (void)stats.on_request(65532u, 1u);
+    }
+
+    const rtps::BufPoolClassStats& c1 = stats[1];
+    CHECK(c1.requests == kRequests, "the requests are not all counted");
+    CHECK(c1.request_octets == static_cast<uint64_t>(kRequests) * 65532u,
+          "the summed request size wrapped");
+    CHECK(c1.request_octets / c1.requests == 65532u, "the mean request size is not 65,532");
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -166,6 +189,10 @@ int main(int argc, char** argv) {
         {"TC-BUF-STATS-003",
          "buf_pool_stats_log() reports each used class's statistics and starts a new window.",
          tc_buf_stats_003},
+        {"TC-BUF-STATS-004",
+         "The summed request size of a class does not wrap while the request count is far "
+         "from wrapping.",
+         tc_buf_stats_004},
     };
 
     return spec_test::run_standalone_tests(tests, sizeof(tests) / sizeof(tests[0]), argc, argv);

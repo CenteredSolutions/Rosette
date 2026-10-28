@@ -27,7 +27,8 @@ void buf_pool_stats_log([[maybe_unused]] bool reset) noexcept {
             continue;
         }
 
-        const unsigned long mean = s.requests == 0u ? 0ul : s.request_octets / s.requests;
+        const unsigned long mean =
+            s.requests == 0u ? 0ul : static_cast<unsigned long>(s.request_octets / s.requests);
         rtps_log_write(RTPS_LOG_LEVEL_INFO, "pool",
                        "%u x%u: served %lu, live %u, peak %u | asked %lu (%u..%u, mean %lu), "
                        "up %lu, refused %lu",

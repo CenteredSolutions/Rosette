@@ -47,12 +47,14 @@ inline constexpr uint8_t kBufPoolStatsBins = 8u;
 /// @brief The statistics of one pool class (see the file comment for the two views).
 struct BufPoolClassStats {
     // Demand: requests whose best fit is this class.
-    uint32_t requests = 0;        ///< Requests, served or not.
-    uint32_t request_octets = 0;  ///< Their sizes summed; the mean is this / requests.
-    uint16_t request_min = 0;     ///< Smallest size requested; 0 before the first.
-    uint16_t request_max = 0;     ///< Largest size requested.
-    uint32_t spilled_up = 0;      ///< Served by a larger class: this one was empty.
-    uint32_t refused = 0;         ///< Got no block: every eligible class was empty.
+    uint32_t requests = 0;  ///< Requests, served or not.
+    /// Their sizes summed; the mean is this / requests. 64 bits, because a
+    /// 32-bit sum wraps after 65,541 requests of 65,532 octets.
+    uint64_t request_octets = 0;
+    uint16_t request_min = 0;  ///< Smallest size requested; 0 before the first.
+    uint16_t request_max = 0;  ///< Largest size requested.
+    uint32_t spilled_up = 0;   ///< Served by a larger class: this one was empty.
+    uint32_t refused = 0;      ///< Got no block: every eligible class was empty.
     /// Requests per size bin: bin i covers sizes above
     /// lower + i * width up to lower + (i + 1) * width (BufPoolStats::bin_width()).
     uint32_t request_bins[kBufPoolStatsBins] = {};
@@ -74,7 +76,7 @@ struct BufPoolClassStats {
  * - Correct means: every request is counted once, in its best-fit class,
  *   whether served, spilled, or refused; live counts equal the blocks
  *   allocated; high_water never falls below live.
- * - Covered by: TC-BUF-STATS-001, TC-BUF-STATS-002.
+ * - Covered by: TC-BUF-STATS-001, TC-BUF-STATS-002, TC-BUF-STATS-004.
  */
 template <uint8_t N>
 class BufPoolStats {
