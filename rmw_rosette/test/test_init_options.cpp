@@ -174,7 +174,7 @@ TEST_F(InitOptionsTest, FiniOfEmptyOptionsIsANoOp) {
 // TC-RMW-INITOPT-006: options stamped by another rmw are rejected and left exactly as found.
 TEST_F(InitOptionsTest, FiniRefusesOptionsOfAnotherRmw) {
     rmw_init_options_t options = options_with_strings();
-    const char* const own_identifier = options.implementation_identifier;
+    const char* const  own_identifier = options.implementation_identifier;
     options.implementation_identifier = "rmw_other_implementation";
     char* const enclave = options.enclave;
 
@@ -208,7 +208,8 @@ TEST_F(InitOptionsTest, CopyReportsAnEnclaveAllocationFailure) {
     EXPECT_EQ(g_live, 0);
 }
 
-// TC-RMW-INITOPT-008: when the security root fails after the enclave was copied, the enclave is released.
+// TC-RMW-INITOPT-008: when the security root fails after the enclave was copied, the enclave is
+// released.
 TEST_F(InitOptionsTest, CopyReleasesTheEnclaveWhenTheSecurityRootFails) {
     rmw_init_options_t source = options_with_strings();
     rmw_init_options_t destination = rmw_get_zero_initialized_init_options();
@@ -226,6 +227,26 @@ TEST_F(InitOptionsTest, CopyReleasesTheEnclaveWhenTheSecurityRootFails) {
     g_fail_at = -1;
     EXPECT_EQ(rmw_init_options_fini(&source), RMW_RET_OK);
     EXPECT_EQ(g_live, 0);
+}
+
+// TC-RMW-INITOPT-009: fresh options carry RMW_DEFAULT_DOMAIN_ID, so rcl_init() applies
+// ROS_DOMAIN_ID.
+TEST_F(InitOptionsTest, InitLeavesTheDomainForRclToResolve) {
+    rmw_init_options_t options = rmw_get_zero_initialized_init_options();
+    ASSERT_EQ(rmw_init_options_init(&options, counting_allocator()), RMW_RET_OK);
+    EXPECT_EQ(options.domain_id, RMW_DEFAULT_DOMAIN_ID);
+    EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
+}
+
+// TC-RMW-INITOPT-010: rmw_init() refuses a domain above 232, whose ports would not fit in 16 bits.
+TEST_F(InitOptionsTest, RmwInitRefusesADomainAbove232) {
+    rmw_init_options_t options = rmw_get_zero_initialized_init_options();
+    ASSERT_EQ(rmw_init_options_init(&options, counting_allocator()), RMW_RET_OK);
+    options.domain_id = 233u;
+    rmw_context_t context = rmw_get_zero_initialized_context();
+    EXPECT_EQ(rmw_init(&options, &context), RMW_RET_INVALID_ARGUMENT);
+    rmw_reset_error();
+    EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
 }
 
 }  // namespace
