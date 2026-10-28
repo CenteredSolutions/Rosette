@@ -104,6 +104,79 @@ void check_rx_resync(const char* name, MakeRecord&& make_record) {
               .c_str());
 }
 
+/**
+ * TC-NET-WIZ-RX-005: a datagram the chip stores after the resync has sampled
+ * Sn_RX_WR is kept, and it leaves the RECV flag set, so the RX task is woken
+ * for it. The resync clears the flag before it samples, never after.
+ */
+template <typename Chip, typename MakeRecord>
+void check_rx_resync_keeps_flag(const char* name, MakeRecord&& make_record) {
+    using Chipset = fake::FakeWiznetChip<Chip>;
+    Chipset                          chip;
+    wiz::WiznetDevice<Chip, Chipset> dev{chip};
+    dev.init_socket_mode(kMac);
+    check(dev.open_udp_socket(1, 7410), tag(name, "resync flag: socket opens").c_str());
+
+    chip.deliver(1, make_record(600u, std::vector<uint8_t>(40u, 0x11u)));
+    // The driver reads Sn_RX_WR until two reads agree, so the sample is complete
+    // after the second read; the datagram is stored right after it.
+    bool     arrived = false;
+    unsigned reads = 0u;
+    chip.after_read = [&](typename Chipset::address_type a) {
+        if (!arrived && a == Chip::socket_rx_write_pointer(1) && ++reads == 2u) {
+            arrived = true;
+            chip.deliver(1, make_record(5u, v({'l', 'a', 't', 'e', '!'})));
+        }
+    };
+
+    std::array<uint8_t, 1472> buf{};
+    wiz::UdpEndpoint          from{};
+    check(
+        dev.udp_receive_from(1, buf.data(), buf.size(), &from) == -1 && arrived,
+        tag(name, "resync flag: the resync ran with a datagram arriving after its sample").c_str());
+    check((chip.u8(Chip::socket_interrupt(1)) & Chip::socket_interrupt_receive()) != 0u,
+          tag(name, "resync flag: the datagram stored after the sample leaves RECV set").c_str());
+    chip.after_read = nullptr;
+    check(dev.udp_receive_from(1, buf.data(), buf.size(), &from) == 5 && buf[0] == 'l',
+          tag(name, "resync flag: the datagram stored after the sample reads intact").c_str());
+}
+
+/**
+ * TC-NET-WIZ-RX-006: a datagram the chip stores after a receive has read
+ * Sn_RX_RSR leaves the RECV flag set. The receive clears the flag before it
+ * reads RSR, never after it consumes the datagram.
+ */
+template <typename Chip, typename MakeRecord>
+void check_rx_receive_keeps_flag(const char* name, MakeRecord&& make_record) {
+    using Chipset = fake::FakeWiznetChip<Chip>;
+    Chipset                          chip;
+    wiz::WiznetDevice<Chip, Chipset> dev{chip};
+    dev.init_socket_mode(kMac);
+    check(dev.open_udp_socket(1, 7410), tag(name, "receive flag: socket opens").c_str());
+
+    chip.deliver(1, make_record(3u, v({'o', 'n', 'e'})));
+    // Sn_RX_RSR is read until two reads agree; the second completes the sample.
+    bool     arrived = false;
+    unsigned reads = 0u;
+    chip.after_read = [&](typename Chipset::address_type a) {
+        if (!arrived && a == Chip::socket_rx_received_size(1) && ++reads == 2u) {
+            arrived = true;
+            chip.deliver(1, make_record(3u, v({'t', 'w', 'o'})));
+        }
+    };
+
+    std::array<uint8_t, 1472> buf{};
+    wiz::UdpEndpoint          from{};
+    check(dev.udp_receive_from(1, buf.data(), buf.size(), &from) == 3 && buf[0] == 'o' && arrived,
+          tag(name, "receive flag: the first datagram reads with another arriving after the sample")
+              .c_str());
+    check((chip.u8(Chip::socket_interrupt(1)) & Chip::socket_interrupt_receive()) != 0u,
+          tag(name, "receive flag: the datagram stored after the sample leaves RECV set").c_str());
+    chip.after_read = nullptr;
+    check(dev.udp_receive_from(1, buf.data(), buf.size(), &from) == 3 && buf[0] == 't',
+          tag(name, "receive flag: the next call reads the datagram that arrived").c_str());
+}
+
 template<typename Chip>
 void check_w6x00(const char* name)
 {
@@ -211,12 +284,15 @@ void check_w5100s()
 int main()
 {
     check_w5100s();
-    check_rx_resync<wiz::W5100S>("W5100S", [](uint16_t len, const std::vector<uint8_t>& payload) {
+    const auto w5100s_with_length = [](uint16_t len, const std::vector<uint8_t>& payload) {
         auto r = w5100s_record(v({10, 0, 0, 7}), 1234, payload);
         r[6] = static_cast<uint8_t>(len >> 8);
         r[7] = static_cast<uint8_t>(len);
         return r;
-    });
+    };
+    check_rx_resync<wiz::W5100S>("W5100S", w5100s_with_length);
+    check_rx_resync_keeps_flag<wiz::W5100S>("W5100S", w5100s_with_length);
+    check_rx_receive_keeps_flag<wiz::W5100S>("W5100S", w5100s_with_length);
     const auto w6x00_with_length = [](uint16_t len, const std::vector<uint8_t>& payload) {
         auto r = w6x00_record(false, v({10, 0, 0, 7}), 1234, payload);
         r[0] = static_cast<uint8_t>((r[0] & 0xF8u) | ((len >> 8) & 0x07u));
@@ -225,6 +301,10 @@ int main()
     };
     check_rx_resync<wiz::W6100>("W6100", w6x00_with_length);
     check_rx_resync<wiz::W6300>("W6300", w6x00_with_length);
+    check_rx_resync_keeps_flag<wiz::W6100>("W6100", w6x00_with_length);
+    check_rx_resync_keeps_flag<wiz::W6300>("W6300", w6x00_with_length);
+    check_rx_receive_keeps_flag<wiz::W6100>("W6100", w6x00_with_length);
+    check_rx_receive_keeps_flag<wiz::W6300>("W6300", w6x00_with_length);
     check_w6x00<wiz::W6100>("W6100");
     check_w6x00<wiz::W6300>("W6300");
     return test_summary();

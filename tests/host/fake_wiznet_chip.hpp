@@ -17,7 +17,8 @@
  * store in the socket's RX ring, packet-info header first), inspect datagrams
  * the driver sent in `sent`, and script socket-less outcomes with
  * `socketless_reply` (NS, RS) and `arp_hosts` (ARP: the hosts that answer,
- * after `arp_reply_reads` reads of SLIR).
+ * after `arp_reply_reads` reads of SLIR). `after_read` runs after each register
+ * read, so a test can deliver a datagram between two of the driver's accesses.
  *
  * Only the behaviour the driver depends on is modelled; the model's buffer
  * layout matches `WiznetDevice::init_socket_mode()` (2 KiB per socket).
@@ -26,6 +27,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <vector>
 
@@ -85,8 +87,20 @@ public:
         for (std::size_t i = 0; i < len; ++i) mem[step(base, i)] = data[i];
     }
 
-    void read(const uint8_t* prefix, std::size_t, uint8_t* data, std::size_t len)
-    {
+    /// Called with the register address after every read has returned its
+    /// data, so a test can store a datagram at an exact point in the driver's
+    /// sequence of register accesses (the chip receives while the host is
+    /// between two SPI transactions).
+    std::function<void(address_type)> after_read;
+
+    void read(const uint8_t* prefix, std::size_t prefix_len, uint8_t* data, std::size_t len) {
+        read_registers(prefix, prefix_len, data, len);
+        if (after_read) {
+            after_read(decode(prefix));
+        }
+    }
+
+    void read_registers(const uint8_t* prefix, std::size_t, uint8_t* data, std::size_t len) {
         const address_type base = decode(prefix);
         if (len == 1u && base == Chip::common_socketless_status() && arp_pending_) {
             if (arp_reads_left_ == 0u) {
