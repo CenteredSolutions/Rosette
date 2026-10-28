@@ -81,6 +81,8 @@ struct W5100S final : ChipBase {
         return static_cast<address_type>(0x0400u + (static_cast<address_type>(socket) * 0x0100u));
     }
 
+    // One register per line, aligned for comparison with the datasheet table.
+    // clang-format off
     static constexpr address_type socket_mode(socket_type socket) { return socket_register_base(socket) + 0x0000u; }
     static constexpr address_type socket_command(socket_type socket) { return socket_register_base(socket) + 0x0001u; }
     static constexpr address_type socket_interrupt(socket_type socket) { return socket_register_base(socket) + 0x0002u; }
@@ -98,7 +100,10 @@ struct W5100S final : ChipBase {
     static constexpr address_type socket_tx_write_pointer(socket_type socket) { return socket_register_base(socket) + 0x0024u; }
     static constexpr address_type socket_rx_received_size(socket_type socket) { return socket_register_base(socket) + 0x0026u; }
     static constexpr address_type socket_rx_read_pointer(socket_type socket) { return socket_register_base(socket) + 0x0028u; }
+    static constexpr address_type socket_rx_write_pointer(socket_type socket) { return socket_register_base(socket) + 0x002Au; }
     static constexpr address_type socket_interrupt_mask(socket_type socket) { return socket_register_base(socket) + 0x002Cu; }
+
+    // clang-format on
 
     // One shared 8 KiB TX region and one shared 8 KiB RX region; init_*()
     // carves each into per-socket spans starting at these bases.

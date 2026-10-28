@@ -130,6 +130,30 @@ void check_chip(const char* name) {
     check(mac.receive_frame(buf.data(), buf.size()) == c.size() && buf == c,
           tag(name, "the frame after an oversize record is delivered intact").c_str());
 
+    // TC-NET-WIZ-MACRAW-006: a length header longer than the received size
+    // means the ring is off a frame boundary; everything queued is dropped
+    // and the next frame the chip stores reads intact.
+    std::vector<uint8_t> misaligned{0x05u, 0xDCu};  // claims 1500 octets
+    const auto           behind = frame_of(30u, 0x20u);
+    misaligned.insert(misaligned.end(), 40u, 0x55u);
+    chip.deliver(Chip::macraw_socket(), misaligned);
+    chip.deliver(Chip::macraw_socket(), macraw_record(behind));
+    check(mac.peek_frame_size() == 0u,
+          tag(name, "a header longer than the received size peeks 0").c_str());
+    check(mac.peek_frame_size() == 0u,
+          tag(name, "the misaligned ring is emptied, frame behind it included").c_str());
+    const auto d = frame_of(50u, 0x90u);
+    chip.deliver(Chip::macraw_socket(), macraw_record(d));
+    buf.assign(d.size(), 0u);
+    check(mac.peek_frame_size() == d.size() && mac.receive_frame(buf.data(), buf.size()) == d.size()
+              && buf == d,
+          tag(name, "the next frame after a resync is delivered intact").c_str());
+    chip.deliver(Chip::macraw_socket(), misaligned);
+    buf.assign(Chip::max_frame_bytes(), 0u);
+    check(mac.receive_frame(buf.data(), buf.size()) == 0u && mac.peek_frame_size() == 0u,
+          tag(name, "receive_frame() also resyncs on a header longer than the received size")
+              .c_str());
+
     // TC-NET-WIZ-MACRAW-005: phy_status() follows the PHY link register.
     check(!mac.phy_status().link_up, tag(name, "link down while the PHY reports none").c_str());
     chip.mem[Chip::common_link_status()] = Chip::link_up_mask();

@@ -142,6 +142,8 @@ struct W6x00 : ChipBase {
     static constexpr bool dest_mac_per_socket() { return true; }
 
     // ── socket registers ────────────────────────────────────────────────────
+    // One register per line, aligned for comparison with the datasheet table.
+    // clang-format off
     static constexpr address_type socket_mode(socket_type s) { return reg(0x0000u, socket_reg_block(s)); }
     static constexpr address_type socket_command(socket_type s) { return reg(0x0010u, socket_reg_block(s)); }
     static constexpr address_type socket_interrupt(socket_type s) { return reg(0x0020u, socket_reg_block(s)); }        // Sn_IR    (read)
@@ -160,6 +162,9 @@ struct W6x00 : ChipBase {
     static constexpr address_type socket_rx_buffer_size(socket_type s) { return reg(0x0220u, socket_reg_block(s)); }   // Sn_RX_BSR
     static constexpr address_type socket_rx_received_size(socket_type s) { return reg(0x0224u, socket_reg_block(s)); } // Sn_RX_RSR
     static constexpr address_type socket_rx_read_pointer(socket_type s) { return reg(0x0228u, socket_reg_block(s)); }  // Sn_RX_RD
+    static constexpr address_type socket_rx_write_pointer(socket_type s) { return reg(0x022Cu, socket_reg_block(s)); } // Sn_RX_WR
+
+    // clang-format on
 
     // Each socket's TX / RX buffer is its own address block; the offset within
     // it is the raw pointer and the chip wraps at the buffer size (auto_wrap).

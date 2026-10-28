@@ -9,7 +9,7 @@
  * acts on the writes that have side effects on a real part: socket commands
  * (OPEN in UDP or IPRAW6 mode, CLOSE, SEND, SEND6, SEND_MAC, RECV), the interrupt-clear registers,
  * and the socket-less command register (ARP on every part; NS and RS on the
- * W6100/W6300). Received-size
+ * W6100/W6300). Received-size (Sn_RX_RSR) and RX write-pointer (Sn_RX_WR)
  * reads are computed from what the test delivered, so `WiznetDevice` runs its
  * real receive and send paths, ring arithmetic included, against it.
  *
@@ -103,6 +103,13 @@ public:
                 data[1] = static_cast<uint8_t>(n);
                 return;
             }
+
+            if (len == 2u && base == Chip::socket_rx_write_pointer(s)) {
+                data[0] = static_cast<uint8_t>(rx_written_[s] >> 8);
+                data[1] = static_cast<uint8_t>(rx_written_[s]);
+                return;
+            }
+
             if (len == 2u && base == Chip::socket_tx_free_size(s)) {
                 const uint16_t free = tx_bytes(s);
                 data[0] = static_cast<uint8_t>(free >> 8);

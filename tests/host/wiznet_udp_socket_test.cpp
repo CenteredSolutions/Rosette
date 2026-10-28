@@ -65,6 +65,45 @@ std::vector<uint8_t> v(std::initializer_list<uint8_t> bytes) { return bytes; }
 
 std::string tag(const char* chip, const char* what) { return std::string(chip) + ": " + what; }
 
+/**
+ * TC-NET-WIZ-RX-004: a packet-info header whose datagram is longer than
+ * Sn_RX_RSR is off a datagram boundary. The receive reports -1, drops
+ * everything queued (the valid datagram behind it too), counts one resync, and
+ * the next datagram the chip stores reads intact. `make_record(len_field,
+ * payload)` builds the chip's record with an arbitrary length field.
+ */
+template <typename Chip, typename MakeRecord>
+void check_rx_resync(const char* name, MakeRecord&& make_record) {
+    using Chipset = fake::FakeWiznetChip<Chip>;
+    Chipset                          chip;
+    wiz::WiznetDevice<Chip, Chipset> dev{chip};
+    dev.init_socket_mode(kMac);
+    check(dev.open_udp_socket(1, 7410), tag(name, "resync: socket opens").c_str());
+
+    chip.deliver(1, make_record(600u, std::vector<uint8_t>(40u, 0x11u)));
+    chip.deliver(1, make_record(3u, v({'o', 'k', '?'})));
+    std::array<uint8_t, 1472> buf{};
+    wiz::UdpEndpoint          from{};
+    check(dev.udp_receive_from(1, buf.data(), buf.size(), &from) == -1,
+          tag(name, "resync: a header longer than the received size reports -1").c_str());
+    check(dev.rx_resyncs() == 1u, tag(name, "resync: counted once").c_str());
+    check(dev.socket_rx_available(1) == 0u
+              && dev.udp_receive_from(1, buf.data(), buf.size(), &from) == 0,
+          tag(name, "resync: the ring is empty afterwards").c_str());
+
+    chip.deliver(1, make_record(5u, v({'h', 'e', 'l', 'l', 'o'})));
+    check(dev.udp_receive_from(1, buf.data(), buf.size(), &from) == 5 && buf[0] == 'h'
+              && buf[4] == 'o',
+          tag(name, "resync: the next datagram reads intact").c_str());
+
+    chip.deliver(1, make_record(3000u, std::vector<uint8_t>(40u, 0x22u)));
+    check(dev.udp_receive_from(1, buf.data(), buf.size(), &from) == -1 && dev.rx_resyncs() == 2u
+              && dev.socket_rx_available(1) == 0u,
+          tag(name,
+              "resync: a second misaligned header resyncs again rather than skipping its length")
+              .c_str());
+}
+
 template<typename Chip>
 void check_w6x00(const char* name)
 {
@@ -172,6 +211,20 @@ void check_w5100s()
 int main()
 {
     check_w5100s();
+    check_rx_resync<wiz::W5100S>("W5100S", [](uint16_t len, const std::vector<uint8_t>& payload) {
+        auto r = w5100s_record(v({10, 0, 0, 7}), 1234, payload);
+        r[6] = static_cast<uint8_t>(len >> 8);
+        r[7] = static_cast<uint8_t>(len);
+        return r;
+    });
+    const auto w6x00_with_length = [](uint16_t len, const std::vector<uint8_t>& payload) {
+        auto r = w6x00_record(false, v({10, 0, 0, 7}), 1234, payload);
+        r[0] = static_cast<uint8_t>((r[0] & 0xF8u) | ((len >> 8) & 0x07u));
+        r[1] = static_cast<uint8_t>(len);
+        return r;
+    };
+    check_rx_resync<wiz::W6100>("W6100", w6x00_with_length);
+    check_rx_resync<wiz::W6300>("W6300", w6x00_with_length);
     check_w6x00<wiz::W6100>("W6100");
     check_w6x00<wiz::W6300>("W6300");
     return test_summary();
