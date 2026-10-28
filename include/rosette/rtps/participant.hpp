@@ -679,6 +679,9 @@ public:
     /// @brief The WriterProxy pool the user readers bind from.
     const ProxyPool& writer_proxy_pool() const noexcept { return writer_proxies_; }
 
+    /// @brief The SEDP announcers; tick() drives their replay to new peers.
+    SedpWriter& sedp_writer() noexcept { return sedp_writer_; }
+
     /// @brief The slots the user readers reassemble fragmented samples in.
     const FragmentAssemblyPool& assembly_pool() const noexcept { return assembly_slots_; }
 

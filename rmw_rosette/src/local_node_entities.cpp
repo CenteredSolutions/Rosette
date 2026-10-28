@@ -94,6 +94,17 @@ void LocalNodeEntities::dissociate(const rtps::Guid& guid) noexcept {
 uint32_t LocalNodeEntities::encode(const rtps::Guid& participant, uint8_t* out,
                                    uint32_t cap) const noexcept {
     CdrWriter cdr(out, cap);
+    write(participant, cdr);
+    return cdr.ok() ? static_cast<uint32_t>(cdr.length()) : 0u;
+}
+
+uint32_t LocalNodeEntities::encoded_size(const rtps::Guid& participant) const noexcept {
+    CdrWriter cdr(nullptr, SIZE_MAX);
+    write(participant, cdr);
+    return static_cast<uint32_t>(cdr.length());
+}
+
+void LocalNodeEntities::write(const rtps::Guid& participant, CdrWriter& cdr) const noexcept {
     put_gid(cdr, participant);
     cdr.put<uint32_t>(node_count_);
     for (uint32_t n = 0; n < node_count_; ++n) {
@@ -114,7 +125,6 @@ uint32_t LocalNodeEntities::encode(const rtps::Guid& participant, uint8_t* out,
             }
         }
     }
-    return cdr.ok() ? static_cast<uint32_t>(cdr.length()) : 0u;
 }
 
 }  // namespace rmw_rosette

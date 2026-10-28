@@ -75,9 +75,13 @@
 
 #include "rosette/platform/platform.hpp"
 
+#ifdef RTPS_BUFPOOL_STATS
+#  include "rosette/rtps/buf_pool_stats.hpp"
+#endif
+
 namespace rosette::rtps {
 
-/// Guards every size class's free list and the debug counters. The critical
+/// Guards every size class's free list, the debug counters, and the usage statistics. The critical
 /// sections are a few pointer moves long, so one lock for all classes costs
 /// nothing measurable and keeps lock ordering trivial.
 inline rosette::platform::Mutex& buf_pool_mutex() noexcept {
@@ -497,15 +501,21 @@ public:
      *
      * @param[in] min_size  Minimum usable bytes; defaults to the smallest
      *   class size.
-     * @param[in] caller_pc Allocation site recorded by RTPS_BUFPOOL_DEBUG.
+     * @param[in] caller_pc Allocation site recorded by RTPS_BUFPOOL_DEBUG,
+     *   and logged with a refusal under RTPS_BUFPOOL_STATS.
      * @return A block whose capacity() may exceed `min_size`, or an invalid
      *   BufRef when every eligible class is exhausted or `min_size` exceeds
      *   the largest class.
      *
+     * With RTPS_BUFPOOL_STATS, every call is counted (stats()), and a
+     * refusal is logged as a warning on the 1st, 2nd, 4th, ... refusal of
+     * the request's best-fit class.
+     *
      * Verification:
      * - Correct means: smallest fit first; promotion stops below the
      *   largest class for requests a smaller class can hold.
-     * - Covered by: tests/host/buf_pool_class_test.cpp.
+     * - Covered by: tests/host/buf_pool_class_test.cpp; the statistics by
+     *   TC-BUF-STATS-001 and TC-BUF-STATS-002.
      */
     BufRef alloc(uint32_t                   min_size = RTPS_POOL_CLASS0_SIZE,
                  [[maybe_unused]] uintptr_t caller_pc = 0u) noexcept {
@@ -519,6 +529,9 @@ public:
 #ifdef RTPS_BUFPOOL_DEBUG
             debug_on_alloc(b, min_size, caller_pc);
 #endif
+#ifdef RTPS_BUFPOOL_STATS
+            stats_on_alloc(min_size, c, caller_pc);
+#endif
             BufRef r{};
             r.block = b;
             r.data  = b->payload();  // data starts at block start; no headroom.
@@ -529,6 +542,9 @@ public:
         }
 #ifdef RTPS_BUFPOOL_DEBUG
         debug_on_alloc_fail(min_size, caller_pc);
+#endif
+#ifdef RTPS_BUFPOOL_STATS
+        stats_on_alloc(min_size, kPoolClassCount, caller_pc);
 #endif
         return {};  // All eligible classes exhausted.
     }
@@ -552,6 +568,11 @@ public:
         debug_on_release(b, prev);
 #endif
         if (prev == 1) {
+#ifdef RTPS_BUFPOOL_STATS
+            buf_pool_mutex().lock();
+            stats_.on_freed(b->size_class);
+            buf_pool_mutex().unlock();
+#endif
             dispatch_free(b);
         }
         if (prev == 0) {
@@ -580,6 +601,34 @@ public:
     }
 
     uint8_t class_count() const noexcept { return kPoolClassCount; }
+
+#ifdef RTPS_BUFPOOL_STATS
+    /// @brief A copy of class @p c's usage statistics (buf_pool_stats.hpp);
+    ///   empty when @p c is out of range.
+    BufPoolClassStats stats(uint8_t c) const noexcept {
+        if (c >= kPoolClassCount) {
+            return {};
+        }
+
+        buf_pool_mutex().lock();
+        const BufPoolClassStats s = stats_[c];
+        buf_pool_mutex().unlock();
+        return s;
+    }
+
+    /// @brief Low end of class @p c's request-size histogram (BufPoolStats::bin_lower()).
+    uint32_t stats_bin_lower(uint8_t c) const noexcept { return stats_.bin_lower(c); }
+
+    /// @brief Width of one bin of class @p c's histogram (BufPoolStats::bin_width()).
+    uint32_t stats_bin_width(uint8_t c) const noexcept { return stats_.bin_width(c); }
+
+    /// @brief Starts a new measurement window (BufPoolStats::reset()).
+    void stats_reset() noexcept {
+        buf_pool_mutex().lock();
+        stats_.reset();
+        buf_pool_mutex().unlock();
+    }
+#endif
 
 #ifdef RTPS_BUFPOOL_DEBUG
     BufPoolDebugClassStats debug_class_stats(uint8_t c) const noexcept {
@@ -641,6 +690,29 @@ private:
     BufPoolDebugClassStats dbg_stats_[kPoolClassCount] = {};
     BufPoolDebugEvent dbg_events_[RTPS_BUFPOOL_DEBUG_EVENT_CAP] = {};
     uint32_t dbg_event_seq_ = 0;
+#endif
+
+#ifdef RTPS_BUFPOOL_STATS
+    BufPoolStats<kPoolClassCount> stats_{class_sizes_};
+
+    /// @brief Counts one alloc() served from class @p c, or refused when
+    ///   @p c is kPoolClassCount, and logs the refusals stats_ selects.
+    void stats_on_alloc(uint32_t min_size, uint8_t c, uintptr_t caller_pc) noexcept {
+        buf_pool_mutex().lock();
+        const bool log_refusal = stats_.on_request(min_size, c);
+        if (c < kPoolClassCount) {
+            stats_.on_served(c);
+        }
+
+        const uint8_t  home = stats_.best_fit(min_size);
+        const uint32_t refused = home < kPoolClassCount ? stats_[home].refused : 0u;
+        buf_pool_mutex().unlock();
+        if (log_refusal) {
+            RTPS_LOG_W("bufpool", "no block for %lu octets (class %u, refusal %lu, caller 0x%lx)",
+                       static_cast<unsigned long>(min_size), static_cast<unsigned>(home),
+                       static_cast<unsigned long>(refused), static_cast<unsigned long>(caller_pc));
+        }
+    }
 #endif
 
     void init() noexcept {

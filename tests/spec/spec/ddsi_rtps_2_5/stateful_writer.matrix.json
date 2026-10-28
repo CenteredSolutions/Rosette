@@ -92,6 +92,33 @@
       "test_ids": ["TC-SWR-8.4.1.4-008"]
     },
     {
+      "id": "REQ-SWR-8.7.2.2-REPLAY-BUDGET",
+      "section": "8.7.2.2",
+      "page": 196,
+      "normativity": "implementation-behavior",
+      "statement": "A TRANSIENT_LOCAL writer replays its history to a newly matched or re-matched reader from tick(), spending at most RTPS_REPLAY_DATAGRAMS_PER_TICK datagrams per call (fragments and HEARTBEATs included, one for an attempt whose payload could not be built, finishing only the change in progress), each change once and in sequence order, including changes written during the replay; a NACK from a replaying reader for a change not yet replayed to it is left to the replay, and any other NACK is repaired.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.4-003", "TC-SWR-8.4.1.4-010", "TC-SWR-8.4.1.4-012", "TC-SWR-8.4.1.4-014", "TC-SWR-8.4.1.4-015"]
+    },
+    {
+      "id": "REQ-SWR-8.7.2.2-REPLAY-FAIRNESS",
+      "section": "8.7.2.2",
+      "page": 196,
+      "normativity": "implementation-behavior",
+      "statement": "Readers replaying from the same writer share the per-tick budget: each tick() starts at the reader after the last one served, so a reader that keeps receiving new changes cannot keep the budget from the readers matched after it.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.4-013"]
+    },
+    {
+      "id": "REQ-SWR-8.3.3-REPLAY-PACKING",
+      "section": "8.3.3",
+      "page": 68,
+      "normativity": "implementation-behavior",
+      "statement": "A writer that builds payloads on demand packs its replay: each datagram holds its first change, framed in that change's own pool block, and as many following changes as fit in the rest of that block, never a larger block; each following change is sized before it is built, so every change built is sent in that datagram; the HEARTBEAT follows the newest change.",
+      "status": "implemented",
+      "test_ids": ["TC-SWR-8.4.1.4-011", "TC-SEDP-8.5.4-019"]
+    },
+    {
       "id": "REQ-SWR-8.4.1.4-REMATCHED-READER",
       "section": "8.4.1.4",
       "page": 108,

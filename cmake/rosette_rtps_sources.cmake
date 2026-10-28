@@ -22,6 +22,7 @@ endif()
 
 set(ROSETTE_RTPS_PROTOCOL_SOURCES
   ${ROSETTE_ROOT}/src/rtps/buf_pool.cpp
+  ${ROSETTE_ROOT}/src/rtps/buf_pool_stats_log.cpp
   ${ROSETTE_ROOT}/src/rtps/message_parser.cpp
   ${ROSETTE_ROOT}/src/rtps/participant.cpp
   ${ROSETTE_ROOT}/src/rtps/participant_peer_tiers.cpp
@@ -33,6 +34,7 @@ set(ROSETTE_RTPS_PROTOCOL_SOURCES
   ${ROSETTE_ROOT}/src/rtps/spdp.cpp
   ${ROSETTE_ROOT}/src/rtps/spdp_peer_records.cpp
   ${ROSETTE_ROOT}/src/rtps/stateful_writer.cpp
+  ${ROSETTE_ROOT}/src/rtps/stateful_writer_replay.cpp
   ${ROSETTE_ROOT}/src/rtps/fragment_assembler.cpp
   ${ROSETTE_ROOT}/src/rtps/proxy_pool.cpp
   ${ROSETTE_ROOT}/src/rtps/stateful_reader.cpp

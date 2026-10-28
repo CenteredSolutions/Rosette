@@ -184,6 +184,7 @@ static bool tc_sedp_8_5_4_001(std::string& err) {
     const GuidPrefix peer_prefix = make_guid(
         0x21u, 0x22u, 0x23u, entity_id::PARTICIPANT).prefix;
     w.announce_to_peer(peer_prefix, dest);
+    finish_replay(w, 0u);
 
     CHECK(tx.sent.size() >= 2u, "SEDP announce should emit at least publications + subscriptions DATA");
     CHECK(tx.dests.size() == tx.sent.size(), "destination record count mismatch");
@@ -281,25 +282,28 @@ static bool tc_sedp_8_5_4_004(std::string& err) {
     const GuidPrefix peer_prefix = make_guid(
         0x81u, 0x82u, 0x83u, entity_id::PARTICIPANT).prefix;
     w.announce_to_peer(peer_prefix, dest);
+    finish_replay(w, 0u);
 
-    CHECK(tx.sent.size() >= 2u, "expected at least two SEDP publications DATA messages");
-    int64_t previous = 0;
-    uint32_t pub_count = 0u;
+    // Every DATA submessage counts, wherever it travels: the replay may pack
+    // several announcements into one datagram.
+    std::vector<int64_t> pub_sns{};
+    ParseOps             ops{};
+    ops.on_data = [](const ParseContext& ctx, const ParsedData& d) noexcept {
+        if (d.writerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER
+            && d.readerId == entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR) {
+            static_cast<std::vector<int64_t>*>(ctx.user_data)->push_back(d.writerSN.to_int64());
+        }
+    };
     for (const auto& msg : tx.sent) {
-        DataCapture cap{};
-        if (!try_parse_data_from_message(msg, cap)) {
-            continue;
-        }
-        if (cap.data.writerId != entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER ||
-            cap.data.readerId != entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR) {
-            continue;
-        }
-        pub_count++;
-        const int64_t sn = cap.data.writerSN.to_int64();
-        CHECK(sn > previous, "publication writerSN must increase for each announced endpoint");
-        previous = sn;
+        CHECK(parse_message(msg.data(), static_cast<uint32_t>(msg.size()), GuidPrefix{}, ops,
+                            &pub_sns)
+                  == ParseResult::OK,
+              "every SEDP message must parse");
     }
-    CHECK(pub_count == 2u, "expected two publication DATA announcements");
+
+    CHECK(pub_sns.size() == 2u, "expected two publication DATA announcements");
+    CHECK(pub_sns[0] < pub_sns[1],
+          "publication writerSN must increase for each announced endpoint");
     return true;
 }
 
@@ -350,7 +354,9 @@ static bool tc_sedp_8_5_4_005(std::string& err) {
     const GuidPrefix peer_prefix = make_guid(
         0x91u, 0x92u, 0x93u, entity_id::PARTICIPANT).prefix;
     w.announce_to_peer(peer_prefix, dest);
+    finish_replay(w, 0u);
     w.announce_to_peer(peer_prefix, dest);
+    finish_replay(w, 0u);
 
     const SedpTally t = tally_sedp(tx);
     CHECK(t.pub_alive == 1u && t.sub_alive == 1u,
@@ -368,6 +374,7 @@ static bool tc_sedp_8_5_4_007(std::string& err) {
     const GuidPrefix peer_prefix = make_guid(0xD1u, 0xD2u, 0xD3u, entity_id::PARTICIPANT).prefix;
     const Locator dest = make_udpv4_locator(0xC0A80110u, 7410u);
     w.announce_to_peer(peer_prefix, dest);
+    finish_replay(w, 0u);
     CHECK(tx.sent.empty(), "nothing to announce before any endpoint exists");
 
     const Guid late_writer = make_guid(0xC1u, 0xC2u, 0xC3u, make_entity(3u, 3u, 3u, 0x03u));
@@ -390,6 +397,7 @@ static bool tc_sedp_8_5_4_008(std::string& err) {
           "register_writer failed");
     const Locator dest = make_udpv4_locator(0xC0A80111u, 7410u);
     w.announce_to_peer(make_guid(0xF1u, 0xF2u, 0xF3u, entity_id::PARTICIPANT).prefix, dest);
+    finish_replay(w, 0u);
 
     CHECK(w.unregister_writer(writer_guid), "unregister_writer should find the endpoint");
     SedpTally t = tally_sedp(tx);
@@ -401,6 +409,7 @@ static bool tc_sedp_8_5_4_008(std::string& err) {
     tx.sent.clear();
     tx.dests.clear();
     w.announce_to_peer(make_guid(0xF4u, 0xF5u, 0xF6u, entity_id::PARTICIPANT).prefix, dest);
+    finish_replay(w, 0u);
     t = tally_sedp(tx);
     CHECK(t.pub_alive == 0u, "a deleted endpoint must not be replayed to late joiners");
 
@@ -417,6 +426,7 @@ static bool tc_sedp_8_5_4_008(std::string& err) {
     tx.sent.clear();
     tx.dests.clear();
     w.announce_to_peer(make_guid(0xF7u, 0xF8u, 0xF9u, entity_id::PARTICIPANT).prefix, dest);
+    finish_replay(w, 0u);
     t = tally_sedp(tx);
     CHECK(t.pub_alive == 1u, "the live endpoint must survive disposal churn in the history");
     return true;

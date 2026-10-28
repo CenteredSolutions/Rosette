@@ -170,6 +170,7 @@ static bool tc_swr_8_4_7_004(std::string& err) {
 
     tx.unicast_msgs.clear();
     CHECK(w.matched_reader_add(late, &kLocB, 1u, false), "late match");
+    finish_replay(w, 0u);
     CHECK(tx.unicast_msgs.size() >= 3u, "the late reader is sent the kept history");
     return true;
 }
@@ -303,6 +304,7 @@ static bool tc_swr_8_4_7_008(std::string& err) {
 
     tx.unicast_msgs.clear();
     CHECK(w.matched_reader_add(a_reader, &kLocA, 1u, false), "A's reader matches late");
+    finish_replay(w, 0u);
     CHECK(!tx.unicast_msgs.empty(), "the kept reply is sent to it");
     CHECK(holds(w, 1), "and stays until A acknowledges it");
 
@@ -385,6 +387,7 @@ static bool tc_swr_8_4_7_010(std::string& err) {
     waiting.waiting = false;
     tx.unicast_msgs.clear();
     CHECK(w.matched_reader_add(late, &kLocA, 1u, false), "the waiting reader binds");
+    finish_replay(w, 0u);
     CHECK(!tx.unicast_msgs.empty(), "the kept reply is replayed to it");
     deliver(w, late, acknack(late, writer, 2, {}, 1));
     CHECK(!holds(w, 1), "and its acknowledgement releases the reply");

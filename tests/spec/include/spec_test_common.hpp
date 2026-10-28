@@ -66,6 +66,25 @@ std::vector<Octet> make_sentinel_only_qos(bool little_endian);
 
 ParseOps make_ops_all(TestCapture& cap);
 
+/**
+ * @brief Ticks @p endpoint at @p now_ms until its TRANSIENT_LOCAL replay has all gone out.
+ *
+ * A TRANSIENT_LOCAL writer replays its history to a new reader from tick(), a
+ * budget at a time (StatefulWriter::drain_replays()). Ticking at a time no
+ * later than the endpoint's previous tick() sends only the replay: no
+ * heartbeatPeriod or nackResponseDelay can have elapsed since.
+ *
+ * @param[in,out] endpoint A StatefulWriter or SedpWriter (anything with
+ *   replay_pending() and tick()).
+ * @param[in]     now_ms   The time to tick at.
+ */
+template <typename Endpoint>
+void finish_replay(Endpoint& endpoint, uint32_t now_ms) {
+    for (int i = 0; i < 256 && endpoint.replay_pending(); ++i) {
+        endpoint.tick(now_ms);
+    }
+}
+
 bool write_passed_json(const std::string& path, const std::vector<std::string>& passed_ids);
 
 /**

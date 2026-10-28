@@ -11,6 +11,13 @@ Architecture:
     endpoint with a `for` list, the list item `j`; that is how instance 3 of
     a vision station names the controller boards it drives.
 
+    An endpoint's `fill` gives field values for what it sends (a
+    publisher's messages, a client's requests, an action client's goals),
+    so payloads have the sizes a real application's do rather than those
+    of an empty message. A role's `lifetime_s` makes its participants come
+    and go: each is shut down and created again after about that long, as
+    command-line tools and short-lived processes do on a real network.
+
     expand() turns the file into a flat list of Participant records, each
     with its fully qualified endpoints. analyze() then pairs endpoints the
     way DDS discovery does (same name, same type, opposite direction) and
@@ -81,6 +88,7 @@ class Endpoint:
     qos: str = "reliable"
     rate_hz: float = 0.0
     probe_period_s: float = 0.0
+    fill: dict | None = dataclasses.field(default=None, compare=False)
 
 
 @dataclasses.dataclass
@@ -107,6 +115,7 @@ class Participant:
     slot: int
     slots: int
     nodes: list[Node]
+    lifetime_s: float = 0.0
 
     @property
     def label(self) -> str:
@@ -180,6 +189,7 @@ def expand_endpoints(specs: list[dict], node: Node, env: dict) -> list[Endpoint]
                 qos=spec.get("qos", "reliable"),
                 rate_hz=float(spec.get("rate_hz", 0.0)),
                 probe_period_s=float(spec.get("probe_period_s", 0.0)),
+                fill=spec.get("fill"),
             ))
 
     return out
@@ -208,7 +218,8 @@ def expand(topology: dict) -> list[Participant]:
                     node.endpoints = expand_endpoints(nspec.get("endpoints", []), node, env)
                     nodes.append(node)
 
-                participants.append(Participant(role, i, slot, len(spec["participants"]), nodes))
+                participants.append(Participant(role, i, slot, len(spec["participants"]), nodes,
+                                                float(spec.get("lifetime_s", 0.0))))
 
     return participants
 

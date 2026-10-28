@@ -102,6 +102,13 @@ namespace rosette::rtps {
 #  define RTPS_MAX_MATCHED_READERS 8
 #endif
 
+/// Most datagrams one writer sends per tick() replaying its TRANSIENT_LOCAL
+/// history to newly matched readers (StatefulWriter::drain_replays()). Bounds
+/// how long one pump pass spends on a replay; the rest waits for the next pass.
+#ifndef RTPS_REPLAY_DATAGRAMS_PER_TICK
+#  define RTPS_REPLAY_DATAGRAMS_PER_TICK 4u
+#endif
+
 /// The pool a writer takes its reader proxies from.
 using ReaderProxyPool = TypedProxyPool<ReaderProxy>;
 
@@ -282,11 +289,24 @@ public:
      * @return A complete serializedPayload (encapsulation header included)
      *   in a pool block the writer releases after the send. Allocating it
      *   with buf_alloc_with_headroom(size + kRtpsHeartbeatTailroom,
-     *   kRtpsDataHeadroom + kMaxInlineQosSize) lets the DATA be framed in
-     *   place. An invalid BufRef means the payload cannot be built now; the
-     *   send is then a lost datagram.
+     *   kRtpsDataHeadroom + inline_qos_serialized_size(change.inlineQos))
+     *   lets the DATA be framed in place. An invalid BufRef means the payload
+     *   cannot be built now; the send is then a lost datagram.
      */
     using PayloadBuilder = BufRef (*)(void* user, const CacheChange& change) noexcept;
+
+    /**
+     * @brief Reports how many octets the PayloadBuilder would build for a change.
+     *
+     * Lets a replay decide whether the next change fits in the datagram
+     * being packed before paying for the build (send_replay_datagram()).
+     *
+     * @param[in] user   The pointer given to set_payload_builder().
+     * @param[in] change The stored change; its payload is empty.
+     * @return The serializedPayload size in octets, never less than the
+     *   builder produces for the same change; 0 when it cannot be built.
+     */
+    using PayloadSizer = uint32_t (*)(void* user, const CacheChange& change) noexcept;
 
     /**
      * @brief Installs the builder that supplies payloads for write_on_demand_async() changes.
@@ -297,17 +317,24 @@ public:
      * bytes for each send instead, trading a serialization per send for the
      * pool block the history would otherwise hold for the change's lifetime.
      *
+     * A sizer lets a TRANSIENT_LOCAL replay pack several built changes per
+     * datagram; without one each goes in a datagram of its own.
+     *
      * @param[in] builder Builder, or null to remove it.
-     * @param[in] user    Passed back to `builder`; must outlive the writer.
+     * @param[in] user    Passed back to `builder` and `sizer`; must outlive
+     *   the writer.
+     * @param[in] sizer   Size of what `builder` builds, or null.
      *
      * Verification:
      * - Correct means: a change stored without a payload goes on the wire
      *   exactly as if its built payload had been stored.
-     * - Covered by: TC-SEDP-8.5.4-015, TC-SEDP-8.5.4-016.
+     * - Covered by: TC-SEDP-8.5.4-015, TC-SEDP-8.5.4-016, TC-SWR-8.4.1.4-011.
      */
-    void set_payload_builder(PayloadBuilder builder, void* user) noexcept {
+    void set_payload_builder(PayloadBuilder builder, void* user,
+                             PayloadSizer sizer = nullptr) noexcept {
         payloadBuilder_ = builder;
         payloadBuilderUser_ = user;
+        payloadSizer_ = sizer;
     }
 
     /**
@@ -340,14 +367,19 @@ public:
     /**
      * @brief Matches a remote reader.
      *
-     * A TRANSIENT_LOCAL writer then sends the new reader every cached change
-     * at once, in sequence order (§8.7.2.2). When the writer is reliable, the
-     * newest change carries a non-final HEARTBEAT so the reader immediately
-     * acknowledges a complete replay or requests any missing cached changes,
-     * rather than waiting for the next periodic HEARTBEAT. This is how a
-     * service reply written before the client's reply reader matched reaches
-     * the client without delay. A VOLATILE writer makes only
-     * changes written after this relevant to the new reader.
+     * A TRANSIENT_LOCAL writer then replays every cached change to the new
+     * reader, in sequence order (§8.7.2.2), from tick() rather than from this
+     * call: the proxy is marked replaying and tick() sends at most
+     * RTPS_REPLAY_DATAGRAMS_PER_TICK datagrams of it per call
+     * (drain_replays()), so matching a reader never blocks its caller for the
+     * whole history. When the writer is reliable, the newest change carries a
+     * non-final HEARTBEAT so the reader immediately acknowledges a complete
+     * replay or requests any missing cached changes, rather than waiting for
+     * the next periodic HEARTBEAT. A service reply written before the client's
+     * reply reader matched therefore reaches the client on the next tick(),
+     * which the participant driver runs in the same pass that matched it. A
+     * VOLATILE writer makes only changes written after this relevant to the
+     * new reader.
      *
      * The proxy refers to one entry of `unicast_locators` rather than copying
      * it (ReaderProxy::init()), so the reader's traffic follows the owning
@@ -380,15 +412,16 @@ public:
      *   match waiting and calls this again once may_add_reader() holds.
      *
      * Verification:
-     * - Correct means: the new reader is sent every cached change of a
-     *   TRANSIENT_LOCAL writer, and a reliable writer's newest one arrives
+     * - Correct means: the new reader is sent nothing by this call, then every
+     *   cached change of a TRANSIENT_LOCAL writer over the following tick()
+     *   calls, and a reliable writer's newest one arrives
      *   with a non-final HEARTBEAT spanning the cache; a best-effort writer
      *   sends no HEARTBEAT; a BEST_EFFORT reader is sent each change once and
      *   no HEARTBEAT; writers sharing a pool are refused exactly as ProxyPool
      *   admission decides.
      * - Covered by: TC-SWR-8.4.1.1-001, TC-SWR-8.4.1.4-002, TC-SWR-8.4.1.4-003,
-     *   TC-SWR-8.4.1.4-008, TC-SWR-8.4.1.4-009, TC-SWR-8.4.9.1-001,
-     *   TC-SWR-8.4.9.1-002.
+     *   TC-SWR-8.4.1.4-008, TC-SWR-8.4.1.4-009, TC-SWR-8.4.1.4-010,
+     *   TC-SWR-8.4.9.1-001, TC-SWR-8.4.9.1-002.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (matched_reader_add), §8.4.1.1, §8.7.2.2,
@@ -609,7 +642,9 @@ public:
     /**
      * @brief Runs the writer's timed behavior.
      *
-     * First, for each reader whose nackResponseDelay has elapsed, resends
+     * First, while a TRANSIENT_LOCAL replay is pending, sends up to
+     * RTPS_REPLAY_DATAGRAMS_PER_TICK datagrams of it (drain_replays()). Then,
+     * for each reader whose nackResponseDelay has elapsed, resends
      * its REQUESTED changes (GAPping any the history evicted) and follows
      * them with a directed final HEARTBEAT. Then, once per heartbeatPeriod,
      * sends a HEARTBEAT to each reader served reliably that still has
@@ -621,7 +656,8 @@ public:
      *
      * Verification:
      * - Covered by: TC-SWR-8.4.2.2-001, TC-SWR-8.4.9-004, TC-SWR-8.4.9-002,
-     *   TC-SWR-8.2.2-003, TC-SWR-8.4.4-001, TC-SWR-8.4.9.1-001.
+     *   TC-SWR-8.2.2-003, TC-SWR-8.4.4-001, TC-SWR-8.4.9.1-001,
+     *   TC-SWR-8.4.1.4-003, TC-SWR-8.4.1.4-010.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.1 (nackResponseDelay, heartbeatPeriod), §8.4.9.2,
@@ -783,21 +819,26 @@ public:
     /**
      * @brief Milliseconds tick() can be deferred at `now_ms`.
      *
-     * The sooner of the next periodic HEARTBEAT (only while some matched
-     * reader has unacknowledged changes) and the end of any pending
-     * nackResponseDelay; UINT32_MAX when neither applies, so an idle writer
-     * never wakes the CPU.
+     * 0 while a TRANSIENT_LOCAL replay is pending, so the next tick() goes on
+     * with it; otherwise the sooner of the next periodic HEARTBEAT (only
+     * while some matched reader has unacknowledged changes) and the end of
+     * any pending nackResponseDelay; UINT32_MAX when neither applies, so an
+     * idle writer never wakes the CPU.
      *
      * @param[in] now_ms Current rosette::platform::monotonic_ms().
      * @return Delay in milliseconds; 0 when overdue.
      *
      * Verification:
-     * - Covered by: TC-SWR-8.4.7-002, TC-SWR-8.4.9-004.
+     * - Covered by: TC-SWR-8.4.7-002, TC-SWR-8.4.9-004, TC-SWR-8.4.1.4-010.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.7.1, §8.4.9.2 (T5-T7)
      */
     uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept;
+
+    /// @brief True while some matched reader is being replayed this writer's
+    ///   TRANSIENT_LOCAL history from tick() (drain_replays()).
+    bool replay_pending() const noexcept { return replayPending_; }
 
     /// @brief Number of matched readers (§8.4.7.1 matched_readers).
     uint8_t matched_reader_count() const noexcept { return readers_.count; }
@@ -1095,6 +1136,10 @@ private:
      * is thereby a lost datagram: a reliable reader requests it again, a
      * best-effort reader loses it, and the loop always terminates.
      *
+     * A reader being replayed to (ReaderProxy::replaying) is skipped: its
+     * UNSENT changes, the new one included, go out in sequence order from
+     * drain_replays(), within its budget.
+     *
      * With `with_heartbeat`, the newest change goes to each reader with a
      * HEARTBEAT in the same datagram (send_data_to()), all sharing one count,
      * and the write count toward the next one restarts. Older changes sent in
@@ -1119,9 +1164,133 @@ private:
      */
     void send_unsent_changes(bool with_heartbeat = false) noexcept;
 
+    /**
+     * @brief Sends the next part of each pending TRANSIENT_LOCAL replay,
+     *   spending RTPS_REPLAY_DATAGRAMS_PER_TICK datagrams for the whole writer.
+     *
+     * matched_reader_add(), and on_acknack() for a reader that started over,
+     * mark the proxy replaying instead of sending its history at once. This
+     * runs from tick() and walks the replaying proxies in match order,
+     * starting where the previous pass stopped, sending each its UNSENT
+     * changes in sequence order (send_replay_datagram()) until the budget is
+     * spent. The budget is charged in datagrams actually sent, fragments and
+     * HEARTBEATs included, and one datagram for an attempt that sends none
+     * (a payload that could not be built or framed is a lost datagram the
+     * reader repairs), so an exhausted pool cannot make a pass attempt the
+     * whole history; a change already being sent is not split, so a pass
+     * overshoots by at most the rest of one change's datagrams. The next
+     * pass starts at the proxy after the last one served, so a reader that
+     * keeps receiving new changes cannot hold the budget against the others.
+     * A proxy with nothing left UNSENT stops replaying; the writer's replay
+     * is pending while any proxy still is.
+     *
+     * Packing sizes each following change before building it, so every
+     * change built is sent in the datagram it was built for and nothing is
+     * held between datagrams or ticks.
+     *
+     * Verification:
+     * - Correct means: a tick() stops attempting once the budget of datagrams
+     *   is spent (an attempt that sends none costs one), finishing at most
+     *   the change in progress; every cached
+     *   change reaches every replaying reader exactly once, in sequence
+     *   order, the newest with the replay's HEARTBEAT when the writer serves
+     *   the reader reliably; every replaying reader is served within as many
+     *   passes as there are replaying readers; once nothing is UNSENT the
+     *   writer reports no pending replay.
+     * - Covered by: TC-SWR-8.4.1.4-003, TC-SWR-8.4.1.4-008, TC-SWR-8.4.1.4-010,
+     *   TC-SWR-8.4.1.4-011, TC-SWR-8.4.1.4-012, TC-SWR-8.4.1.4-013,
+     *   TC-SWR-8.4.1.4-015.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.7.2.2 (TRANSIENT_LOCAL replay), §8.4.9.2,
+     *   §8.4.15.4 (piggybacked HEARTBEAT)
+     */
+    void drain_replays() noexcept;
+
+    /**
+     * @brief Sends one replay datagram to @p proxy: its lowest UNSENT change,
+     *   and after it as many of the next ones as fit in the same block.
+     *
+     * A change with a stored payload, or one too large for one datagram,
+     * goes alone through send_data_to(). A writer that builds payloads on
+     * demand (set_payload_builder(), the SEDP announcers) frames the first
+     * change in its own block, as send_data_in_place() does, then appends
+     * each following change's DATA submessage into the space left in that
+     * block for as long as the next one fits (pack_following_changes()), the
+     * block being whatever size class the first payload needed: nothing
+     * larger is taken to make room. The datagram holding the newest change
+     * takes the replay's HEARTBEAT when the writer serves the reader
+     * reliably, in the same block when it fits and in a datagram of its own
+     * when not.
+     *
+     * @param[in,out] proxy A replaying reader.
+     * @return true when a datagram was sent or attempted (a change left
+     *   UNSENT); false when the proxy had nothing UNSENT.
+     *
+     * Verification:
+     * - Correct means: every DATA in a datagram is a well-formed §9.4.5.3
+     *   submessage for its own sequence number, in order, and the datagram
+     *   never exceeds its block or the transport's datagram limit.
+     * - Covered by: TC-SWR-8.4.1.4-011.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.3 (a message carries several submessages),
+     *   §9.4.1, §9.4.5.3 (DATA), §8.4.15.4
+     */
+    bool send_replay_datagram(ReaderProxy& proxy) noexcept;
+
+    /// @brief Frames @p view, which holds @p ch's payload (@p payload_size
+    ///   octets) with headroom, as an RTPS message with one DATA for
+    ///   @p reader_id: prepends the inline QoS, the DATA header and the message
+    ///   header (§9.4.5.3). Sends nothing; false, leaving the headers partly
+    ///   written, when the headroom is short.
+    bool frame_data_in_place(BufRef& view, const CacheChange& ch, uint32_t payload_size,
+                             const EntityId& reader_id) const noexcept;
+
+    /**
+     * @brief Fills the rest of the block holding a framed replay datagram with
+     *   @p proxy's following UNSENT changes, each as one more DATA submessage.
+     *
+     * Moves the framed message to the start of its block first, so the room
+     * left is the whole rest of the block even when the builder reserved
+     * more headroom than the change used. Then, for each next UNSENT change,
+     * asks the PayloadSizer for its size and, when its DATA submessage fits
+     * in what is left, builds it, appends it (append_built_data()), and marks
+     * it sent. Stops at the first change that does not fit, a change with a
+     * stored payload, a payload that cannot be built, a writer with no
+     * sizer, or after a payload whose length is not a multiple of 4, since
+     * every submessage starts on a 4-octet boundary (§9.4.1). A payload
+     * built larger than its size said is released unsent, the change left
+     * UNSENT for the next datagram.
+     *
+     * @param[in,out] proxy    The reader the datagram is for.
+     * @param[in,out] datagram Its framed message, in the first change's block.
+     * @param[in]     aligned  The message ends on a 4-octet boundary.
+     * @param[out]    last     The newest change the datagram now holds; left
+     *   unchanged when nothing was appended.
+     * @return Whether the message still ends on a 4-octet boundary, so a
+     *   HEARTBEAT may follow it.
+     */
+    bool pack_following_changes(ReaderProxy& proxy, BufRef& datagram, bool aligned,
+                                SequenceNumber& last) noexcept;
+
+    /// @brief Appends a DATA submessage for @p ch, whose built payload is
+    ///   @p payload, after the region of @p datagram; false, changing nothing,
+    ///   when it does not fit (the block, or the transport's datagram limit).
+    bool append_built_data(BufRef& datagram, const CacheChange& ch, const BufRef& payload,
+                           const EntityId& reader_id) const noexcept;
+
     /// @brief The range a HEARTBEAT advertises: the history's oldest and
     ///   newest change, or lastSN + 1 and lastSN when it is empty (§8.4.2.2).
     void heartbeat_range(SequenceNumber& first, SequenceNumber& last) const noexcept;
+
+    /// @brief Sends one datagram through the transport and counts it, so
+    ///   drain_replays() charges the datagrams a send actually put on the wire
+    ///   (a fragmented sample is many, a HEARTBEAT alone is one).
+    bool send_counted(const BufRef& datagram, const Locator& dest) noexcept {
+        ++datagramsSent_;
+        return transport_.send_unicast(datagram, dest);
+    }
 
     /// @brief Sends a HEARTBEAT for the current history range to one locator.
     void send_heartbeat_to(const EntityId& reader_id, const Locator& dest, bool final_flag) noexcept;
@@ -1248,6 +1417,9 @@ private:
     bool           releaseRepliesOnDelivery_ = false;  ///< Service reply writer.
     uint32_t       evictedUnacknowledged_ = 0;         ///< See evicted_unacknowledged().
     FragmentRepair fragRepair_{};                      ///< Pending NACK_FRAG repair.
+    bool           replayPending_ = false;  ///< Some proxy is replaying (drain_replays()).
+    uint32_t       replayCursor_ = 0;   ///< Match-order index where the next replay pass starts.
+    uint32_t       datagramsSent_ = 0;  ///< Datagrams sent so far (send_counted()); wraps.
 
     /// Called when a matched reader started over (set_rematch_listener()).
     struct {
@@ -1262,6 +1434,7 @@ private:
     } waitingReaderQuery_;
     PayloadBuilder payloadBuilder_ = nullptr;  ///< Builds payloads of on-demand changes.
     void* payloadBuilderUser_ = nullptr;
+    PayloadSizer   payloadSizer_ = nullptr;  ///< Sizes them, for replay packing.
     MessageBuilder builder_;
 };
 

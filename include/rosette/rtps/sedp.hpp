@@ -201,8 +201,10 @@ public:
                                 transport),
           endpoints_(endpoints) {
         if (endpoints_.valid()) {
-            publications_writer_.set_payload_builder(&SedpWriter::build_announcement, this);
-            subscriptions_writer_.set_payload_builder(&SedpWriter::build_announcement, this);
+            publications_writer_.set_payload_builder(&SedpWriter::build_announcement, this,
+                                                     &SedpWriter::announcement_size);
+            subscriptions_writer_.set_payload_builder(&SedpWriter::build_announcement, this,
+                                                      &SedpWriter::announcement_size);
         }
     }
 
@@ -307,8 +309,15 @@ public:
     /// the participant routes ACKNACK and NACK_FRAG through it.
     StatefulWriter* find_writer(const EntityId& writer_id) noexcept;
 
-    // Drive builtin writer periodic maintenance.
+    // Drive builtin writer periodic maintenance, and the announcement replay
+    // to newly discovered peers (StatefulWriter::drain_replays()).
     void tick(uint32_t now_ms) noexcept;
+
+    /// @brief True while either builtin writer is still replaying its
+    ///   announcements to a newly discovered peer from tick().
+    bool replay_pending() const noexcept {
+        return publications_writer_.replay_pending() || subscriptions_writer_.replay_pending();
+    }
 
     // Soonest timed action of the two builtin writers (heartbeat or repair).
     uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept {
@@ -357,6 +366,31 @@ private:
      * - OMG DDSI-RTPS 2.5 §9.6.3.2 (PL_CDR endpoint data), §9.4.5.3 (DATA)
      */
     static BufRef build_announcement(void* user, const CacheChange& change) noexcept;
+
+    /**
+     * @brief Sizes the announcement build_announcement() would build for a change.
+     *
+     * The StatefulWriter::PayloadSizer of both builtin writers, which lets a
+     * replay pack several announcements per datagram without building one
+     * that does not fit. It looks the endpoint up as build_announcement()
+     * does and adds up the PL_CDR parameters serialise_writer() or
+     * serialise_reader() write, each padded to 4 octets.
+     *
+     * @param[in] user   This SedpWriter.
+     * @param[in] change A live announcement from either builtin writer.
+     * @return The serializedPayload size in octets; 0 when the source no
+     *   longer has the endpoint.
+     *
+     * Verification:
+     * - Correct means: the size equals the size of the payload
+     *   build_announcement() builds for the same change, and is never less.
+     * - Covered by: TC-SEDP-8.5.4-019.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §9.6.3.2 (PL_CDR endpoint data), §9.4.2.11
+     *   (ParameterList, 4-octet alignment)
+     */
+    static uint32_t announcement_size(void* user, const CacheChange& change) noexcept;
 
     /// Serialise one DiscoveredWriterData as PL_CDR_LE.
     uint32_t serialise_writer(const DiscoveredWriterData& wd,

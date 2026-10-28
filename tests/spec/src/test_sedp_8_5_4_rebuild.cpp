@@ -142,7 +142,10 @@ static bool tc_sedp_8_5_4_015(std::string& err) {
     CHECK(live_blocks() - live_before == stored_held, "a rebuilt announcement holds no block");
 
     stored.announce_to_peer(peer, dest);
+
+    finish_replay(stored, 0u);
     rebuilt.announce_to_peer(peer, dest);
+    finish_replay(rebuilt, 0u);
     CHECK(!stored_tx.sent.empty(), "the stored writer announces to the peer");
     CHECK(rebuilt_tx.sent == stored_tx.sent, "rebuilt datagrams equal stored ones byte for byte");
     CHECK(live_blocks() - live_before == stored_held,
@@ -153,7 +156,9 @@ static bool tc_sedp_8_5_4_015(std::string& err) {
     stored_tx.sent.clear();
     rebuilt_tx.sent.clear();
     stored.announce_to_peer(late, dest);
+    finish_replay(stored, 0u);
     rebuilt.announce_to_peer(late, dest);
+    finish_replay(rebuilt, 0u);
     CHECK(!rebuilt_tx.sent.empty() && rebuilt_tx.sent == stored_tx.sent,
           "TRANSIENT_LOCAL replay to a late peer is identical");
     return true;
@@ -173,6 +178,7 @@ static bool tc_sedp_8_5_4_016(std::string& err) {
     SedpWriter w(local, tx, endpoints.source());
     CHECK(w.register_writer(wd), "registration");
     w.announce_to_peer(peer, dest);
+    finish_replay(w, 0u);
     const std::vector<std::vector<Octet>> first = data_payloads(tx.sent);
     CHECK(first.size() == 1u, "the peer is sent the announcement once");
 
@@ -232,6 +238,42 @@ static bool tc_sedp_8_5_4_017(std::string& err) {
     return true;
 }
 
+// A rebuilt replay sizes each announcement before building it and packs
+// several per datagram: the peer receives the same announcements, in the
+// same order, as from stored ones sent one per datagram, in fewer datagrams.
+static bool tc_sedp_8_5_4_019(std::string& err) {
+    const GuidPrefix   local = make_guid(0x31u, entity_id::PARTICIPANT).prefix;
+    const GuidPrefix   peer = make_guid(0x32u, entity_id::PARTICIPANT).prefix;
+    const Locator      dest = make_udpv4_locator(0xC0A80132u, 7410u);
+    RecordedEndpoints  endpoints{};
+    RecordingTransport stored_tx{};
+    RecordingTransport rebuilt_tx{};
+    SedpWriter         stored(local, stored_tx);
+    SedpWriter         rebuilt(local, rebuilt_tx, endpoints.source());
+    for (Octet i = 0u; i < 4u; ++i) {
+        // 168-octet announcements: too large for the default 256-octet class,
+        // so each is built in a 512-octet block with room for a second.
+        DiscoveredReaderData rd = make_reader(make_guid(0x31u, make_entity(i, 0u, 1u, 0x04u)));
+        rd.topicName.assign("rt/arm/joint_states");
+        rd.typeName.assign("sensor_msgs::msg::dds_::JointState_WithExtraFields_");
+        endpoints.readers.push_back(rd);
+        CHECK(stored.register_reader(rd) && rebuilt.register_reader(rd), "registration");
+    }
+
+    stored.announce_to_peer(peer, dest);
+    finish_replay(stored, 0u);
+    rebuilt.announce_to_peer(peer, dest);
+    finish_replay(rebuilt, 0u);
+
+    const std::vector<std::vector<Octet>> stored_payloads = data_payloads(stored_tx.sent);
+    CHECK(stored_payloads.size() == 4u, "the stored replay sends every announcement");
+    CHECK(data_payloads(rebuilt_tx.sent) == stored_payloads,
+          "the packed replay carries the same announcements in the same order");
+    CHECK(rebuilt_tx.sent.size() < stored_tx.sent.size(),
+          "the packed replay needs fewer datagrams");
+    return true;
+}
+
 void append_sedp_tests_8_5_4_rebuild(std::vector<TestCase>& tests) {
     tests.push_back(
         {"TC-SEDP-8.5.4-015",
@@ -246,6 +288,11 @@ void append_sedp_tests_8_5_4_rebuild(std::vector<TestCase>& tests) {
                      "§8.5.5.1: the endpoint table serves back a local endpoint's recorded "
                      "discovery data, and nothing for remote, unknown, or removed endpoints.",
                      tc_sedp_8_5_4_017});
+    tests.push_back({"TC-SEDP-8.5.4-019",
+                     "§8.3.3/§9.6.3.2: a rebuilt TRANSIENT_LOCAL replay sizes each announcement "
+                     "before building it and packs several per datagram, carrying the same "
+                     "announcements in order as a stored replay.",
+                     tc_sedp_8_5_4_019});
 }
 
 }  // namespace spec_test

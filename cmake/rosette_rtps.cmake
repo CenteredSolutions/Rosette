@@ -30,6 +30,9 @@
 #                                   When full, an endpoint that matches a
 #                                   local one displaces one that matches none.
 #   ROSETTE_RTPS_LOG_LEVEL          0-5 (default 2, warnings)
+#   ROSETTE_RTPS_POOL_STATS         ON to count buffer pool use per class
+#                                   (rtps/buf_pool_stats.hpp) and warn when a
+#                                   request gets no block (default OFF)
 #
 # Output: STATIC library `rosette_rtps`, linked PUBLIC to rosette_platform and
 # rosette_net, with ROSETTE_RTPS_MAX_DATAGRAM_SIZE as a compile definition
@@ -46,6 +49,7 @@ set(ROSETTE_RTPS_MAX_PEERS 8 CACHE STRING "Remote participants exchanging endpoi
 set(ROSETTE_RTPS_MAX_KNOWN_PEERS 8 CACHE STRING "Remote participants known, active or parked")
 set(ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS 64 CACHE STRING "Remote writers (and readers) known from SEDP; when full, only those matching a local endpoint are admitted")
 set(ROSETTE_RTPS_LOG_LEVEL 2 CACHE STRING "rosette::rtps log level (0-5)")
+option(ROSETTE_RTPS_POOL_STATS "Count buffer pool use per class and warn on refusals" OFF)
 
 include(${ROSETTE_ROOT}/cmake/rosette_rtps_sources.cmake)
 add_library(rosette_rtps STATIC
@@ -125,3 +129,6 @@ target_compile_definitions(rosette_rtps PUBLIC
   RTPS_POOL_CLASS4_SIZE=${ROSETTE_RTPS_MAX_SAMPLE_SIZE}u
   RTPS_POOL_CLASS4_COUNT=${ROSETTE_RTPS_MAX_SAMPLE_BLOCKS}u
 )
+if(ROSETTE_RTPS_POOL_STATS)
+  target_compile_definitions(rosette_rtps PUBLIC RTPS_BUFPOOL_STATS=1)
+endif()

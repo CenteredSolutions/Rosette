@@ -9,14 +9,24 @@
  *  - mutex(): every access to the participant, its endpoints, and state its
  *    callbacks touch (rmw take rings, for example) happens with this held.
  *    RTPS objects themselves take no locks.
- *  - spin_until(ready, timeout): drain every socket, tick, and evaluate
- *    `ready` under the lock; then release it and sleep in the transport until
- *    a datagram arrives, wake() is called, or the participant's next timer
- *    (heartbeat, repair, SPDP announcement, lease expiry) is due, whichever
- *    is first. rmw_wait() and rmw_publisher_wait_for_all_acked() are both
- *    this loop with different predicates.
+ *  - spin_until(ready, timeout): run one protocol pass (take waiting
+ *    datagrams, tick) and evaluate `ready` under the lock; then release it
+ *    and sleep in the transport until a datagram arrives, wake() is called,
+ *    or the participant's next timer (heartbeat, repair, SPDP announcement,
+ *    lease expiry) is due, whichever is first. rmw_wait() and
+ *    rmw_publisher_wait_for_all_acked() are both this loop with different
+ *    predicates.
  *  - wake(): ends a sleeping spin_until() from any thread, core, or (via
  *    wake_event().signal_from_isr()) interrupt handler.
+ *
+ * A pass is bounded in time, not by how much is waiting. It takes datagrams
+ * alternately from the metatraffic and user-data sockets and stops taking
+ * them once it has run RTPS_PUMP_PASS_BUDGET_US; datagrams still waiting are
+ * taken by the next pass, which follows at once without sleeping. A flood
+ * (a whole network of peers announcing or leaving at once) therefore delays
+ * `ready`, the lock's other users, and the participant's timers by about one
+ * budget, not by the time it takes to drain the flood, and a discovery flood
+ * does not hold back the user data queued behind it.
  *
  * An idle node therefore sleeps: WFE on bare metal, blocked on FreeRTOS,
  * blocked in poll() on POSIX, until data or a deadline needs it.
@@ -40,6 +50,14 @@
 
 #include <cstdint>
 
+#ifndef RTPS_PUMP_PASS_BUDGET_US
+/// Microseconds one protocol pass may spend taking datagrams before it ticks
+/// and returns: about 20 metatraffic datagrams on a 133 MHz RP2040 with a
+/// WIZnet chip on SPI, and the tick that follows sees timers at most this
+/// late. 0 takes one datagram per pass.
+#  define RTPS_PUMP_PASS_BUDGET_US 10000u
+#endif
+
 namespace rosette::rtps {
 
 class ParticipantDriver {
@@ -56,10 +74,13 @@ public:
      * @param[in] rx_buffer   Receive buffer holding one full datagram; must
      *   outlive the driver.
      * @param[in] rx_capacity Size of `rx_buffer` in octets.
+     * @param[in] pass_budget_us Microseconds one pass may spend taking
+     *   datagrams (RTPS_PUMP_PASS_BUDGET_US); a pass always takes at least one.
      */
     ParticipantDriver(RTPSParticipant& participant, SocketUdpTransport& transport,
                       rosette::net::SocketProvider& provider, Octet* rx_buffer,
-                      uint32_t rx_capacity) noexcept;
+                      uint32_t rx_capacity,
+                      uint32_t pass_budget_us = RTPS_PUMP_PASS_BUDGET_US) noexcept;
     ~ParticipantDriver() noexcept;
 
     ParticipantDriver(const ParticipantDriver&) = delete;
@@ -77,11 +98,12 @@ public:
     /**
      * @brief Runs the protocol until `ready()` holds or `timeout_ms` passes.
      *
-     * Each pass, with the lock held: drains every datagram waiting on the
-     * transport into the participant, calls tick(), and evaluates `ready()`.
-     * Between passes the lock is released and the caller sleeps until the
-     * sooner of the remaining timeout and the participant's next timer, or
-     * until a datagram or wake() ends the sleep.
+     * Each pass, with the lock held: feeds the participant the datagrams
+     * waiting on the transport, up to the pass budget, calls tick(), and
+     * evaluates `ready()`. Between passes the lock is released. A pass that
+     * left datagrams waiting is followed at once by the next; otherwise the
+     * caller sleeps until the sooner of the remaining timeout and the
+     * participant's next timer, or until a datagram or wake() ends the sleep.
      *
      * @param[in] ready      Predicate evaluated under the lock; must not block.
      * @param[in] timeout_ms Longest total wait; 0 runs one pass,
@@ -90,43 +112,81 @@ public:
      *
      * Verification:
      * - Correct means: returns within one sleep of a datagram, wake(), or the
-     *   predicate becoming true; never sleeps past a participant timer.
-     * - Covered by: rmw_rosette/test/test_guard_condition.cpp,
+     *   predicate becoming true; never sleeps past a participant timer, nor
+     *   while a datagram it has not taken is waiting.
+     * - Covered by: TC-DRV-PASS-001..003 (tests/spec), and
+     *   rmw_rosette/test/test_guard_condition.cpp,
      *   rmw_rosette/test/test_pub_sub_loopback.cpp, tests/ros2 interop.
      */
     template <typename Ready>
     bool spin_until(Ready ready, uint32_t timeout_ms) noexcept {
         const uint32_t start_ms = rosette::platform::monotonic_ms();
         for (;;) {
-            uint32_t now_ms;
-            uint32_t next_timer_ms;
+            Pass     pass;
+            uint32_t sleep_ms;
             {
                 rosette::platform::LockGuard guard(mutex_);
-                now_ms = pump_locked();
-                if (ready()) return true;
-                next_timer_ms = participant_.ms_until_next_timer(now_ms);
+                pass = pump_locked();
+                if (ready()) {
+                    return true;
+                }
+
+                sleep_ms = pass.backlog ? 0u : participant_.ms_until_next_timer(pass.now_ms);
             }
-            uint32_t sleep_ms = next_timer_ms;
+
             if (timeout_ms != rosette::platform::kWaitForever) {
-                const uint32_t elapsed = now_ms - start_ms;
-                if (elapsed >= timeout_ms) return false;
+                const uint32_t elapsed = pass.now_ms - start_ms;
+                if (elapsed >= timeout_ms) {
+                    return false;
+                }
+
                 const uint32_t remaining = timeout_ms - elapsed;
-                if (remaining < sleep_ms) sleep_ms = remaining;
+                if (remaining < sleep_ms) {
+                    sleep_ms = remaining;
+                }
             }
-            if (sleep_ms > 0u) transport_.wait_readable(wake_, sleep_ms);
+
+            if (sleep_ms > 0u) {
+                transport_.wait_readable(wake_, sleep_ms);
+            }
         }
     }
 
 private:
-    /// Drains all waiting datagrams and ticks; caller holds mutex_.
-    /// Returns the monotonic time the pass ran at.
-    uint32_t pump_locked() noexcept;
+    /// The outcome of one protocol pass.
+    struct Pass {
+        uint32_t now_ms = 0u;      ///< Monotonic time the pass ticked at.
+        bool     backlog = false;  ///< The budget ran out; datagrams may still be waiting.
+    };
+
+    /**
+     * @brief One protocol pass: feeds the participant waiting datagrams, up
+     *   to the pass budget, then ticks it. The caller holds mutex_.
+     *
+     * Takes one datagram at a time, alternating between the metatraffic
+     * sockets (poll_meta()) and the user-data socket (poll_user()), and
+     * carries the alternation over to the next pass, so neither kind waits
+     * behind a flood of the other. Stops when both are empty, or after the
+     * datagram during which the pass's budget ran out.
+     *
+     * @return The tick time, and whether the budget ended the pass.
+     *
+     * Verification:
+     * - Correct means: every pass takes at least one waiting datagram; no
+     *   pass takes another once pass_budget_us_ has passed since it began;
+     *   with both kinds waiting, consecutive datagrams alternate kinds; a
+     *   pass that emptied both sockets reports no backlog.
+     * - Covered by: TC-DRV-PASS-001, TC-DRV-PASS-002, TC-DRV-PASS-003.
+     */
+    Pass pump_locked() noexcept;
 
     RTPSParticipant&              participant_;
     SocketUdpTransport&           transport_;
     rosette::net::SocketProvider& provider_;
     Octet*                        rx_buffer_;
     uint32_t                      rx_capacity_;
+    uint32_t                      pass_budget_us_;
+    bool                          next_is_user_ = false;
     rosette::platform::Mutex      mutex_;
     rosette::platform::Event      wake_;
 };

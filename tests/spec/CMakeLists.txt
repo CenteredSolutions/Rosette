@@ -193,6 +193,7 @@ set(SEDP_SPEC_TEST_SOURCES
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/message_parser.cpp
     ../../src/rtps/buf_pool.cpp
@@ -234,6 +235,7 @@ add_executable(history_cache_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/buf_pool.cpp
 )
@@ -264,12 +266,14 @@ add_executable(stateful_writer_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     src/test_stateful_writer_8_4_1_1_locator_reference.cpp
     ../../src/rtps/fragment_assembler.cpp
     src/test_proxy_pool_admission.cpp
     src/test_stateful_writer_8_4_1_4.cpp
     src/test_stateful_writer_8_4_1_4_rematch.cpp
+    src/test_stateful_writer_8_4_1_4_replay.cpp
     src/test_stateful_writer_8_4_2_2.cpp
     src/test_stateful_writer_8_4_3_8_4_4.cpp
     src/test_stateful_writer_8_4_6_requested_window.cpp
@@ -318,6 +322,7 @@ add_executable(stateful_reader_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/message_parser.cpp
@@ -352,7 +357,10 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     src/test_participant_waiting_matches.cpp
     src/test_participant_writer_evictions.cpp
     src/test_participant_8_4_4_reader_reliability.cpp
+    src/test_participant_driver_pass_budget.cpp
     ../../src/rtps/participant.cpp
+    ../../src/rtps/participant_driver.cpp
+    ../../src/rtps/transport.cpp
     ../../src/rtps/participant_peer_tiers.cpp
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/fragment_assembler.cpp
@@ -360,6 +368,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/spdp.cpp
@@ -428,6 +437,7 @@ add_executable(local_name_limit_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/spdp.cpp
@@ -465,6 +475,7 @@ add_executable(writer_slot_class_spec_tests
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
+    ../../src/rtps/stateful_writer_replay.cpp
     ../../src/rtps/proxy_pool.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/spdp.cpp
@@ -511,13 +522,38 @@ add_test(
     COMMAND buf_pool_debug_spec_tests
 )
 
+# The buffer pool's usage statistics, with two blocks per class so a class
+# runs out in a few allocations, and a log sink of the test's own.
+add_executable(buf_pool_stats_spec_tests
+    src/test_buf_pool_stats.cpp
+    src/spec_test_common.cpp
+    ../../src/rtps/buf_pool.cpp
+    ../../src/rtps/buf_pool_stats_log.cpp
+)
+target_include_directories(buf_pool_stats_spec_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+target_compile_definitions(buf_pool_stats_spec_tests PRIVATE
+    RTPS_LOG_LEVEL=2
+    RTPS_BUFPOOL_STATS=1
+    RTPS_POOL_CLASS0_COUNT=2u RTPS_POOL_CLASS1_COUNT=2u RTPS_POOL_CLASS2_COUNT=2u
+    RTPS_POOL_CLASS3_COUNT=2u RTPS_POOL_CLASS4_COUNT=2u
+)
+add_test(
+    NAME buf_pool_stats_spec_conformance
+    COMMAND buf_pool_stats_spec_tests
+)
+
 # The peer-tier tests need an active tier smaller than the network: two
 # active slots among six known peers, and a short settle time.
 set(PARTICIPANT_TIER_SPEC_TEST_SOURCES ${PARTICIPANT_SPEC_TEST_SOURCES})
 list(REMOVE_ITEM PARTICIPANT_TIER_SPEC_TEST_SOURCES
     src/spec_participant_test_registry.cpp
     src/test_participant_8_5_1.cpp
-    src/test_participant_waiting_matches.cpp)
+    src/test_participant_waiting_matches.cpp
+    src/test_participant_driver_pass_budget.cpp)
 list(APPEND PARTICIPANT_TIER_SPEC_TEST_SOURCES
     src/spec_participant_tier_test_registry.cpp
     src/test_participant_8_5_3_peer_tiers.cpp)
@@ -691,7 +727,8 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
     rosette_spec_add_fuzz(sedp fuzz/fuzz_sedp.cpp
         sedp.cpp endpoint_match_table.cpp locator_ranking.cpp stateful_reader.cpp
         fragment_assembler.cpp writer_proxy.cpp sn_window.cpp history_cache.cpp
-        reader_proxy.cpp stateful_writer.cpp proxy_pool.cpp message_parser.cpp buf_pool.cpp)
+        reader_proxy.cpp stateful_writer.cpp stateful_writer_replay.cpp proxy_pool.cpp
+        message_parser.cpp buf_pool.cpp)
     rosette_spec_add_fuzz(endpoint_match fuzz/fuzz_endpoint_match_table.cpp
         endpoint_match_table.cpp locator_ranking.cpp)
 

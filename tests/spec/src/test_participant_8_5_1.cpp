@@ -88,14 +88,9 @@ static bool tc_part_8_5_1_002(std::string& err) {
                                   static_cast<uint32_t>(spdp_payload.size()),
                                   g_participant_test_now_ms),
           "participant should accept SPDP participant announcement");
-    {
-        const size_t announces = count_sedp_data_announcements(tx);
-        if (announces != 2u) {
-            err = "new peer discovery SEDP announce count mismatch: got " +
-                  std::to_string(announces) + " expected 2";
-            return false;
-        }
-    }
+    finish_replay(p.sedp_writer(), g_participant_test_now_ms);
+    CHECK(count_sedp_data_announcements(tx) == 2u,
+          "new peer discovery must send the two SEDP announcements");
     // §8.5.3.2: the directed SPDP reply precedes SEDP, so the peer has
     // matched this participant's builtin writers before their DATA arrives.
     CHECK(tx.packets.size() >= 3u, "expected SPDP reply plus two SEDP announcements");
@@ -112,6 +107,7 @@ static bool tc_part_8_5_1_002(std::string& err) {
                                   static_cast<uint32_t>(spdp_payload.size()),
                                   g_participant_test_now_ms),
           "participant should accept SPDP refresh");
+    finish_replay(p.sedp_writer(), g_participant_test_now_ms);
     {
         const size_t announces = count_sedp_data_announcements(tx);
         if (announces != 2u) {
@@ -164,6 +160,7 @@ static bool tc_part_8_5_1_002(std::string& err) {
                                   static_cast<uint32_t>(spdp_payload.size()),
                                   g_participant_test_now_ms),
           "participant should accept rediscovery after lease expiry");
+    finish_replay(p.sedp_writer(), g_participant_test_now_ms);
     {
         // Rediscovery replays the two existing announcements
         // (TRANSIENT_LOCAL); it writes no duplicates.

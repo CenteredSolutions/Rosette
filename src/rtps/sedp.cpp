@@ -190,15 +190,16 @@ static SequenceNumber write_rebuilt_announcement(SedpWriter::BuiltinWriter& writ
 
 // Serialises one endpoint into a fresh pool block laid out as
 // StatefulWriter::write_preframed_async() lays out a stored announcement
-// (headroom for the RTPS, DATA, and inline QoS headers; tailroom for a
-// HEARTBEAT), so the DATA is framed in place exactly as a stored one is.
-// Returns an invalid BufRef when the pool is exhausted or the data does
-// not fit.
+// (headroom for the RTPS and DATA headers and the change's own inline QoS;
+// tailroom for a HEARTBEAT), so the DATA is framed in place exactly as a
+// stored one is. Returns an invalid BufRef when the pool is exhausted or the
+// data does not fit.
 template <typename EndpointData, typename SerialiseFn>
 static BufRef serialise_for_send(const EndpointData& endpoint, uint32_t size_estimate,
-                                 SerialiseFn serialise) noexcept {
-    BufRef payload = buf_alloc_with_headroom(size_estimate + kRtpsHeartbeatTailroom,
-                                             kRtpsDataHeadroom + kMaxInlineQosSize);
+                                 const CacheChange& change, SerialiseFn serialise) noexcept {
+    BufRef payload =
+        buf_alloc_with_headroom(size_estimate + kRtpsHeartbeatTailroom,
+                                kRtpsDataHeadroom + inline_qos_serialized_size(change.inlineQos));
     if (!payload.valid()) {
         return payload;
     }
@@ -224,7 +225,7 @@ static BufRef serialise_for_send(const EndpointData& endpoint, uint32_t size_est
         }
 
         return serialise_for_send(
-            wd, writer_payload_size_estimate(wd),
+            wd, writer_payload_size_estimate(wd), change,
             [&self](const DiscoveredWriterData& d, Octet* buf, uint32_t cap) noexcept {
                 return self.serialise_writer(d, buf, cap);
             });
@@ -236,10 +237,27 @@ static BufRef serialise_for_send(const EndpointData& endpoint, uint32_t size_est
     }
 
     return serialise_for_send(
-        rd, reader_payload_size_estimate(rd),
+        rd, reader_payload_size_estimate(rd), change,
         [&self](const DiscoveredReaderData& d, Octet* buf, uint32_t cap) noexcept {
             return self.serialise_reader(d, buf, cap);
         });
+}
+
+[[gnu::cold]] uint32_t SedpWriter::announcement_size(void*              user,
+                                                     const CacheChange& change) noexcept {
+    const SedpWriter& self = *static_cast<const SedpWriter*>(user);
+    const Guid        endpoint_guid = change.inlineQos.key_hash_guid();
+    if (change.writerGuid.entityId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
+        DiscoveredWriterData wd{};
+        return self.endpoints_.writer(self.endpoints_.user, endpoint_guid, wd)
+                   ? writer_payload_size_estimate(wd)
+                   : 0u;
+    }
+
+    DiscoveredReaderData rd{};
+    return self.endpoints_.reader(self.endpoints_.user, endpoint_guid, rd)
+               ? reader_payload_size_estimate(rd)
+               : 0u;
 }
 
 // Withdraws an endpoint: drops its live announcement and writes a disposal

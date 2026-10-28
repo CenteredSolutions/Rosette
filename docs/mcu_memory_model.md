@@ -504,10 +504,25 @@ grep -A1 '^s_' probe.s
 
 **Heap**: print `mallinfo().uordblks` periodically, as `rclc_chatter` does.
 
-**Pool pressure**: build with `-DRTPS_BUFPOOL_DEBUG` to get per-class `live`,
-`high_water`, and `alloc_fail` counters (`MultiBufPool::debug_class_stats()`)
-and an allocation event ring. A class whose high-water mark sits well below
-its count can shrink; one with `alloc_fail > 0` is too small.
+**Pool pressure**: configure with `-DROSETTE_RTPS_POOL_STATS=ON` and call
+`rosette::rtps::buf_pool_stats_log(true)` from a periodic status report
+(`rtps/buf_pool_stats.hpp`). For each class it logs supply (blocks served,
+live, peak) and demand: the requests whose best fit is that class, their
+smallest, mean, and largest size, a histogram of those sizes across the
+class's range, how many spilled up to a larger class because this one was
+empty, and how many got no block. A refusal is also logged as it happens, on
+the 1st, 2nd, 4th, ... of its class. Sizes are what the caller requested,
+headroom included; the pool does not see how much of the block is then
+written.
+
+Read it as: a peak well below the count means the class can shrink; spills
+or refusals mean it is too small; a histogram crowded at the top of a class's
+range means the class below just misses a common size, and one crowded at
+the bottom means most of each block goes unused.
+
+For a single leak or a block held too long, `-DRTPS_BUFPOOL_DEBUG` adds an
+allocation event ring and the allocating PC of every live block
+(`MultiBufPool::debug_class_stats()`, `debug_recent_event()`).
 
 **Datagrams**: `rtps_chatter` prints the transport counters (largest datagram
 sent and received, oversize, truncated); on a host, `RMW_ROSETTE_TRANSPORT_STATS=1`

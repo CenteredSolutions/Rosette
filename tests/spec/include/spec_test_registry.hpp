@@ -57,6 +57,7 @@ void register_all_history_cache_tests(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_1_1_locator_reference(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_1_4(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_1_4_rematch(std::vector<TestCase>& tests);
+void append_stateful_writer_tests_8_4_1_4_replay(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_2_2(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_3_8_4_4(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_2_2(std::vector<TestCase>& tests);
@@ -85,6 +86,7 @@ void append_participant_tests_8_5_1(std::vector<TestCase>& tests);
 void append_participant_waiting_match_tests(std::vector<TestCase>& tests);
 void append_participant_writer_eviction_tests(std::vector<TestCase>& tests);
 void append_participant_reader_reliability_tests(std::vector<TestCase>& tests);
+void append_participant_driver_pass_budget_tests(std::vector<TestCase>& tests);
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests);
 
 void register_all_participant_tests(std::vector<TestCase>& tests);
