@@ -727,7 +727,8 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
     rosette_spec_add_fuzz(sedp fuzz/fuzz_sedp.cpp
         sedp.cpp endpoint_match_table.cpp locator_ranking.cpp stateful_reader.cpp
         fragment_assembler.cpp writer_proxy.cpp sn_window.cpp history_cache.cpp
-        reader_proxy.cpp stateful_writer.cpp proxy_pool.cpp message_parser.cpp buf_pool.cpp)
+        reader_proxy.cpp stateful_writer.cpp stateful_writer_replay.cpp proxy_pool.cpp
+        message_parser.cpp buf_pool.cpp)
     rosette_spec_add_fuzz(endpoint_match fuzz/fuzz_endpoint_match_table.cpp
         endpoint_match_table.cpp locator_ranking.cpp)
 
