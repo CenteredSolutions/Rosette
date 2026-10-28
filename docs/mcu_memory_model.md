@@ -39,16 +39,16 @@ firmware capacity:
 | | `rtps_chatter` (RTPS core, direct) | `rclc_chatter` (rclc over `rmw_rosette`) |
 | --- | ---: | ---: |
 | Flash (`.text`) | 204,488 B | 285,236 B |
-| Static RAM (`.bss`) | **62,836 B** | **94,580 B** |
-| RTPS participant (all tables below) | 28,824 | 56,256 |
+| Static RAM (`.bss`) | **62,836 B** | **99,816 B** |
+| RTPS participant (all tables below) | 28,824 | 55,392 |
 |   writer slots | 4 × 1,048 | 7 × 1,048 + 4 × 648 |
 |   reader slots | 4 × 76 | 10 × 76 |
 |   `ReaderProxy` / `WriterProxy` pools | 2,640 + 2,128 | 7,232 + 5,296 |
-|   assembly pool (6 / 8 slots) | 824 | 1,112 |
+|   assembly pool (6 slots) | 824 | 824 |
 |   `EndpointMatchTable` | 9,760 | 15,616 |
-|   SEDP writer + reader | 4,048 + 2,632 | 4,784 + 3,208 |
+|   SEDP writer + reader | 4,048 + 2,632 | 4,784 + 2,632 |
 |   SPDP reader (peer table) | 1,532 | 7,516 |
-| Buffer pool (`rosette::rtps::g_buf_pool`) | 26,988 | 27,980 |
+| Buffer pool (`rosette::rtps::g_buf_pool`) | 26,988 | 34,080 |
 | Receive buffer (one datagram) | 1,472 | (inside the rmw context) |
 | rmw entity pools (context, publishers, subscriptions, ...) | – | ~8 KB beyond the participant |
 | USB stdio, Pico SDK, board network | ~5 KB | ~5 KB |
@@ -60,15 +60,11 @@ Two observations drive most tuning:
    endpoints, and in `rclc_chatter` they are sized for the firmware defaults
    of 4 publishers, 4 subscriptions, 4 services, and 2 clients. The example
    uses one publisher and one subscription.
-2. **The buffer pool is the largest single item**, and its counts follow
-   what a board holds at once (samples awaiting acknowledgement or a take,
-   messages being built), not how many endpoints it declares. The firmware
-   profile's counts come from a 35-endpoint board among 90 participants;
-   [Pool pressure](#measuring) shows how to check them on another workload.
+2. **The buffer pool is the largest single item**, and its small-block
+   counts scale with the number of local endpoints.
 
-Declaring what the firmware actually creates shrinks the participant (see
-[Worked example](#worked-example-rclc_chatter-sized-to-what-it-creates));
-the pool is the same size either way.
+Declaring what the firmware actually creates fixes both at once (see
+[Worked example](#worked-example-rclc_chatter-sized-to-what-it-creates)).
 
 ## Object model
 
@@ -258,8 +254,7 @@ Who holds blocks at any moment:
 | Holder | Blocks held | Released when |
 | --- | --- | --- |
 | Writer history | up to depth samples per writer | every matched reliable reader acknowledges, or depth is exceeded |
-| SEDP writers | firmware profile: the announcement being rebuilt and sent; host profile: one announcement per local endpoint, plus one disposal | the datagram is sent; the endpoint is deleted |
-| `ros_discovery_info` writer (rmw) | one sample, the context's node table, sized exactly (a datagram block once it passes 1 KiB) | the node table changes and the next sample replaces it |
+| SEDP writers | one announcement per local endpoint, plus one disposal | the endpoint is deleted |
 | Fragment reassembly | one per sample being reassembled, at most `RTPS_ASSEMBLY_SLOTS` | the last fragment arrives, the reader replaces the sample with a newer one, or the writer is unmatched |
 | `ChangeRing` (rmw) | up to the entity's KEEP_LAST depth | `rmw_take()`, or replaced by a newer sample |
 | Message builder | one while a datagram is built | the datagram is sent |
@@ -326,11 +321,11 @@ counts, which is why a publisher costs more than a subscription there.
 | `RMW_ROSETTE_MATCHED_WRITERS` | empty: readers × cap | the `WriterProxy` pool, shared by every reader | 66 B, plus a 36 B match record |
 | `RMW_ROSETTE_MIN_MATCHED_ENDPOINTS` | 1 | floor: proxies reserved for every endpoint slot, so its first matches never wait | raises the pools' minimum size |
 | `RMW_ROSETTE_MATCH_WAITERS` | 8 (`MAX_MATCHED_ENDPOINTS`) | matches waiting for a proxy at once, oldest bound first | 36 B (one match record) |
-| `RMW_ROSETTE_ASSEMBLY_SLOTS` | empty: the datagram and large block counts (8) | fragmented samples in reassembly at once, across all readers | 144 B, plus 144 B in each SEDP reader's private pool while that pool is below its writer count |
+| `RMW_ROSETTE_ASSEMBLY_SLOTS` | empty: the datagram and large block counts (6) | fragmented samples in reassembly at once, across all readers | 136 B |
 | `RMW_ROSETTE_MAX_WRITER_DEPTH` | 8 | deepest KEEP_LAST history a publisher keeps (1 to 255); deeper requests and KEEP_ALL run at this depth; sizes the deep writer slots | 100 B per history slot per deep writer |
 | `RMW_ROSETTE_REPLY_DEPTH` | 4 | replies each service holds until acknowledged (1 to `RMW_ROSETTE_MAX_WRITER_DEPTH`); a reply written while this many are unacknowledged displaces the oldest; sizes the shallow writer slots | 100 B per reply per service |
 | `RMW_ROSETTE_MAX_PENDING_CHANGES` | 10 | `ChangeRing` depth ceiling per subscription, service, and client | 72 B per entry per entity, plus the blocks unread entries pin |
-| `RMW_ROSETTE_MAX_DATAGRAM_SIZE` | 1472 | receive buffer, datagram pool class, DATA_FRAG threshold | the datagram class × 6 blocks |
+| `RMW_ROSETTE_MAX_DATAGRAM_SIZE` | 1472 | receive buffer, datagram pool class, DATA_FRAG threshold | the datagram class × 4 blocks |
 | `RMW_ROSETTE_MAX_SAMPLE_SIZE` | 4096 | largest pool class: the biggest message sent or received | × `RMW_ROSETTE_LARGE_BUFFERS` |
 | `RMW_ROSETTE_LARGE_BUFFERS` | 2 | blocks of `MAX_SAMPLE_SIZE`: large samples in flight at once | `MAX_SAMPLE_SIZE` each |
 | `RMW_ROSETTE_POOL_PROFILE` | `firmware` | pool layout: `firmware` sizes classes by role; `host` for many peers and deep histories | |
@@ -427,9 +422,9 @@ cmake --build build-hw/pico2-lean --target rclc_chatter
 
 | | Default capacity | Declared capacity | Saved |
 | --- | ---: | ---: | ---: |
-| `.bss` total | 94,580 B | **61,156 B** | 33,424 B |
-| rmw context (participant, transport, rx buffer) | 58,424 | 25,744 | 32,680 |
-| buffer pool | 27,980 | 27,980 | 0 |
+| `.bss` total | 99,816 B | **63,980 B** | 35,836 B |
+| rmw context (participant, transport, rx buffer) | 57,560 | 24,880 | 32,680 |
+| buffer pool | 34,080 | 31,668 | 2,412 |
 | subscription + publisher pools | 4,976 | 1,256 | 3,720 |
 | `.text` | 285,236 | 279,108 | 6,128 |
 
