@@ -80,6 +80,47 @@ constexpr uint32_t kSpdpMulticastAddr = 0xEFFF0001u;
 /// IDs above 119 would spill into the next domain's range.
 constexpr uint8_t kMaxParticipantId = 119u;
 
+/// Highest ROS domain ID: domain 232's SPDP port (7400 + 250 * 232 = 65400)
+/// is the last whose unicast ports still fit in 16 bits.
+constexpr size_t kMaxDomainId = 232u;
+
+/**
+ * @brief The domain rmw_init() joins for the domain ID in its options.
+ *
+ * rcl_init() replaces RMW_DEFAULT_DOMAIN_ID with ROS_DOMAIN_ID before
+ * rmw_init() sees it; a caller that skips rcl can still pass it, and that
+ * means domain 0, the ROS 2 default.
+ *
+ * @param[in]  requested  The options' domain_id.
+ * @param[out] domain_id  The domain to join; written only on success.
+ * @return true when the domain is valid; false above kMaxDomainId.
+ *
+ * Verification:
+ * - Correct means: RMW_DEFAULT_DOMAIN_ID gives 0, 0..232 pass through
+ *   unchanged, and 233 or more is refused instead of wrapping the port
+ *   arithmetic into another domain's ports.
+ * - Covered by: rmw_rosette/test/test_init_options.cpp (TC-RMW-INITOPT-010); the
+ *   default mapping by tests/ros2 loopback runs, which bind domain 0 without ROS_DOMAIN_ID.
+ *
+ * References:
+ * - rmw/domain_id.h (Humble), RMW_DEFAULT_DOMAIN_ID
+ * - ROS 2 documentation, "The ROS_DOMAIN_ID": domain IDs 0 to 232
+ * - OMG DDSI-RTPS 2.5 §9.6.1.1 (port mapping)
+ */
+bool resolve_domain_id(size_t requested, uint8_t& domain_id) noexcept {
+    if (requested == RMW_DEFAULT_DOMAIN_ID) {
+        domain_id = 0u;
+        return true;
+    }
+
+    if (requested > kMaxDomainId) {
+        return false;
+    }
+
+    domain_id = static_cast<uint8_t>(requested);
+    return true;
+}
+
 /**
  * @brief Computes the SPDP multicast port shared by a domain's participants.
  *
@@ -116,7 +157,8 @@ rmw_rosette::Pool<rmw_context_impl_s, RMW_ROSETTE_MAX_CONTEXTS>& context_pool() 
  * @param[in,out] ctx            Context whose transport storage is used.
  * @param[out]    participant_id Receives the chosen ID on success.
  * @return `true` with `ctx.transport` open; `false` when every ID up to
- *   kMaxParticipantId is taken or the SPDP port cannot be opened.
+ *   kMaxParticipantId whose ports fit in 16 bits is taken, or the SPDP
+ *   port cannot be opened.
  *
  * Verification:
  * - Correct means: several rmw_rosette and stock-RMW processes in one domain
@@ -127,6 +169,11 @@ rmw_rosette::Pool<rmw_context_impl_s, RMW_ROSETTE_MAX_CONTEXTS>& context_pool() 
  */
 bool open_transport_on_free_ports(rmw_rosette::Context& ctx, uint8_t& participant_id) noexcept {
     for (uint8_t id = 0; id <= kMaxParticipantId; ++id) {
+        // In the highest domains the last participant IDs' ports pass 65535.
+        if (7400u + 250u * ctx.domain_id + 11u + 2u * id > 65535u) {
+            break;
+        }
+
         ctx.transport = new (ctx.transport_storage)
             rtps::SocketUdpTransport(*ctx.provider, metatraffic_unicast_port(ctx.domain_id, id),
                                      default_unicast_port(ctx.domain_id, id), kSpdpMulticastAddr,
@@ -253,14 +300,26 @@ const char* rmw_get_serialization_format(void) {
 /**
  * @brief Fills an rmw_init_options_t with rmw_rosette's default values.
  *
- * rcl calls this before rmw_init(), then may override fields (most
- * notably `domain_id`) before passing the options on.
+ * rcl calls this before rmw_init(), then may override fields before
+ * passing the options on. `domain_id` starts as RMW_DEFAULT_DOMAIN_ID, the
+ * value rcl_init() replaces with ROS_DOMAIN_ID (or 0 when unset); any other
+ * value would make rcl skip that lookup, so every rcl, rclc and rclcpp
+ * program would ignore ROS_DOMAIN_ID.
  *
  * @param[out] init_options Options struct to fill.
  * @param[in] allocator Allocator to record on the options; unused beyond
  *   that, since nothing here allocates.
  * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `init_options`
  *   is null.
+ *
+ * Verification:
+ * - Correct means: `domain_id` is RMW_DEFAULT_DOMAIN_ID, so a program
+ *   started with ROS_DOMAIN_ID=65 binds domain 65's ports (7400 + 250 * 65).
+ * - Covered by: rmw_rosette/test/test_init_options.cpp (TC-RMW-INITOPT-009).
+ *
+ * References:
+ * - rmw/init_options.h, rmw/domain_id.h (Humble), RMW_DEFAULT_DOMAIN_ID
+ * - rcl/src/rcl/init.c (Humble), rcl_init(): the ROS_DOMAIN_ID lookup
  */
 rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_allocator_t allocator) {
     if (!init_options) return RMW_RET_INVALID_ARGUMENT;
@@ -269,7 +328,7 @@ rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_alloca
     init_options->allocator = allocator;
     init_options->impl = nullptr;
     init_options->enclave = nullptr;
-    init_options->domain_id = 0;  // RMW_DEFAULT_DOMAIN_ID
+    init_options->domain_id = RMW_DEFAULT_DOMAIN_ID;
     init_options->security_options = rmw_get_zero_initialized_security_options();
     return RMW_RET_OK;
 }
@@ -426,9 +485,10 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * condition is triggered by every graph change the participant reports.
  *
  * @param[in] options Init options; `domain_id` and `instance_id` are used.
+ *   `domain_id` is 0 to 232, or RMW_DEFAULT_DOMAIN_ID for domain 0.
  * @param[out] context Context to initialize.
  * @return `RMW_RET_OK` on success; `RMW_RET_INVALID_ARGUMENT` if either
- *   argument is null; `RMW_RET_ERROR` if the context pool is exhausted,
+ *   argument is null or `domain_id` is above 232; `RMW_RET_ERROR` if the context pool is exhausted,
  *   no participant ID with free ports was found, or the participant cannot
  *   hold the `ros_discovery_info` writer.
  *
@@ -442,7 +502,15 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * - OMG DDSI-RTPS 2.5 §8.5.3 (SPDP), §9.6.1.1 (port mapping)
  */
 rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
-    if (!options || !context) return RMW_RET_INVALID_ARGUMENT;
+    if (!options || !context) {
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+
+    uint8_t domain_id = 0u;
+    if (!resolve_domain_id(options->domain_id, domain_id)) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: domain_id above 232");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
 
     rmw_context_impl_s* impl = context_pool().acquire();
     if (!impl) {
@@ -452,7 +520,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     }
 
     rmw_rosette::Context& ctx = impl->rosette_context;
-    ctx.domain_id = static_cast<uint8_t>(options->domain_id);
+    ctx.domain_id = domain_id;
     ctx.provider = &rmw_rosette::network_socket_provider();
     uint8_t participant_id = 0;
     if (!open_transport_on_free_ports(ctx, participant_id)) {
