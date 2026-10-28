@@ -96,9 +96,9 @@
       "section": "8.7.2.2",
       "page": 196,
       "normativity": "implementation-behavior",
-      "statement": "A TRANSIENT_LOCAL writer replays its history to a newly matched or re-matched reader from tick(), spending at most RTPS_REPLAY_DATAGRAMS_PER_TICK datagrams per call (fragments and HEARTBEATs included, finishing only the change in progress), each change once and in sequence order, including changes written during the replay; a NACK from a replaying reader for a change not yet replayed to it is left to the replay, and any other NACK is repaired.",
+      "statement": "A TRANSIENT_LOCAL writer replays its history to a newly matched or re-matched reader from tick(), spending at most RTPS_REPLAY_DATAGRAMS_PER_TICK datagrams per call (fragments and HEARTBEATs included, one for an attempt whose payload could not be built, finishing only the change in progress), each change once and in sequence order, including changes written during the replay; a NACK from a replaying reader for a change not yet replayed to it is left to the replay, and any other NACK is repaired.",
       "status": "implemented",
-      "test_ids": ["TC-SWR-8.4.1.4-003", "TC-SWR-8.4.1.4-010", "TC-SWR-8.4.1.4-012", "TC-SWR-8.4.1.4-014"]
+      "test_ids": ["TC-SWR-8.4.1.4-003", "TC-SWR-8.4.1.4-010", "TC-SWR-8.4.1.4-012", "TC-SWR-8.4.1.4-014", "TC-SWR-8.4.1.4-015"]
     },
     {
       "id": "REQ-SWR-8.7.2.2-REPLAY-FAIRNESS",

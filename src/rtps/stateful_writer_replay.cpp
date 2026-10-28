@@ -27,19 +27,28 @@
 namespace rosette::rtps {
 
 void StatefulWriter::drain_replays() noexcept {
-    const uint32_t first_datagram = datagramsSent_;
-    bool           pending = false;
-    uint32_t       resume = replayCursor_;
+    uint32_t spent = 0;
+    bool     pending = false;
+    uint32_t resume = replayCursor_;
 
     // Sends one replaying proxy datagrams until the budget is spent, and
     // records where the next pass starts: just after the last proxy served.
+    // An attempt is charged the datagrams it sent, or one when it sent none (a
+    // payload that could not be built or framed is a lost datagram the reader
+    // repairs), so a starved pool cannot turn a pass into history-sized work.
     const auto serve = [&](ReaderProxy& proxy, uint32_t index) noexcept {
         if (!proxy.replaying) {
             return;
         }
 
-        while (datagramsSent_ - first_datagram < RTPS_REPLAY_DATAGRAMS_PER_TICK
-               && send_replay_datagram(proxy)) {
+        while (spent < RTPS_REPLAY_DATAGRAMS_PER_TICK) {
+            const uint32_t before = datagramsSent_;
+            if (!send_replay_datagram(proxy)) {
+                break;
+            }
+
+            const uint32_t sent = datagramsSent_ - before;
+            spent += sent > 0u ? sent : 1u;
             resume = index + 1u;
         }
 

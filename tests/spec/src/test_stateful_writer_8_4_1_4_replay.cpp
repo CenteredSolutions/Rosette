@@ -357,6 +357,46 @@ static bool tc_swr_8_4_1_4_014(std::string& err) {
     return true;
 }
 
+/// A payload builder for an exhausted pool: it counts the attempt and builds nothing.
+static BufRef starved_payload(void* attempts, const CacheChange& /*change*/) noexcept {
+    ++*static_cast<uint32_t*>(attempts);
+    return BufRef{};
+}
+
+// TC-SWR-8.4.1.4-015: an attempt that sends nothing, because its payload
+// could not be built, still spends the replay budget: with the pool
+// exhausted a tick() attempts the budget's worth of changes, not the whole
+// history, and the changes it could not build are not attempted twice.
+static bool tc_swr_8_4_1_4_015(std::string& err) {
+    RecordingTransport           tx{};
+    const Guid                   writer = make_guid(0xC0u, make_entity(0u, 0u, 3u, 0xC2u));
+    const Guid                   reader = make_guid(0xD0u, make_entity(0u, 0u, 3u, 0xC7u));
+    const Locator                loc = make_udpv4_locator(0xC0A80196u, 7410u);
+    StatefulWriterStorage<32, 1> w(writer, ReliabilityKind::RELIABLE,
+                                   DurabilityKind::TRANSIENT_LOCAL, tx, 5u, 1000u);
+    uint32_t                     attempts = 0u;
+    w.set_payload_builder(&starved_payload, &attempts, &size_payload);
+
+    const uint32_t history = 3u * RTPS_REPLAY_DATAGRAMS_PER_TICK;
+    for (uint32_t i = 0; i < history; ++i) {
+        InlineQos qos{};
+        qos.set_key_hash(make_guid(0xC0u, make_entity(0u, 0u, static_cast<Octet>(i), 0x03u)));
+        CHECK(w.write_on_demand_async(ChangeKind::ALIVE, qos), "announce an endpoint");
+    }
+
+    CHECK(w.matched_reader_add(reader, &loc, 1u, false), "match a peer's detector");
+
+    w.tick(0u);
+    CHECK(attempts == RTPS_REPLAY_DATAGRAMS_PER_TICK,
+          "a tick() with no payload to send attempts only the budget's worth of changes");
+    CHECK(w.replay_pending(), "the rest of the history waits for the next tick()");
+
+    finish_replay(w, 0u);
+    CHECK(attempts == history && !w.replay_pending(),
+          "each change is attempted once and the replay then ends");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_1_4_replay(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.1.4-010",
                      "§8.7.2.2/§8.4.1.4: a TRANSIENT_LOCAL replay goes out from tick(), at most "
@@ -380,6 +420,11 @@ void append_stateful_writer_tests_8_4_1_4_replay(std::vector<TestCase>& tests) {
                      "§8.4.7.1/§8.4.9.2: a NACK for a change UNSENT to a reader that is not "
                      "replaying is repaired; only a replaying reader's NACK is left to the replay.",
                      tc_swr_8_4_1_4_014});
+    tests.push_back({"TC-SWR-8.4.1.4-015",
+                     "§8.7.2.2: a replay attempt that sends nothing because its payload could not "
+                     "be built still spends the per-tick budget, so an exhausted pool cannot make "
+                     "one tick() attempt the whole history.",
+                     tc_swr_8_4_1_4_015});
 }
 
 }  // namespace spec_test

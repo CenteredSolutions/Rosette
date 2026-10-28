@@ -1174,8 +1174,11 @@ private:
      * starting where the previous pass stopped, sending each its UNSENT
      * changes in sequence order (send_replay_datagram()) until the budget is
      * spent. The budget is charged in datagrams actually sent, fragments and
-     * HEARTBEATs included; a change already being sent is not split, so a
-     * pass overshoots by at most the rest of one change's datagrams. The next
+     * HEARTBEATs included, and one datagram for an attempt that sends none
+     * (a payload that could not be built or framed is a lost datagram the
+     * reader repairs), so an exhausted pool cannot make a pass attempt the
+     * whole history; a change already being sent is not split, so a pass
+     * overshoots by at most the rest of one change's datagrams. The next
      * pass starts at the proxy after the last one served, so a reader that
      * keeps receiving new changes cannot hold the budget against the others.
      * A proxy with nothing left UNSENT stops replaying; the writer's replay
@@ -1186,15 +1189,17 @@ private:
      * held between datagrams or ticks.
      *
      * Verification:
-     * - Correct means: a tick() stops sending once the budget of datagrams
-     *   is spent, finishing at most the change in progress; every cached
+     * - Correct means: a tick() stops attempting once the budget of datagrams
+     *   is spent (an attempt that sends none costs one), finishing at most
+     *   the change in progress; every cached
      *   change reaches every replaying reader exactly once, in sequence
      *   order, the newest with the replay's HEARTBEAT when the writer serves
      *   the reader reliably; every replaying reader is served within as many
      *   passes as there are replaying readers; once nothing is UNSENT the
      *   writer reports no pending replay.
      * - Covered by: TC-SWR-8.4.1.4-003, TC-SWR-8.4.1.4-008, TC-SWR-8.4.1.4-010,
-     *   TC-SWR-8.4.1.4-011, TC-SWR-8.4.1.4-012, TC-SWR-8.4.1.4-013.
+     *   TC-SWR-8.4.1.4-011, TC-SWR-8.4.1.4-012, TC-SWR-8.4.1.4-013,
+     *   TC-SWR-8.4.1.4-015.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.7.2.2 (TRANSIENT_LOCAL replay), §8.4.9.2,
