@@ -71,8 +71,8 @@ static_assert(sizeof(RequestWriterGuid) >= 16,
  *
  * Service request IDs name the request's writer by GUID; stock RMWs store
  * the 12-octet prefix followed by the 4-octet EntityId, and so does this.
- * Octets past the first 16 (present when the field is RMW_GID_STORAGE_SIZE
- * long) are zeroed.
+ * Octets past the first 16, in a field declared longer than that, are
+ * zeroed.
  *
  * @param[in]  guid RTPS GUID.
  * @param[out] out  Destination `rmw_request_id_t::writer_guid`; fully overwritten.
@@ -89,10 +89,14 @@ static_assert(sizeof(RequestWriterGuid) >= 16,
  */
 inline void guid_to_request_writer(const rosette::rtps::Guid& guid,
                                    RequestWriterGuid&         out) noexcept {
-    std::memset(out, 0, sizeof(out));
     std::memcpy(out, guid.prefix.value, 12);
     std::memcpy(out + 12, guid.entityId.entityKey, 3);
     out[15] = static_cast<RequestWriterOctet>(guid.entityId.entityKind);
+
+    // Every distribution so far declares exactly 16 octets, so this costs no code.
+    if constexpr (sizeof(RequestWriterGuid) > 16) {
+        std::memset(out + 16, 0, sizeof(RequestWriterGuid) - 16);
+    }
 }
 
 /**
