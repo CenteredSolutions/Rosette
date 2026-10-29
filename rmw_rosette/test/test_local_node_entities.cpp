@@ -179,7 +179,8 @@ TEST(LocalNodeEntities, MeasuresExactlyWhatItEncodes) {
 
     ASSERT_TRUE(table.add_node(nodes[0]));
     ASSERT_TRUE(table.add_node(nodes[1]));
-    for (uint8_t i = 0; i < 40; ++i) {
+    // Enough endpoints to pass 1024 octets with either Gid size (24 or 16 octets).
+    for (uint8_t i = 0; table.encoded_size(participant) <= 1024u; ++i) {
         ASSERT_TRUE(table.associate(nodes[i % 2], make_guid(0x50, i, 0x03), i % 3 == 0));
     }
 

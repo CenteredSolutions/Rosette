@@ -26,6 +26,7 @@ find_package(rosidl_typesupport_introspection_c REQUIRED)
 find_package(rosidl_typesupport_microxrcedds_c QUIET)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmw_rosette_capacity.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmw_rosette_ros_features.cmake)
 
 # Root of the Rosette repository, which provides the RTPS core and platform glue.
 set(ROSETTE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH
@@ -92,6 +93,10 @@ target_compile_definitions(rmw_rosette PRIVATE
 
 rmw_rosette_apply_capacity(rmw_rosette)
 
+# Features of the ROS 2 distribution being built against (rmw_rosette/ros_features.h).
+rmw_rosette_probe_ros_features(rmw_rosette
+  LIBRARIES rcutils::rcutils rmw::rmw rosidl_runtime_c::rosidl_runtime_c)
+
 target_link_libraries(rmw_rosette PUBLIC
   rcutils::rcutils
   rmw::rmw
@@ -137,15 +142,21 @@ if(BUILD_TESTING)
 
   # Each test binary links librmw_rosette directly, so it exercises this
   # implementation without going through rmw_implementation's loader.
-  foreach(test_name test_introspection_c_codec test_guard_condition test_pub_sub_loopback
-                    test_change_ring test_local_node_entities test_service_departed_client
-                    test_service_reply_depth
-                    test_init_options)
+  set(_rmw_rosette_tests test_introspection_c_codec test_guard_condition test_pub_sub_loopback
+                         test_change_ring test_local_node_entities test_service_departed_client
+                         test_service_reply_depth test_init_options)
+  # Entry points the ROS 2 headers declare only from some distribution on.
+  if(RMW_ROSETTE_HAS_CLIENT_GID)
+    list(APPEND _rmw_rosette_tests test_client_gid)
+  endif()
+
+  foreach(test_name ${_rmw_rosette_tests})
     ament_add_gtest(${test_name} test/${test_name}.cpp TIMEOUT 60)
     target_link_libraries(${test_name} rmw_rosette)
     # Tests include rmw_rosette headers whose layouts depend on the capacity model.
     rmw_rosette_apply_capacity(${test_name})
-    target_include_directories(${test_name} PRIVATE ${ROSETTE_ROOT}/include)
+    target_include_directories(${test_name} PRIVATE ${ROSETTE_ROOT}/include
+                               ${CMAKE_CURRENT_BINARY_DIR}/rmw_rosette_generated)
     # Same platform selection as the library, without a second copy of its
     # state: the OS and chip ports' definitions, and their include
     # directories, where platform.hpp finds rosette_os_port.hpp.

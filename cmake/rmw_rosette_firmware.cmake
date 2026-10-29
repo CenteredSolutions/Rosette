@@ -142,6 +142,11 @@ endif()
 rmw_rosette_apply_capacity(rmw_rosette_static)
 target_link_libraries(rmw_rosette_static PUBLIC ros2_c_client_stack_headers rosette_platform rosette_net)
 
+# Features of the micro-ROS distribution the stack was built from
+# (rmw_rosette/ros_features.h); probed against the same headers the library compiles with.
+include(${_rr_dir}/cmake/rmw_rosette_ros_features.cmake)
+rmw_rosette_probe_ros_features(rmw_rosette_static INCLUDE_DIRS ${_r2_include_roots})
+
 # ------------------------------------------------------------
 # rmw_rosette_firmware
 # ------------------------------------------------------------

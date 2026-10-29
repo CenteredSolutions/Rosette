@@ -13,6 +13,8 @@
 
 #include <gtest/gtest.h>
 
+#include "rcl_default_init_options.hpp"
+
 #include <rcutils/allocator.h>
 #include <rmw/error_handling.h>
 #include <rmw/rmw.h>
@@ -27,7 +29,7 @@ class GuardConditionTest : public ::testing::Test {
 protected:
     void SetUp() override {
         options_ = rmw_get_zero_initialized_init_options();
-        ASSERT_EQ(rmw_init_options_init(&options_, rcutils_get_default_allocator()), RMW_RET_OK);
+        ASSERT_EQ(rmw_rosette_test::init_options_as_rcl(&options_), RMW_RET_OK);
         options_.domain_id = 91;
         context_ = rmw_get_zero_initialized_context();
         ASSERT_EQ(rmw_init(&options_, &context_), RMW_RET_OK);

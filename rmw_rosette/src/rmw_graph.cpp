@@ -17,6 +17,7 @@
  */
 
 #include "rmw_rosette/identifier.h"
+#include "rmw_rosette/ros_features.h"
 #include "rmw_rosette/topic_naming.hpp"
 #include "rmw_rosette/types.hpp"
 
@@ -32,63 +33,72 @@
 
 namespace {
 
+/// Writes the DDS topic name for a ROS name; one of the topic_naming.hpp composers.
+using ComposeDdsName = bool (*)(char* out, size_t cap, const char* ros_name) noexcept;
+
 /**
- * @brief Counts the writers or readers the graph knows on one ROS topic.
+ * @brief Counts the writers or readers the graph knows on one mangled DDS topic.
  *
- * The shared body of rmw_count_publishers() and rmw_count_subscribers().
- * The ROS name is mangled to its DDS topic name ("/chatter" becomes
- * "rt/chatter", as publishers and subscriptions announce it) and counted in
- * the participant's EndpointMatchTable, which holds this participant's own
+ * The shared body of every rmw_count_* query. The ROS name is mangled to the
+ * DDS topic its endpoints announce (a topic "/chatter" becomes "rt/chatter";
+ * a service "/add" has its replies on "rr/addReply") and counted in the
+ * participant's EndpointMatchTable, which holds this participant's own
  * endpoints and every remote one SEDP has announced.
  *
- * @param[in]  node       Node the query is made through; selects the context.
- * @param[in]  topic_name Fully-qualified ROS topic name.
- * @param[in]  writers    `true` to count publishers; `false` for subscriptions.
- * @param[out] count      Endpoints on the topic, written on RMW_RET_OK.
- * @param[in]  caller     rmw function name, for error messages.
+ * @param[in]  node     Node the query is made through; selects the context.
+ * @param[in]  ros_name Fully-qualified ROS topic or service name.
+ * @param[in]  compose  Mangles `ros_name` to its DDS topic name.
+ * @param[in]  writers  `true` to count writers; `false` for readers.
+ * @param[out] count    Endpoints on the topic, written on RMW_RET_OK.
+ * @param[in]  caller   rmw function name, for error messages.
  * @return RMW_RET_OK with `count` set; RMW_RET_INVALID_ARGUMENT for a null
- *   argument or a topic name that is not a valid fully-qualified name;
+ *   argument or a name that is not a valid fully-qualified name;
  *   RMW_RET_INCORRECT_RMW_IMPLEMENTATION for another rmw's node. A name too
  *   long to be announced counts zero endpoints.
  *
  * Verification:
  * - Correct means: the count equals what a stock rmw reports for the same
- *   topic: every publisher (or subscription) on it, local or remote,
- *   whatever its type; a withdrawn endpoint no longer counts.
+ *   name: every matching endpoint, local or remote, whatever its type; a
+ *   withdrawn endpoint no longer counts.
  * - Covered by: TC-SEDP-8.5.4-014 (the table's count), and
  *   tests/ros2/run_rmw_graph_loopback.sh (against stock Fast DDS).
  *
  * References:
- * - rmw/rmw.h (Humble), `rmw_count_publishers`, `rmw_count_subscribers`
- * - rmw_fastrtps_shared_cpp/src/rmw_count.cpp (Humble), `__rmw_count_publishers`
+ * - rmw/rmw.h, `rmw_count_publishers`, `rmw_count_subscribers`,
+ *   `rmw_count_clients`, `rmw_count_services` (Jazzy)
+ * - rmw_fastrtps_shared_cpp/src/rmw_count.cpp (Jazzy), `__rmw_count_*`
  */
-rmw_ret_t count_endpoints(const rmw_node_t* node, const char* topic_name, bool writers,
-                          size_t* count, const char* caller) noexcept {
-    if (!node || !node->data || !topic_name || !count) {
+rmw_ret_t count_endpoints(const rmw_node_t* node, const char* ros_name, ComposeDdsName compose,
+                          bool writers, size_t* count, const char* caller) noexcept {
+    if (!node || !node->data || !ros_name || !count) {
         RMW_SET_ERROR_MSG_WITH_FORMAT_STRING("rmw_rosette: %s: null argument", caller);
         return RMW_RET_INVALID_ARGUMENT;
     }
-    if (!node->implementation_identifier ||
-        std::strcmp(node->implementation_identifier, rmw_rosette_identifier) != 0) {
+
+    if (!node->implementation_identifier
+        || std::strcmp(node->implementation_identifier, rmw_rosette_identifier) != 0) {
         RMW_SET_ERROR_MSG_WITH_FORMAT_STRING("rmw_rosette: %s: node from another rmw", caller);
         return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
     }
+
     int validation = RMW_TOPIC_VALID;
-    if (rmw_validate_full_topic_name(topic_name, &validation, nullptr) != RMW_RET_OK) {
+    if (rmw_validate_full_topic_name(ros_name, &validation, nullptr) != RMW_RET_OK) {
         return RMW_RET_ERROR;
     }
+
     if (validation != RMW_TOPIC_VALID) {
-        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING("rmw_rosette: %s: invalid topic name: %s", caller,
-                                             rmw_full_topic_name_validation_result_string(
-                                                 validation));
+        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING(
+            "rmw_rosette: %s: invalid name: %s", caller,
+            rmw_full_topic_name_validation_result_string(validation));
         return RMW_RET_INVALID_ARGUMENT;
     }
 
     char dds_topic[RTPS_MAX_TOPIC_NAME_LEN];
-    if (!rmw_rosette::compose_topic_name(dds_topic, sizeof(dds_topic), topic_name)) {
+    if (!compose(dds_topic, sizeof(dds_topic), ros_name)) {
         *count = 0u;
         return RMW_RET_OK;
     }
+
     auto& ctx = *static_cast<const rmw_rosette::Node*>(node->data)->context;
     rmw_rosette::ContextLock lock(ctx);
     *count = ctx.participant->match_table().count(dds_topic, writers);
@@ -119,13 +129,31 @@ rmw_ret_t rmw_get_node_names(const rmw_node_t* node, rcutils_string_array_t* nod
 
 /// @brief Counts publishers on a ROS topic across the graph; see count_endpoints().
 rmw_ret_t rmw_count_publishers(const rmw_node_t* node, const char* topic_name, size_t* count) {
-    return count_endpoints(node, topic_name, /*writers=*/true, count, "rmw_count_publishers");
+    return count_endpoints(node, topic_name, rmw_rosette::compose_topic_name, /*writers=*/true,
+                           count, "rmw_count_publishers");
 }
 
 /// @brief Counts subscriptions on a ROS topic across the graph; see count_endpoints().
 rmw_ret_t rmw_count_subscribers(const rmw_node_t* node, const char* topic_name, size_t* count) {
-    return count_endpoints(node, topic_name, /*writers=*/false, count, "rmw_count_subscribers");
+    return count_endpoints(node, topic_name, rmw_rosette::compose_topic_name, /*writers=*/false,
+                           count, "rmw_count_subscribers");
 }
+
+#if RMW_ROSETTE_HAS_SERVICE_ENDPOINT_COUNTS
+/// @brief Counts clients of a ROS service across the graph: the readers on its
+/// reply topic, as stock rmws count them; see count_endpoints().
+rmw_ret_t rmw_count_clients(const rmw_node_t* node, const char* service_name, size_t* count) {
+    return count_endpoints(node, service_name, rmw_rosette::compose_service_reply_topic,
+                           /*writers=*/false, count, "rmw_count_clients");
+}
+
+/// @brief Counts servers of a ROS service across the graph: the writers on its
+/// reply topic, as stock rmws count them; see count_endpoints().
+rmw_ret_t rmw_count_services(const rmw_node_t* node, const char* service_name, size_t* count) {
+    return count_endpoints(node, service_name, rmw_rosette::compose_service_reply_topic,
+                           /*writers=*/true, count, "rmw_count_services");
+}
+#endif
 
 /// @brief Returns RMW_RET_UNSUPPORTED (see the file comment).
 rmw_ret_t rmw_get_node_names_with_enclaves(const rmw_node_t* node,

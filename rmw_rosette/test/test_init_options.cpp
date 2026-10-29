@@ -9,15 +9,25 @@
  * rcl_init(): 16 B of heap per session on the RP2040, where a board rebuilds
  * its session after every link loss. These tests count every allocation
  * through the options' allocator and require copy + fini to return them all.
+ *
+ * Where the headers have discovery options, the static peer list is a third
+ * owned allocation, and rmw_init() checks the requested discovery range
+ * before it creates anything.
  */
+
+#include "rmw_rosette/ros_features.h"
 
 #include <gtest/gtest.h>
 
 #include <rcutils/allocator.h>
 #include <rcutils/strdup.h>
 #include <rmw/error_handling.h>
+#include <rmw/init.h>
 #include <rmw/init_options.h>
 #include <rmw/rmw.h>
+#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+#  include <rmw/discovery_options.h>
+#endif
 
 #include <cstdlib>
 #include <cstring>
@@ -243,10 +253,79 @@ TEST_F(InitOptionsTest, RmwInitRefusesADomainAbove232) {
     rmw_init_options_t options = rmw_get_zero_initialized_init_options();
     ASSERT_EQ(rmw_init_options_init(&options, counting_allocator()), RMW_RET_OK);
     options.domain_id = 233u;
+#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+    // A valid range, so the refusal is the domain's.
+    options.discovery_options.automatic_discovery_range = RMW_AUTOMATIC_DISCOVERY_RANGE_SUBNET;
+#endif
     rmw_context_t context = rmw_get_zero_initialized_context();
     EXPECT_EQ(rmw_init(&options, &context), RMW_RET_INVALID_ARGUMENT);
     rmw_reset_error();
     EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
 }
+
+#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+/// Calls rmw_init() with `options`, and finalizes the context when it succeeds.
+rmw_ret_t init_and_fini(const rmw_init_options_t& options) {
+    rmw_context_t   context = rmw_get_zero_initialized_context();
+    const rmw_ret_t ret = rmw_init(&options, &context);
+    if (ret == RMW_RET_OK) {
+        EXPECT_EQ(rmw_shutdown(&context), RMW_RET_OK);
+        EXPECT_EQ(rmw_context_fini(&context), RMW_RET_OK);
+    }
+
+    rmw_reset_error();
+    return ret;
+}
+
+// TC-RMW-INITOPT-011: rmw_init() accepts the discovery scopes the participant
+// provides and refuses the rest before creating anything.
+TEST_F(InitOptionsTest, InitChecksTheDiscoveryRange) {
+    rmw_init_options_t options = rmw_get_zero_initialized_init_options();
+    ASSERT_EQ(rmw_init_options_init(&options, rcutils_get_default_allocator()), RMW_RET_OK);
+    options.domain_id = 77;
+
+    options.discovery_options.automatic_discovery_range = RMW_AUTOMATIC_DISCOVERY_RANGE_SUBNET;
+    EXPECT_EQ(init_and_fini(options), RMW_RET_OK);
+    options.discovery_options.automatic_discovery_range =
+        RMW_AUTOMATIC_DISCOVERY_RANGE_SYSTEM_DEFAULT;
+    EXPECT_EQ(init_and_fini(options), RMW_RET_OK);
+
+    options.discovery_options.automatic_discovery_range = RMW_AUTOMATIC_DISCOVERY_RANGE_NOT_SET;
+    EXPECT_EQ(init_and_fini(options), RMW_RET_INVALID_ARGUMENT);
+    options.discovery_options.automatic_discovery_range = RMW_AUTOMATIC_DISCOVERY_RANGE_LOCALHOST;
+    EXPECT_EQ(init_and_fini(options), RMW_RET_UNSUPPORTED);
+    options.discovery_options.automatic_discovery_range = RMW_AUTOMATIC_DISCOVERY_RANGE_OFF;
+    EXPECT_EQ(init_and_fini(options), RMW_RET_UNSUPPORTED);
+
+    options.discovery_options.automatic_discovery_range = RMW_AUTOMATIC_DISCOVERY_RANGE_SUBNET;
+    rcutils_allocator_t allocator = rcutils_get_default_allocator();
+    ASSERT_EQ(rmw_discovery_options_init(&options.discovery_options, 1, &allocator), RMW_RET_OK);
+    std::strcpy(options.discovery_options.static_peers[0].peer_address, "192.168.0.10");
+    EXPECT_EQ(init_and_fini(options), RMW_RET_UNSUPPORTED);
+
+    EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
+}
+
+// TC-RMW-INITOPT-012: a copy owns its own static peer list; finalizing both frees everything once.
+TEST_F(InitOptionsTest, CopyDuplicatesTheStaticPeers) {
+    rmw_init_options_t  source = options_with_strings();
+    rcutils_allocator_t allocator = counting_allocator();
+    ASSERT_EQ(rmw_discovery_options_init(&source.discovery_options, 2, &allocator), RMW_RET_OK);
+    std::strcpy(source.discovery_options.static_peers[1].peer_address, "10.42.0.176");
+    const int source_live = g_live;
+
+    rmw_init_options_t copy = rmw_get_zero_initialized_init_options();
+    ASSERT_EQ(rmw_init_options_copy(&source, &copy), RMW_RET_OK);
+    EXPECT_EQ(g_live, 2 * source_live);
+    ASSERT_EQ(copy.discovery_options.static_peers_count, 2u);
+    EXPECT_NE(copy.discovery_options.static_peers, source.discovery_options.static_peers);
+    EXPECT_STREQ(copy.discovery_options.static_peers[1].peer_address, "10.42.0.176");
+
+    EXPECT_EQ(rmw_init_options_fini(&source), RMW_RET_OK);
+    EXPECT_STREQ(copy.discovery_options.static_peers[1].peer_address, "10.42.0.176");
+    EXPECT_EQ(rmw_init_options_fini(&copy), RMW_RET_OK);
+    EXPECT_EQ(g_live, 0);
+}
+#endif
 
 }  // namespace

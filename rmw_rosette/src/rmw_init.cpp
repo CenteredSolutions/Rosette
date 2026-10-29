@@ -6,6 +6,7 @@
 #include "rmw_rosette/identifier.h"
 #include "rmw_rosette/network_port.hpp"
 #include "rmw_rosette/pool.hpp"
+#include "rmw_rosette/ros_features.h"
 #include "rmw_rosette/types.hpp"
 
 #include <rcutils/strdup.h>
@@ -14,6 +15,9 @@
 #include <rmw/init_options.h>
 #include <rmw/rmw.h>
 #include <rmw/security_options.h>
+#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+#  include <rmw/discovery_options.h>
+#endif
 #include <cstdio>
 #include <cstdlib>
 
@@ -282,6 +286,57 @@ void trigger_graph_guard(void* graph_guard) noexcept {
     static_cast<rmw_rosette::GuardCondition*>(graph_guard)->trigger();
 }
 
+#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+/**
+ * @brief Checks that the requested discovery scope is one this participant provides.
+ *
+ * rcl fills `discovery_options` from ROS_AUTOMATIC_DISCOVERY_RANGE and
+ * ROS_STATIC_PEERS (default: SUBNET, no peers). The participant discovers over
+ * SPDP multicast and the unicast locators of the network port, which is the
+ * SUBNET range, and is also what SYSTEM_DEFAULT names for this middleware. A
+ * narrower range (LOCALHOST, OFF) or a static peer list would need the
+ * transport to restrict or extend where SPDP is sent; until it does, those
+ * requests are refused, so a node never discovers wider than it was asked to.
+ *
+ * @param[in] options Discovery options from rmw_init()'s init options.
+ * @return `RMW_RET_OK` for SUBNET or SYSTEM_DEFAULT without static peers;
+ *   `RMW_RET_INVALID_ARGUMENT` for NOT_SET, which rmw/discovery_options.h says
+ *   an implementation must reject; `RMW_RET_UNSUPPORTED` for LOCALHOST, OFF,
+ *   or any static peer. The rmw error message names the refused setting.
+ *
+ * Verification:
+ * - Correct means: rmw_init() succeeds under rcl's defaults and fails, with
+ *   the context untouched, for each refused setting.
+ * - Covered by: rmw_rosette/test/test_init_options.cpp (TC-RMW-INITOPT-011).
+ *
+ * References:
+ * - rmw/discovery_options.h (Jazzy), `rmw_automatic_discovery_range_t`
+ * - rcl/src/rcl/init.c (Jazzy), `rcl_init` (environment to discovery options)
+ */
+rmw_ret_t check_discovery_options(const rmw_discovery_options_t& options) noexcept {
+    switch (options.automatic_discovery_range) {
+        case RMW_AUTOMATIC_DISCOVERY_RANGE_SUBNET:
+        case RMW_AUTOMATIC_DISCOVERY_RANGE_SYSTEM_DEFAULT:
+            break;
+        case RMW_AUTOMATIC_DISCOVERY_RANGE_NOT_SET:
+            RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: automatic_discovery_range is not set");
+            return RMW_RET_INVALID_ARGUMENT;
+        default:
+            RMW_SET_ERROR_MSG(
+                "rmw_rosette: rmw_init: only the SUBNET and SYSTEM_DEFAULT "
+                "discovery ranges are supported");
+            return RMW_RET_UNSUPPORTED;
+    }
+
+    if (options.static_peers_count != 0u) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: static discovery peers are not supported");
+        return RMW_RET_UNSUPPORTED;
+    }
+
+    return RMW_RET_OK;
+}
+#endif
+
 }  // namespace
 
 extern "C" {
@@ -304,7 +359,9 @@ const char* rmw_get_serialization_format(void) {
  * passing the options on. `domain_id` starts as RMW_DEFAULT_DOMAIN_ID, the
  * value rcl_init() replaces with ROS_DOMAIN_ID (or 0 when unset); any other
  * value would make rcl skip that lookup, so every rcl, rclc and rclcpp
- * program would ignore ROS_DOMAIN_ID.
+ * program would ignore ROS_DOMAIN_ID. Where the headers have discovery
+ * options, they are left zero (range NOT_SET, no peers), as in the stock
+ * rmws; rcl_init() sets the range from ROS_AUTOMATIC_DISCOVERY_RANGE.
  *
  * @param[out] init_options Options struct to fill.
  * @param[in] allocator Allocator to record on the options; unused beyond
@@ -330,19 +387,23 @@ rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_alloca
     init_options->enclave = nullptr;
     init_options->domain_id = RMW_DEFAULT_DOMAIN_ID;
     init_options->security_options = rmw_get_zero_initialized_security_options();
+#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+    init_options->discovery_options = rmw_get_zero_initialized_discovery_options();
+#endif
     return RMW_RET_OK;
 }
 
 /**
- * @brief Deep-copies an rmw_init_options_t, including the strings the options own.
+ * @brief Deep-copies an rmw_init_options_t, including the memory the options own.
  *
- * The options own two heap strings: `enclave` and
- * `security_options.security_root_path`. rcl_init() fills `enclave` with
- * rcutils_strdup() in the context's own copy of the options, and
- * rcl_context_fini() finalizes that copy through rmw_init_options_fini(),
- * so the copy duplicates both strings with `src`'s allocator and
- * rmw_init_options_fini() frees them; a shallow copy would leave two
- * owners of one string.
+ * The options own two heap strings, `enclave` and
+ * `security_options.security_root_path`, and, where the headers have
+ * discovery options, the `discovery_options.static_peers` array. rcl_init()
+ * fills `enclave` with rcutils_strdup() and the peers from ROS_STATIC_PEERS in
+ * the context's own copy of the options, and rcl_context_fini() finalizes that
+ * copy through rmw_init_options_fini(), so the copy duplicates each of them
+ * with `src`'s allocator and rmw_init_options_fini() frees them; a shallow
+ * copy would leave two owners of one allocation.
  *
  * @param[in] src Options to copy from; initialized by rmw_init_options_init().
  * @param[out] dst Options to copy into; must be zero-initialized
@@ -350,18 +411,19 @@ rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_alloca
  * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` if either argument is
  *   null, `dst` is already initialized or `src`'s allocator is invalid;
  *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` if `src` is another rmw's;
- *   `RMW_RET_BAD_ALLOC` if a string cannot be duplicated.
+ *   `RMW_RET_BAD_ALLOC` if a string or the peer list cannot be duplicated.
  *
  * Verification:
  * - Correct means: `dst` equals `src` field for field except that its
  *   strings are its own copies, and finalizing both returns every byte
  *   they allocated.
  * - Covered by: rmw_rosette/test/test_init_options.cpp
- *   (TC-RMW-INITOPT-002, -004, -007, -008).
+ *   (TC-RMW-INITOPT-002, -004, -007, -008, -012).
  *
  * References:
- * - rmw/init_options.h (Humble), `rmw_init_options_copy`, `rmw_init_options_fini`
+ * - rmw/init_options.h (Humble, Jazzy), `rmw_init_options_copy`, `rmw_init_options_fini`
  * - rmw/security_options.h (Humble), `rmw_security_options_copy`
+ * - rmw/discovery_options.h (Jazzy), `rmw_discovery_options_copy`
  * - rcl/src/rcl/init.c (Humble), `rcl_init` (the enclave rcutils_strdup)
  */
 rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_t* dst) {
@@ -403,15 +465,29 @@ rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_
         return RMW_RET_BAD_ALLOC;
     }
 
+#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+    // The peer list records its allocator by value; the copy takes a mutable one.
+    rcutils_allocator_t peers_allocator = *allocator;
+    copy.discovery_options = rmw_get_zero_initialized_discovery_options();
+    if (rmw_discovery_options_copy(&src->discovery_options, &peers_allocator,
+                                   &copy.discovery_options)
+        != RMW_RET_OK) {
+        allocator->deallocate(copy.enclave, allocator->state);
+        (void)rmw_security_options_fini(&copy.security_options, allocator);
+        return RMW_RET_BAD_ALLOC;
+    }
+#endif
+
     *dst = copy;
     return RMW_RET_OK;
 }
 
 /**
- * @brief Releases an rmw_init_options_t and the strings it owns.
+ * @brief Releases an rmw_init_options_t and the memory it owns.
  *
  * Frees `enclave` and `security_options.security_root_path` with the
- * options' allocator (see rmw_init_options_copy() for who fills them),
+ * options' allocator, and the discovery peer list with the allocator recorded
+ * beside it (see rmw_init_options_copy() for who fills them),
  * then resets the options. Options that were never initialized, or were
  * already finalized, carry no implementation identifier, own nothing and
  * are only reset. Options stamped by another rmw are rejected before any
@@ -434,8 +510,9 @@ rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_
  *   (TC-RMW-INITOPT-001, -003, -005, -006).
  *
  * References:
- * - rmw/init_options.h (Humble), `rmw_init_options_fini`
+ * - rmw/init_options.h (Humble, Jazzy), `rmw_init_options_fini`
  * - rmw/security_options.h (Humble), `rmw_security_options_fini`
+ * - rmw/discovery_options.h (Jazzy), `rmw_discovery_options_fini`
  */
 rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
     if (!init_options) {
@@ -462,6 +539,15 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
         (void)rmw_security_options_fini(&init_options->security_options, allocator);
     }
 
+#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+    // The peer list records its own allocator, so it is released whether or
+    // not the options own a string.
+    if (init_options->discovery_options.static_peers != nullptr
+        && rmw_discovery_options_fini(&init_options->discovery_options) != RMW_RET_OK) {
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+#endif
+
     *init_options = rmw_get_zero_initialized_init_options();
     return RMW_RET_OK;
 }
@@ -484,11 +570,15 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * node created on this context reports to. The context's graph guard
  * condition is triggered by every graph change the participant reports.
  *
- * @param[in] options Init options; `domain_id` and `instance_id` are used.
- *   `domain_id` is 0 to 232, or RMW_DEFAULT_DOMAIN_ID for domain 0.
+ * @param[in] options Init options; `domain_id` and `instance_id` are used,
+ *   and `discovery_options` where the headers have them
+ *   (check_discovery_options()). `domain_id` is 0 to 232, or
+ *   RMW_DEFAULT_DOMAIN_ID for domain 0.
  * @param[out] context Context to initialize.
  * @return `RMW_RET_OK` on success; `RMW_RET_INVALID_ARGUMENT` if either
- *   argument is null or `domain_id` is above 232; `RMW_RET_ERROR` if the context pool is exhausted,
+ *   argument is null, no discovery range is set, or `domain_id` is above 232;
+ *   `RMW_RET_UNSUPPORTED` for a discovery range or static peers this
+ *   participant cannot provide; `RMW_RET_ERROR` if the context pool is exhausted,
  *   no participant ID with free ports was found, or the participant cannot
  *   hold the `ros_discovery_info` writer.
  *
@@ -498,13 +588,20 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * - Covered by: tests/ros2/run_rmw_interop_loopback.sh.
  *
  * References:
- * - rmw/init.h (Humble), `rmw_init`
+ * - rmw/init.h (Humble, Jazzy), `rmw_init`
  * - OMG DDSI-RTPS 2.5 §8.5.3 (SPDP), §9.6.1.1 (port mapping)
  */
 rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     if (!options || !context) {
         return RMW_RET_INVALID_ARGUMENT;
     }
+
+#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+    const rmw_ret_t discovery_ret = check_discovery_options(options->discovery_options);
+    if (discovery_ret != RMW_RET_OK) {
+        return discovery_ret;
+    }
+#endif
 
     uint8_t domain_id = 0u;
     if (!resolve_domain_id(options->domain_id, domain_id)) {
