@@ -257,6 +257,49 @@ public:
         return -1;
     }
 
+    /**
+     * @brief Sends this socket's IPv4 multicast out of the interface holding `local`.
+     *
+     * Without it the kernel routes a group datagram like any other, through
+     * the default route's interface on most hosts. See
+     * Socket::set_multicast_interface() for the contract.
+     *
+     * @param[in] local IPv4 address of the interface; 0.0.0.0 restores the kernel's choice.
+     * @return 0 on success; the negative SocketError otherwise (`invalid_argument` when
+     *   no interface holds `local`, `not_supported` for IPv6, `closed`).
+     *
+     * Verification:
+     * - Correct means: a group datagram sent afterwards reaches a member
+     *   joined on that interface.
+     * - Covered by: tests/host/posix_host_interface_test.cpp (TC-NET-IFC-006).
+     *
+     * References:
+     * - Linux ip(7), IP_MULTICAST_IF
+     */
+    int set_multicast_interface(const SocketAddress& local) noexcept override {
+        if (!is_open()) {
+            last_error_ = SocketError::closed;
+            return static_cast<int>(last_error_);
+        }
+
+        if (local.domain != SocketDomain::ipv4) {
+            return static_cast<int>(SocketError::not_supported);
+        }
+
+        in_addr ifaddr{};
+        ifaddr.s_addr = htonl((static_cast<uint32_t>(local.address[0]) << 24u)
+                              | (static_cast<uint32_t>(local.address[1]) << 16u)
+                              | (static_cast<uint32_t>(local.address[2]) << 8u)
+                              | static_cast<uint32_t>(local.address[3]));
+        if (::setsockopt(fd_, IPPROTO_IP, IP_MULTICAST_IF, &ifaddr, sizeof(ifaddr)) != 0) {
+            last_error_ = errno == EADDRNOTAVAIL ? SocketError::invalid_argument : map_errno(errno);
+            return static_cast<int>(last_error_);
+        }
+
+        last_error_ = SocketError::none;
+        return 0;
+    }
+
     int leaveMulticastGroup(const SocketMulticastMembership& membership) noexcept override
     {
         if (!is_open()) {

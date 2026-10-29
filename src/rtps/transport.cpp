@@ -53,6 +53,12 @@ static bool locator_is_udp(const Locator& locator) noexcept
     return locator_is_ipv4(locator) || locator_is_ipv6(locator);
 }
 
+/// The four octets of a host-order IPv4 address, most significant first.
+static std::array<uint8_t, 4> ipv4_octets(uint32_t ipv4) noexcept {
+    return {static_cast<uint8_t>(ipv4 >> 24u), static_cast<uint8_t>(ipv4 >> 16u),
+            static_cast<uint8_t>(ipv4 >> 8u), static_cast<uint8_t>(ipv4)};
+}
+
 }  // namespace
 
 SocketUdpTransport::SocketUdpTransport(rosette::net::SocketProvider& provider,
@@ -109,6 +115,19 @@ std::unique_ptr<rosette::net::Socket> SocketUdpTransport::open_bound(uint16_t po
         } else {
             RTPS_LOG_I("transport", "port %u receive buffer %lu", static_cast<unsigned>(port),
                        static_cast<unsigned long>(granted));
+        }
+    }
+
+    // Every socket sends SPDP multicast from the interface the participant
+    // advertises; a backend with one interface declines, which is fine.
+    if (multicast_interface_ != 0u && locator_is_ipv4(multicast_locator_)) {
+        const int rc = socket->set_multicast_interface(
+            rosette::net::make_socket_address_v4(ipv4_octets(multicast_interface_), 0u));
+        if (rc != 0 && rc != static_cast<int>(rosette::net::SocketError::not_supported)) {
+            RTPS_LOG_E("transport", "multicast interface refused: port=%u error=%d",
+                       static_cast<unsigned>(port), rc);
+            socket->close();
+            return nullptr;
         }
     }
 
@@ -344,9 +363,8 @@ SocketUdpTransport::locator_to_socket_address(const Locator& dest) noexcept
         static_cast<uint16_t>(dest.port));
 }
 
-rosette::net::SocketMulticastMembership
-SocketUdpTransport::locator_to_multicast_membership(const Locator& dest) noexcept
-{
+rosette::net::SocketMulticastMembership SocketUdpTransport::locator_to_multicast_membership(
+    const Locator& dest) const noexcept {
     if (locator_is_ipv6(dest)) {
         std::array<uint8_t, 16> ipv6{};
         std::memcpy(ipv6.data(), dest.address, ipv6.size());
@@ -364,8 +382,7 @@ SocketUdpTransport::locator_to_multicast_membership(const Locator& dest) noexcep
             static_cast<uint8_t>(ip >> 8u),
             static_cast<uint8_t>(ip),
         },
-        {0u, 0u, 0u, 0u},
-        static_cast<uint16_t>(dest.port));
+        ipv4_octets(multicast_interface_), static_cast<uint16_t>(dest.port));
 }
 
 rosette::net::SocketAddress

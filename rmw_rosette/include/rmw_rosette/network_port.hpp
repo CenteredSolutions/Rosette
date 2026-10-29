@@ -53,12 +53,19 @@ rosette::net::SocketProvider& network_socket_provider() noexcept;
  * DDS implementations discard loopback locators from participants they cannot
  * prove are on the same host.
  *
+ * The same address names the interface SPDP multicast is joined on and sent
+ * from (SocketUdpTransport::set_multicast_interface()), so on a host with
+ * several networks the announcement goes out where the locators point. On a
+ * host the address is chosen by `ROSETTE_INTERFACE`, by interface name or by
+ * address, else it is the default route's (ports/net/posix).
+ *
  * @return The address in host byte order, or 0 when no address is assigned
- *   (the participant then advertises no unicast locator and cannot be reached).
+ *   or the configured interface cannot be used; rmw_init() then fails, since
+ *   a participant without a unicast locator cannot be answered.
  *
  * Verification:
  * - Correct means: the SPDP announcement's default and metatraffic unicast
- *   locators carry this address.
+ *   locators carry this address, and SPDP leaves through its interface.
  *
  * References:
  * - OMG DDSI-RTPS 2.5 §8.5.3.2 (SPDPdiscoveredParticipantData locators)

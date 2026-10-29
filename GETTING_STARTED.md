@@ -393,7 +393,7 @@ into the participant or its endpoints holds `driver.mutex()`.
 | Symptom | Look at |
 | --- | --- |
 | No address, or no echo | the board's console `[net]` lines; `tools/wiznet_udp_echo_probe.py`; [docs/network_configuration.md](docs/network_configuration.md#checking-the-network-below-ros) |
-| Nothing discovered | Same `ROS_DOMAIN_ID` on both sides (firmware uses 0)? Same IPv4 subnet, multicast delivered, UDP 7400+ open on the host's firewall ([ports](docs/network_configuration.md#what-ros-2-traffic-needs))? A stale `ros2` daemon (`ros2 daemon stop`) |
+| Nothing discovered | Same `ROS_DOMAIN_ID` on both sides (firmware uses 0)? An `rmw_rosette` host on several networks uses its default route's interface unless `ROSETTE_INTERFACE=eth0` names the boards' one. Same IPv4 subnet, multicast delivered, UDP 7400+ open on the host's firewall ([ports](docs/network_configuration.md#what-ros-2-traffic-needs))? A stale `ros2` daemon (`ros2 daemon stop`) |
 | RP2040 firmware faults at boot | it was linked against the RP2350 C client stack (step 4) |
 | Discovery works, data does not | RTPS log level 4 shows every HEARTBEAT, ACKNACK, and DATA (`-DROSETTE_RMW_LOG_LEVEL=4` for firmware `rmw_rosette`, `-DROSETTE_RTPS_LOG_LEVEL=4` for `rosette_rtps`, `-DRMW_ROSETTE_RTPS_LOG_LEVEL=4` for the colcon package) |
 | Large messages lost to a board | the peer's datagrams exceed 1472 octets; cap them (Fast DDS `maxMessageSize`) — see `rmw_rosette/README.md` |

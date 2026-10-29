@@ -212,6 +212,11 @@ public:
      * participants can bind the group port. Joining the group the socket
      * already holds succeeds and changes nothing.
      *
+     * An IPv4 membership whose `interface` is 0.0.0.0 joins wherever the
+     * stack chooses; any other address joins on the interface holding it,
+     * which is how a caller on a multi-interface stack listens on the network
+     * its peers are on (see set_multicast_interface() for the sending side).
+     *
      * @param[in] membership Group, interface, and port to join.
      * @return 0 when the socket holds the group; -1 with last_error() set otherwise.
      *
@@ -337,6 +342,51 @@ public:
 
     /// @brief Receive buffering this socket has, in bytes; 0 when the backend does not say.
     virtual std::size_t receive_buffer_size() const noexcept { return 0u; }
+
+    /**
+     * @brief Sends this socket's multicast datagrams out of the interface holding `local`.
+     *
+     * On a stack with several interfaces, a datagram to a multicast group
+     * leaves through whichever interface the stack picks, usually the default
+     * route's, which need not be the network the caller's peers are on. RTPS
+     * discovery announces a participant by multicast and asks peers to answer
+     * at its unicast address, so both must use the same interface. The caller
+     * names that interface by an IPv4 address it holds, the same address a
+     * joinMulticastGroup() membership carries in `interface`. Each backend
+     * maps the address to its own notion of an interface: a POSIX kernel
+     * interface (IP_MULTICAST_IF), a FreeRTOS+TCP endpoint
+     * (FreeRTOS_FindEndPointOnIP_IPv4()), or an lwIP netif
+     * (udp_set_multicast_netif_addr()).
+     *
+     * A backend with one interface (WIZnet) has nothing to choose and leaves
+     * this default, which returns not_supported, changes nothing, and leaves
+     * last_error() as it was; the caller treats that as success.
+     *
+     * @param[in] local An IPv4 address of the interface to send through; its
+     *   port is ignored. 0.0.0.0 restores the stack's own choice.
+     * @return 0 when later multicast sends leave through that interface;
+     *   otherwise the negative SocketError listed under Errors.
+     *
+     * Errors:
+     * - `not_supported`: the backend sends through one interface (WIZnet, FreeRTOS+TCP),
+     *   or `local` is not IPv4 (POSIX).
+     * - `invalid_argument`: no interface holds `local` (POSIX).
+     * - `closed`: the socket was closed (POSIX).
+     *
+     * Verification:
+     * - Correct means: a datagram sent to a group after a 0 return leaves
+     *   through the interface holding `local`, whatever the routing table
+     *   says about the group.
+     * - Covered by: tests/host/posix_host_interface_test.cpp (TC-NET-IFC-006,
+     *   POSIX backend over loopback).
+     *
+     * References:
+     * - Linux ip(7), IP_MULTICAST_IF; RFC 1112 §6.1
+     */
+    virtual int set_multicast_interface(const SocketAddress& local) noexcept {
+        (void)local;
+        return static_cast<int>(SocketError::not_supported);
+    }
 
     /**
      * @brief Sends one datagram to `remote`.

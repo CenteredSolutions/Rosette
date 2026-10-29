@@ -39,6 +39,7 @@ set(ROSETTE_RTPS_SOURCES
   ${ROSETTE_RTPS_IO_SOURCES}
   ${ROSETTE_ROOT}/src/rtps/rtps_stderr_log.cpp
   ${ROSETTE_ROOT}/ports/net/posix/posix_socket.cpp
+  ${ROSETTE_ROOT}/ports/net/posix/posix_host_interface.cpp
   ${ROSETTE_ROOT}/ports/net/posix/posix_board_network.cpp
   ${ROSETTE_ROOT}/src/net/network_config.cpp
   ${ROSETTE_ROOT}/src/net/address_list.cpp
