@@ -13,6 +13,7 @@
 
 #include <cstdlib>
 
+#include "../../ports/net/posix/posix_host_interface.hpp"
 #include "rosette/net/board_network.hpp"
 #include "test_util.hpp"
 
@@ -26,6 +27,9 @@ void reports_no_address() {
     const net::AddressSnapshot& snapshot = net::board_address_snapshot();
     check(!snapshot.assigned && snapshot.v4.addresses.empty(), "005: snapshot unassigned");
     check(!net::board_network_ready(), "005: not ready");
+    check(rosette::net::posix::host_interface_error()
+              == rosette::net::posix::InterfaceError::no_such_interface,
+          "005: the reason is no_such_interface");
 }
 
 }  // namespace

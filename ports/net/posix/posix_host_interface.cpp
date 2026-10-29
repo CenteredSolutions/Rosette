@@ -141,43 +141,104 @@ void fill_from_entry(const ifaddrs& ifa, HostInterface& out) noexcept {
     (void)std::snprintf(out.name, sizeof(out.name), "%s", ifa.ifa_name);
 }
 
+/// Every IPv4 interface the host has, as "name address, ...", for a console message.
+void list_interfaces(bool networks_only, char* text, std::size_t size,
+                     std::size_t& listed) noexcept {
+    listed = 0u;
+    ifaddrs* list = nullptr;
+    if (::getifaddrs(&list) == 0) {
+        listed = append_interfaces(list, networks_only, text, size);
+        ::freeifaddrs(list);
+    }
+}
+
+/**
+ * @brief Reports on stderr why a setting names no usable interface, and what the host has.
+ *
+ * @param[in] setting The setting that failed to resolve.
+ * @param[in] error   Why it failed; not `none`.
+ */
+void report_failure(const char* setting, InterfaceError error) noexcept {
+    char        have[256] = {};
+    std::size_t listed = 0u;
+    list_interfaces(false, have, sizeof(have), listed);
+    std::fprintf(stderr, "rosette: ROSETTE_INTERFACE=%s: %s (this host has: %s)\n", setting,
+                 describe(error), have);
+}
+
 /**
  * @brief Reports the default choice on stderr when the host has other networks to choose from.
  *
  * @param[in] chosen The interface the default resolved to.
  */
 void report_default_choice(const HostInterface& chosen) noexcept {
-    ifaddrs* list = nullptr;
-    if (::getifaddrs(&list) != 0) {
-        return;
-    }
-
-    char choices[256] = {};
-    if (append_interfaces(list, true, choices, sizeof(choices)) > 1u) {
+    char        choices[256] = {};
+    std::size_t listed = 0u;
+    list_interfaces(true, choices, sizeof(choices), listed);
+    if (listed > 1u) {
         std::fprintf(stderr,
                      "rosette: using %s, the default route's interface; set ROSETTE_INTERFACE "
                      "to choose one of: %s\n",
                      chosen.name, choices);
     }
+}
 
-    ::freeifaddrs(list);
+/// The interface host_interface() resolved, and why it failed when it did.
+struct ResolvedInterface {
+    HostInterface  chosen{};
+    InterfaceError error = InterfaceError::none;
+};
+
+/// Resolves `ROSETTE_INTERFACE` once per process and reports the outcome on stderr.
+const ResolvedInterface& resolved_interface() noexcept {
+    static const ResolvedInterface resolved = [] {
+        const char*       setting = std::getenv("ROSETTE_INTERFACE");
+        ResolvedInterface out{};
+        out.error = resolve_host_interface(setting, out.chosen);
+        if (out.error != InterfaceError::none) {
+            report_failure(setting, out.error);
+            out.chosen = HostInterface{};
+        } else if (setting == nullptr || setting[0] == '\0') {
+            report_default_choice(out.chosen);
+        }
+
+        return out;
+    }();
+    return resolved;
 }
 
 }  // namespace
 
-bool resolve_host_interface(const char* setting, HostInterface& out, char* why,
-                            std::size_t why_size) noexcept {
+const char* describe(InterfaceError error) noexcept {
+    switch (error) {
+        case InterfaceError::none:
+            return "ok";
+        case InterfaceError::several_named:
+            return "names several interfaces; set exactly one";
+        case InterfaceError::cannot_list:
+            return "cannot list the host's interfaces";
+        case InterfaceError::no_such_interface:
+            return "no interface has that name";
+        case InterfaceError::no_ipv4_address:
+            return "that interface has no IPv4 address";
+        case InterfaceError::address_not_held:
+            return "no interface holds that address";
+        case InterfaceError::interface_down:
+            return "that interface is down";
+    }
+
+    return "unknown";
+}
+
+InterfaceError resolve_host_interface(const char* setting, HostInterface& out) noexcept {
     const bool by_default = setting == nullptr || setting[0] == '\0';
-    char       reason[256] = {};
     if (!by_default && std::strchr(setting, ',') != nullptr) {
-        (void)std::snprintf(why, why_size, "names several interfaces; set exactly one");
-        return false;
+        return InterfaceError::several_named;
     }
 
     ifaddrs* list = nullptr;
     if (::getifaddrs(&list) != 0) {
-        (void)std::snprintf(why, why_size, "cannot list the host's interfaces");
-        return false;
+        return InterfaceError::cannot_list;
     }
 
     uint32_t    address = 0u;
@@ -192,52 +253,32 @@ bool resolve_host_interface(const char* setting, HostInterface& out, char* why,
         name = setting;
     }
 
+    InterfaceError error = InterfaceError::none;
     const ifaddrs* entry = find_ipv4_entry(list, name, address);
     if (entry == nullptr && by_default) {
         // A detected address no interface reports still identifies the route.
         out = HostInterface{};
         out.address = address;
     } else if (entry == nullptr) {
-        (void)std::snprintf(reason, sizeof(reason),
-                            name == nullptr                ? "no interface holds %s"
-                            : interface_exists(list, name) ? "%s has no IPv4 address"
-                                                           : "no interface named %s",
-                            setting);
+        error = name == nullptr                ? InterfaceError::address_not_held
+                : interface_exists(list, name) ? InterfaceError::no_ipv4_address
+                                               : InterfaceError::no_such_interface;
     } else if ((entry->ifa_flags & IFF_UP) == 0u) {
-        (void)std::snprintf(reason, sizeof(reason), "%s is down", entry->ifa_name);
+        error = InterfaceError::interface_down;
     } else {
         fill_from_entry(*entry, out);
     }
 
-    if (reason[0] != '\0') {
-        std::strncat(reason, " (have: ", sizeof(reason) - std::strlen(reason) - 1u);
-        (void)append_interfaces(list, false, reason, sizeof(reason));
-        std::strncat(reason, ")", sizeof(reason) - std::strlen(reason) - 1u);
-        (void)std::snprintf(why, why_size, "%s", reason);
-    }
-
     ::freeifaddrs(list);
-    return reason[0] == '\0';
+    return error;
 }
 
 const HostInterface& host_interface() noexcept {
-    static const HostInterface chosen = [] {
-        const char*   setting = std::getenv("ROSETTE_INTERFACE");
-        HostInterface out{};
-        char          why[320] = {};
-        if (!resolve_host_interface(setting, out, why, sizeof(why))) {
-            std::fprintf(stderr, "rosette: ROSETTE_INTERFACE=%s: %s\n",
-                         setting != nullptr ? setting : "", why);
-            return HostInterface{};
-        }
+    return resolved_interface().chosen;
+}
 
-        if (setting == nullptr || setting[0] == '\0') {
-            report_default_choice(out);
-        }
-
-        return out;
-    }();
-    return chosen;
+InterfaceError host_interface_error() noexcept {
+    return resolved_interface().error;
 }
 
 }  // namespace rosette::net::posix

@@ -28,53 +28,50 @@ constexpr uint32_t kLoopback = 0x7F000001u;
 
 /// TC-NET-IFC-001: loopback resolves by name and by address to lo at 127.0.0.1/8.
 void resolves_by_name_and_address() {
-    char                 why[256] = {};
     posix::HostInterface by_address{};
-    check(posix::resolve_host_interface("127.0.0.1", by_address, why, sizeof(why)),
+    check(posix::resolve_host_interface("127.0.0.1", by_address) == posix::InterfaceError::none,
           "001: 127.0.0.1 resolves");
     check(by_address.address == kLoopback && by_address.prefix_len == 8u, "001: to 127.0.0.1/8");
 
     posix::HostInterface by_name{};
-    check(posix::resolve_host_interface(by_address.name, by_name, why, sizeof(why)),
+    check(posix::resolve_host_interface(by_address.name, by_name) == posix::InterfaceError::none,
           "001: its name resolves");
     check(by_name.address == kLoopback && std::strcmp(by_name.name, by_address.name) == 0,
           "001: to the same interface");
 }
 
-/// TC-NET-IFC-002: an unknown name and an unheld address fail, naming the host's interfaces.
+/// TC-NET-IFC-002: an unknown name and an unheld address are refused, each with its own reason.
 void refuses_what_no_interface_is() {
-    char                 why[256] = {};
     posix::HostInterface out{};
-    check(!posix::resolve_host_interface("rosette-none0", out, why, sizeof(why)),
-          "002: unknown name refused");
-    check(std::strstr(why, "no interface named rosette-none0") != nullptr
-              && std::strstr(why, "127.0.0.1") != nullptr,
-          "002: reason names it and lists the host's interfaces");
+    check(posix::resolve_host_interface("rosette-none0", out)
+              == posix::InterfaceError::no_such_interface,
+          "002: unknown name is no_such_interface");
+    check(
+        posix::resolve_host_interface("192.0.2.10", out) == posix::InterfaceError::address_not_held,
+        "002: unheld address is address_not_held");
     check(out.address == 0u, "002: output untouched");
-
-    check(!posix::resolve_host_interface("192.0.2.10", out, why, sizeof(why)),
-          "002: unheld address refused");
-    check(std::strstr(why, "no interface holds 192.0.2.10") != nullptr, "002: reason names it");
+    check(std::strcmp(posix::describe(posix::InterfaceError::address_not_held),
+                      "no interface holds that address")
+              == 0,
+          "002: describe() words the reason");
 }
 
 /// TC-NET-IFC-003: a list names several interfaces and is refused.
 void refuses_a_list() {
-    char                 why[256] = {};
     posix::HostInterface out{};
-    check(!posix::resolve_host_interface("lo,eth0", out, why, sizeof(why)), "003: list refused");
-    check(std::strstr(why, "exactly one") != nullptr, "003: reason says one");
+    check(posix::resolve_host_interface("lo,eth0", out) == posix::InterfaceError::several_named,
+          "003: list is several_named");
 }
 
 /// TC-NET-IFC-004: the default is an address the host holds, or loopback.
 void defaults_to_a_held_address() {
-    char                 why[256] = {};
     posix::HostInterface chosen{};
-    check(posix::resolve_host_interface(nullptr, chosen, why, sizeof(why)),
+    check(posix::resolve_host_interface(nullptr, chosen) == posix::InterfaceError::none,
           "004: default resolves");
     check(chosen.address != 0u, "004: to an address");
 
     posix::HostInterface empty{};
-    check(posix::resolve_host_interface("", empty, why, sizeof(why))
+    check(posix::resolve_host_interface("", empty) == posix::InterfaceError::none
               && empty.address == chosen.address,
           "004: empty is the default");
 }

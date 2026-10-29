@@ -39,6 +39,27 @@ struct HostInterface {
     char     name[kInterfaceNameSize] = {};  ///< Interface name, such as "eth0".
 };
 
+/// Why a `ROSETTE_INTERFACE` setting names no usable interface.
+enum class InterfaceError : uint8_t {
+    /// The setting resolved to an interface.
+    none = 0,
+    /// The setting lists several interfaces; it names exactly one.
+    several_named,
+    /// The operating system's interface list (getifaddrs()) could not be read.
+    cannot_list,
+    /// No interface has the name the setting gives.
+    no_such_interface,
+    /// The named interface exists but holds no IPv4 address.
+    no_ipv4_address,
+    /// The setting is an IPv4 address no interface holds.
+    address_not_held,
+    /// The interface exists and holds the address, but is administratively down.
+    interface_down,
+};
+
+/// @brief A short English description of an `InterfaceError`, for the console.
+const char* describe(InterfaceError error) noexcept;
+
 /**
  * @brief Resolves a `ROSETTE_INTERFACE` setting to one IPv4 interface.
  *
@@ -47,43 +68,42 @@ struct HostInterface {
  *
  * An empty or null setting selects the interface holding the address the
  * kernel would use toward the internet (a connected but unsent UDP socket
- * reports it), else loopback. Otherwise a dotted-quad setting selects the
- * interface holding that address and any other text the interface of that
- * name, using its first IPv4 address. The interface must be up.
+ * reports it), else loopback; the default never fails once the interface
+ * list is readable. Otherwise a dotted-quad setting selects the interface
+ * holding that address and any other text the interface of that name, using
+ * its first IPv4 address. The interface must be up.
  *
- * @param[in]  setting  The setting's text; null or empty for the default.
- * @param[out] out      The interface, written only on success.
- * @param[out] why      On failure, a one-line reason naming the interfaces
- *   the host has; may be null when `why_size` is 0.
- * @param[in]  why_size Capacity of `why`, terminator included.
- * @return True with `out` filled; false when the setting names an interface
- *   that does not exist, has no IPv4 address, or is down, an address no
- *   interface holds, or a list of several interfaces.
+ * @param[in]  setting The setting's text; null or empty for the default.
+ * @param[out] out     The interface, written only when the result is `none`.
+ * @return `InterfaceError::none` with `out` filled; otherwise the reason the
+ *   setting names no usable interface, which describe() puts into words.
  *
  * Verification:
  * - Correct means: "lo" and "127.0.0.1" both give lo at 127.0.0.1/8; an
- *   unknown name, an unheld address, and "a,b" fail with a reason; the
- *   default gives an address some interface holds, or loopback.
+ *   unknown name gives `no_such_interface`, an unheld address
+ *   `address_not_held`, and "a,b" `several_named`, each leaving `out`
+ *   untouched; the default gives an address some interface holds, or loopback.
  * - Covered by: tests/host/posix_host_interface_test.cpp (TC-NET-IFC-001..004).
  *
  * References:
  * - POSIX getifaddrs(3), inet_pton(3); Linux netdevice(7) (IFF_UP)
  */
-bool resolve_host_interface(const char* setting, HostInterface& out, char* why,
-                            std::size_t why_size) noexcept;
+InterfaceError resolve_host_interface(const char* setting, HostInterface& out) noexcept;
 
 /**
  * @brief The process's interface, resolved from `ROSETTE_INTERFACE` on first use.
  *
  * Resolution runs once; the result holds for the process's lifetime, as the
  * participant's locators do. A setting that cannot be resolved is reported
- * once on stderr, and the result is then the all-zero interface, which the
- * board network reports as no address, so rmw_init() fails. When the setting
- * is unset on a host with more than one up, non-loopback IPv4 interface, the
- * choice is reported once on stderr with the alternatives, since the default
- * route's interface is often not the one the boards are on.
+ * once on stderr, with describe()'s reason and the interfaces the host has,
+ * and the result is then the all-zero interface, which the board network
+ * reports as no address, so rmw_init() fails. When the setting is unset on a
+ * host with more than one up, non-loopback IPv4 interface, the choice is
+ * reported once on stderr with the alternatives, since the default route's
+ * interface is often not the one the boards are on.
  *
- * @return The interface; `address` is 0 when the setting could not be resolved.
+ * @return The interface; `address` is 0 when the setting could not be
+ *   resolved, and host_interface_error() then says why.
  *
  * Verification:
  * - Correct means: equals resolve_host_interface(getenv("ROSETTE_INTERFACE"))
@@ -95,5 +115,8 @@ bool resolve_host_interface(const char* setting, HostInterface& out, char* why,
  * - POSIX getenv(3)
  */
 const HostInterface& host_interface() noexcept;
+
+/// @brief Why host_interface() has no address; `InterfaceError::none` when it has one.
+InterfaceError host_interface_error() noexcept;
 
 }  // namespace rosette::net::posix
