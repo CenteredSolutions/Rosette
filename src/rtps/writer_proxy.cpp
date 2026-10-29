@@ -48,7 +48,7 @@ bool WriterProxy::on_heartbeat(const SequenceNumber& first_sn,
     missing_changes_update(last_sn);
 
     const bool must_reply = !final_flag || has_missing_changes();
-    if (must_reply) {
+    if (must_reply && !acknackPending) {
         acknackPending = true;
         heartbeatResponseDeadlineMs = now_ms + response_delay_ms;
     }

@@ -223,6 +223,56 @@ bool tc_srr_8_4_7_4_006(std::string& err) {
     return true;
 }
 
+extern uint32_t g_stateful_reader_test_now_ms;
+
+// TC-SRR-8.4.7.4-007: with a heartbeatResponseDelay, HEARTBEATs that arrive
+// while an ACKNACK is owed fold into it: the first one sets the deadline,
+// later ones do not push it back, and one ACKNACK answers them all.
+bool tc_srr_8_4_7_4_007(std::string& err) {
+    CaptureTransport tx{};
+    const Guid       reader_guid = make_guid(0x11u, 0x12u, 0x13u, make_entity(1u, 2u, 3u, 0xC7u));
+    const Guid       writer_guid = make_guid(0x21u, 0x22u, 0x23u, make_entity(4u, 5u, 6u, 0xC2u));
+    const Locator    loc = make_udpv4_locator(0xC0A80114u, 7411u);
+
+    g_stateful_reader_test_now_ms = 1000u;
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
+    r.heartbeat_response_delay(2u);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+    tx.sent.clear();
+
+    ParsedHeartbeat hb{};
+    hb.writerId = writer_guid.entityId;
+    hb.readerId = reader_guid.entityId;
+    hb.firstSN = SequenceNumber::from_int64(1);
+    hb.lastSN = SequenceNumber::from_int64(0);
+    hb.finalFlag = false;
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+    hb.count = 1;
+    r.on_heartbeat(ctx, hb);
+    r.tick(g_stateful_reader_test_now_ms);
+    CHECK(tx.sent.empty(), "the first HEARTBEAT is not answered at once");
+
+    g_stateful_reader_test_now_ms = 1001u;
+    hb.count = 2;
+    r.on_heartbeat(ctx, hb);
+    r.tick(g_stateful_reader_test_now_ms);
+    CHECK(tx.sent.empty(), "nor is the second, 1 ms later");
+
+    g_stateful_reader_test_now_ms = 1002u;
+    CHECK(r.ms_until_next_timer(g_stateful_reader_test_now_ms) == 0u,
+          "the ACKNACK is due 2 ms after the first HEARTBEAT, not after the last");
+    r.tick(g_stateful_reader_test_now_ms);
+    ParsedAckNack ack{};
+    CHECK(tx.sent.size() == 1u && parse_acknack(tx.sent[0], ack),
+          "one ACKNACK answers both HEARTBEATs");
+    CHECK(ack.finalFlag, "an up-to-date reader's ACKNACK carries the F-flag");
+
+    r.tick(g_stateful_reader_test_now_ms + 10u);
+    CHECK(tx.sent.size() == 1u, "nothing more is owed once it is sent");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.7.4-001",
                      "§8.4.7.4: matched_writer_add creates one WriterProxy for a newly matched writer, and matched_writer_remove removes it from the matched set.",
@@ -250,6 +300,10 @@ void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
          "§8.4.7.1/§8.4.7.4: readers sharing a WriterProxy pool bind by its admission rule; a "
          "refused match sends no ACKNACK; an unmatch or a destroyed reader returns proxies.",
          tc_srr_8_4_7_4_006});
+    tests.push_back({"TC-SRR-8.4.7.4-007",
+                     "§8.4.7.1: HEARTBEATs that arrive while an ACKNACK is owed keep its "
+                     "heartbeatResponseDelay deadline, so one ACKNACK answers them all.",
+                     tc_srr_8_4_7_4_007});
 }
 
 } // namespace spec_test

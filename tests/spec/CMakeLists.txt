@@ -21,6 +21,10 @@ rosette_warnings_for_directory()
 # src/test_participant_platform_stub.cpp) instead of the host chip layer;
 # see rosette_spec_use_platform() below.
 add_compile_definitions(ROSETTE_OS_POSIX ROSETTE_CHIP_HOST)
+# The cases check what a reader's ACKNACK holds and where it goes at the
+# moment a HEARTBEAT owes one, so readers answer at once here; the cases that
+# check heartbeatResponseDelay itself (TC-SRR-8.4.7.4-007) set their own.
+add_compile_definitions(RTPS_HEARTBEAT_RESPONSE_DELAY_MS=0u)
 set(ROSETTE_SPEC_PLATFORM_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../src/platform)
 set(ROSETTE_SPEC_HOST_CHIP ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host/chip_host.cpp)
 
