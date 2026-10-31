@@ -21,10 +21,12 @@
  *     NodeEntitiesInfo { string<=256 node_namespace; string<=256 node_name;
  *                        sequence<Gid> reader_gid_seq;
  *                        sequence<Gid> writer_gid_seq; }
- *     Gid { char data[24]; }
+ *     Gid { char data[RMW_GID_STORAGE_SIZE]; }
  *
- * A GID is the 16-octet RTPS GUID followed by 8 zero octets, the layout
- * rmw_fastrtps_cpp and rmw_cyclonedds_cpp use and guid_to_rmw_gid() writes.
+ * Gid.msg and rmw's RMW_GID_STORAGE_SIZE change together: 24 octets on Humble,
+ * 16 from Iron on. A GID is the 16-octet RTPS GUID followed by zero padding to
+ * that size, the layout rmw_fastrtps_cpp and rmw_cyclonedds_cpp use and
+ * guid_to_rmw_gid() writes, so a peer on the same distribution decodes it.
  * The participant's own GID uses ENTITYID_PARTICIPANT, which is how a peer
  * ties each message to the participant it discovered through SPDP.
  *
@@ -38,6 +40,8 @@
 #include "capacity.hpp"
 #include "rosette/rtps/types.hpp"
 
+#include <rmw/types.h>
+
 #include <cstdint>
 
 namespace rmw_rosette {
@@ -45,8 +49,8 @@ namespace rmw_rosette {
 struct Node;
 class CdrWriter;
 
-/// Octets in an `rmw_dds_common/msg/Gid` (Humble: `char[24] data`).
-constexpr uint32_t kGidSize = 24;
+/// Octets in an `rmw_dds_common/msg/Gid`, which matches rmw_gid_t storage on every distribution.
+constexpr uint32_t kGidSize = RMW_GID_STORAGE_SIZE;
 
 /// Longest node name or namespace ParticipantEntitiesInfo carries (`string<=256`).
 constexpr uint32_t kNodeEntitiesMaxNameLength = 256;
@@ -119,7 +123,7 @@ public:
      *
      * References:
      * - rmw_dds_common/msg/ParticipantEntitiesInfo.msg, NodeEntitiesInfo.msg,
-     *   Gid.msg (Humble)
+     *   Gid.msg (Humble: char[24]; Jazzy: char[16])
      * - OMG DDS-XTypes 1.3 §7.4.1 (XCDR1 encoding of strings and sequences)
      */
     uint32_t encode(const rosette::rtps::Guid& participant, uint8_t* out,

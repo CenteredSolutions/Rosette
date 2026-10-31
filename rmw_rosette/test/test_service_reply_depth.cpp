@@ -24,6 +24,8 @@
 
 #include <gtest/gtest.h>
 
+#include "rcl_default_init_options.hpp"
+
 #include <algorithm>
 
 #include <rmw/rmw.h>
@@ -48,7 +50,7 @@ class ServiceReplyDepth : public ::testing::Test {
 protected:
     void SetUp() override {
         rmw_init_options_t options = rmw_get_zero_initialized_init_options();
-        ASSERT_EQ(rmw_init_options_init(&options, rcutils_get_default_allocator()), RMW_RET_OK);
+        ASSERT_EQ(rmw_rosette_test::init_options_as_rcl(&options), RMW_RET_OK);
         ASSERT_EQ(rmw_init(&options, &context_), RMW_RET_OK);
         node_ = rmw_create_node(&context_, "reply_depth_test", "/");
         ASSERT_NE(node_, nullptr);

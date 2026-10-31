@@ -17,6 +17,7 @@
 #include "rmw_rosette/message_codec.hpp"
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/qos.hpp"
+#include "rmw_rosette/ros_features.h"
 #include "rmw_rosette/service_endpoints.hpp"
 #include "rmw_rosette/types.hpp"
 
@@ -295,5 +296,45 @@ rmw_ret_t rmw_client_response_subscription_get_actual_qos(const rmw_client_t* cl
                                       false, RMW_ROSETTE_MAX_PENDING_CHANGES);
     return RMW_RET_OK;
 }
+
+#if RMW_ROSETTE_HAS(CLIENT_GID)
+/**
+ * @brief Reports a client's GID: the GUID of its request writer.
+ *
+ * A server sees the same GUID in the `writer_guid` of every request this
+ * client sends (rmw_take_request()), so rcl's service introspection can tie a
+ * client to the requests it made, as it does with stock rmws.
+ *
+ * @param[in]  client Client to query.
+ * @param[out] gid    Receives the request writer's GUID via guid_to_rmw_gid().
+ * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` if any argument is null;
+ *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` for another rmw's client.
+ *
+ * Verification:
+ * - Correct means: the first 16 octets of the GID equal the `writer_guid` the
+ *   server reads from this client's requests.
+ * - Covered by: rmw_rosette/test/test_client_gid.cpp.
+ *
+ * References:
+ * - rmw/rmw.h (Jazzy), `rmw_get_gid_for_client`
+ * - rmw_fastrtps_shared_cpp/src/rmw_client.cpp (Jazzy), `__rmw_get_gid_for_client`
+ */
+rmw_ret_t rmw_get_gid_for_client(const rmw_client_t* client, rmw_gid_t* gid) {
+    if (!client || !client->data || !gid) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_get_gid_for_client: null argument");
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+
+    if (client->implementation_identifier != rmw_rosette_identifier) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_get_gid_for_client: client of another rmw");
+        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    }
+
+    const auto*              impl = static_cast<const rmw_rosette::Client*>(client->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
+    rmw_rosette::guid_to_rmw_gid(impl->request_writer->guid(), *gid);
+    return RMW_RET_OK;
+}
+#endif
 
 }  // extern "C"
