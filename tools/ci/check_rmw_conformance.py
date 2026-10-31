@@ -26,7 +26,10 @@ Architecture:
     A line prefixed with `flaky ` is allowed to pass, fail or be absent, for a
     case whose outcome depends on timing rather than on rmw_rosette's
     behaviour; a test process that aborts part-way reports fewer cases, so a
-    flaky case is not always in the results.
+    flaky case is not always in the results. A flaky line may use `*` to
+    match any run of characters, for a family of cases that share one cause,
+    such as every AfterShutdown case; a must-fail line names one case
+    exactly, so it still goes stale when that case passes or disappears.
 
     A case is named `<result file stem>::<classname>.<name>`, for example
     `test_client__rmw_rosette::test_rmw_implementation.TestClient.check_qos`.
@@ -53,6 +56,7 @@ References:
 
 import argparse
 import pathlib
+import re
 import sys
 import xml.etree.ElementTree as ET
 
@@ -117,6 +121,29 @@ def read_known(path: pathlib.Path) -> tuple[set[str], set[str]]:
     return failing, flaky
 
 
+def is_flaky(name: str, flaky: set[str]) -> bool:
+    """Tells whether a case is allowed either outcome.
+
+    Args:
+        name: The case name, `<result file stem>::<classname>.<name>`.
+        flaky: The flaky lines of a known list; `*` in a line matches any run
+            of characters, and every other character matches itself.
+
+    Returns:
+        True when a flaky line names the case or a pattern matches all of it.
+
+    Verification:
+        Correct means: `[`, `]`, `.` and the other regex and glob
+        metacharacters in a case name match only themselves, so a
+        parametrized name such as `...[Arrays]` can be listed exactly.
+    """
+    if name in flaky:
+        return True
+
+    return any("*" in line and re.fullmatch(".*".join(map(re.escape, line.split("*"))), name)
+               for line in flaky)
+
+
 def report(title: str, names: set[str]) -> None:
     """Prints a sorted, indented list of case names under a title."""
     print(title)
@@ -155,7 +182,7 @@ def main() -> int:
     print(f"{len(cases) - len(failed)}/{len(cases)} rmw_rosette cases pass; "
           f"{len(known)} known failures, {len(flaky)} flaky")
 
-    new = failed - known - flaky
+    new = {name for name in failed - known if not is_flaky(name, flaky)}
     fixed = {name for name in known if cases.get(name)}
     stale = known - cases.keys()
     if new:
