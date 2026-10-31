@@ -43,6 +43,27 @@ server's reply writer is TRANSIENT_LOCAL so a reply written before the calling
 client's reader has matched still arrives; clients keep only replies that name
 their request writer or reply reader.
 
+### Choosing the network interface
+
+A participant joins and sends SPDP multicast on one interface and advertises
+that interface's address as its unicast locators, so a peer that hears it can
+answer. `ROSETTE_INTERFACE` names the interface, by name or by an address it
+holds:
+
+```sh
+ROSETTE_INTERFACE=eth0 RMW_IMPLEMENTATION=rmw_rosette \
+  ros2 topic pub /rosette/command std_msgs/msg/String "{data: hi}"
+ROSETTE_INTERFACE=10.42.0.1 RMW_IMPLEMENTATION=rmw_rosette \
+  ros2 topic pub /rosette/command std_msgs/msg/String "{data: hi}"
+```
+
+Unset, it is the interface of the default route, and on a host with more
+than one network the choice is printed once on stderr with the alternatives.
+A bench host whose default route is Wi-Fi while the boards are on Ethernet
+needs the setting. A name that matches no interface, an address no interface
+holds, an interface that is down, or a list of several is reported on stderr
+and `rmw_init()` fails; the process never falls back to another interface.
+
 ### Large messages and small links
 
 Samples are serialized once into a buffer-pool block and never copied

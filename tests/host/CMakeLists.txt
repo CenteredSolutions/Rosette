@@ -88,6 +88,7 @@ add_host_test(network_config_test)
 add_host_test(posix_board_network_test)
 target_sources(posix_board_network_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_board_network.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_host_interface.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_socket.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host/chip_host.cpp)
 
@@ -96,8 +97,24 @@ target_sources(posix_board_network_test PRIVATE
 add_host_test(posix_board_network_prefix_test)
 target_sources(posix_board_network_prefix_test PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_board_network.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_host_interface.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_socket.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host/chip_host.cpp)
+
+# The board network when ROSETTE_INTERFACE names no usable interface, in its
+# own process: the interface is resolved once per process.
+add_host_test(posix_board_network_unresolved_test)
+target_sources(posix_board_network_unresolved_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_board_network.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_host_interface.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_socket.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host/chip_host.cpp)
+
+# ROSETTE_INTERFACE resolution, and multicast joined and sent on the chosen interface.
+add_host_test(posix_host_interface_test)
+target_sources(posix_host_interface_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_host_interface.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/net/posix/posix_socket.cpp)
 
 # The ROS session supervisor, against a fake network, application, and agent gate.
 add_host_test(session_supervisor_test)

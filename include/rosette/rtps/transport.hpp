@@ -174,6 +174,33 @@ public:
     bool open() noexcept;
     void close() noexcept;
 
+    /**
+     * @brief Names the interface SPDP multicast is joined on and sent from.
+     *
+     * The participant announces itself by multicast and asks peers to answer
+     * at its unicast locators, so on a stack with several interfaces both
+     * must use the same one, or a peer hears the announcement on one network
+     * and answers toward another. The caller passes the address it
+     * advertises; open() puts it in the SPDP group membership and gives it to
+     * every socket's Socket::set_multicast_interface(). A backend with one
+     * interface declines the latter, which open() accepts.
+     *
+     * @param[in] ipv4 Host-order IPv4 address of the interface, held by it;
+     *   0 (the default) leaves both choices to the stack. Takes effect at the
+     *   next open().
+     *
+     * Verification:
+     * - Correct means: after open(), the SPDP membership names `ipv4` and
+     *   each socket was asked to send multicast through it before bind().
+     * - Covered by: tests/spec/src/test_transport_multicast_interface.cpp
+     *   (TC-TRN-9.6.1-001); on hardware, a W5100S-EVB-Pico2 on eth0
+     *   discovers an rmw_rosette host whose default route is wlan0.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3 (SPDP), §9.6.1.1 (port mapping)
+     */
+    void set_multicast_interface(uint32_t ipv4) noexcept { multicast_interface_ = ipv4; }
+
     /// @brief Receives one metatraffic datagram (unicast first, then SPDP multicast).
     uint32_t poll_meta(Octet*    buf,
                        uint32_t  buf_size,
@@ -258,8 +285,8 @@ private:
                                  uint16_t& src_port) noexcept;
     static rosette::net::SocketAddress locator_to_socket_address(
         const Locator& dest) noexcept;
-    static rosette::net::SocketMulticastMembership locator_to_multicast_membership(
-        const Locator& dest) noexcept;
+    rosette::net::SocketMulticastMembership locator_to_multicast_membership(
+        const Locator& dest) const noexcept;
     rosette::net::SocketAddress any_bind_address(uint16_t port) const noexcept;
     /**
      * @brief Opens a socket, joins the multicast group when asked, and binds `port`.
@@ -280,6 +307,7 @@ private:
     uint16_t meta_port_;
     uint16_t user_port_;
     Locator multicast_locator_{};
+    uint32_t                              multicast_interface_ = 0u;
     std::unique_ptr<rosette::net::Socket> meta_socket_;
     std::unique_ptr<rosette::net::Socket> spdp_socket_;
     std::unique_ptr<rosette::net::Socket> user_socket_;

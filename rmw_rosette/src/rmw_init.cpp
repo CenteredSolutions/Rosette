@@ -157,8 +157,13 @@ rmw_rosette::Pool<rmw_context_impl_s, RMW_ROSETTE_MAX_CONTEXTS>& context_pool() 
  *
  * Placement-news a SocketUdpTransport into `ctx.transport_storage` for each
  * candidate ID, keeps the first one that opens, and destroys the others.
+ * Each transport joins and sends SPDP multicast on the interface holding
+ * `address`, the address the participant advertises, so peers hear the
+ * announcement on the same network they are asked to answer on.
  *
  * @param[in,out] ctx            Context whose transport storage is used.
+ * @param[in]     address        Host-order IPv4 address the participant
+ *   advertises (network_ipv4_address()); never 0.
  * @param[out]    participant_id Receives the chosen ID on success.
  * @return `true` with `ctx.transport` open; `false` when every ID up to
  *   kMaxParticipantId whose ports fit in 16 bits is taken, or the SPDP
@@ -171,7 +176,8 @@ rmw_rosette::Pool<rmw_context_impl_s, RMW_ROSETTE_MAX_CONTEXTS>& context_pool() 
  * References:
  * - OMG DDSI-RTPS 2.5 §9.6.1.1 (participantId in the port mapping)
  */
-bool open_transport_on_free_ports(rmw_rosette::Context& ctx, uint8_t& participant_id) noexcept {
+bool open_transport_on_free_ports(rmw_rosette::Context& ctx, uint32_t address,
+                                  uint8_t& participant_id) noexcept {
     for (uint8_t id = 0; id <= kMaxParticipantId; ++id) {
         // In the highest domains the last participant IDs' ports pass 65535.
         if (7400u + 250u * ctx.domain_id + 11u + 2u * id > 65535u) {
@@ -182,6 +188,7 @@ bool open_transport_on_free_ports(rmw_rosette::Context& ctx, uint8_t& participan
             rtps::SocketUdpTransport(*ctx.provider, metatraffic_unicast_port(ctx.domain_id, id),
                                      default_unicast_port(ctx.domain_id, id), kSpdpMulticastAddr,
                                      spdp_multicast_port(ctx.domain_id));
+        ctx.transport->set_multicast_interface(address);
         if (ctx.transport->open()) {
             participant_id = id;
             return true;
@@ -563,9 +570,10 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * over the build's socket backend (network_socket_provider()) on the first
  * free participant ID (open_transport_on_free_ports()), then placement-news
  * the `RTPSParticipant` that borrows it. The participant advertises the
- * network port's IPv4 address (network_ipv4_address()) rather than loopback:
- * stock DDS implementations ignore loopback locators from participants they
- * cannot prove are local. The participant's first user writer is the
+ * network port's IPv4 address (network_ipv4_address()) rather than loopback,
+ * since stock DDS implementations ignore loopback locators from participants
+ * they cannot prove are local, and its transport joins and sends SPDP on the
+ * interface holding that address. The participant's first user writer is the
  * `ros_discovery_info` writer (ros_discovery_info_writer.hpp), which every
  * node created on this context reports to. The context's graph guard
  * condition is triggered by every graph change the participant reports.
@@ -578,7 +586,9 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * @return `RMW_RET_OK` on success; `RMW_RET_INVALID_ARGUMENT` if either
  *   argument is null, no discovery range is set, or `domain_id` is above 232;
  *   `RMW_RET_UNSUPPORTED` for a discovery range or static peers this
- *   participant cannot provide; `RMW_RET_ERROR` if the context pool is exhausted,
+ *   participant cannot provide; `RMW_RET_ERROR` if the network holds no IPv4
+ *   address (on a host, `ROSETTE_INTERFACE` names no usable interface), the
+ *   context pool is exhausted,
  *   no participant ID with free ports was found, or the participant cannot
  *   hold the `ros_discovery_info` writer.
  *
@@ -609,6 +619,13 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
         return RMW_RET_INVALID_ARGUMENT;
     }
 
+    // Without an address no peer could answer; the network port has said why.
+    const uint32_t address = rmw_rosette::network_ipv4_address();
+    if (address == 0u) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: the network holds no IPv4 address");
+        return RMW_RET_ERROR;
+    }
+
     rmw_context_impl_s* impl = context_pool().acquire();
     if (!impl) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: context pool exhausted "
@@ -620,7 +637,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     ctx.domain_id = domain_id;
     ctx.provider = &rmw_rosette::network_socket_provider();
     uint8_t participant_id = 0;
-    if (!open_transport_on_free_ports(ctx, participant_id)) {
+    if (!open_transport_on_free_ports(ctx, address, participant_id)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: no free RTPS participant ports "
                           "in this domain");
         context_pool().release(impl);
@@ -637,8 +654,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     // RMW_ROSETTE_STRICT_LINK rehearses such a link's losses on a host: every
     // received datagram above the limit is discarded, as the wire would.
     ctx.transport->set_strict_link(std::getenv("RMW_ROSETTE_STRICT_LINK") != nullptr);
-    ctx.participant->add_ipv4_address(rmw_rosette::network_ipv4_address(),
-                                      rmw_rosette::network_ipv4_prefix_len());
+    ctx.participant->add_ipv4_address(address, rmw_rosette::network_ipv4_prefix_len());
     ctx.driver = new (ctx.driver_storage) rtps::ParticipantDriver(
         *ctx.participant, *ctx.transport, *ctx.provider, ctx.rx_buffer, sizeof(ctx.rx_buffer));
     ctx.constructed = true;
