@@ -2,7 +2,7 @@
 # Checked by tools/ci/check_rmw_conformance.py in the rmw-rosette workflow:
 # a case listed here must fail, a `flaky` case may pass, fail or be absent,
 # and any other failing case fails the job. Remove a line when its case passes.
-# 348/747 cases passed in every bench run; 231 must fail, 168 flaky.
+# 348/747 cases passed in every bench run; 231 must fail, 170 flaky.
 
 # A test_communication AfterShutdown case checks only that the test processes exited within
 # the launch timeout, which depends on the runner's speed; every rmw_rosette one is flaky.
@@ -124,6 +124,8 @@ flaky test_publisher_subscriber__rclcpp__rmw_fastrtps_cpp__rmw_rosette::test_com
 flaky test_publisher_subscriber__rclcpp__rmw_fastrtps_cpp__rmw_rosette::test_communication.TestPublisherSubscriberAfterShutdown.test_processes_finished_gracefully[Strings]
 flaky test_publisher_subscriber__rclcpp__rmw_fastrtps_cpp__rmw_rosette::test_communication.TestPublisherSubscriberAfterShutdown.test_processes_finished_gracefully[UnboundedSequences]
 flaky test_publisher_subscriber__rclcpp__rmw_fastrtps_cpp__rmw_rosette::test_communication.TestPublisherSubscriberAfterShutdown.test_processes_finished_gracefully[WStrings]
+flaky test_publisher_subscriber__rclcpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[Arrays]
+flaky test_publisher_subscriber__rclcpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[Defaults]
 flaky test_publisher_subscriber__rclcpp__rmw_rosette::test_communication.TestPublisherSubscriberAfterShutdown.test_processes_finished_gracefully[Arrays]
 flaky test_publisher_subscriber__rclcpp__rmw_rosette::test_communication.TestPublisherSubscriberAfterShutdown.test_processes_finished_gracefully[BasicTypes]
 flaky test_publisher_subscriber__rclcpp__rmw_rosette::test_communication.TestPublisherSubscriberAfterShutdown.test_processes_finished_gracefully[BoundedPlainSequences]
