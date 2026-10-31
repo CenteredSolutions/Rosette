@@ -19,6 +19,11 @@
 
 #pragma once
 
+#include "capacity.hpp"
+#include "change_ring.hpp"
+#include "message_codec.hpp"
+#include "participant_pump.hpp"
+#include "ros_discovery_info_writer.hpp"
 #include "rosette/net/socket.hpp"
 #include "rosette/rtps/buf_pool.hpp"
 #include "rosette/rtps/participant.hpp"
@@ -26,10 +31,6 @@
 #include "rosette/rtps/stateful_reader.hpp"
 #include "rosette/rtps/stateful_writer.hpp"
 #include "rosette/rtps/transport.hpp"
-#include "capacity.hpp"
-#include "change_ring.hpp"
-#include "message_codec.hpp"
-#include "ros_discovery_info_writer.hpp"
 
 #include <rmw/init.h>
 #include <rmw/types.h>
@@ -125,6 +126,10 @@ struct Context {
     std::atomic<bool>                 shut_down{false};
     /// Receive buffer the driver drains sockets into; one full datagram.
     uint8_t rx_buffer[RMW_ROSETTE_MAX_DATAGRAM_SIZE] = {};
+#if RMW_ROSETTE_PUMP_THREAD
+    /// Runs `driver` from rmw_init() to rmw_context_fini() (participant_pump.hpp).
+    ParticipantPump pump;
+#endif
 };
 
 /// @brief Holds a context's participant lock for the enclosing scope.
@@ -135,6 +140,69 @@ public:
 private:
     rosette::platform::LockGuard guard_;
 };
+
+/**
+ * @brief Holds a context's participant lock for a scope that queues protocol
+ *   work, and wakes the driver as the scope ends.
+ *
+ * Creating or destroying an entity queues discovery announcements, and
+ * publishing, requesting or replying queues a sample; a protocol pass sends
+ * them. Whoever runs the passes (the host pump thread, or another task's
+ * rmw_wait() on a board) may be asleep until a later timer, so every entry
+ * point that queues work takes this lock instead of ContextLock, and the pass
+ * that sends the work follows at once.
+ *
+ * Verification:
+ * - Correct means: a sample published while no thread is in rmw_wait() is
+ *   sent within one pass, not at the participant's next timer.
+ * - Covered by: rmw_rosette/test/test_participant_pump.cpp (TC-RMW-PUMP-001).
+ */
+class ContextUpdateLock {
+public:
+    explicit ContextUpdateLock(Context& ctx) noexcept
+        : driver_(*ctx.driver), guard_(ctx.driver->mutex()) {}
+
+    ~ContextUpdateLock() { driver_.wake(); }
+
+    ContextUpdateLock(const ContextUpdateLock&) = delete;
+    ContextUpdateLock& operator=(const ContextUpdateLock&) = delete;
+
+private:
+    rosette::rtps::ParticipantDriver& driver_;
+    rosette::platform::LockGuard      guard_;
+};
+
+/**
+ * @brief Blocks until `ready()` holds or `timeout_ms` passes, while the
+ *   context's participant runs.
+ *
+ * The one wait rmw_wait() and rmw_publisher_wait_for_all_acked() share. On a
+ * host the pump thread runs the participant and this waits on it
+ * (ParticipantPump::wait_until()); on a board the caller runs the passes
+ * itself (ParticipantDriver::spin_until()). Either way `ready` is evaluated
+ * under the participant lock, at once and after every pass.
+ *
+ * @param[in] ctx        The context whose participant decides readiness.
+ * @param[in] ready      Predicate; must not block, and may run on another thread.
+ * @param[in] timeout_ms Longest wait; 0 checks once,
+ *   rosette::platform::kWaitForever waits until `ready()` holds.
+ * @return true when `ready()` held, false on timeout.
+ *
+ * Verification:
+ * - Correct means: as ParticipantDriver::spin_until(), whichever thread runs the passes.
+ * - Covered by: rmw_rosette/test/test_participant_pump.cpp,
+ *   test_guard_condition.cpp, test_pub_sub_loopback.cpp.
+ */
+template <typename Ready>
+bool wait_until_ready(Context& ctx, Ready ready, uint32_t timeout_ms) noexcept {
+#if RMW_ROSETTE_PUMP_THREAD
+    return ctx.pump.wait_until(
+        [](void* argument) noexcept { return (*static_cast<Ready*>(argument))(); }, &ready,
+        timeout_ms);
+#else
+    return ctx.driver->spin_until(ready, timeout_ms);
+#endif
+}
 
 #ifndef RMW_ROSETTE_MAX_NAME_LEN
 #  define RMW_ROSETTE_MAX_NAME_LEN 64

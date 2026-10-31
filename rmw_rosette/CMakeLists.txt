@@ -67,6 +67,7 @@ add_library(rmw_rosette SHARED
   src/rmw_serialize.cpp
   src/service_endpoints.cpp
   src/network_port.cpp
+  src/participant_pump.cpp
   ${ROSETTE_RTPS_SOURCES}
 )
 
@@ -85,6 +86,17 @@ set(ROSETTE_OS posix CACHE STRING "Platform OS layer: posix, freertos, baremetal
 set(ROSETTE_CHIP host CACHE STRING "Platform chip layer: host, rp2")
 include(${ROSETTE_ROOT}/cmake/rosette_platform.cmake)
 target_link_libraries(rmw_rosette PRIVATE rosette_platform)
+
+# The participant pump (rmw_rosette/participant_pump.hpp) runs the participant
+# on a thread of its own, from rmw_init() on, as stock DDS implementations do.
+# It needs rosette::platform::Thread, which the POSIX OS port supplies.
+if(ROSETTE_OS STREQUAL "posix")
+  set(_rr_pump_default ON)
+else()
+  set(_rr_pump_default OFF)
+endif()
+
+option(RMW_ROSETTE_PUMP_THREAD "Run the participant on a pump thread" ${_rr_pump_default})
 
 # RTPS log levels (rosette/rtps/log.hpp): 0 none, 1 error, 2 warning,
 # 3 info, 4 debug, 5 trace; output goes to stderr.
@@ -152,7 +164,7 @@ if(BUILD_TESTING)
   set(_rmw_rosette_tests test_introspection_c_codec test_guard_condition test_pub_sub_loopback
                          test_change_ring test_local_node_entities test_service_departed_client
                          test_service_reply_depth test_init_options test_argument_checks
-                         test_live_context_refusals)
+                         test_live_context_refusals test_participant_pump)
   # Entry points the ROS 2 headers declare only from some distribution on.
   if(RMW_ROSETTE_HAS_CLIENT_GID)
     list(APPEND _rmw_rosette_tests test_client_gid)

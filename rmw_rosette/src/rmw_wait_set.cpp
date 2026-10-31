@@ -276,11 +276,13 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
  * @brief Runs the participant until an entity in the wait set is ready or
  * the timeout elapses.
  *
- * The blocking primitive every executor builds its spin loop on, and the
- * place the RTPS state machine advances: rosette::rtps::ParticipantDriver drains
- * received datagrams, ticks, and checks readiness under the participant
- * lock, then sleeps until a datagram arrives, a guard condition is
- * triggered, or the participant's next timer is due.
+ * The blocking primitive every executor builds its spin loop on. On a host
+ * the context's pump thread runs the participant (participant_pump.hpp), and
+ * this sleeps until the pump finds an entity ready after a pass. On a board
+ * this is where the RTPS state machine advances: rosette::rtps::ParticipantDriver
+ * drains received datagrams, ticks, and checks readiness under the
+ * participant lock, then sleeps until a datagram arrives, a guard condition
+ * is triggered, or the participant's next timer is due.
  *
  * Per `rmw_wait()`'s contract (rmw/rmw.h), every entry in each input
  * array starts non-null and this function nulls out entries that are
@@ -319,7 +321,8 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
  *   returns RMW_RET_TIMEOUT with a ready entry left unreported.
  * - Covered by: rmw_rosette/test/test_guard_condition.cpp,
  *   rmw_rosette/test/test_pub_sub_loopback.cpp,
- *   rmw_rosette/test/test_live_context_refusals.cpp (TC-RMW-ARG-008).
+ *   rmw_rosette/test/test_live_context_refusals.cpp (TC-RMW-ARG-008),
+ *   rmw_rosette/test/test_participant_pump.cpp.
  *
  * References:
  * - rmw/rmw.h (Humble), `rmw_wait`
@@ -349,11 +352,10 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
             ? rosette::platform::kWaitForever - 1u : static_cast<uint32_t>(ms);
     }
 
-    // The driver receives, ticks, and evaluates readiness under the
-    // participant lock, sleeping in between until a datagram, a guard
-    // condition trigger (which signals the driver's wake event), or the next
-    // RTPS timer.
-    const bool ready = ctx.driver->spin_until(
+    // Readiness is evaluated under the participant lock after every protocol
+    // pass, whichever thread runs the passes.
+    const bool ready = rmw_rosette::wait_until_ready(
+        ctx,
         [&]() noexcept { return any_ready(subscriptions, guard_conditions, services, clients); },
         timeout_ms);
 

@@ -31,8 +31,10 @@
  * An idle node therefore sleeps: WFE on bare metal, blocked on FreeRTOS,
  * blocked in poll() on POSIX, until data or a deadline needs it.
  *
- * Nothing else runs the participant, so it sends its first SPDP announcement
- * and reads its first discovery traffic in the first rmw_wait(). A firmware
+ * On a board nothing else runs the participant, so it sends its first SPDP
+ * announcement and reads its first discovery traffic in the first
+ * rmw_wait(). (On a POSIX host rmw_rosette runs it from a thread of its own,
+ * from rmw_init() on; see rmw_rosette/participant_pump.hpp.) A firmware
  * that creates all of its entities before it first waits (rclc does, before
  * the executor spins) is discovered with all of them, and every SEDP
  * announcement a peer replays to it arrives after its local endpoints exist.

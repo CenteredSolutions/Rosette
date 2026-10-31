@@ -93,7 +93,7 @@ rmw_publisher_t* rmw_create_publisher(
     }
 
     auto* node_impl = static_cast<rmw_rosette::Node*>(node->data);
-    rmw_rosette::ContextLock lock(*node_impl->context);
+    rmw_rosette::ContextUpdateLock lock(*node_impl->context);
 
     rtps::WriterConfig cfg{};
     rmw_rosette::fill_writer_config(cfg, *qos_policies);
@@ -177,7 +177,7 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
     }
 
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
-    rmw_rosette::ContextLock lock(*impl->node->context);
+    rmw_rosette::ContextUpdateLock lock(*impl->node->context);
     if (impl->node && impl->writer) {
         impl->node->context->discovery_info.remove_endpoints(nullptr, &impl->writer->guid());
         impl->node->context->participant->delete_writer(impl->writer);
@@ -214,7 +214,7 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
     }
 
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
-    rmw_rosette::ContextLock lock(*impl->node->context);
+    rmw_rosette::ContextUpdateLock lock(*impl->node->context);
 
     rtps::BufRef payload = rmw_rosette::serialize_to_pool(impl->codec, ros_message);
     if (!payload.valid()) {
@@ -278,7 +278,7 @@ rmw_ret_t rmw_publish_serialized_message(const rmw_publisher_t* publisher,
     }
 
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
-    rmw_rosette::ContextLock lock(*impl->node->context);
+    rmw_rosette::ContextUpdateLock lock(*impl->node->context);
     const bool               ok = impl->writer->write_async(
         rtps::ChangeKind::ALIVE, reinterpret_cast<const rtps::Octet*>(buf + hdr),
         static_cast<uint32_t>(serialized_message->buffer_length - hdr));
@@ -421,8 +421,9 @@ rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher,
     }
 
     rtps::StatefulWriter* writer = impl->writer;
-    const bool acked = impl->node->context->driver->spin_until(
-        [writer]() noexcept { return writer->acknowledged_by_all(); }, timeout_ms);
+    const bool            acked = rmw_rosette::wait_until_ready(
+        *impl->node->context, [writer]() noexcept { return writer->acknowledged_by_all(); },
+        timeout_ms);
     return acked ? RMW_RET_OK : RMW_RET_TIMEOUT;
 }
 

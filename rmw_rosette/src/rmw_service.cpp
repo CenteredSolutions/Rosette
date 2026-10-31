@@ -85,7 +85,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node,
     }
 
     auto* node_impl = static_cast<rmw_rosette::Node*>(node->data);
-    rmw_rosette::ContextLock lock(*node_impl->context);
+    rmw_rosette::ContextUpdateLock lock(*node_impl->context);
 
     ServiceSlot* slot = service_pool().acquire();
     if (!slot) {
@@ -146,7 +146,7 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
     }
 
     auto* impl = static_cast<rmw_rosette::Service*>(service->data);
-    rmw_rosette::ContextLock lock(*impl->node->context);
+    rmw_rosette::ContextUpdateLock lock(*impl->node->context);
     if (impl->node) {
         rmw_rosette::destroy_service_endpoints(*impl->node, impl->reply_writer,
                                                impl->request_reader);
@@ -249,7 +249,7 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
     }
 
     auto* impl = static_cast<rmw_rosette::Service*>(service->data);
-    rmw_rosette::ContextLock lock(*impl->node->context);
+    rmw_rosette::ContextUpdateLock lock(*impl->node->context);
     const rtps::Guid request_writer =
         rmw_rosette::guid_from_request_writer(request_header->writer_guid);
     if (impl->request_reader->matched_writer_lookup(request_writer) == nullptr) {
