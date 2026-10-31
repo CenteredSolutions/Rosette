@@ -463,12 +463,16 @@ rmw_ret_t rmw_take_serialized_message(const rmw_subscription_t* subscription,
  * @param[out]    taken                 Number of messages taken.
  * @param[in]     allocation            Unused.
  * @return `RMW_RET_OK` (including when nothing was available);
- *   `RMW_RET_INVALID_ARGUMENT` for null arguments, `count == 0`, or
- *   insufficient capacity; `RMW_RET_ERROR` when a message fails to decode.
+ *   `RMW_RET_INVALID_ARGUMENT` for null arguments, a null message slot among
+ *   the first `count`, `count == 0`, or insufficient capacity, with nothing
+ *   taken; `RMW_RET_ERROR` when a message fails to decode.
  *
  * Verification:
  * - Correct means: after N changes are buffered, a take of count >= N
- *   returns exactly N messages in arrival order.
+ *   returns exactly N messages in arrival order, and a refused take leaves
+ *   every buffered change in place.
+ * - Covered by: rmw_rosette/test/test_creation_after_shutdown.cpp
+ *   (TC-RMW-ARG-006).
  *
  * References:
  * - rmw/rmw.h (Humble), `rmw_take_sequence`
@@ -490,6 +494,20 @@ rmw_ret_t rmw_take_sequence(const rmw_subscription_t* subscription, size_t count
     if (count == 0 || message_sequence->capacity < count
         || message_info_sequence->capacity < count) {
         return rmw_rosette::refuse_argument(__func__, "count", rmw_rosette::ArgumentFault::invalid);
+    }
+
+    // Every slot a take could fill is checked before the first take, so a
+    // refused call consumes no buffered sample.
+    if (message_sequence->data == nullptr || message_info_sequence->data == nullptr) {
+        return rmw_rosette::refuse_argument(__func__, "message_sequence",
+                                            rmw_rosette::ArgumentFault::null);
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        if (message_sequence->data[i] == nullptr) {
+            return rmw_rosette::refuse_argument(__func__, "message_sequence",
+                                                rmw_rosette::ArgumentFault::null);
+        }
     }
 
     auto& impl = *static_cast<rmw_rosette::Subscription*>(subscription->data);

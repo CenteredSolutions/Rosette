@@ -59,13 +59,17 @@ TEST(ArgumentChecks, RefuseArgumentFormatsTheMessageAndPicksTheCode) {
     }
 }
 
-// TC-RMW-ARG-002: null before foreign before uninitialized, then the required
-// pointers in order; a usable handle passes and sets no error.
+// TC-RMW-ARG-002: null, then a zero-initialized handle, then foreign before
+// uninitialized, then the required pointers in order; a usable handle passes
+// and sets no error.
 TEST(ArgumentChecks, CheckHandleRefusesInOrder) {
     rmw_publisher_t publisher{};
     EXPECT_EQ(RMW_RET_INVALID_ARGUMENT,
               rmw_rosette::check_handle<rmw_publisher_t>(nullptr, "f", "publisher"));
     EXPECT_EQ("rmw_rosette: f: publisher is null", message_of(take_error()));
+
+    EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, rmw_rosette::check_handle(&publisher, "f", "publisher"));
+    EXPECT_EQ("rmw_rosette: f: publisher is not initialized", message_of(take_error()));
 
     publisher.implementation_identifier = "not-an-rmw-implementation-identifier";
     EXPECT_EQ(RMW_RET_INCORRECT_RMW_IMPLEMENTATION,
@@ -88,8 +92,9 @@ TEST(ArgumentChecks, CheckHandleRefusesInOrder) {
     EXPECT_FALSE(rcutils_error_is_set());
 }
 
-// TC-RMW-ARG-003: a context is refused when null, uninitialized or foreign, and
-// one that was shut down only when the caller requires a live context.
+// TC-RMW-ARG-003: a context is refused when null, zero-initialized, foreign or
+// without impl, in that order, and one that was shut down only when the caller
+// requires a live context.
 TEST(ArgumentChecks, CheckContextRefusesInOrder) {
     EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, rmw_rosette::check_context(nullptr, "f", false));
     rcutils_reset_error();
@@ -98,28 +103,37 @@ TEST(ArgumentChecks, CheckContextRefusesInOrder) {
     EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, rmw_rosette::check_context(&context, "f", false));
     EXPECT_EQ("rmw_rosette: f: context is not initialized", message_of(take_error()));
 
-    rmw_context_impl_t impl{};
-    context.impl = &impl;
     context.implementation_identifier = "not-an-rmw-implementation-identifier";
     EXPECT_EQ(RMW_RET_INCORRECT_RMW_IMPLEMENTATION,
               rmw_rosette::check_context(&context, "f", false));
     rcutils_reset_error();
 
     context.implementation_identifier = rmw_rosette_identifier;
+    EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, rmw_rosette::check_context(&context, "f", false));
+    EXPECT_EQ("rmw_rosette: f: context is not initialized", message_of(take_error()));
+
+    rmw_context_impl_t impl{};
+    context.impl = &impl;
     EXPECT_EQ(RMW_RET_OK, rmw_rosette::check_context(&context, "f", true));
 
-    impl.rosette_context.shut_down = true;
+    impl.rosette_context.shut_down.store(true);
     EXPECT_EQ(RMW_RET_OK, rmw_rosette::check_context(&context, "f", false));
     EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, rmw_rosette::check_context(&context, "f", true));
     EXPECT_EQ("rmw_rosette: f: context has been shut down", message_of(take_error()));
 }
 
 // TC-RMW-ARG-004: the endpoint factories' shared checks, in the stock order,
-// with ROS name rules waived by avoid_ros_namespace_conventions.
+// with ROS name rules waived by avoid_ros_namespace_conventions, and no
+// endpoint for a node whose context was shut down.
 TEST(ArgumentChecks, CheckEndpointArgumentsRefusesInOrder) {
+    rmw_context_impl_t impl{};
+    rmw_context_t      context = rmw_get_zero_initialized_context();
+    context.implementation_identifier = rmw_rosette_identifier;
+    context.impl = &impl;
     rmw_node_t node{};
     node.implementation_identifier = rmw_rosette_identifier;
     node.data = &g_object;
+    node.context = &context;
     const void*       ts = &g_object;
     rmw_qos_profile_t qos = rmw_qos_profile_default;
     const auto        check = [&](const char* name, const rmw_qos_profile_t* profile) {
@@ -141,6 +155,10 @@ TEST(ArgumentChecks, CheckEndpointArgumentsRefusesInOrder) {
     EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, check("", &qos));
 
     qos.avoid_ros_namespace_conventions = false;
+    impl.rosette_context.shut_down.store(true);
+    EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, check("/chatter", &qos));
+
+    impl.rosette_context.shut_down.store(false);
     ts = nullptr;
     EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, check("/chatter", &qos));
 

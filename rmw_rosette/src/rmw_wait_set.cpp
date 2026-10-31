@@ -135,12 +135,19 @@ extern "C" {
  * @param[in] max_conditions Unused; wait_set_pool()'s capacity is fixed
  *   at compile time via `RMW_ROSETTE_MAX_WAIT_SETS` (pool.hpp).
  * @return The new wait set, or `nullptr` if check_context() refuses
- *   `context` (null, not initialized, or another rmw's) or the wait set
- *   pool is exhausted.
+ *   `context` (null, not initialized, another rmw's, or shut down) or the
+ *   wait set pool is exhausted.
+ *
+ * Verification:
+ * - Correct means: no wait set is created in a context that was shut down.
+ * - Covered by: rmw_rosette/test/test_creation_after_shutdown.cpp (TC-RMW-ARG-005).
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_create_wait_set`
  */
 rmw_wait_set_t* rmw_create_wait_set(rmw_context_t* context, size_t max_conditions) {
     (void)max_conditions;
-    if (rmw_rosette::check_context(context, __func__, false) != RMW_RET_OK) {
+    if (rmw_rosette::check_context(context, __func__, true) != RMW_RET_OK) {
         return nullptr;
     }
 

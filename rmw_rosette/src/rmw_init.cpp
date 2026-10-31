@@ -791,7 +791,7 @@ rmw_ret_t rmw_shutdown(rmw_context_t* context) {
         return ret;
     }
 
-    context->impl->rosette_context.shut_down = true;
+    context->impl->rosette_context.shut_down.store(true);
     return RMW_RET_OK;
 }
 
@@ -821,7 +821,7 @@ rmw_ret_t rmw_context_fini(rmw_context_t* context) {
     }
 
     rmw_context_impl_s* impl = context->impl;
-    if (!impl->rosette_context.shut_down) {
+    if (!impl->rosette_context.shut_down.load()) {
         return rmw_rosette::refuse_argument(__func__, "context", ArgumentFault::invalid);
     }
 

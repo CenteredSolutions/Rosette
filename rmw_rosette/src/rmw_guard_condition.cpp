@@ -48,17 +48,20 @@ extern "C" {
  * @param[in] context Context the guard condition belongs to; recorded on
  *   the handle, as rcl expects.
  * @return The new guard condition, or `nullptr` if check_context() refuses
- *   `context` or RMW_ROSETTE_MAX_GUARD_CONDITIONS are already in use.
+ *   `context` (null, not initialized, another rmw's, or shut down) or
+ *   RMW_ROSETTE_MAX_GUARD_CONDITIONS are already in use.
  *
  * Verification:
- * - Correct means: a fresh guard condition is not reported ready by rmw_wait().
- * - Covered by: rmw_rosette/test/test_guard_condition.cpp.
+ * - Correct means: a fresh guard condition is not reported ready by
+ *   rmw_wait(), and none is created in a context that was shut down.
+ * - Covered by: rmw_rosette/test/test_guard_condition.cpp, and
+ *   rmw_rosette/test/test_creation_after_shutdown.cpp (TC-RMW-ARG-005).
  *
  * References:
  * - rmw/rmw.h (Humble), `rmw_create_guard_condition`
  */
 rmw_guard_condition_t* rmw_create_guard_condition(rmw_context_t* context) {
-    if (rmw_rosette::check_context(context, __func__, false) != RMW_RET_OK) {
+    if (rmw_rosette::check_context(context, __func__, true) != RMW_RET_OK) {
         return nullptr;
     }
 

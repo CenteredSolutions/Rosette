@@ -72,7 +72,7 @@ rmw_ret_t check_context(const rmw_context_t* context, const char* function,
         return refuse_argument(function, "context", ArgumentFault::null);
     }
 
-    if (context->implementation_identifier == nullptr || context->impl == nullptr) {
+    if (context->implementation_identifier == nullptr) {
         return refuse_argument(function, "context", ArgumentFault::uninitialized);
     }
 
@@ -80,7 +80,11 @@ rmw_ret_t check_context(const rmw_context_t* context, const char* function,
         return refuse_argument(function, "context", ArgumentFault::foreign);
     }
 
-    if (require_live && context->impl->rosette_context.shut_down) {
+    if (context->impl == nullptr) {
+        return refuse_argument(function, "context", ArgumentFault::uninitialized);
+    }
+
+    if (require_live && context->impl->rosette_context.shut_down.load()) {
         return refuse_argument(function, "context", ArgumentFault::shut_down);
     }
 
@@ -93,6 +97,11 @@ rmw_ret_t check_endpoint_arguments(const rmw_node_t* node, const void* type_supp
     const rmw_ret_t node_ret = check_handle(node, function, "node");
     if (node_ret != RMW_RET_OK) {
         return node_ret;
+    }
+
+    const rmw_ret_t context_ret = check_context(node->context, function, true);
+    if (context_ret != RMW_RET_OK) {
+        return context_ret;
     }
 
     if (type_support == nullptr) {

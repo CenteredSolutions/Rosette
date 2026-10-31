@@ -11,7 +11,7 @@
  *
  *   null argument                        RMW_RET_INVALID_ARGUMENT
  *   handle of another implementation     RMW_RET_INCORRECT_RMW_IMPLEMENTATION
- *   handle not initialized (no impl)     RMW_RET_INVALID_ARGUMENT
+ *   handle not initialized (zero-init)   RMW_RET_INVALID_ARGUMENT
  *   invalid name, QoS or allocator       RMW_RET_INVALID_ARGUMENT
  *
  * A check runs before anything is acquired or changed, so a refused call
@@ -106,9 +106,10 @@ struct RequiredArgument {
  *   error state set.
  *
  * Verification:
- * - Correct means: null is refused before the identifier is read, a foreign
- *   identifier before the data pointer is read, and a usable handle is not
- *   touched.
+ * - Correct means: null is refused before the identifier is read; a null
+ *   identifier (a zero-initialized handle) is refused as uninitialized; a
+ *   foreign identifier is refused before the data pointer is read; and a
+ *   usable handle is not touched.
  * - Covered by: rmw_rosette/test/test_argument_checks.cpp (TC-RMW-ARG-002), and
  *   test_rmw_implementation's *_with_bad_arguments and *_of_another_impl cases.
  *
@@ -120,6 +121,10 @@ rmw_ret_t check_handle(const Handle* handle, const char* function, const char* a
                        std::initializer_list<RequiredArgument> required = {}) noexcept {
     if (handle == nullptr) {
         return refuse_argument(function, argument, ArgumentFault::null);
+    }
+
+    if (handle->implementation_identifier == nullptr) {
+        return refuse_argument(function, argument, ArgumentFault::uninitialized);
     }
 
     if (!is_rosette_identifier(handle->implementation_identifier)) {
@@ -153,8 +158,9 @@ rmw_ret_t check_handle(const Handle* handle, const char* function, const char* a
  *   error state set.
  *
  * Verification:
- * - Correct means: the faults are checked in the order null, foreign,
- *   uninitialized, shut down, and a usable context is not touched.
+ * - Correct means: the faults are checked in the order null, null identifier
+ *   (uninitialized), foreign identifier, null impl (uninitialized), shut
+ *   down, and a usable context is not touched.
  * - Covered by: rmw_rosette/test/test_argument_checks.cpp (TC-RMW-ARG-003), and
  *   test_rmw_implementation's test_create_destroy_node.
  *
@@ -177,7 +183,8 @@ rmw_ret_t check_context(const rmw_context_t* context, const char* function,
  * reliability, durability or liveliness is UNKNOWN (rmw_qos_profile_unknown)
  * describes no endpoint and is refused.
  *
- * @param[in] node         The node to create in; must be rmw_rosette's and initialized.
+ * @param[in] node         The node to create in; must be rmw_rosette's, initialized, and in a
+ *   context that has not been shut down.
  * @param[in] type_support The message or service type support; must be non-null.
  *   Whether it offers a typesupport family this rmw reads is the factory's check.
  * @param[in] name         The topic or service name.
@@ -189,8 +196,10 @@ rmw_ret_t check_context(const rmw_context_t* context, const char* function,
  *
  * Verification:
  * - Correct means: every create_with_bad_arguments case of test_rmw_implementation
- *   returns nullptr and leaves the entity pools as they were.
- * - Covered by: rmw_rosette/test/test_argument_checks.cpp (TC-RMW-ARG-004), and
+ *   returns nullptr and leaves the entity pools as they were, and a node kept
+ *   past rmw_shutdown() creates no endpoint.
+ * - Covered by: rmw_rosette/test/test_argument_checks.cpp (TC-RMW-ARG-004),
+ *   rmw_rosette/test/test_creation_after_shutdown.cpp (TC-RMW-ARG-005), and
  *   test_rmw_implementation's TestPublisher, TestSubscription, TestClient and
  *   TestService create_with_bad_arguments.
  *
