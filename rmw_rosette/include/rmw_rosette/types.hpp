@@ -119,6 +119,9 @@ struct Context {
     rmw_guard_condition_t graph_guard_handle{};
     uint8_t domain_id = 0;
     bool constructed = false;
+    /// Set by rmw_shutdown(): no entity may be created in the context any
+    /// more, and rmw_context_fini() is allowed.
+    bool                              shut_down = false;
     /// Receive buffer the driver drains sockets into; one full datagram.
     uint8_t rx_buffer[RMW_ROSETTE_MAX_DATAGRAM_SIZE] = {};
 };

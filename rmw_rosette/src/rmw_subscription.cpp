@@ -3,12 +3,13 @@
  * @brief rmw_create_subscription / rmw_take(_with_info) family.
  */
 
+#include "rmw_rosette/argument_checks.hpp"
 #include "rmw_rosette/guid.hpp"
 #include "rmw_rosette/identifier.h"
+#include "rmw_rosette/message_codec.hpp"
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/qos.hpp"
 #include "rmw_rosette/topic_naming.hpp"
-#include "rmw_rosette/message_codec.hpp"
 #include "rmw_rosette/types.hpp"
 
 #include <rcutils/types/uint8_array.h>
@@ -56,6 +57,94 @@ void on_change_available(const rosette::rtps::CacheChange& change, void* user_da
     impl->received.push(change);
 }
 
+/// @brief Fills `message_info`, when present, from the change it describes.
+void fill_message_info(const rmw_rosette::PendingChange& change,
+                       rmw_message_info_t*               message_info) noexcept {
+    if (message_info == nullptr) {
+        return;
+    }
+
+    *message_info = rmw_get_zero_initialized_message_info();
+    message_info->source_timestamp = rmw_rosette::timestamp_to_ns(change.source_timestamp);
+    rmw_rosette::guid_to_rmw_gid(change.writer_guid, message_info->publisher_gid);
+    message_info->from_intra_process = false;
+}
+
+/**
+ * @brief Pops the oldest buffered change and decodes it into `ros_message`.
+ *
+ * The body rmw_take() and rmw_take_with_info() share once each has checked
+ * its own arguments; they differ only in whether `message_info` is required.
+ *
+ * @param[in]  impl         The checked subscription's state.
+ * @param[out] ros_message  Message to decode into.
+ * @param[out] taken        true when a change was taken and decoded.
+ * @param[out] message_info Filled when non-null and a change was taken.
+ * @return RMW_RET_OK, including when nothing was buffered; RMW_RET_ERROR when
+ *   the change does not decode.
+ */
+rmw_ret_t take_message(rmw_rosette::Subscription& impl, void* ros_message, bool* taken,
+                       rmw_message_info_t* message_info) noexcept {
+    *taken = false;
+
+    rmw_rosette::ContextLock   lock(*impl.node->context);
+    rmw_rosette::PendingChange change;
+    if (!impl.received.pop(change)) {
+        return RMW_RET_OK;  // Nothing buffered — not an error, per rmw_take()'s contract.
+    }
+
+    if (!rmw_rosette::deserialize_message(impl.codec, change.payload.data, change.payload.size,
+                                          ros_message)) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_take: deserialize failed");
+        return RMW_RET_ERROR;
+    }
+
+    fill_message_info(change, message_info);
+    *taken = true;
+    return RMW_RET_OK;
+}
+
+/**
+ * @brief Pops the oldest buffered change and copies its bytes into `serialized_message`.
+ *
+ * The body rmw_take_serialized_message() and its _with_info variant share
+ * once each has checked its own arguments.
+ *
+ * @param[in]     impl               The checked subscription's state.
+ * @param[in,out] serialized_message Receives the change's CDR bytes, encapsulation
+ *   header included; grown with its own allocator when too small.
+ * @param[out]    taken              true when a change was taken.
+ * @param[out]    message_info       Filled when non-null and a change was taken.
+ * @return RMW_RET_OK, including when nothing was buffered; RMW_RET_BAD_ALLOC when
+ *   `serialized_message` cannot be grown to hold the change.
+ */
+rmw_ret_t take_serialized(rmw_rosette::Subscription& impl,
+                          rmw_serialized_message_t* serialized_message, bool* taken,
+                          rmw_message_info_t* message_info) noexcept {
+    *taken = false;
+
+    rmw_rosette::ContextLock   lock(*impl.node->context);
+    rmw_rosette::PendingChange change;
+    if (!impl.received.pop(change)) {
+        return RMW_RET_OK;
+    }
+
+    const uint32_t size = change.payload.size;
+    if (serialized_message->buffer_capacity < size
+        && rcutils_uint8_array_resize(serialized_message, size) != RCUTILS_RET_OK) {
+        RMW_SET_ERROR_MSG(
+            "rmw_rosette: rmw_take_serialized_message: "
+            "could not grow serialized_message");
+        return RMW_RET_BAD_ALLOC;
+    }
+
+    std::memcpy(serialized_message->buffer, change.payload.data, size);
+    serialized_message->buffer_length = size;
+    fill_message_info(change, message_info);
+    *taken = true;
+    return RMW_RET_OK;
+}
+
 }  // namespace
 
 extern "C" {
@@ -78,9 +167,10 @@ extern "C" {
  * @param[in] topic_name Fully-qualified ROS 2 topic name, as rcl passes it.
  * @param[in] qos_policies Requested QoS profile.
  * @param[in] subscription_options Copied verbatim into the resulting
- *   `rmw_subscription_t::options`.
- * @return The new subscription, or `nullptr` if any required argument is
- *   null, the type support offers no supported typesupport family, the
+ *   `rmw_subscription_t::options`; must be non-null.
+ * @return The new subscription, or `nullptr` if check_endpoint_arguments() refuses
+ *   the node, type support, name or QoS, the options are null, the type
+ *   support offers no supported typesupport family, the
  *   subscription pool is exhausted, the participant's reader table is
  *   full, or the updated `ros_discovery_info` message cannot be written.
  */
@@ -90,8 +180,14 @@ rmw_subscription_t* rmw_create_subscription(
     const char* topic_name,
     const rmw_qos_profile_t* qos_policies,
     const rmw_subscription_options_t* subscription_options) {
-    if (!node || !node->data || !type_support || !topic_name || !qos_policies) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_subscription: null argument");
+    if (rmw_rosette::check_endpoint_arguments(node, type_support, topic_name, qos_policies,
+                                              __func__)
+        != RMW_RET_OK) {
+        return nullptr;
+    }
+
+    if (rmw_rosette::check_not_null(subscription_options, __func__, "subscription_options")
+        != RMW_RET_OK) {
         return nullptr;
     }
 
@@ -154,7 +250,7 @@ rmw_subscription_t* rmw_create_subscription(
     slot->sub.implementation_identifier = rmw_rosette_identifier;
     slot->sub.data = &slot->impl;
     slot->sub.topic_name = slot->impl.mangled_topic_name;
-    if (subscription_options) slot->sub.options = *subscription_options;
+    slot->sub.options = *subscription_options;
     slot->sub.can_loan_messages = false;
     slot->sub.is_cft_enabled = false;
 
@@ -168,7 +264,7 @@ rmw_subscription_t* rmw_create_subscription(
  * deleting it through the participant withdraws it from SEDP, so remote
  * publishers stop sending to it, and frees its reader-table slot.
  *
- * @param[in] node Unused; kept for ABI symmetry with `rmw_create_subscription()`.
+ * @param[in] node The node the endpoint was created in; checked as a handle, not compared.
  * @param[in] subscription Subscription to destroy.
  * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `subscription` is null.
  *
@@ -176,8 +272,12 @@ rmw_subscription_t* rmw_create_subscription(
  * - rmw/rmw.h (Humble), `rmw_destroy_subscription`
  */
 rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscription) {
-    (void)node;
-    if (!subscription || !subscription->data) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked =
+        rmw_rosette::check_node_and_handle(node, subscription, __func__, "subscription");
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     auto* impl = static_cast<rmw_rosette::Subscription*>(subscription->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     if (impl->node && impl->reader) {
@@ -202,49 +302,41 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
  *   message type.
  * @param[out] taken Set to `true` if a change was taken and decoded,
  *   `false` if none was buffered.
- * @param[out] message_info When non-null, filled with metadata about the
- *   taken change (currently only `publisher_gid.implementation_identifier`).
+ * @param[out] message_info Receives the taken change's source timestamp and
+ *   publisher GID; must be non-null.
  * @param[in] allocation Unused; this path performs no loaned-message allocation.
  * @return `RMW_RET_OK` on success (including the nothing-buffered case);
- *   `RMW_RET_INVALID_ARGUMENT` if any required argument is null;
+ *   `RMW_RET_INVALID_ARGUMENT` if any argument but `allocation` is null;
+ *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` for another rmw's subscription;
  *   `RMW_RET_ERROR` if deserialization failed.
  */
 rmw_ret_t rmw_take_with_info(const rmw_subscription_t* subscription, void* ros_message,
                               bool* taken, rmw_message_info_t* message_info,
                               rmw_subscription_allocation_t* allocation) {
     (void)allocation;
-    if (!subscription || !subscription->data || !ros_message || !taken) {
-        return RMW_RET_INVALID_ARGUMENT;
-    }
-    *taken = false;
-
-    auto* impl = static_cast<rmw_rosette::Subscription*>(subscription->data);
-    rmw_rosette::ContextLock lock(*impl->node->context);
-    rmw_rosette::PendingChange change;
-    if (!impl->received.pop(change)) {
-        return RMW_RET_OK;  // Nothing buffered — not an error, per rmw_take()'s contract.
+    const rmw_ret_t checked = rmw_rosette::check_handle(
+        subscription, __func__, "subscription",
+        {{ros_message, "ros_message"}, {taken, "taken"}, {message_info, "message_info"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
     }
 
-    if (!rmw_rosette::deserialize_message(impl->codec, change.payload.data, change.payload.size,
-                                          ros_message)) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_take_with_info: deserialize failed");
-        return RMW_RET_ERROR;
-    }
-
-    if (message_info) {
-        *message_info = rmw_get_zero_initialized_message_info();
-        message_info->source_timestamp = rmw_rosette::timestamp_to_ns(change.source_timestamp);
-        rmw_rosette::guid_to_rmw_gid(change.writer_guid, message_info->publisher_gid);
-        message_info->from_intra_process = false;
-    }
-    *taken = true;
-    return RMW_RET_OK;
+    return take_message(*static_cast<rmw_rosette::Subscription*>(subscription->data), ros_message,
+                        taken, message_info);
 }
 
-/// Equivalent to rmw_take_with_info() with `message_info` omitted.
+/// @brief Equivalent to rmw_take_with_info() without the message info.
 rmw_ret_t rmw_take(const rmw_subscription_t* subscription, void* ros_message, bool* taken,
                     rmw_subscription_allocation_t* allocation) {
-    return rmw_take_with_info(subscription, ros_message, taken, nullptr, allocation);
+    (void)allocation;
+    const rmw_ret_t checked = rmw_rosette::check_handle(
+        subscription, __func__, "subscription", {{ros_message, "ros_message"}, {taken, "taken"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
+    return take_message(*static_cast<rmw_rosette::Subscription*>(subscription->data), ros_message,
+                        taken, nullptr);
 }
 
 /**
@@ -262,11 +354,12 @@ rmw_ret_t rmw_take(const rmw_subscription_t* subscription, void* ros_message, bo
  *   representation described in rmw_serialize.cpp).
  * @param[out] taken Set to `true` if a change was taken, `false` if none
  *   was buffered.
- * @param[out] message_info When non-null, filled with metadata about the
- *   taken change.
+ * @param[out] message_info Receives the taken change's source timestamp and
+ *   publisher GID; must be non-null.
  * @param[in] allocation Unused; this path performs no loaned-message allocation.
  * @return `RMW_RET_OK` on success (including the nothing-buffered case);
- *   `RMW_RET_INVALID_ARGUMENT` if any required argument is null;
+ *   `RMW_RET_INVALID_ARGUMENT` if any argument but `allocation` is null;
+ *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` for another rmw's subscription;
  *   `RMW_RET_BAD_ALLOC` if `serialized_message` could not be grown (with
  *   its own allocator) to hold the change.
  */
@@ -274,36 +367,16 @@ rmw_ret_t rmw_take_serialized_message_with_info(
     const rmw_subscription_t* subscription, rmw_serialized_message_t* serialized_message,
     bool* taken, rmw_message_info_t* message_info, rmw_subscription_allocation_t* allocation) {
     (void)allocation;
-    if (!subscription || !subscription->data || !serialized_message || !taken) {
-        return RMW_RET_INVALID_ARGUMENT;
-    }
-    *taken = false;
-
-    auto* impl = static_cast<rmw_rosette::Subscription*>(subscription->data);
-    rmw_rosette::ContextLock lock(*impl->node->context);
-    rmw_rosette::PendingChange change;
-    if (!impl->received.pop(change)) {
-        return RMW_RET_OK;
+    const rmw_ret_t checked = rmw_rosette::check_handle(subscription, __func__, "subscription",
+                                                        {{serialized_message, "serialized_message"},
+                                                         {taken, "taken"},
+                                                         {message_info, "message_info"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
     }
 
-    const uint32_t size = change.payload.size;
-    if (serialized_message->buffer_capacity < size &&
-        rcutils_uint8_array_resize(serialized_message, size) != RCUTILS_RET_OK) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_take_serialized_message_with_info: "
-                          "could not grow serialized_message");
-        return RMW_RET_BAD_ALLOC;
-    }
-    std::memcpy(serialized_message->buffer, change.payload.data, size);
-    serialized_message->buffer_length = size;
-
-    if (message_info) {
-        *message_info = rmw_get_zero_initialized_message_info();
-        message_info->source_timestamp = rmw_rosette::timestamp_to_ns(change.source_timestamp);
-        rmw_rosette::guid_to_rmw_gid(change.writer_guid, message_info->publisher_gid);
-        message_info->from_intra_process = false;
-    }
-    *taken = true;
-    return RMW_RET_OK;
+    return take_serialized(*static_cast<rmw_rosette::Subscription*>(subscription->data),
+                           serialized_message, taken, message_info);
 }
 
 /**
@@ -318,7 +391,12 @@ rmw_ret_t rmw_take_serialized_message_with_info(
  */
 rmw_ret_t rmw_subscription_count_matched_publishers(const rmw_subscription_t* subscription,
                                                      size_t* publisher_count) {
-    if (!subscription || !subscription->data || !publisher_count) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(subscription, __func__, "subscription",
+                                                        {{publisher_count, "publisher_count"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     const auto* impl = static_cast<const rmw_rosette::Subscription*>(subscription->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     *publisher_count = impl->reader ? impl->reader->matched_writer_count() : 0u;
@@ -334,17 +412,17 @@ rmw_ret_t rmw_subscription_count_matched_publishers(const rmw_subscription_t* su
  *   argument is null.
  */
 rmw_ret_t rmw_get_gid_for_subscription(const rmw_subscription_t* subscription, rmw_gid_t* gid) {
-    if (!subscription || !subscription->data || !gid) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked =
+        rmw_rosette::check_handle(subscription, __func__, "subscription", {{gid, "gid"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     auto* impl = static_cast<rmw_rosette::Subscription*>(subscription->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     rmw_rosette::guid_to_rmw_gid(impl->reader->guid(), *gid);
     return RMW_RET_OK;
 }
-
-// This file does not define rmw_take_sequence(), rmw_take_loaned_message()/
-// rmw_take_loaned_message_with_info(), rmw_subscription_get_actual_qos(),
-// rmw_subscription_set_content_filter() (the underlying rtps core has no
-// content-filter support), or rmw_subscription_get_network_flow_endpoints().
 
 /**
  * @brief Takes the oldest buffered change as a serialized message.
@@ -357,15 +435,23 @@ rmw_ret_t rmw_get_gid_for_subscription(const rmw_subscription_t* subscription, r
 rmw_ret_t rmw_take_serialized_message(const rmw_subscription_t* subscription,
                                       rmw_serialized_message_t* serialized_message, bool* taken,
                                       rmw_subscription_allocation_t* allocation) {
-    return rmw_take_serialized_message_with_info(subscription, serialized_message, taken, nullptr,
-                                                 allocation);
+    (void)allocation;
+    const rmw_ret_t checked =
+        rmw_rosette::check_handle(subscription, __func__, "subscription",
+                                  {{serialized_message, "serialized_message"}, {taken, "taken"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
+    return take_serialized(*static_cast<rmw_rosette::Subscription*>(subscription->data),
+                           serialized_message, taken, nullptr);
 }
 
 /**
  * @brief Takes up to `count` buffered changes in arrival order.
  *
  * Used by rclcpp's `take` of message sequences. Takes one message at a
- * time through rmw_take_with_info() into the caller's pre-initialized
+ * time through take_message() into the caller's pre-initialized
  * message slots and stops at the first empty take.
  *
  * @param[in]     subscription          Subscription to drain.
@@ -391,19 +477,38 @@ rmw_ret_t rmw_take_sequence(const rmw_subscription_t* subscription, size_t count
                             rmw_message_sequence_t* message_sequence,
                             rmw_message_info_sequence_t* message_info_sequence, size_t* taken,
                             rmw_subscription_allocation_t* allocation) {
-    if (!subscription || !message_sequence || !message_info_sequence || !taken || count == 0 ||
-        message_sequence->capacity < count || message_info_sequence->capacity < count) {
-        return RMW_RET_INVALID_ARGUMENT;
+    (void)allocation;
+    const rmw_ret_t checked =
+        rmw_rosette::check_handle(subscription, __func__, "subscription",
+                                  {{message_sequence, "message_sequence"},
+                                   {message_info_sequence, "message_info_sequence"},
+                                   {taken, "taken"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
     }
+
+    if (count == 0 || message_sequence->capacity < count
+        || message_info_sequence->capacity < count) {
+        return rmw_rosette::refuse_argument(__func__, "count", rmw_rosette::ArgumentFault::invalid);
+    }
+
+    auto& impl = *static_cast<rmw_rosette::Subscription*>(subscription->data);
     *taken = 0;
     for (size_t i = 0; i < count; ++i) {
         bool one = false;
-        const rmw_ret_t ret = rmw_take_with_info(subscription, message_sequence->data[i], &one,
-                                                 &message_info_sequence->data[i], allocation);
-        if (ret != RMW_RET_OK) return ret;
-        if (!one) break;
+        const rmw_ret_t ret =
+            take_message(impl, message_sequence->data[i], &one, &message_info_sequence->data[i]);
+        if (ret != RMW_RET_OK) {
+            return ret;
+        }
+
+        if (!one) {
+            break;
+        }
+
         ++*taken;
     }
+
     message_sequence->size = *taken;
     message_info_sequence->size = *taken;
     return RMW_RET_OK;
@@ -421,7 +526,12 @@ rmw_ret_t rmw_take_sequence(const rmw_subscription_t* subscription, size_t count
  */
 rmw_ret_t rmw_subscription_get_actual_qos(const rmw_subscription_t* subscription,
                                           rmw_qos_profile_t* qos) {
-    if (!subscription || !subscription->data || !qos) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked =
+        rmw_rosette::check_handle(subscription, __func__, "subscription", {{qos, "qos"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     *qos = static_cast<const rmw_rosette::Subscription*>(subscription->data)->qos;
     return RMW_RET_OK;
 }

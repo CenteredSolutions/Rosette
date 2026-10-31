@@ -10,6 +10,7 @@
  * (rmw_qos_event.cpp).
  */
 
+#include "rmw_rosette/argument_checks.hpp"
 #include "rmw_rosette/identifier.h"
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/types.hpp"
@@ -133,13 +134,13 @@ extern "C" {
  *   poll for this wait set.
  * @param[in] max_conditions Unused; wait_set_pool()'s capacity is fixed
  *   at compile time via `RMW_ROSETTE_MAX_WAIT_SETS` (pool.hpp).
- * @return The new wait set, or `nullptr` if `context`/its `impl` is null
- *   or the wait set pool is exhausted.
+ * @return The new wait set, or `nullptr` if check_context() refuses
+ *   `context` (null, not initialized, or another rmw's) or the wait set
+ *   pool is exhausted.
  */
 rmw_wait_set_t* rmw_create_wait_set(rmw_context_t* context, size_t max_conditions) {
     (void)max_conditions;
-    if (!context || !context->impl) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_wait_set: null context");
+    if (rmw_rosette::check_context(context, __func__, false) != RMW_RET_OK) {
         return nullptr;
     }
 
@@ -160,11 +161,27 @@ rmw_wait_set_t* rmw_create_wait_set(rmw_context_t* context, size_t max_condition
 /**
  * @brief Destroys a wait set and returns its slot to the pool.
  *
+ * Refuses before releasing anything, so a wait set of another
+ * implementation stays with its owner.
+ *
  * @param[in] wait_set Wait set to destroy.
- * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `wait_set` is null.
+ * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` if `wait_set` is null or
+ *   not initialized; `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` for another rmw's.
+ *
+ * Verification:
+ * - Correct means: a refused destroy leaves the slot allocated, and the
+ *   destroy that follows with the identifier restored succeeds.
+ * - Covered by: test_rmw_implementation's test_wait_set (rmw_destroy_wait_set).
+ *
+ * References:
+ * - rmw/rmw.h (Humble, Jazzy), `rmw_destroy_wait_set`
  */
 rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
-    if (!wait_set) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(wait_set, __func__, "wait_set");
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     wait_set_pool().release(slot_from(wait_set));
     return RMW_RET_OK;
 }
@@ -222,7 +239,10 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
 rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* guard_conditions,
                    rmw_services_t* services, rmw_clients_t* clients, rmw_events_t* events,
                    rmw_wait_set_t* wait_set, const rmw_time_t* wait_timeout) {
-    if (!wait_set || !wait_set->data) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(wait_set, __func__, "wait_set");
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
 
     auto* impl = static_cast<rmw_rosette::WaitSet*>(wait_set->data);
     rmw_rosette::Context& ctx = *impl->context;

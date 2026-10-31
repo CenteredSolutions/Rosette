@@ -101,6 +101,7 @@ add_library(rmw_rosette_static STATIC
   ${_rr_dir}/src/introspection_c_codec.cpp
   ${_rr_dir}/src/message_codec.cpp
   ${_rr_dir}/src/rmw_init.cpp
+  ${_rr_dir}/src/argument_checks.cpp
   ${_rr_dir}/src/rmw_node.cpp
   ${_rr_dir}/src/rmw_publisher.cpp
   ${_rr_dir}/src/rmw_subscription.cpp

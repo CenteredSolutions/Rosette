@@ -49,6 +49,7 @@ add_library(rmw_rosette SHARED
   src/introspection_c_codec.cpp
   src/message_codec.cpp
   src/rmw_init.cpp
+  src/argument_checks.cpp
   src/rmw_node.cpp
   src/rmw_publisher.cpp
   src/rmw_subscription.cpp
@@ -150,7 +151,7 @@ if(BUILD_TESTING)
   # implementation without going through rmw_implementation's loader.
   set(_rmw_rosette_tests test_introspection_c_codec test_guard_condition test_pub_sub_loopback
                          test_change_ring test_local_node_entities test_service_departed_client
-                         test_service_reply_depth test_init_options)
+                         test_service_reply_depth test_init_options test_argument_checks)
   # Entry points the ROS 2 headers declare only from some distribution on.
   if(RMW_ROSETTE_HAS_CLIENT_GID)
     list(APPEND _rmw_rosette_tests test_client_gid)
