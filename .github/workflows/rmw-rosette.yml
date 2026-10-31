@@ -59,7 +59,9 @@ jobs:
   # suite ships as a binary package, so each is built from source at a pinned
   # commit of its distribution branch. tools/ci/check_rmw_conformance.py holds
   # the results to the committed known-failure list exactly: a new failure, a
-  # listed case that passes, or a stale entry fails the job.
+  # listed case that passes, or a stale entry fails the job. Tests the list
+  # marks `skip` (rclcpp on rmw_rosette, until the C++ introspection codec
+  # exists) are not run.
   conformance:
     runs-on: ubuntu-24.04
     strategy:
@@ -116,12 +118,16 @@ jobs:
           colcon build --base-paths src --packages-select test_rmw_implementation test_communication \
             --event-handlers console_cohesion+ --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
+      # The known list's `skip` lines name tests that cannot pass yet and would
+      # only wait out their timeouts; they become ctest's exclude expression.
       - name: Test
         working-directory: ws
         run: |
           source install/setup.bash
+          known=../rosette/rmw_rosette/test/conformance_known_failures_${{ matrix.distro }}.txt
+          exclude=$(python3 ../rosette/tools/ci/check_rmw_conformance.py --known "$known" --ctest-exclude)
           colcon test --base-paths src --packages-select test_rmw_implementation test_communication \
-            --ctest-args -R rmw_rosette --timeout 120
+            --ctest-args -R rmw_rosette ${exclude:+-E "$exclude"} --timeout 120
 
       - name: Check against known failures
         working-directory: ws

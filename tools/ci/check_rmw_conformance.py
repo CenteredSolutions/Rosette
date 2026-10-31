@@ -31,6 +31,17 @@ Architecture:
     such as every AfterShutdown case; a must-fail line names one case
     exactly, so it still goes stale when that case passes or disappears.
 
+    A line prefixed with `skip ` holds a regular expression over CTest test
+    names, for a whole test that fails for a reason already understood and
+    costs minutes of timeouts to confirm. The workflow asks this script for
+    the skip lines joined into one alternation (--ctest-exclude) and passes it
+    to `ctest -E`, so the test does not run; result files whose name matches
+    are ignored, and a must-fail line naming a case of a skipped test is
+    reported stale. A skip line uses only the syntax CMake's regular
+    expressions and Python's `re` share: `^ $ . * + ? [] () |`, and all skip
+    lines together hold at most nine `()` groups, CMake's limit for one
+    expression.
+
     A case is named `<result file stem>::<classname>.<name>`, for example
     `test_client__rmw_rosette::test_rmw_implementation.TestClient.check_qos`.
     Only result files whose name contains `rmw_rosette` are read.
@@ -39,6 +50,8 @@ Usage:
     tools/ci/check_rmw_conformance.py --known <known_failures.txt>
         <test_results dir>...
     Add --write-known to record the current failures as the list instead.
+    tools/ci/check_rmw_conformance.py --known <known_failures.txt> --ctest-exclude
+    prints the `ctest -E` expression for the list's skip lines.
 
 Verification:
     Correct means: exit status 1 for a new failure, an unexpected pass or a
@@ -61,14 +74,17 @@ import sys
 import xml.etree.ElementTree as ET
 
 FLAKY = "flaky "
+SKIP = "skip "
 
 
-def collect_cases(result_dirs: list[pathlib.Path]) -> dict[str, bool]:
+def collect_cases(result_dirs: list[pathlib.Path], skip: list[str]) -> dict[str, bool]:
     """Reads every rmw_rosette result file under the given directories.
 
     Args:
         result_dirs: Directories to search recursively for `*.xml` result
             files, usually `build/<package>/test_results`.
+        skip: The skip lines of the known list; a result file whose stem
+            (its CTest test name) one of them matches is not read.
 
     Returns:
         A map from case name to True when the case passed, False when it
@@ -79,8 +95,8 @@ def collect_cases(result_dirs: list[pathlib.Path]) -> dict[str, bool]:
 
     Verification:
         Correct means: every `<testcase>` of every result file whose name
-        contains `rmw_rosette` appears once, failed exactly when it holds a
-        `<failure>` or `<error>` element.
+        contains `rmw_rosette` and matches no skip line appears once, failed
+        exactly when it holds a `<failure>` or `<error>` element.
     """
     cases = {}
     for result_dir in result_dirs:
@@ -89,6 +105,9 @@ def collect_cases(result_dirs: list[pathlib.Path]) -> dict[str, bool]:
                 continue
 
             stem = path.name.split(".")[0]
+            if any(re.search(pattern, stem) for pattern in skip):
+                continue
+
             for case in ET.parse(path).getroot().iter("testcase"):
                 name = f"{stem}::{case.get('classname')}.{case.get('name')}"
                 failed = case.find("failure") is not None or case.find("error") is not None
@@ -97,17 +116,19 @@ def collect_cases(result_dirs: list[pathlib.Path]) -> dict[str, bool]:
     return cases
 
 
-def read_known(path: pathlib.Path) -> tuple[set[str], set[str]]:
+def read_known(path: pathlib.Path) -> tuple[set[str], set[str], list[str]]:
     """Reads a known-failure list.
 
     Args:
         path: The list: one case name per line, `#` comments and blank lines
-            ignored, `flaky ` marking a case allowed either outcome.
+            ignored, `flaky ` marking a case allowed either outcome, `skip `
+            marking a CTest test-name expression not to run.
 
     Returns:
-        The names that must fail, and the names allowed either outcome.
+        The names that must fail, the names allowed either outcome, and the
+        skip expressions in file order.
     """
-    failing, flaky = set(), set()
+    failing, flaky, skip = set(), set(), []
     for raw in path.read_text().splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
@@ -115,10 +136,12 @@ def read_known(path: pathlib.Path) -> tuple[set[str], set[str]]:
 
         if line.startswith(FLAKY):
             flaky.add(line[len(FLAKY):].strip())
+        elif line.startswith(SKIP):
+            skip.append(line[len(SKIP):].strip())
         else:
             failing.add(line)
 
-    return failing, flaky
+    return failing, flaky, skip
 
 
 def is_flaky(name: str, flaky: set[str]) -> bool:
@@ -161,26 +184,38 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--known", type=pathlib.Path, required=True)
     parser.add_argument("--write-known", action="store_true")
-    parser.add_argument("result_dirs", type=pathlib.Path, nargs="+")
+    parser.add_argument("--ctest-exclude", action="store_true",
+                        help="print the ctest -E expression for the skip lines and exit")
+    parser.add_argument("result_dirs", type=pathlib.Path, nargs="*")
     args = parser.parse_args()
 
-    cases = collect_cases(args.result_dirs)
+    known, flaky, skip = read_known(args.known) if args.known.exists() else (set(), set(), [])
+    if args.ctest_exclude:
+        # Joined bare: `|` binds loosest, and CMake's regular expressions allow
+        # only nine groups in one expression.
+        print("|".join(skip))
+        return 0
+
+    if not args.result_dirs:
+        parser.error("result_dirs are required unless --ctest-exclude is given")
+
+    cases = collect_cases(args.result_dirs, skip)
     if not cases:
         print("no rmw_rosette results found; did the tests run?")
         return 1
 
     failed = {name for name, passed in cases.items() if not passed}
     if args.write_known:
-        _, flaky = read_known(args.known) if args.known.exists() else (set(), set())
-        lines = [f"{FLAKY}{name}" for name in sorted(flaky)]
+        lines = [f"{SKIP}{pattern}" for pattern in skip]
+        lines += [f"{FLAKY}{name}" for name in sorted(flaky)]
         lines += sorted(failed - flaky)
         args.known.write_text("".join(f"{line}\n" for line in lines))
-        print(f"wrote {len(failed - flaky)} failures and {len(flaky)} flaky cases to {args.known}")
+        print(f"wrote {len(failed - flaky)} failures, {len(flaky)} flaky cases and "
+              f"{len(skip)} skipped tests to {args.known}")
         return 0
 
-    known, flaky = read_known(args.known)
     print(f"{len(cases) - len(failed)}/{len(cases)} rmw_rosette cases pass; "
-          f"{len(known)} known failures, {len(flaky)} flaky")
+          f"{len(known)} known failures, {len(flaky)} flaky, {len(skip)} skip expressions")
 
     new = {name for name in failed - known if not is_flaky(name, flaky)}
     fixed = {name for name in known if cases.get(name)}
