@@ -306,7 +306,18 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
         out_change,
         msg.inlineQosPresent ? &msg.inlineQos : nullptr);
 
-    if (!complete) return;
+    // An incomplete sample of a reliable writer is asked for again once its
+    // fragments stop arriving (fragment_assembler.hpp, quiet-period repair).
+    if (!complete) {
+        if (proxy != nullptr && reliability_ == ReliabilityKind::RELIABLE) {
+            assembler_.schedule_repair(
+                writer_guid, msg.writerSN,
+                rosette::platform::monotonic_ms() + RTPS_FRAGMENT_REPAIR_DELAY_MS,
+                static_cast<uint8_t>(RTPS_FRAGMENT_REPAIR_ROUNDS));
+        }
+
+        return;
+    }
 
     // Sample is complete — treat identically to a full DATA reception.
     if (proxy) {
@@ -391,27 +402,51 @@ void StatefulReader::on_heartbeat_frag(const ParseContext&       ctx,
     const bool has_slot = assembler_.missing_fragments(
         writer_guid, msg.writerSN, msg.lastFragmentNum, missing);
 
-    if (!has_slot || missing.empty()) return;
+    if (!has_slot || missing.empty()) {
+        return;
+    }
 
-    // Send NACK_FRAG — §9.4.5.8, p. 218.
-    const Locator& dest = proxy->best_locator();
-    if (dest == LOCATOR_INVALID) return;
+    send_nack_frag(*proxy, msg.writerSN, missing);
+}
 
-    if (!builder_.begin(guid_.prefix)) return;
+void StatefulReader::send_nack_frag(WriterProxy& proxy, const SequenceNumber& sn,
+                                    const FragmentNumberSet& missing) noexcept {
+    const Locator& dest = proxy.best_locator();
+    if (dest == LOCATOR_INVALID || !builder_.begin(guid_.prefix)) {
+        return;
+    }
 
-    bool ok = builder_.append_nack_frag(
-        guid_.entityId,
-        msg.writerId,
-        msg.writerSN,
-        missing,
-        ++proxy->acknackCount);
-
-    if (ok) {
-        BufRef buf = builder_.finish();
-        transport_.send_unicast(buf, dest);
-        buf.reset();
-    } else {
+    builder_.append_info_dst(proxy.remoteWriterGuid.prefix);
+    if (!builder_.append_nack_frag(guid_.entityId, proxy.remoteWriterGuid.entityId, sn, missing,
+                                   ++proxy.acknackCount)) {
+        RTPS_LOG_W("reader", "NACK_FRAG builder failed (pool exhausted?)");
         builder_.abort();
+        return;
+    }
+
+    RTPS_LOG_D("reader", "NACK_FRAG sent SN=%d:%lu from fragment %lu", static_cast<int>(sn.high),
+               static_cast<unsigned long>(sn.low), static_cast<unsigned long>(missing.bitmapBase));
+    BufRef buf = builder_.finish();
+    transport_.send_unicast(buf, dest);
+    buf.reset();
+}
+
+void StatefulReader::send_due_fragment_repairs(uint32_t now_ms) noexcept {
+    Guid              writer{};
+    SequenceNumber    sn{};
+    FragmentNumberSet missing{};
+    while (assembler_.take_due_repair(now_ms, RTPS_FRAGMENT_REPAIR_DELAY_MS, writer, sn, missing)) {
+        // A sample accepted or declared irrelevant meanwhile (a whole DATA,
+        // a GAP, a HEARTBEAT's firstSN) is no longer wanted.
+        WriterProxy* proxy = find_proxy(writer);
+        if (proxy == nullptr || !is_new_change(*proxy, sn)) {
+            assembler_.discard(writer, sn);
+            continue;
+        }
+
+        if (!missing.empty()) {
+            send_nack_frag(*proxy, sn, missing);
+        }
     }
 }
 
@@ -585,6 +620,8 @@ void StatefulReader::tick(uint32_t now_ms) noexcept {
             proxy.on_acknack_sent();
         }
     }
+
+    send_due_fragment_repairs(now_ms);
 }
 
 // ============================================================
@@ -605,7 +642,9 @@ uint32_t StatefulReader::ms_until_next_timer(uint32_t now_ms) const noexcept {
             next = wait;
         }
     }
-    return next;
+
+    const uint32_t repair = assembler_.ms_until_repair_due(now_ms);
+    return repair < next ? repair : next;
 }
 
 WriterProxy* StatefulReader::find_proxy(const Guid& guid) noexcept {

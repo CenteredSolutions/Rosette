@@ -19,6 +19,12 @@ uint32_t fragment_length(uint32_t frag_num, uint16_t frag_size, uint32_t data_si
     return frag_num == total_frags ? data_size - offset : static_cast<uint32_t>(frag_size);
 }
 
+/// @brief Milliseconds from `now_ms` to `due_ms`, or 0 once it has passed; wrap-safe for 2^31 ms.
+uint32_t ms_until(uint32_t due_ms, uint32_t now_ms) noexcept {
+    const uint32_t left = due_ms - now_ms;
+    return left > 0x80000000u ? 0u : left;
+}
+
 }  // namespace
 
 uint16_t FragmentAssemblyPool::active_count() const noexcept {
@@ -165,6 +171,52 @@ uint16_t FragmentAssembler::active_count() const noexcept {
     return n;
 }
 
+void FragmentAssembler::schedule_repair(const Guid& writer_guid, const SequenceNumber& writer_sn,
+                                        uint32_t due_ms, uint8_t rounds) noexcept {
+    AssemblySlot* slot = find_slot(writer_guid, writer_sn);
+    if (slot != nullptr) {
+        slot->repairDueMs = due_ms;
+        slot->repairsLeft = rounds;
+    }
+}
+
+bool FragmentAssembler::take_due_repair(uint32_t now_ms, uint32_t retry_ms, Guid& writer,
+                                        SequenceNumber& sn, FragmentNumberSet& missing) noexcept {
+    for (uint16_t i = 0; i < pool_.capacity_; ++i) {
+        AssemblySlot& slot = pool_.slots_[i];
+        if (!slot.change.is_active() || slot.owner != this || slot.repairsLeft == 0u
+            || ms_until(slot.repairDueMs, now_ms) != 0u) {
+            continue;
+        }
+
+        --slot.repairsLeft;
+        slot.repairDueMs = now_ms + retry_ms;
+        writer = slot.change.writerGuid;
+        sn = slot.change.sequenceNumber;
+        slot.change.missing_fragments(UINT32_MAX, missing);
+        return true;
+    }
+
+    return false;
+}
+
+uint32_t FragmentAssembler::ms_until_repair_due(uint32_t now_ms) const noexcept {
+    uint32_t next = UINT32_MAX;
+    for (uint16_t i = 0; i < pool_.capacity_; ++i) {
+        const AssemblySlot& slot = pool_.slots_[i];
+        if (!slot.change.is_active() || slot.owner != this || slot.repairsLeft == 0u) {
+            continue;
+        }
+
+        const uint32_t wait = ms_until(slot.repairDueMs, now_ms);
+        if (wait < next) {
+            next = wait;
+        }
+    }
+
+    return next;
+}
+
 AssemblySlot* FragmentAssembler::find_slot(const Guid& wg,
                                            const SequenceNumber& sn) const noexcept {
     for (uint16_t i = 0; i < pool_.capacity_; ++i) {
@@ -268,6 +320,7 @@ FragmentedChange* FragmentAssembler::alloc_slot(const Guid& wg, const SequenceNu
     change.buffer = static_cast<BufRef&&>(buf);
     slot->owner = this;
     slot->stamp = pool_.next_stamp_++;
+    slot->repairsLeft = 0u;
     return &change;
 }
 

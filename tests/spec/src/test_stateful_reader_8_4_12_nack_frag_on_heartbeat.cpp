@@ -14,6 +14,12 @@
  * out, as Fast DDS's reader does. A change the reader holds no fragments of,
  * including one refused because a shared assembly pool was full, is
  * requested whole.
+ *
+ * A lost last fragment leaves no later fragment to show the gap, so a
+ * reliable reader does not wait for the writer's HEARTBEAT: once a partial
+ * change has received nothing for RTPS_FRAGMENT_REPAIR_DELAY_MS it sends a
+ * NACK_FRAG for the missing fragments on its own, for a bounded number of
+ * rounds.
  */
 
 #include "spec_test_common.hpp"
@@ -232,6 +238,87 @@ static bool tc_srr_8_4_12_004(std::string& err) {
     return true;
 }
 
+// §8.4.12, §8.4.14: a partial change whose last fragment was lost is
+// requested by NACK_FRAG one quiet period after its last fragment arrived,
+// with no HEARTBEAT; a fragment arriving in the meantime pushes the deadline
+// out, and the completed change leaves no timer behind.
+static bool tc_srr_8_4_12_005(std::string& err) {
+    CaptureTransport tx{};
+    int              delivered = 0;
+    const auto       count = [](const CacheChange&, void* n) noexcept {
+        ++*static_cast<int*>(n);
+    };
+    const Guid            reader = make_guid(0x91u, make_entity(1u, 2u, 3u, 0x04u));
+    const Guid            writer = make_guid(0xA2u, make_entity(4u, 5u, 6u, 0x03u));
+    DefaultStatefulReader r(reader, ReliabilityKind::RELIABLE, tx, count, &delivered);
+    CHECK(r.matched_writer_add(writer, &kLoc, 1u), "match");
+    tx.unicast_msgs.clear();
+
+    g_stateful_reader_test_now_ms = 1000u;
+    deliver_fragment(r, reader, writer, 1, 1u);
+    g_stateful_reader_test_now_ms = 1200u;
+    deliver_fragment(r, reader, writer, 1, 2u);
+    CHECK(r.ms_until_next_timer(1200u) == RTPS_FRAGMENT_REPAIR_DELAY_MS,
+          "the driver is woken one quiet period after the latest fragment");
+    r.tick(1000u + RTPS_FRAGMENT_REPAIR_DELAY_MS);
+    CHECK(tx.unicast_msgs.empty(), "a fragment within the quiet period pushes the deadline out");
+
+    r.tick(1200u + RTPS_FRAGMENT_REPAIR_DELAY_MS - 1u);
+    CHECK(tx.unicast_msgs.empty(), "nothing is requested before the quiet period ends");
+    r.tick(1200u + RTPS_FRAGMENT_REPAIR_DELAY_MS);
+    CHECK(tx.unicast_msgs.size() == 1u, "one message once the quiet period ends");
+    const Reply reply = inspect(tx.unicast_msgs[0]);
+    CHECK(reply.parsed && reply.acknacks == 0 && reply.nack_frags.size() == 1u,
+          "it carries one NACK_FRAG and no ACKNACK");
+    const ParsedNackFrag& nf = reply.nack_frags[0];
+    CHECK(nf.writerSN == SequenceNumber::from_int64(1) && nf.writerId == writer.entityId,
+          "the NACK_FRAG names the partial change");
+    CHECK(nf.fragmentNumberState.bitmapBase == 3u && nf.fragmentNumberState.test(0u)
+              && nf.fragmentNumberState.numBits == 1u,
+          "and exactly its lost last fragment");
+
+    deliver_fragment(r, reader, writer, 1, 3u);
+    CHECK(delivered == 1, "the repaired change is delivered");
+    CHECK(r.ms_until_next_timer(1500u) == UINT32_MAX, "the completed change leaves no deadline");
+    tx.unicast_msgs.clear();
+    r.tick(5000u);
+    CHECK(tx.unicast_msgs.empty(), "and no further NACK_FRAG");
+    return true;
+}
+
+// §8.4.12: unanswered, the quiet-period NACK_FRAG is repeated at most
+// RTPS_FRAGMENT_REPAIR_ROUNDS times, after which the writer's HEARTBEAT
+// drives repair; a best-effort reader, whose writer never repairs, sends none.
+static bool tc_srr_8_4_12_006(std::string& err) {
+    CaptureTransport      tx{};
+    const Guid            reader = make_guid(0xB3u, make_entity(1u, 2u, 3u, 0x04u));
+    const Guid            writer = make_guid(0xC4u, make_entity(4u, 5u, 6u, 0x03u));
+    DefaultStatefulReader r(reader, ReliabilityKind::RELIABLE, tx);
+    CHECK(r.matched_writer_add(writer, &kLoc, 1u), "match");
+    tx.unicast_msgs.clear();
+
+    g_stateful_reader_test_now_ms = 0u;
+    deliver_fragment(r, reader, writer, 1, 1u);
+    for (uint32_t round = 1u; round <= RTPS_FRAGMENT_REPAIR_ROUNDS + 2u; ++round) {
+        r.tick(round * RTPS_FRAGMENT_REPAIR_DELAY_MS);
+    }
+
+    CHECK(tx.unicast_msgs.size() == RTPS_FRAGMENT_REPAIR_ROUNDS,
+          "one NACK_FRAG per quiet period, up to the round limit");
+    CHECK(r.ms_until_next_timer(10u * RTPS_FRAGMENT_REPAIR_DELAY_MS) == UINT32_MAX,
+          "with the rounds spent no deadline remains");
+
+    CaptureTransport      be_tx{};
+    const Guid            be_reader = make_guid(0xD5u, make_entity(1u, 2u, 3u, 0x04u));
+    DefaultStatefulReader be(be_reader, ReliabilityKind::BEST_EFFORT, be_tx);
+    CHECK(be.matched_writer_add(writer, &kLoc, 1u), "best-effort match");
+    be_tx.unicast_msgs.clear();
+    deliver_fragment(be, be_reader, writer, 1, 1u);
+    be.tick(10u * RTPS_FRAGMENT_REPAIR_DELAY_MS);
+    CHECK(be_tx.unicast_msgs.empty(), "a best-effort reader never asks for fragments");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_12_nack_frag_on_heartbeat(std::vector<TestCase>& tests) {
     tests.push_back(
         {"TC-SRR-8.4.12-002",
@@ -247,6 +334,15 @@ void append_stateful_reader_tests_8_4_12_nack_frag_on_heartbeat(std::vector<Test
                      "assembly pool requests it whole and assembles the resent change once a "
                      "slot frees.",
                      tc_srr_8_4_12_004});
+    tests.push_back({"TC-SRR-8.4.12-005",
+                     "§8.4.12/§8.4.14: a partial change whose fragments stop arriving is "
+                     "requested by NACK_FRAG one quiet period after the last fragment, naming a "
+                     "lost last fragment, with no HEARTBEAT.",
+                     tc_srr_8_4_12_005});
+    tests.push_back({"TC-SRR-8.4.12-006",
+                     "§8.4.12: unanswered quiet-period NACK_FRAGs stop after "
+                     "RTPS_FRAGMENT_REPAIR_ROUNDS; a best-effort reader sends none.",
+                     tc_srr_8_4_12_006});
 }
 
 }  // namespace spec_test
