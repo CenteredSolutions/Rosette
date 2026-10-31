@@ -28,20 +28,38 @@
  * pump off the sockets and back. Passes never overlap: every pass, on any
  * thread, runs under the participant lock.
  *
- * Each waiter also registers its readiness predicate. After every pass the
- * pump evaluates the registered predicates under the participant lock, as
- * ParticipantDriver::spin_until() evaluates its own, and signals exactly the
- * waiters whose predicate holds. That covers what only the pump observes:
+ * Each waiter also registers its readiness predicate. After every pass, on
+ * the pump or on a waiting thread, the registered predicates are evaluated
+ * under the participant lock, as ParticipantDriver::spin_until() evaluates its
+ * own, and exactly the waiters whose predicate holds are signaled. A waiter
+ * whose datagram another waiter drained is therefore still woken by the pass
+ * that delivered it. The pump's own passes cover what only the pump observes:
  * a triggered guard condition and every rmw entry point that queues
  * protocol work wake the pump through the driver's wake event
  * (ContextUpdateLock in types.hpp), not the waiting threads. A waiter
  * therefore wakes for its own readiness or its own timeout, and an idle wait
  * still costs no CPU.
  *
- * RMW_ROSETTE_PUMP_THREAD selects the pump. The build sets it
- * (rmw_rosette_capacity.cmake): 1 for a host build on the POSIX OS port,
- * whose rosette::platform::Thread runs the pump, and 0 for firmware, where
- * the executor runs the passes and none of this is built.
+ * The pump is chosen twice. The build option RMW_ROSETTE_PUMP_THREAD
+ * (rmw_rosette_capacity.cmake) compiles it in: ON for a host build on the
+ * POSIX OS port, whose rosette::platform::Thread runs the pump, and OFF for
+ * firmware, where none of this is built. A host build then starts the pump in
+ * rmw_init() unless the environment sets RMW_ROSETTE_PUMP_THREAD=0.
+ *
+ * Without the pump the participant runs as it does on a board: only inside
+ * rmw_wait() and rmw_publisher_wait_for_all_acked(), on the calling thread
+ * (ParticipantDriver::spin_until()). That is the deterministic choice for a
+ * program shaped like rclc firmware, one executor thread spinning for the
+ * life of the context: no second thread runs, so every pass happens on the
+ * executor, between its callbacks, and a round trip pays no handoff at all.
+ * Its contract is the firmware's too. A program that publishes without
+ * spinning sends what it publishes but neither discovers, acknowledges nor
+ * repairs until it spins again, and one thread at a time waits on a context:
+ * the driver has a single wake event, so a guard condition triggered for one
+ * of two concurrent waits may wake the other, and the first then sleeps
+ * until the participant's next timer. Programs that wait from several
+ * threads at once, as rclcpp's wait_for_service() beside a spinning
+ * executor does, keep the pump.
  */
 
 #pragma once
@@ -116,8 +134,9 @@ public:
      * same contract: `ready` is evaluated under the participant lock, at once
      * and after every pass, and the call returns as soon as it holds. The
      * caller runs passes itself, sleeping on the sockets and an event owned
-     * by its thread, while the pump stays off the sockets; the pump signals
-     * that event when `ready` holds after a pass of its own.
+     * by its thread, while the pump stays off the sockets; that event is
+     * signaled when `ready` holds after a pass of the pump or of another
+     * waiting thread. Valid only while running().
      *
      * @param[in] ready      Predicate; must not block, and may run on the pump
      *   thread while this call is in progress.
@@ -140,6 +159,9 @@ public:
      */
     bool wait_until(ReadyFunction ready, void* argument, uint32_t timeout_ms) noexcept;
 
+    /// @brief Whether start() succeeded and stop() has not run since.
+    bool running() const noexcept { return driver_ != nullptr; }
+
 private:
     /// A thread blocked in wait_until(); lives on that thread's stack while linked.
     struct Waiter {
@@ -152,8 +174,8 @@ private:
     /// @brief Thread entry point; runs `self`'s driver until stop() is requested.
     static void run(void* self) noexcept;
 
-    /// @brief Wakes every waiter whose predicate holds; the caller holds the lock.
-    void wake_ready_waiters_locked() noexcept;
+    /// @brief Wakes every waiter but `skip` whose predicate holds; the caller holds the lock.
+    void wake_ready_waiters_locked(const Waiter* skip = nullptr) noexcept;
 
     /// @brief Removes `waiter` from the list; the caller holds the lock.
     void unlink_locked(Waiter& waiter) noexcept;

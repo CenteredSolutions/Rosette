@@ -495,7 +495,8 @@ public:
             pollfd pfd{};
             pfd.fd = fd_;
             pfd.events = POLLIN;
-            const int ready = ::poll(&pfd, 1u, static_cast<int>(remaining));
+            const int ready =
+                ::poll(&pfd, 1u, static_cast<int>(remaining > INT32_MAX ? INT32_MAX : remaining));
             if (ready == 0) {
                 last_error_ = SocketError::timed_out;
                 return -1;
@@ -577,8 +578,8 @@ void PosixSocketProvider::wait_readable(Socket* const* sockets, std::size_t coun
             fds[n++] = pollfd{socket->native_handle(), POLLIN, 0};
         }
     }
-    const int timeout = (timeout_ms == rosette::platform::kWaitForever)
-        ? -1 : static_cast<int>(timeout_ms);
+
+    const int timeout = rosette::platform::poll_timeout_ms(timeout_ms);
     int rc;
     do {
         rc = ::poll(fds, n, timeout);

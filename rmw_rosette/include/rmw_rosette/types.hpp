@@ -176,11 +176,12 @@ private:
  * @brief Blocks until `ready()` holds or `timeout_ms` passes, while the
  *   context's participant runs.
  *
- * The one wait rmw_wait() and rmw_publisher_wait_for_all_acked() share. On a
- * host the pump thread runs the participant and this waits on it
- * (ParticipantPump::wait_until()); on a board the caller runs the passes
- * itself (ParticipantDriver::spin_until()). Either way `ready` is evaluated
- * under the participant lock, at once and after every pass.
+ * The one wait rmw_wait() and rmw_publisher_wait_for_all_acked() share. With
+ * the pump thread running (a host, unless RMW_ROSETTE_PUMP_THREAD=0) this
+ * waits alongside it (ParticipantPump::wait_until()); otherwise, as on a
+ * board, the caller runs the passes itself (ParticipantDriver::spin_until()).
+ * Either way `ready` is evaluated under the participant lock, at once and
+ * after every pass.
  *
  * @param[in] ctx        The context whose participant decides readiness.
  * @param[in] ready      Predicate; must not block, and may run on another thread.
@@ -196,12 +197,14 @@ private:
 template <typename Ready>
 bool wait_until_ready(Context& ctx, Ready ready, uint32_t timeout_ms) noexcept {
 #if RMW_ROSETTE_PUMP_THREAD
-    return ctx.pump.wait_until(
-        [](void* argument) noexcept { return (*static_cast<Ready*>(argument))(); }, &ready,
-        timeout_ms);
-#else
-    return ctx.driver->spin_until(ready, timeout_ms);
+    if (ctx.pump.running()) {
+        return ctx.pump.wait_until(
+            [](void* argument) noexcept { return (*static_cast<Ready*>(argument))(); }, &ready,
+            timeout_ms);
+    }
 #endif
+
+    return ctx.driver->spin_until(ready, timeout_ms);
 }
 
 #ifndef RMW_ROSETTE_MAX_NAME_LEN

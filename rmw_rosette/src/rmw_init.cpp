@@ -21,6 +21,7 @@
 #endif
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 // 1 when the paired rcl is micro-ROS', built without command-line support,
 // whose rcl_init() leaves the enclave null; cmake/rmw_rosette_firmware.cmake sets it.
@@ -223,6 +224,32 @@ uint32_t effective_max_datagram_size() noexcept {
     }
     return limit;
 }
+
+#if RMW_ROSETTE_PUMP_THREAD
+/**
+ * @brief Whether rmw_init() starts the participant pump thread.
+ *
+ * A host build runs the participant on the pump thread by default, as stock
+ * DDS implementations do. RMW_ROSETTE_PUMP_THREAD=0 in the environment
+ * leaves it to the thread in rmw_wait() instead, as on a board: the
+ * deterministic choice for one executor that spins for the life of the
+ * context (participant_pump.hpp states that contract). Any other value, or
+ * none, keeps the pump.
+ *
+ * @return false only when the environment sets RMW_ROSETTE_PUMP_THREAD=0.
+ *
+ * Verification:
+ * - Correct means: with the variable set to 0, no thread is started and
+ *   rmw_wait() runs the passes; the rmw_rosette tests pass in both modes.
+ * - Covered by: rmw_rosette/CMakeLists.txt registers every rmw_rosette test
+ *   but test_participant_pump a second time, as <name>_direct, with
+ *   RMW_ROSETTE_PUMP_THREAD=0.
+ */
+bool pump_thread_requested() noexcept {
+    const char* env = std::getenv("RMW_ROSETTE_PUMP_THREAD");
+    return env == nullptr || std::strcmp(env, "0") != 0;
+}
+#endif
 
 /**
  * @brief Prints the transport's datagram counters when requested.
@@ -797,7 +824,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     }
 
 #if RMW_ROSETTE_PUMP_THREAD
-    if (!ctx.pump.start(*ctx.driver)) {
+    if (pump_thread_requested() && !ctx.pump.start(*ctx.driver)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: cannot start the participant pump thread");
         destroy_participant(ctx);
         context_pool().release(impl);

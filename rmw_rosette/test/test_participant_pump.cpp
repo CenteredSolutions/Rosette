@@ -32,6 +32,28 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+/// @brief Triggers `guard` and joins `thread` on scope exit, unless already joined,
+///   so a failed fatal assertion ends a waiting thread instead of std::terminate().
+class ReleaseWaiterOnExit {
+public:
+    ReleaseWaiterOnExit(std::thread& thread, rmw_guard_condition_t* guard) noexcept
+        : thread_(thread), guard_(guard) {}
+
+    ~ReleaseWaiterOnExit() {
+        if (thread_.joinable()) {
+            (void)rmw_trigger_guard_condition(guard_);
+            thread_.join();
+        }
+    }
+
+    ReleaseWaiterOnExit(const ReleaseWaiterOnExit&) = delete;
+    ReleaseWaiterOnExit& operator=(const ReleaseWaiterOnExit&) = delete;
+
+private:
+    std::thread&           thread_;
+    rmw_guard_condition_t* guard_;
+};
+
 /// @brief Milliseconds elapsed since `start`.
 long long elapsed_ms(Clock::time_point start) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
@@ -188,8 +210,9 @@ TEST_F(ParticipantPump, ParticipantRunsWhileAnotherThreadWaits) {
     rmw_wait_set_t*        wait_set = rmw_create_wait_set(&context_, 1);
     ASSERT_NE(guard, nullptr);
     ASSERT_NE(wait_set, nullptr);
-    rmw_ret_t   waiter_ret = RMW_RET_ERROR;
-    std::thread waiter([&] { waiter_ret = wait_on(wait_set, guard, rmw_time_t{20, 0}); });
+    rmw_ret_t           waiter_ret = RMW_RET_ERROR;
+    std::thread         waiter([&] { waiter_ret = wait_on(wait_set, guard, rmw_time_t{20, 0}); });
+    ReleaseWaiterOnExit release_waiter(waiter, guard);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
     rmw_qos_profile_t qos = rmw_qos_profile_default;

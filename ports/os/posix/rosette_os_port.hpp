@@ -32,6 +32,32 @@
 namespace rosette::platform {
 
 /**
+ * @brief Converts a platform timeout to poll()'s signed millisecond timeout.
+ *
+ * poll() takes an int, so a finite wait longer than INT32_MAX milliseconds
+ * (about 24.8 days) would turn negative and block forever. Such a wait is
+ * capped instead: poll() returns early as on a timeout, and every caller
+ * waits in a loop that recomputes what remains of its own deadline.
+ *
+ * @param[in] timeout_ms Longest wait; UINT32_MAX (kWaitForever) blocks.
+ * @return -1 for UINT32_MAX, otherwise `timeout_ms` capped at INT32_MAX.
+ *
+ * Verification:
+ * - Correct means: no finite timeout yields a negative result.
+ * - Covered by: inspection; the cap needs 24.8 days to observe.
+ *
+ * References:
+ * - POSIX.1-2017 poll(), the `timeout` argument
+ */
+inline int poll_timeout_ms(uint32_t timeout_ms) noexcept {
+    if (timeout_ms == UINT32_MAX) {
+        return -1;
+    }
+
+    return timeout_ms > static_cast<uint32_t>(INT32_MAX) ? INT32_MAX : static_cast<int>(timeout_ms);
+}
+
+/**
  * @brief Non-recursive mutex over pthread_mutex_t.
  */
 class Mutex {
@@ -95,8 +121,8 @@ public:
      */
     bool wait_for(uint32_t timeout_ms) noexcept {
         pollfd p{fds_[0], POLLIN, 0};
-        const int t = (timeout_ms == UINT32_MAX) ? -1 : static_cast<int>(timeout_ms);
-        int rc;
+        const int t = poll_timeout_ms(timeout_ms);
+        int       rc;
         do {
             rc = poll(&p, 1, t);
         } while (rc < 0 && errno == EINTR);

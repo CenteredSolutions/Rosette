@@ -89,7 +89,9 @@ target_link_libraries(rmw_rosette PRIVATE rosette_platform)
 
 # The participant pump (rmw_rosette/participant_pump.hpp) runs the participant
 # on a thread of its own, from rmw_init() on, as stock DDS implementations do.
-# It needs rosette::platform::Thread, which the POSIX OS port supplies.
+# It needs rosette::platform::Thread, which the POSIX OS port supplies. A build
+# with the pump still runs without it when the environment sets
+# RMW_ROSETTE_PUMP_THREAD=0: rmw_wait() then runs the participant, as on a board.
 if(ROSETTE_OS STREQUAL "posix")
   set(_rr_pump_default ON)
 else()
@@ -164,10 +166,18 @@ if(BUILD_TESTING)
   set(_rmw_rosette_tests test_introspection_c_codec test_guard_condition test_pub_sub_loopback
                          test_change_ring test_local_node_entities test_service_departed_client
                          test_service_reply_depth test_init_options test_argument_checks
-                         test_live_context_refusals test_participant_pump)
+                         test_live_context_refusals)
   # Entry points the ROS 2 headers declare only from some distribution on.
   if(RMW_ROSETTE_HAS_CLIENT_GID)
     list(APPEND _rmw_rosette_tests test_client_gid)
+  endif()
+
+  # Every test but the pump's own runs in both execution modes when the pump is
+  # built: on the pump thread, and as <name>_direct with the participant run
+  # only inside rmw_wait(), as on a board.
+  set(_rmw_rosette_direct_tests ${_rmw_rosette_tests})
+  if(RMW_ROSETTE_PUMP_THREAD)
+    list(APPEND _rmw_rosette_tests test_participant_pump)
   endif()
 
   foreach(test_name ${_rmw_rosette_tests})
@@ -187,6 +197,20 @@ if(BUILD_TESTING)
     ament_target_dependencies(${test_name} geometry_msgs rmw_dds_common sensor_msgs std_msgs
                               std_srvs)
   endforeach()
+
+  if(RMW_ROSETTE_PUMP_THREAD)
+    # ament_add_gtest_test() names a test after its target on Humble, so the
+    # second registration of each binary goes through ament_add_test().
+    foreach(test_name ${_rmw_rosette_direct_tests})
+      set(_rr_result "${AMENT_TEST_RESULTS_DIR}/${PROJECT_NAME}/${test_name}_direct.gtest.xml")
+      ament_add_test(${test_name}_direct
+        COMMAND $<TARGET_FILE:${test_name}> --gtest_output=xml:${_rr_result}
+        OUTPUT_FILE ${CMAKE_BINARY_DIR}/ament_cmake_gtest/${test_name}_direct.txt
+        RESULT_FILE ${_rr_result}
+        TIMEOUT 60
+        ENV RMW_ROSETTE_PUMP_THREAD=0)
+    endforeach()
+  endif()
 endif()
 
 ament_package()

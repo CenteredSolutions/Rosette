@@ -52,9 +52,9 @@ void ParticipantPump::run(void* self) noexcept {
     }
 }
 
-void ParticipantPump::wake_ready_waiters_locked() noexcept {
+void ParticipantPump::wake_ready_waiters_locked(const Waiter* skip) noexcept {
     for (Waiter* waiter = waiters_; waiter != nullptr; waiter = waiter->next) {
-        if (waiter->ready(waiter->argument)) {
+        if (waiter != skip && waiter->ready(waiter->argument)) {
             waiter->event->signal();
         }
     }
@@ -101,8 +101,15 @@ bool ParticipantPump::wait_until(ReadyFunction ready, void* argument,
         driver_->wake();
     }
 
-    const bool held = driver_->spin_until([ready, argument]() noexcept { return ready(argument); },
-                                          timeout_ms, event);
+    // Waiting threads share the sockets, so a pass here may drain the
+    // datagram another waiter is waiting for; that waiter is signaled here,
+    // since its own poll() will not see the datagram again.
+    const bool held = driver_->spin_until(
+        [this, &self]() noexcept {
+            wake_ready_waiters_locked(&self);
+            return self.ready(self.argument);
+        },
+        timeout_ms, event);
 
     if (receiving_waiters_.fetch_sub(1u) == 1u) {
         driver_->wake();

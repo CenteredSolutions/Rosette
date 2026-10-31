@@ -146,44 +146,74 @@ bool any_ready(const rmw_subscriptions_t* subscriptions,
 /**
  * @brief Applies rmw_wait()'s output contract: nulls every entry not ready.
  *
+ * Runs under the participant lock after the wait ends, and is the one
+ * decision of what rmw_wait() reports: a pass on another thread may deliver a
+ * sample between the wait and this call, and that sample is reported here.
  * Triggered guard conditions are consumed (flag cleared) as they are
- * reported, so each trigger wakes exactly one wait. Events are always
- * nulled (see the file comment).
+ * reported, so each trigger wakes exactly one wait. Events are always nulled
+ * (see the file comment).
+ *
+ * @return true when any entry was left non-null, so rmw_wait() returns
+ *   RMW_RET_OK exactly when it reports something.
  */
-void finalize_ready(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* guard_conditions,
+bool finalize_ready(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* guard_conditions,
                     rmw_services_t* services, rmw_clients_t* clients,
                     rmw_events_t* events) noexcept {
+    bool any = false;
     if (subscriptions) {
         for (size_t i = 0; i < subscriptions->subscriber_count; ++i) {
             const auto* sub = static_cast<const rmw_rosette::Subscription*>(
                 subscriptions->subscribers[i]);
-            if (!sub || !sub->received.ready()) subscriptions->subscribers[i] = nullptr;
+            if (!sub || !sub->received.ready()) {
+                subscriptions->subscribers[i] = nullptr;
+            } else {
+                any = true;
+            }
         }
     }
+
     if (guard_conditions) {
         for (size_t i = 0; i < guard_conditions->guard_condition_count; ++i) {
             auto* gc = static_cast<rmw_rosette::GuardCondition*>(
                 guard_conditions->guard_conditions[i]);
-            if (!gc || !gc->triggered.exchange(false)) guard_conditions->guard_conditions[i] = nullptr;
+            if (!gc || !gc->triggered.exchange(false)) {
+                guard_conditions->guard_conditions[i] = nullptr;
+            } else {
+                any = true;
+            }
         }
     }
+
     if (services) {
         for (size_t i = 0; i < services->service_count; ++i) {
             const auto* srv = static_cast<const rmw_rosette::Service*>(services->services[i]);
-            if (!srv || !srv->requests.ready()) services->services[i] = nullptr;
+            if (!srv || !srv->requests.ready()) {
+                services->services[i] = nullptr;
+            } else {
+                any = true;
+            }
         }
     }
+
     if (clients) {
         for (size_t i = 0; i < clients->client_count; ++i) {
             const auto* cli = static_cast<const rmw_rosette::Client*>(clients->clients[i]);
-            if (!cli || !cli->replies.ready()) clients->clients[i] = nullptr;
+            if (!cli || !cli->replies.ready()) {
+                clients->clients[i] = nullptr;
+            } else {
+                any = true;
+            }
         }
     }
-    if (events) {
-        for (size_t i = 0; i < events->event_count; ++i) events->events[i] = nullptr;
-    }
-}
 
+    if (events) {
+        for (size_t i = 0; i < events->event_count; ++i) {
+            events->events[i] = nullptr;
+        }
+    }
+
+    return any;
+}
 
 struct WaitSetSlot {
     rmw_wait_set_t ws{};
@@ -353,15 +383,17 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
     }
 
     // Readiness is evaluated under the participant lock after every protocol
-    // pass, whichever thread runs the passes.
-    const bool ready = rmw_rosette::wait_until_ready(
+    // pass, whichever thread runs the passes. The wait only decides when to
+    // stop; the report, and with it the status, is taken afresh under the lock.
+    (void)rmw_rosette::wait_until_ready(
         ctx,
         [&]() noexcept { return any_ready(subscriptions, guard_conditions, services, clients); },
         timeout_ms);
 
     rmw_rosette::ContextLock lock(ctx);
-    finalize_ready(subscriptions, guard_conditions, services, clients, events);
-    return ready ? RMW_RET_OK : RMW_RET_TIMEOUT;
+    const bool               reported =
+        finalize_ready(subscriptions, guard_conditions, services, clients, events);
+    return reported ? RMW_RET_OK : RMW_RET_TIMEOUT;
 }
 
 }  // extern "C"
