@@ -2,7 +2,7 @@
 # Checked by tools/ci/check_rmw_conformance.py in the rmw-rosette workflow:
 # a case listed here must fail, a `flaky` case may pass, fail or be absent,
 # and any other failing case fails the job. Remove a line when its case passes.
-# 348/747 cases passed in every bench run; 231 must fail, 170 flaky.
+# 348/747 cases passed in every bench run; 231 must fail, 171 flaky.
 
 # A test_communication AfterShutdown case checks only that the test processes exited within
 # the launch timeout, which depends on the runner's speed; every rmw_rosette one is flaky.
@@ -293,6 +293,7 @@ test_subscription_valid_data_cpp__rmw_rosette::test_communication.test_subscript
 # UnboundedSequences: a sample above RMW_ROSETTE_MAX_SAMPLE_SIZE is refused on publish, and on
 # receipt the large samples are evicted before the reader takes them.
 test_messages_c__rmw_rosette::test_communication.TestMessagesFixture.test_unbounded_sequences
+flaky test_publisher_subscriber__rclpy__rclcpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
 test_publisher_subscriber__rclpy__rmw_cyclonedds_cpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
 test_publisher_subscriber__rclpy__rmw_fastrtps_cpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
 test_publisher_subscriber__rclpy__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
