@@ -51,3 +51,81 @@ jobs:
           --library install/rmw_rosette/lib/librmw_rosette.so
           --loader /opt/ros/${{ matrix.distro }}/lib/librmw_implementation.so
           --baseline rmw_rosette/test/exported_symbols_${{ matrix.distro }}.txt
+
+  # Run the upstream ROS 2 rmw conformance suites against rmw_rosette:
+  # test_rmw_implementation, which calls the rmw API directly as rcl would, and
+  # test_communication, which exchanges messages, services and actions between
+  # rmw_rosette and itself, rmw_fastrtps_cpp and rmw_cyclonedds_cpp. Neither
+  # suite ships as a binary package, so each is built from source at a pinned
+  # commit of its distribution branch. tools/ci/check_rmw_conformance.py holds
+  # the results to the committed known-failure list exactly: a new failure, a
+  # listed case that passes, or a stale entry fails the job.
+  conformance:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: humble
+            rmw_implementation: 0fd2967b217afef2d45fbab550b598c70444a0aa
+            system_tests: 36137c53e6e49edf39311513f9d1e53f7edc36dc
+          - distro: jazzy
+            rmw_implementation: 835ff87c676cd65634edd3ad7ba88c8d8a0452e7
+            system_tests: 7f0058064a96415bdb304a873c08e4d099f6b25d
+    container: ros:${{ matrix.distro }}-ros-base
+    env:
+      # Generate tests for these rmws only, whatever else the image holds.
+      RMW_IMPLEMENTATIONS: rmw_rosette:rmw_fastrtps_cpp:rmw_cyclonedds_cpp
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: rosette
+
+      - name: Fetch the conformance suites
+        run: |
+          apt-get update
+          apt-get install -y git
+          fetch() {
+            git init -q "ws/src/$1"
+            git -C "ws/src/$1" fetch -q --depth 1 "https://github.com/ros2/$1.git" "$2"
+            git -C "ws/src/$1" checkout -q FETCH_HEAD
+          }
+          fetch rmw_implementation ${{ matrix.rmw_implementation }}
+          fetch system_tests ${{ matrix.system_tests }}
+
+      - name: Install dependencies
+        run: |
+          apt-get install -y ros-${{ matrix.distro }}-rmw-cyclonedds-cpp
+          rosdep update --rosdistro ${{ matrix.distro }}
+          rosdep install --from-paths rosette/rmw_rosette ws/src/rmw_implementation/test_rmw_implementation \
+            ws/src/system_tests/test_communication --ignore-src -y --rosdistro ${{ matrix.distro }}
+
+      # rmw_rosette is built and sourced first, so the suites' CMake finds it
+      # in the ament index and generates its tests. The source checkout of
+      # rmw_implementation is only used for its test package.
+      - name: Build
+        working-directory: ws
+        run: |
+          source /opt/ros/${{ matrix.distro }}/setup.bash
+          colcon build --base-paths ../rosette/rmw_rosette --event-handlers console_cohesion+ \
+            --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=OFF
+          source install/setup.bash
+          colcon build --base-paths src --packages-select test_rmw_implementation test_communication \
+            --event-handlers console_cohesion+ --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Test
+        working-directory: ws
+        run: |
+          source install/setup.bash
+          colcon test --base-paths src --packages-select test_rmw_implementation test_communication \
+            --ctest-args -R rmw_rosette --timeout 120
+
+      - name: Check against known failures
+        working-directory: ws
+        run: >
+          python3 ../rosette/tools/ci/check_rmw_conformance.py
+          --known ../rosette/rmw_rosette/test/conformance_known_failures_${{ matrix.distro }}.txt
+          build/test_rmw_implementation/test_results build/test_communication/test_results
