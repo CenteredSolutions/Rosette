@@ -18,12 +18,13 @@
 # undeclared identifier there is an error in every C dialect, where a call
 # would only warn under C89 implicit-declaration rules.
 #
-# The results land in a generated header, rmw_rosette/ros_features.h, whose
-# macros are always defined to 0 or 1 (#cmakedefine01). Code tests them with
-# `#if`, and on host builds -Wundef turns a misspelled or unincluded macro into
-# a diagnostic instead of a silent 0. Entry points that exist only on some
-# distributions live in their own source files, which the probe adds to the
-# target.
+# The results land in a generated header, rmw_rosette/ros_features.h. Code
+# tests a feature with `#if RMW_ROSETTE_HAS(CLIENT_GID)`, a function-like macro
+# that makes a misspelled feature or a missing include a preprocessor error
+# under every compiler, host and firmware alike, instead of a silent 0. CMake
+# keeps each result in a variable named RMW_ROSETTE_HAS_<FEATURE>. Entry points
+# that exist only on some distributions live in their own source files, which
+# the probe adds to the target.
 #
 # Usage:
 #   include(rmw_rosette/cmake/rmw_rosette_ros_features.cmake)
@@ -56,9 +57,8 @@ endfunction()
 
 # Probes the ROS 2 headers reachable from INCLUDE_DIRS and LIBRARIES, writes
 # rmw_rosette/ros_features.h under the current binary directory, adds that
-# directory to TARGET's private include path, compiles TARGET's C++ with -Wundef
-# on host builds, and adds the source files of the entry points those headers
-# declare.
+# directory to TARGET's private include path, and adds the source files of the
+# entry points those headers declare.
 function(rmw_rosette_probe_ros_features TARGET)
   cmake_parse_arguments(ARG "" "" "INCLUDE_DIRS;LIBRARIES" ${ARGN})
   set(_RMW_ROSETTE_PROBE_INCLUDES ${ARG_INCLUDE_DIRS})
@@ -118,14 +118,6 @@ const void * probe(void) { return (const void *)&rmw_take_dynamic_message; }
   configure_file(${_rmw_rosette_ros_features_dir}/ros_features.h.in
                  ${_out_dir}/rmw_rosette/ros_features.h @ONLY)
   target_include_directories(${TARGET} PRIVATE ${_out_dir})
-  # -Wundef applies to host builds only, and to their C++ alone. A firmware
-  # target compiles board SDK and RTOS headers (Pico SDK, FreeRTOS portmacro.h)
-  # whose #if tests rely on undefined macros, and its probes are all 0, the same
-  # branches a Humble host build compiles; host builds on each distribution
-  # compile both sides of every feature test, so a misspelled macro is caught there.
-  if(NOT CMAKE_CROSSCOMPILING)
-    target_compile_options(${TARGET} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wundef>)
-  endif()
 
   set(_src_dir ${_rmw_rosette_ros_features_dir}/../src)
   if(RMW_ROSETTE_HAS_DYNAMIC_TYPESUPPORT)

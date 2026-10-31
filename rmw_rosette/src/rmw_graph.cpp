@@ -139,7 +139,7 @@ rmw_ret_t rmw_count_subscribers(const rmw_node_t* node, const char* topic_name, 
                            count, "rmw_count_subscribers");
 }
 
-#if RMW_ROSETTE_HAS_SERVICE_ENDPOINT_COUNTS
+#if RMW_ROSETTE_HAS(SERVICE_ENDPOINT_COUNTS)
 /// @brief Counts clients of a ROS service across the graph: the readers on its
 /// reply topic, as stock rmws count them; see count_endpoints().
 rmw_ret_t rmw_count_clients(const rmw_node_t* node, const char* service_name, size_t* count) {

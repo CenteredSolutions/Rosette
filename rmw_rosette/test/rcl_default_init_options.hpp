@@ -31,7 +31,7 @@ namespace rmw_rosette_test {
  */
 inline rmw_ret_t init_options_as_rcl(rmw_init_options_t* options) {
     const rmw_ret_t ret = rmw_init_options_init(options, rcutils_get_default_allocator());
-#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
     if (ret == RMW_RET_OK) {
         options->discovery_options.automatic_discovery_range = RMW_AUTOMATIC_DISCOVERY_RANGE_SUBNET;
     }

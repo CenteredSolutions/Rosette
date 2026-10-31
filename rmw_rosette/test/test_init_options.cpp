@@ -25,7 +25,7 @@
 #include <rmw/init.h>
 #include <rmw/init_options.h>
 #include <rmw/rmw.h>
-#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
 #  include <rmw/discovery_options.h>
 #endif
 
@@ -253,7 +253,7 @@ TEST_F(InitOptionsTest, RmwInitRefusesADomainAbove232) {
     rmw_init_options_t options = rmw_get_zero_initialized_init_options();
     ASSERT_EQ(rmw_init_options_init(&options, counting_allocator()), RMW_RET_OK);
     options.domain_id = 233u;
-#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
     // A valid range, so the refusal is the domain's.
     options.discovery_options.automatic_discovery_range = RMW_AUTOMATIC_DISCOVERY_RANGE_SUBNET;
 #endif
@@ -263,7 +263,7 @@ TEST_F(InitOptionsTest, RmwInitRefusesADomainAbove232) {
     EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
 }
 
-#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
 /// Calls rmw_init() with `options`, and finalizes the context when it succeeds.
 rmw_ret_t init_and_fini(const rmw_init_options_t& options) {
     rmw_context_t   context = rmw_get_zero_initialized_context();

@@ -297,7 +297,7 @@ rmw_ret_t rmw_client_response_subscription_get_actual_qos(const rmw_client_t* cl
     return RMW_RET_OK;
 }
 
-#if RMW_ROSETTE_HAS_CLIENT_GID
+#if RMW_ROSETTE_HAS(CLIENT_GID)
 /**
  * @brief Reports a client's GID: the GUID of its request writer.
  *

@@ -44,7 +44,7 @@ rmw_ret_t rmw_subscription_event_init(rmw_event_t* rmw_event,
     return RMW_RET_UNSUPPORTED;
 }
 
-#if RMW_ROSETTE_HAS_EVENT_TYPE_QUERY
+#if RMW_ROSETTE_HAS(EVENT_TYPE_QUERY)
 /**
  * @brief Reports that no QoS event type is supported.
  *

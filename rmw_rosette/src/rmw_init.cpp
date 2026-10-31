@@ -15,7 +15,7 @@
 #include <rmw/init_options.h>
 #include <rmw/rmw.h>
 #include <rmw/security_options.h>
-#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
 #  include <rmw/discovery_options.h>
 #endif
 #include <cstdio>
@@ -286,7 +286,7 @@ void trigger_graph_guard(void* graph_guard) noexcept {
     static_cast<rmw_rosette::GuardCondition*>(graph_guard)->trigger();
 }
 
-#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
 /**
  * @brief Checks that the requested discovery scope is one this participant provides.
  *
@@ -387,7 +387,7 @@ rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_alloca
     init_options->enclave = nullptr;
     init_options->domain_id = RMW_DEFAULT_DOMAIN_ID;
     init_options->security_options = rmw_get_zero_initialized_security_options();
-#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
     init_options->discovery_options = rmw_get_zero_initialized_discovery_options();
 #endif
     return RMW_RET_OK;
@@ -465,7 +465,7 @@ rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_
         return RMW_RET_BAD_ALLOC;
     }
 
-#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
     // The peer list records its allocator by value; the copy takes a mutable one.
     rcutils_allocator_t peers_allocator = *allocator;
     copy.discovery_options = rmw_get_zero_initialized_discovery_options();
@@ -539,7 +539,7 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
         (void)rmw_security_options_fini(&init_options->security_options, allocator);
     }
 
-#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
     // The peer list records its own allocator, so it is released whether or
     // not the options own a string.
     if (init_options->discovery_options.static_peers != nullptr
@@ -596,7 +596,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
         return RMW_RET_INVALID_ARGUMENT;
     }
 
-#if RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
     const rmw_ret_t discovery_ret = check_discovery_options(options->discovery_options);
     if (discovery_ret != RMW_RET_OK) {
         return discovery_ret;
