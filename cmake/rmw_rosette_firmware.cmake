@@ -130,9 +130,12 @@ set(ROSETTE_RMW_LOG_LEVEL 2 CACHE STRING "rosette::rtps log level inside rmw_ros
 # micro-ROS generates CDR callbacks for every message; rmw_rosette prefers
 # them (rmw_rosette/include/rmw_rosette/message_codec.hpp), and rcl built with
 # ROSIDL_TYPESUPPORT_SINGLE_TYPESUPPORT hands out only those handles.
+# micro-ROS also builds rcl with RCL_COMMAND_LINE_ENABLED off, so rcl_init()
+# passes rmw_init() a null enclave, which rmw_rosette then accepts.
 target_compile_definitions(rmw_rosette_static PRIVATE
   RTPS_LOG_LEVEL=${ROSETTE_RMW_LOG_LEVEL}
   RMW_ROSETTE_HAVE_MICROXRCEDDS_TYPESUPPORT
+  RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE=1
 )
 # Network port (rmw_rosette/network_port.hpp): forwards to the board network
 # (rosette/net/board_network.hpp), which the board's BSP defines.

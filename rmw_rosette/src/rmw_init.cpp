@@ -22,6 +22,12 @@
 #include <cstdio>
 #include <cstdlib>
 
+// 1 when the paired rcl is micro-ROS', built without command-line support,
+// whose rcl_init() leaves the enclave null; cmake/rmw_rosette_firmware.cmake sets it.
+#ifndef RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE
+#  define RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE 0
+#endif
+
 namespace rtps = rosette::rtps;
 using rmw_rosette::ArgumentFault;
 
@@ -613,15 +619,24 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * node created on this context reports to. The context's graph guard
  * condition is triggered by every graph change the participant reports.
  *
+ * A null enclave is refused only where the paired rcl always supplies one.
+ * Stock rcl sets it in rcl_init(), to the --enclave argument or "/".
+ * micro-ROS builds rcl with RCL_COMMAND_LINE_ENABLED off, which compiles
+ * that step out, so on firmware every rclc program reaches rmw_init() with a
+ * null enclave; the firmware build defines RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE
+ * and the enclave is then optional. rmw_rosette reads the enclave nowhere
+ * else, and a null one is copied and finalized as absent.
+ *
  * @param[in] options Init options from rmw_init_options_init(), with the
- *   `enclave` rcl_init() sets; `domain_id` and `instance_id` are used,
+ *   `enclave` rcl_init() sets, or a null one on firmware; `domain_id` and `instance_id` are used,
  *   and `discovery_options` where the headers have them
  *   (check_discovery_options()). `domain_id` is 0 to 232, or
  *   RMW_DEFAULT_DOMAIN_ID for domain 0.
  * @param[out] context Context to initialize; must be zero-initialized
  *   (rmw_get_zero_initialized_context()). Untouched on failure.
  * @return `RMW_RET_OK` on success; `RMW_RET_INVALID_ARGUMENT` if either
- *   argument is null, the options are not initialized or have no enclave,
+ *   argument is null, the options are not initialized or (on a host) have
+ *   no enclave,
  *   the context is already initialized, no discovery range is set, or
  *   `domain_id` is above 232; `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` if the
  *   options are another rmw's;
@@ -634,14 +649,18 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  *
  * Verification:
  * - Correct means: a stock RMW in the same domain discovers this
- *   participant and matches its endpoints, and a refused call takes no
- *   context slot.
+ *   participant and matches its endpoints, a refused call takes no
+ *   context slot, and a stock rclc firmware initializes with the null
+ *   enclave its rcl passes.
  * - Covered by: tests/ros2/run_rmw_interop_loopback.sh; test_rmw_implementation's
- *   TestInitShutdown.init_with_bad_arguments and init_shutdown.
+ *   TestInitShutdown.init_with_bad_arguments and init_shutdown (host);
+ *   examples/led_files and examples/rclc_chatter reaching "session up" on a
+ *   board (firmware).
  *
  * References:
  * - rmw/init.h (Humble, Jazzy), `rmw_init`
  * - OMG DDSI-RTPS 2.5 §8.5.3 (SPDP), §9.6.1.1 (port mapping)
+ * - rcl/src/rcl/init.c (ros2/rcl and micro-ROS/rcl, Humble), `rcl_init`, the enclave step
  */
 rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     if (options == nullptr || context == nullptr) {
@@ -657,9 +676,11 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
         return rmw_rosette::refuse_argument(__func__, "options", ArgumentFault::foreign);
     }
 
+#if !RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE
     if (options->enclave == nullptr) {
         return rmw_rosette::refuse_argument(__func__, "options enclave", ArgumentFault::null);
     }
+#endif
 
     if (context->implementation_identifier != nullptr) {
         return rmw_rosette::refuse_argument(__func__, "context", ArgumentFault::already_in_use);
