@@ -283,7 +283,8 @@ public:
         }
 
         if (local.domain != SocketDomain::ipv4) {
-            return static_cast<int>(SocketError::not_supported);
+            last_error_ = SocketError::not_supported;
+            return static_cast<int>(last_error_);
         }
 
         in_addr ifaddr{};

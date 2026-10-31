@@ -155,15 +155,17 @@ void list_interfaces(bool networks_only, char* text, std::size_t size,
 /**
  * @brief Reports on stderr why a setting names no usable interface, and what the host has.
  *
- * @param[in] setting The setting that failed to resolve.
+ * @param[in] setting The setting that failed to resolve; null or empty when
+ *   ROSETTE_INTERFACE is unset, which is reported as `(unset)`.
  * @param[in] error   Why it failed; not `none`.
  */
 void report_failure(const char* setting, InterfaceError error) noexcept {
     char        have[256] = {};
     std::size_t listed = 0u;
     list_interfaces(false, have, sizeof(have), listed);
-    std::fprintf(stderr, "rosette: ROSETTE_INTERFACE=%s: %s (this host has: %s)\n", setting,
-                 describe(error), have);
+    const bool unset = setting == nullptr || setting[0] == '\0';
+    std::fprintf(stderr, "rosette: ROSETTE_INTERFACE=%s: %s (this host has: %s)\n",
+                 unset ? "(unset)" : setting, describe(error), have);
 }
 
 /**

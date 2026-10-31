@@ -100,6 +100,11 @@ void sends_multicast_on_the_chosen_interface() {
     check(sender->set_multicast_interface(net::make_socket_address_v4({192u, 0u, 2u, 10u}, 0u))
               == static_cast<int>(net::SocketError::invalid_argument),
           "006: an unheld address is invalid_argument");
+    check(sender->set_multicast_interface(net::make_socket_address_v6({}, 0u))
+              == static_cast<int>(net::SocketError::not_supported),
+          "006: an IPv6 interface is not_supported");
+    check(sender->last_error() == net::SocketError::not_supported,
+          "006: the IPv6 refusal is left in last_error()");
     check(sender->set_multicast_interface(net::make_socket_address_v4(lo, 0u)) == 0,
           "006: egress back on loopback");
 

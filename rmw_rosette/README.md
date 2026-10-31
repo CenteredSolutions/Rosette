@@ -51,8 +51,10 @@ answer. `ROSETTE_INTERFACE` names the interface, by name or by an address it
 holds:
 
 ```sh
-ROSETTE_INTERFACE=eth0 RMW_IMPLEMENTATION=rmw_rosette ros2 topic list
-ROSETTE_INTERFACE=10.42.0.1 RMW_IMPLEMENTATION=rmw_rosette ros2 topic list
+ROSETTE_INTERFACE=eth0 RMW_IMPLEMENTATION=rmw_rosette \
+  ros2 topic pub /rosette/command std_msgs/msg/String "{data: hi}"
+ROSETTE_INTERFACE=10.42.0.1 RMW_IMPLEMENTATION=rmw_rosette \
+  ros2 topic pub /rosette/command std_msgs/msg/String "{data: hi}"
 ```
 
 Unset, it is the interface of the default route, and on a host with more
