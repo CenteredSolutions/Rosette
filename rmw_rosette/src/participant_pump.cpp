@@ -37,12 +37,19 @@ void ParticipantPump::stop() noexcept {
 
 void ParticipantPump::run(void* self) noexcept {
     auto& pump = *static_cast<ParticipantPump*>(self);
-    pump.driver_->spin_until(
-        [&pump]() noexcept {
-            pump.wake_ready_waiters_locked();
-            return pump.stop_requested_.load();
-        },
-        rosette::platform::kWaitForever);
+    while (!pump.stop_requested_.load()) {
+        // While a thread receives in wait_until(), the pump keeps the timers
+        // and answers wake() but leaves the sockets to that thread; it
+        // switches back once the last one leaves (both ends call wake()).
+        const bool pump_receives = pump.receiving_waiters_.load() == 0u;
+        pump.driver_->spin_until(
+            [&pump, pump_receives]() noexcept {
+                pump.wake_ready_waiters_locked();
+                return pump.stop_requested_.load()
+                       || (pump.receiving_waiters_.load() == 0u) != pump_receives;
+            },
+            rosette::platform::kWaitForever, pump.driver_->wake_event(), pump_receives);
+    }
 }
 
 void ParticipantPump::wake_ready_waiters_locked() noexcept {
@@ -68,39 +75,41 @@ bool ParticipantPump::wait_until(ReadyFunction ready, void* argument,
     // the pump signals it only while it is linked.
     thread_local rosette::platform::Event event;
     rosette::platform::Mutex&             mutex = driver_->mutex();
-    const uint32_t                        start_ms = rosette::platform::monotonic_ms();
 
     mutex.lock();
-    bool held = ready(argument);
-    if (!held && timeout_ms != 0u) {
-        // A signal left from an earlier wait of this thread would end the
-        // first sleep early; it is harmless, but drop it before sleeping.
-        (void)event.consume();
-        Waiter self{ready, argument, &event, waiters_};
-        waiters_ = &self;
-        for (;;) {
-            uint32_t sleep_ms = rosette::platform::kWaitForever;
-            if (timeout_ms != rosette::platform::kWaitForever) {
-                const uint32_t elapsed = rosette::platform::monotonic_ms() - start_ms;
-                if (elapsed >= timeout_ms) {
-                    break;
-                }
-
-                sleep_ms = timeout_ms - elapsed;
-            }
-
-            mutex.unlock();
-            (void)event.wait_for(sleep_ms);
-            mutex.lock();
-            held = ready(argument);
-            if (held) {
-                break;
-            }
-        }
-
-        unlink_locked(self);
+    const bool held_at_once = ready(argument);
+    if (held_at_once || timeout_ms == 0u) {
+        mutex.unlock();
+        return held_at_once;
     }
 
+    // A signal left from an earlier wait of this thread would end the first
+    // sleep early; it is harmless, but drop it before sleeping.
+    (void)event.consume();
+    Waiter self{ready, argument, &event, waiters_};
+    waiters_ = &self;
+    mutex.unlock();
+
+    // This thread receives for itself: the datagram that makes `ready` hold
+    // wakes it directly, and it runs the pass that delivers it, so a round
+    // trip pays no handoff from the pump. The first receiving thread moves
+    // the pump off the sockets, so it neither wakes for that datagram nor
+    // holds the lock when this thread wants it. Staying linked lets the pump
+    // signal this thread for what only the pump sees: wake() from a guard
+    // condition or an rmw entry point.
+    if (receiving_waiters_.fetch_add(1u) == 0u) {
+        driver_->wake();
+    }
+
+    const bool held = driver_->spin_until([ready, argument]() noexcept { return ready(argument); },
+                                          timeout_ms, event);
+
+    if (receiving_waiters_.fetch_sub(1u) == 1u) {
+        driver_->wake();
+    }
+
+    mutex.lock();
+    unlink_locked(self);
     mutex.unlock();
     return held;
 }

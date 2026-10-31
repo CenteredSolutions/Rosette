@@ -1,14 +1,15 @@
 /**
  * @file test_participant_pump.cpp
- * @brief The host pump thread runs the participant with no thread in rmw_wait(),
- *        and wakes each waiting thread for its own readiness only.
+ * @brief The host pump thread runs the participant with or without a thread in
+ *        rmw_wait(), and wakes each waiting thread for its own readiness only.
  *
  * Verification:
  * - Correct means: discovery, publishing and delivery complete while no
- *   thread waits; concurrent rmw_wait() calls on separate wait sets each
- *   return for their own guard condition and no other; rmw_wait() honors a
- *   zero and a finite timeout.
- * - Covered here: TC-RMW-PUMP-001..003.
+ *   thread waits, and while a thread waits on something unrelated;
+ *   concurrent rmw_wait() calls on separate wait sets each return for their
+ *   own guard condition and no other; rmw_wait() honors a zero and a finite
+ *   timeout.
+ * - Covered here: TC-RMW-PUMP-001..004.
  *
  * References:
  * - rmw/rmw.h (Humble, Jazzy), `rmw_wait`, `rmw_publish`, `rmw_take`
@@ -174,6 +175,69 @@ TEST_F(ParticipantPump, WaitHonorsZeroAndFiniteTimeouts) {
     EXPECT_GE(elapsed_ms(start), 200);
     EXPECT_LT(elapsed_ms(start), 1000);
 
+    EXPECT_EQ(rmw_destroy_wait_set(wait_set), RMW_RET_OK);
+    EXPECT_EQ(rmw_destroy_guard_condition(guard), RMW_RET_OK);
+}
+
+// TC-RMW-PUMP-004: while another thread blocks in rmw_wait() on a guard
+// condition nothing triggers, so the pump has left the sockets to it, the
+// publisher and subscription still match and a published sample is
+// delivered; triggering the guard then ends that wait.
+TEST_F(ParticipantPump, ParticipantRunsWhileAnotherThreadWaits) {
+    rmw_guard_condition_t* guard = rmw_create_guard_condition(&context_);
+    rmw_wait_set_t*        wait_set = rmw_create_wait_set(&context_, 1);
+    ASSERT_NE(guard, nullptr);
+    ASSERT_NE(wait_set, nullptr);
+    rmw_ret_t   waiter_ret = RMW_RET_ERROR;
+    std::thread waiter([&] { waiter_ret = wait_on(wait_set, guard, rmw_time_t{20, 0}); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    rmw_qos_profile_t qos = rmw_qos_profile_default;
+    qos.depth = 1;
+    const rosidl_message_type_support_t* ts = ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String);
+    rmw_publisher_options_t              pub_options = rmw_get_default_publisher_options();
+    rmw_subscription_options_t           sub_options = rmw_get_default_subscription_options();
+    rmw_publisher_t* pub = rmw_create_publisher(node_, ts, "/pump_waiting", &qos, &pub_options);
+    ASSERT_NE(pub, nullptr);
+    rmw_subscription_t* sub =
+        rmw_create_subscription(node_, ts, "/pump_waiting", &qos, &sub_options);
+    ASSERT_NE(sub, nullptr);
+
+    size_t     matched = 0u;
+    const auto start = Clock::now();
+    while (matched == 0u && elapsed_ms(start) < 5000) {
+        ASSERT_EQ(rmw_subscription_count_matched_publishers(sub, &matched), RMW_RET_OK);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    EXPECT_EQ(matched, 1u) << "the endpoints never matched while a thread waited";
+
+    std_msgs__msg__String out_msg{};
+    std_msgs__msg__String__init(&out_msg);
+    rosidl_runtime_c__String__assign(&out_msg.data, "beside a waiter");
+    EXPECT_EQ(rmw_publish(pub, &out_msg, nullptr), RMW_RET_OK);
+
+    std_msgs__msg__String in_msg{};
+    std_msgs__msg__String__init(&in_msg);
+    bool       taken = false;
+    const auto sent = Clock::now();
+    while (!taken && elapsed_ms(sent) < 2000) {
+        ASSERT_EQ(rmw_take(sub, &in_msg, &taken, nullptr), RMW_RET_OK);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_TRUE(taken) << "the sample was not delivered while a thread waited";
+
+    const auto triggered = Clock::now();
+    EXPECT_EQ(rmw_trigger_guard_condition(guard), RMW_RET_OK);
+    waiter.join();
+    EXPECT_EQ(waiter_ret, RMW_RET_OK);
+    EXPECT_LT(elapsed_ms(triggered), 1000);
+
+    std_msgs__msg__String__fini(&in_msg);
+    std_msgs__msg__String__fini(&out_msg);
+    EXPECT_EQ(rmw_destroy_subscription(node_, sub), RMW_RET_OK);
+    EXPECT_EQ(rmw_destroy_publisher(node_, pub), RMW_RET_OK);
     EXPECT_EQ(rmw_destroy_wait_set(wait_set), RMW_RET_OK);
     EXPECT_EQ(rmw_destroy_guard_condition(guard), RMW_RET_OK);
 }

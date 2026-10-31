@@ -14,19 +14,29 @@
  * each run receive and event threads of their own for the same reason.
  *
  * ParticipantPump is that thread for rmw_rosette on a POSIX host. It starts in
- * rmw_init() and runs the driver until rmw_context_fini(); it is the only
- * thread that runs passes or sleeps in the transport. A thread that waits
- * (rmw_wait(), rmw_publisher_wait_for_all_acked()) registers its readiness
- * predicate and sleeps on an event of its own. After every pass the pump
- * evaluates each registered predicate under the participant lock, as
- * ParticipantDriver::spin_until() evaluates its own, and wakes exactly the
- * waiters whose predicate holds. A waiter therefore wakes for its own
- * readiness or its own timeout, never for a pass that changed nothing it
- * waits on, and an idle wait still costs no CPU.
+ * rmw_init() and runs the driver until rmw_context_fini(), so the participant
+ * advances whether or not any thread waits.
  *
- * Everything that makes a pass due wakes the pump through the driver's wake
- * event: a datagram, a triggered guard condition, and every rmw entry point
- * that queues protocol work (ContextUpdateLock in types.hpp).
+ * A thread that waits (rmw_wait(), rmw_publisher_wait_for_all_acked()) runs
+ * the driver too, as a firmware executor does: it sleeps on the sockets and
+ * an event of its own, and the datagram it is waiting for wakes it and is
+ * delivered by its own pass. While at least one thread waits this way, the
+ * pump sleeps on the driver's wake event and the participant's timers only,
+ * so it neither wakes for user data nor holds the participant lock when the
+ * waiting thread needs it; the round trip pays no thread handoff. The first
+ * waiter to arrive and the last to leave each call wake(), which moves the
+ * pump off the sockets and back. Passes never overlap: every pass, on any
+ * thread, runs under the participant lock.
+ *
+ * Each waiter also registers its readiness predicate. After every pass the
+ * pump evaluates the registered predicates under the participant lock, as
+ * ParticipantDriver::spin_until() evaluates its own, and signals exactly the
+ * waiters whose predicate holds. That covers what only the pump observes:
+ * a triggered guard condition and every rmw entry point that queues
+ * protocol work wake the pump through the driver's wake event
+ * (ContextUpdateLock in types.hpp), not the waiting threads. A waiter
+ * therefore wakes for its own readiness or its own timeout, and an idle wait
+ * still costs no CPU.
  *
  * RMW_ROSETTE_PUMP_THREAD selects the pump. The build sets it
  * (rmw_rosette_capacity.cmake): 1 for a host build on the POSIX OS port,
@@ -105,9 +115,9 @@ public:
      * The pump's counterpart of ParticipantDriver::spin_until(), with the
      * same contract: `ready` is evaluated under the participant lock, at once
      * and after every pass, and the call returns as soon as it holds. The
-     * caller sleeps on an event owned by its thread, which the pump signals
-     * when `ready` holds after a pass; the predicate is checked again by the
-     * caller before it returns, under the lock.
+     * caller runs passes itself, sleeping on the sockets and an event owned
+     * by its thread, while the pump stays off the sockets; the pump signals
+     * that event when `ready` holds after a pass of its own.
      *
      * @param[in] ready      Predicate; must not block, and may run on the pump
      *   thread while this call is in progress.
@@ -117,10 +127,13 @@ public:
      * @return true when `ready` held, false on timeout.
      *
      * Verification:
-     * - Correct means: returns within one pass of `ready` becoming true, and
-     *   never wakes its caller for a pass after which `ready` is false.
+     * - Correct means: returns within one pass of `ready` becoming true;
+     *   the pump never wakes its caller for a pass after which `ready` is
+     *   false; the participant keeps discovering, matching and delivering
+     *   while a thread is inside the call.
      * - Covered by: rmw_rosette/test/test_participant_pump.cpp (TC-RMW-PUMP-002,
-     *   TC-RMW-PUMP-003), test_guard_condition.cpp, test_pub_sub_loopback.cpp.
+     *   TC-RMW-PUMP-003, TC-RMW-PUMP-004), test_guard_condition.cpp,
+     *   test_pub_sub_loopback.cpp; tests/perf/rmw_head_to_head for latency.
      *
      * References:
      * - rmw/rmw.h (Humble, Jazzy), `rmw_wait`
@@ -149,6 +162,8 @@ private:
     rosette::platform::Thread         thread_;
     std::atomic<bool>                 stop_requested_{false};
     Waiter*                           waiters_ = nullptr;  ///< Guarded by the participant lock.
+    /// Threads inside wait_until(); while any is, the pump leaves the sockets to them.
+    std::atomic<uint32_t>             receiving_waiters_{0u};
 };
 
 }  // namespace rmw_rosette

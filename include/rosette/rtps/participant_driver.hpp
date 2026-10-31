@@ -122,6 +122,40 @@ public:
      */
     template <typename Ready>
     bool spin_until(Ready ready, uint32_t timeout_ms) noexcept {
+        return spin_until(ready, timeout_ms, wake_);
+    }
+
+    /**
+     * @brief spin_until(), sleeping on `wake`, and optionally not on the sockets.
+     *
+     * Lets two threads share the participant on a POSIX host
+     * (rmw_rosette/participant_pump.hpp). A thread blocked in rmw_wait()
+     * receives itself: it sleeps on the sockets and an event of its own, so
+     * the datagram it waits for wakes it directly. Meanwhile the pump thread
+     * sleeps on the driver's wake event and the participant's timers only,
+     * with `receive` false, so it neither wakes for that datagram nor takes
+     * the lock from the thread that does. Either thread's pass still drains
+     * whatever is waiting on the sockets.
+     *
+     * @param[in] ready      As for spin_until().
+     * @param[in] timeout_ms As for spin_until().
+     * @param[in] wake       Event that ends this caller's sleep; owned by the
+     *   caller and outliving the call.
+     * @param[in] receive    true to also end the sleep when a datagram
+     *   arrives; false to sleep until `wake`, a participant timer, or the
+     *   timeout only.
+     * @return As for spin_until().
+     *
+     * Verification:
+     * - Correct means: the contract of spin_until(), with `wake` in place of
+     *   wake(), and with datagrams ending the sleep only when `receive`
+     *   holds; passes of two spinning threads never overlap.
+     * - Covered by: rmw_rosette/test/test_participant_pump.cpp
+     *   (TC-RMW-PUMP-001..004) and the rmw_rosette round-trip tests.
+     */
+    template <typename Ready>
+    bool spin_until(Ready ready, uint32_t timeout_ms, rosette::platform::Event& wake,
+                    bool receive = true) noexcept {
         const uint32_t start_ms = rosette::platform::monotonic_ms();
         for (;;) {
             Pass     pass;
@@ -148,8 +182,10 @@ public:
                 }
             }
 
-            if (sleep_ms > 0u) {
-                transport_.wait_readable(wake_, sleep_ms);
+            if (sleep_ms > 0u && receive) {
+                transport_.wait_readable(wake, sleep_ms);
+            } else if (sleep_ms > 0u) {
+                (void)wake.wait_for(sleep_ms);
             }
         }
     }
