@@ -1,8 +1,10 @@
 # rmw_rosette ROS 2 conformance known failures, humble.
 # Checked by tools/ci/check_rmw_conformance.py in the rmw-rosette workflow:
-# a case listed here must fail, a `flaky` case may pass, fail or be absent,
-# and any other failing case fails the job. Remove a line when its case passes.
-# 146 cases must fail, 1 flaky line; 6 skip expressions leave out the tests that cannot pass yet.
+# a case listed here must fail, a `flaky` case may pass, fail or be absent, a `teardown`
+# case may fail only because launch stopped a process at teardown, and any other failing
+# case fails the job. Remove a line when its case passes. The tests that must report
+# results are listed in conformance_tests_humble.txt.
+# 146 cases must fail, 1 teardown line; 6 skip expressions leave out the tests that cannot pass yet.
 
 # Not run: every test in which an rclcpp process uses rmw_rosette. rclcpp and its
 # parameter services use rosidl_typesupport_cpp, and rmw_rosette encodes from C
@@ -16,10 +18,13 @@ skip ^test_([a-z]+_)*[a-z]+__rclcpp__(rclpy__)?rmw_rosette
 skip ^test_([a-z]+_)*[a-z]+__(rclpy__)?rclcpp__rmw_[a-z]+_cpp__rmw_rosette$
 skip ^test_([a-z]+_)*[a-z]+__rclpy__rclcpp__rmw_rosette$
 
-# A test_communication AfterShutdown case checks only that the test processes exited within
-# the launch timeout, which depends on the runner's speed; every rmw_rosette one is flaky.
-# The case that checks rmw_rosette's behaviour is the test's main class.
-flaky *::test_communication.*AfterShutdown.test_processes_finished_gracefully[*]
+# A test_communication AfterShutdown case checks the exit code of every process the test
+# launched. One that is still running when the test ends, such as a publisher whose
+# subscriber has finished, is stopped with SIGINT and, if it has not exited within
+# launch's timeouts, SIGTERM and SIGKILL; whether it exits in time depends on the runner's
+# speed. A process stopped by one of those signals is allowed; a crash or an error exit is
+# not, and neither is a subscriber failure, which the test's main class does not check.
+teardown *::test_communication.*AfterShutdown.test_processes_finished_gracefully[*]
 
 # C++ type support in the rmw serialization gtests: rmw_rosette encodes from C introspection
 # only (message_codec.cpp); the C cases pass. Needs a rosidl_typesupport_introspection_cpp codec.

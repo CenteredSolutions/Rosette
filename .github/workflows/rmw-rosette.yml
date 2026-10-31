@@ -58,8 +58,9 @@ jobs:
   # rmw_rosette and itself, rmw_fastrtps_cpp and rmw_cyclonedds_cpp. Neither
   # suite ships as a binary package, so each is built from source at a pinned
   # commit of its distribution branch. tools/ci/check_rmw_conformance.py holds
-  # the results to the committed known-failure list exactly: a new failure, a
-  # listed case that passes, or a stale entry fails the job. Tests the list
+  # the results to the committed known-failure list and test inventory
+  # exactly: a new failure, a listed case that passes, a stale entry, or a
+  # test that stops or starts reporting fails the job. Tests the list
   # marks `skip` (rclcpp on rmw_rosette, until the C++ introspection codec
   # exists) are not run.
   conformance:
@@ -106,8 +107,8 @@ jobs:
             ws/src/system_tests/test_communication --ignore-src -y --rosdistro ${{ matrix.distro }}
 
       # rmw_rosette is built and sourced first, so the suites' CMake finds it
-      # in the ament index and generates its tests. The source checkout of
-      # rmw_implementation is only used for its test package.
+      # in the ament index and generates its tests. Only the two test packages
+      # are discovered; every other package comes from the binary underlay.
       - name: Build
         working-directory: ws
         run: |
@@ -115,7 +116,7 @@ jobs:
           colcon build --base-paths ../rosette/rmw_rosette --event-handlers console_cohesion+ \
             --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=OFF
           source install/setup.bash
-          colcon build --base-paths src --packages-select test_rmw_implementation test_communication \
+          colcon build --base-paths src/rmw_implementation/test_rmw_implementation src/system_tests/test_communication \
             --event-handlers console_cohesion+ --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
       # The known list's `skip` lines name tests that cannot pass yet and would
@@ -126,7 +127,7 @@ jobs:
           source install/setup.bash
           known=../rosette/rmw_rosette/test/conformance_known_failures_${{ matrix.distro }}.txt
           exclude=$(python3 ../rosette/tools/ci/check_rmw_conformance.py --known "$known" --ctest-exclude)
-          colcon test --base-paths src --packages-select test_rmw_implementation test_communication \
+          colcon test --base-paths src/rmw_implementation/test_rmw_implementation src/system_tests/test_communication \
             --ctest-args -R rmw_rosette ${exclude:+-E "$exclude"} --timeout 120
 
       - name: Check against known failures
@@ -134,4 +135,15 @@ jobs:
         run: >
           python3 ../rosette/tools/ci/check_rmw_conformance.py
           --known ../rosette/rmw_rosette/test/conformance_known_failures_${{ matrix.distro }}.txt
+          --tests ../rosette/rmw_rosette/test/conformance_tests_${{ matrix.distro }}.txt
           build/test_rmw_implementation/test_results build/test_communication/test_results
+
+      # The result files, for regenerating the lists with --write-known.
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-results-${{ matrix.distro }}
+          path: |
+            ws/build/test_rmw_implementation/test_results
+            ws/build/test_communication/test_results
