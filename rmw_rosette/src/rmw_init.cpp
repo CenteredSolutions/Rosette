@@ -367,8 +367,12 @@ const char* rmw_get_serialization_format(void) {
  * value rcl_init() replaces with ROS_DOMAIN_ID (or 0 when unset); any other
  * value would make rcl skip that lookup, so every rcl, rclc and rclcpp
  * program would ignore ROS_DOMAIN_ID. Where the headers have discovery
- * options, they are left zero (range NOT_SET, no peers), as in the stock
- * rmws; rcl_init() sets the range from ROS_AUTOMATIC_DISCOVERY_RANGE.
+ * options, the range is SYSTEM_DEFAULT (this middleware's own default, the
+ * subnet) with no static peers, so options from here pass rmw_init() as
+ * they are, as the stock rmws' do; a caller that drives the rmw directly,
+ * such as test_rmw_implementation, relies on that. rcl_init_options_init()
+ * resets the range to NOT_SET afterwards, so rcl_init() still applies
+ * ROS_AUTOMATIC_DISCOVERY_RANGE.
  *
  * @param[out] init_options Options struct to fill.
  * @param[in] allocator Allocator to record on the options; unused beyond
@@ -378,15 +382,23 @@ const char* rmw_get_serialization_format(void) {
  *
  * Verification:
  * - Correct means: `domain_id` is RMW_DEFAULT_DOMAIN_ID, so a program
- *   started with ROS_DOMAIN_ID=65 binds domain 65's ports (7400 + 250 * 65).
- * - Covered by: rmw_rosette/test/test_init_options.cpp (TC-RMW-INITOPT-009).
+ *   started with ROS_DOMAIN_ID=65 binds domain 65's ports (7400 + 250 * 65),
+ *   and rmw_init() accepts the options unmodified.
+ * - Covered by: rmw_rosette/test/test_init_options.cpp (TC-RMW-INITOPT-009,
+ *   TC-RMW-INITOPT-013); test_rmw_implementation's test_init_shutdown.
  *
  * References:
  * - rmw/init_options.h, rmw/domain_id.h (Humble), RMW_DEFAULT_DOMAIN_ID
  * - rcl/src/rcl/init.c (Humble), rcl_init(): the ROS_DOMAIN_ID lookup
+ * - rmw/discovery_options.h (Jazzy), `rmw_automatic_discovery_range_t`;
+ *   rmw/src/discovery_options.c, `rmw_discovery_options_init` (stock default)
+ * - rcl/src/rcl/init_options.c (Jazzy), `rcl_init_options_init` (NOT_SET reset)
  */
 rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_allocator_t allocator) {
-    if (!init_options) return RMW_RET_INVALID_ARGUMENT;
+    if (!init_options) {
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+
     init_options->instance_id = 0;
     init_options->implementation_identifier = rmw_rosette_identifier;
     init_options->allocator = allocator;
@@ -396,7 +408,10 @@ rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_alloca
     init_options->security_options = rmw_get_zero_initialized_security_options();
 #if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
     init_options->discovery_options = rmw_get_zero_initialized_discovery_options();
+    init_options->discovery_options.automatic_discovery_range =
+        RMW_AUTOMATIC_DISCOVERY_RANGE_SYSTEM_DEFAULT;
 #endif
+
     return RMW_RET_OK;
 }
 
