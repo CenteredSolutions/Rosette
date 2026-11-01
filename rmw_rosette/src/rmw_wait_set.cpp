@@ -232,6 +232,39 @@ WaitSetSlot* slot_from(rmw_wait_set_t* ws) noexcept {
     return reinterpret_cast<WaitSetSlot*>(ws);
 }
 
+/**
+ * @brief Converts an rmw_wait() timeout to the participant's millisecond wait.
+ *
+ * rmw_wait() must not return RMW_RET_TIMEOUT before the requested time has
+ * passed. The participant measures its wait on a truncating millisecond
+ * clock, so a wait that starts late in one millisecond can end up to one
+ * millisecond early in real time; the conversion rounds the request up to
+ * whole milliseconds and adds that one millisecond.
+ *
+ * @param[in] timeout The caller's timeout; {0, 0} means check once.
+ * @return 0 for a zero timeout; otherwise the rounded-up milliseconds plus
+ *   one, capped one below rosette::platform::kWaitForever so a long finite
+ *   timeout never reads as "forever".
+ *
+ * Verification:
+ * - Correct means: a finite rmw_wait() with nothing ready returns
+ *   RMW_RET_TIMEOUT no sooner than its timeout, measured on steady_clock.
+ * - Covered by: TC-RMW-PUMP-003 in rmw_rosette/test/test_participant_pump.cpp.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_wait`, wait_timeout
+ */
+uint32_t wait_timeout_ms(const rmw_time_t& timeout) noexcept {
+    if (timeout.sec == 0u && timeout.nsec == 0u) {
+        return 0u;
+    }
+
+    const uint64_t ms =
+        static_cast<uint64_t>(timeout.sec) * 1000u + (timeout.nsec + 999999u) / 1000000u + 1u;
+    return ms >= rosette::platform::kWaitForever ? rosette::platform::kWaitForever - 1u
+                                                 : static_cast<uint32_t>(ms);
+}
+
 }  // namespace
 
 extern "C" {
@@ -373,13 +406,10 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
     rmw_rosette::Context& ctx = *impl->context;
 
     // rmw_wait()'s contract (rmw/rmw.h): NULL wait_timeout blocks until
-    // something is ready; {0,0} checks once; otherwise wait up to that long.
+    // something is ready; {0,0} checks once; otherwise wait at least that long.
     uint32_t timeout_ms = rosette::platform::kWaitForever;
     if (wait_timeout != nullptr) {
-        const uint64_t ms = static_cast<uint64_t>(wait_timeout->sec) * 1000u +
-                            wait_timeout->nsec / 1000000u;
-        timeout_ms = ms >= rosette::platform::kWaitForever
-            ? rosette::platform::kWaitForever - 1u : static_cast<uint32_t>(ms);
+        timeout_ms = wait_timeout_ms(*wait_timeout);
     }
 
     // Readiness is evaluated under the participant lock after every protocol
