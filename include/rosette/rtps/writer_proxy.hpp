@@ -258,7 +258,9 @@ public:
      * and is ignored. Otherwise firstSN resolves everything the writer no
      * longer holds, lastSN makes the rest MISSING, and an ACKNACK is owed
      * when the F-flag is clear or something is MISSING (§8.3.7.5). An owed
-     * ACKNACK is due `response_delay_ms` from now.
+     * ACKNACK is due `response_delay_ms` after the HEARTBEAT that first owed
+     * it; later HEARTBEATs before it is sent do not push that deadline back,
+     * so a steady stream of them is still answered once per delay.
      *
      * @param[in] first_sn          HEARTBEAT firstSN.
      * @param[in] last_sn           HEARTBEAT lastSN.
@@ -271,8 +273,9 @@ public:
      *
      * Verification:
      * - Correct means: duplicates change nothing; F=0 always owes an
-     *   ACKNACK; F=1 owes one only while something is MISSING.
-     * - Covered by: TC-SRR-8.4.9-001, TC-SRR-8.4.7-001.
+     *   ACKNACK; F=1 owes one only while something is MISSING; an owed
+     *   ACKNACK keeps the deadline of the HEARTBEAT that first owed it.
+     * - Covered by: TC-SRR-8.4.9-001, TC-SRR-8.4.7-001, TC-SRR-8.4.7.4-007.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.7.5, §8.4.12.2

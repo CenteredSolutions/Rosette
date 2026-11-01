@@ -6,7 +6,8 @@
  * ParticipantDriver::spin_until() runs protocol passes under the participant
  * lock. A pass takes datagrams alternately from the metatraffic and user-data
  * sockets and stops once its budget (RTPS_PUMP_PASS_BUDGET_US) has run out;
- * the next pass follows without sleeping while datagrams wait. These cases
+ * the next pass follows a short yield (RTPS_PUMP_BACKLOG_YIELD_MS) rather
+ * than a wait for data, while datagrams wait. These cases
  * run a real SocketUdpTransport and RTPSParticipant over a socket backend
  * whose sockets hold queued datagrams, on the test clock: each datagram
  * taken can advance it, so the budget's cut-off is exact.
@@ -16,6 +17,7 @@
 
 #include "rosette/rtps/participant_driver.hpp"
 
+#include <chrono>
 #include <deque>
 #include <map>
 
@@ -159,27 +161,46 @@ bool tc_drv_pass_001(std::string& err) {
 }
 
 /// TC-DRV-PASS-002: a pass stops taking datagrams once its budget has run
-/// out, and spin_until() runs the next pass at once while datagrams wait.
+/// out, and spin_until() runs the next pass after the backlog yield, without
+/// waiting for data, while datagrams wait; each such pass is counted.
+///
+/// The participant runs on the test clock, but the yield is a real sleep:
+/// the gap between backlogged passes is measured on the steady clock and
+/// must be at least the yield. sleep_ms() never returns early, so a slow
+/// host cannot fail the check; without the yield the gap is microseconds.
 bool tc_drv_pass_002(std::string& err) {
+    static_assert(RTPS_PUMP_BACKLOG_YIELD_MS > 0u, "the yield under test is configured");
+    using SteadyClock = std::chrono::steady_clock;
+
     g_participant_test_now_ms = 100u;
     DrivenParticipant d{10000u};
     CHECK(d.transport.open(), "transport opens on the queued backend");
     d.provider.ms_per_datagram = 3u;
     d.provider.queue(kMetaPort, 10);
 
-    std::vector<size_t> per_pass{};
-    size_t              before = 0u;
-    const bool          drained = d.driver.spin_until(
+    std::vector<size_t>                  per_pass{};
+    std::vector<SteadyClock::time_point> ended{};
+    size_t                               before = 0u;
+    const bool                           drained = d.driver.spin_until(
         [&] {
             per_pass.push_back(d.provider.taken.size() - before);
             before = d.provider.taken.size();
+            ended.push_back(SteadyClock::now());
             return d.provider.waiting() == 0u;
         },
         rosette::platform::kWaitForever);
     CHECK(drained, "spin_until returns once every datagram is taken");
     CHECK((per_pass == std::vector<size_t>{4u, 4u, 2u}),
           "3 ms datagrams under a 10 ms budget: 4, 4, then the last 2");
-    CHECK(d.provider.sleeps == 0, "no sleep while datagrams wait");
+    CHECK(d.provider.sleeps == 0, "no wait for data while datagrams wait");
+    CHECK(d.driver.backlogged_passes() == 2u, "the two passes the budget cut short are counted");
+
+    const auto yield = std::chrono::milliseconds(RTPS_PUMP_BACKLOG_YIELD_MS);
+    for (size_t pass = 1u; pass < ended.size(); ++pass) {
+        CHECK(ended[pass] - ended[pass - 1u] >= yield,
+              "each backlogged pass is followed by a sleep of at least the backlog yield");
+    }
+
     return true;
 }
 
@@ -206,6 +227,7 @@ bool tc_drv_pass_003(std::string& err) {
         rosette::platform::kWaitForever);
     CHECK(first_pass == 12u, "one pass takes all 12 datagrams");
     CHECK(d.provider.sleeps == 1, "an emptied pass sleeps before the next");
+    CHECK(d.driver.backlogged_passes() == 0u, "a pass that emptied the sockets is not backlogged");
     return true;
 }
 
@@ -218,7 +240,7 @@ void append_participant_driver_pass_budget_tests(std::vector<TestCase>& tests) {
                      tc_drv_pass_001});
     tests.push_back({"TC-DRV-PASS-002",
                      "ParticipantDriver: a pass stops once its budget runs out, and the next "
-                     "follows without sleeping while datagrams wait.",
+                     "follows after the backlog yield while datagrams wait; each is counted.",
                      tc_drv_pass_002});
     tests.push_back({"TC-DRV-PASS-003",
                      "ParticipantDriver: within its budget one pass takes every waiting "

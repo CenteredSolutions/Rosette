@@ -946,7 +946,12 @@ enum class TopicKind : uint32_t {
 #  define RTPS_HEARTBEAT_PERIOD_MS      2000u   ///< §8.4.1.1
 #endif
 #ifndef RTPS_HEARTBEAT_RESPONSE_DELAY_MS
-#  define RTPS_HEARTBEAT_RESPONSE_DELAY_MS  0u  ///< §8.4.7.1
+/// §8.4.7.1. Answering a HEARTBEAT at once lets a writer that answers each
+/// ACKNACK with a fresh HEARTBEAT hold the reader in a ping-pong as fast as
+/// the link turns round; a delay folds the HEARTBEATs that arrive inside it
+/// into one ACKNACK. Deadlines are in whole milliseconds, so 2 is the
+/// smallest value that waits at least 1 ms.
+#  define RTPS_HEARTBEAT_RESPONSE_DELAY_MS 2u
 #endif
 
 /// Most writers one user StatefulReader matches at once (its cap in the
