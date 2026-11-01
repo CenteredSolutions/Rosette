@@ -64,7 +64,7 @@ _SOURCE_SUFFIXES = (".c", ".cc", ".cpp", ".h", ".hpp")
 
 # Third-party header families, matched against the text between the include
 # delimiters. A header matching no family is portable (the C and C++ standard
-# libraries, littlefs, ROS 2, MicroPython, and Rosette's own headers).
+# libraries, littlefs, ROS 2, and Rosette's own headers).
 _FAMILIES = {
     "pico_sdk": re.compile(r"^(pico|hardware|boards)/|^pico\.h$"),
     "freertos_kernel": re.compile(

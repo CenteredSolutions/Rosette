@@ -58,7 +58,7 @@ Three decisions follow from this layout:
 | `ports/os/freertos/` | FreeRTOS kernel |
 | `ports/net/freertos_tcp/` | FreeRTOS kernel, FreeRTOS+TCP |
 | `boards/`, `tests/`, `examples/`, `tools/` | anything |
-| everything else | the C/C++ standard libraries, littlefs, ROS 2, MicroPython, Rosette's portable headers |
+| everything else | the C/C++ standard libraries, littlefs, ROS 2, Rosette's portable headers |
 | every zone | never the WIZnet ioLibrary |
 
 1. **header**: a file includes only the third-party families its zone allows. The chip port doesn't include
@@ -172,7 +172,6 @@ Done in step 9, except where a row says otherwise.
 | `boards/bc-gen2/` | deleted: an RP2040 + W5100S board with a debug port; when a debug target is needed again it returns as a board over `boards/common/rp2_wiznet/`: the W5100S-EVB-Pico wiring plus two LEDs on GPIO 22 and 23 |
 | `boards/*/board.cmake` | set `ROSETTE_CHIP`, `ROSETTE_OS`, `ROSETTE_NET_STACK`, `ROSETTE_BOARD_COMMON` and pins. `ROSETTE_BOARD_FAMILY` and `ROSETTE_BOARD_BUILD_BSP` are gone; `ROSETTE_BOARD_ENABLE_PICO_SDK/FREERTOS/WIZNET` are set by the rp2, freertos and wiznet ports, for the examples that use those directly |
 | `examples/*/CMakeLists.txt` | `rosette_add_image_outputs()` instead of the `pico_*` calls (not `led_files`, which has uncommitted work); their `main.cpp` still include `pico/stdlib.h` and `board.h`, so they build on rp2 only |
-| `bindings/micropython/modrosette.c` | **not done**: `sys/time.h` replaced by `mp_hal_ticks_*` (MicroPython is the port there) |
 
 ## The WIZnet ioLibrary
 
@@ -235,8 +234,6 @@ Moves (`git mv`) and edits go in separate commits, so `git log --follow` keeps e
   command line today, so that is a second board directory or an override mechanism.
 - **lwIP.** It will be `ports/net/lwip/`. The check already has its zone and header family, so lwIP headers can't
   leak into portable code when the port lands.
-- **MicroPython binding.** `rosette_mpy_backend_runtime.cpp` and `rosette_mpy_transport.cpp` include
-  `rosette/ros/micro_ros/*`, which no longer exists. The binding needs its own repair before it can be checked.
 - **Public include paths.** Decided: see "What an application includes". The only include applications lose is
   `rosette/net/wiznet/board_network.hpp`; its replacement, `rosette/net/board_network.hpp`, has the same functions
   in a portable namespace.

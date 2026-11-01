@@ -220,14 +220,6 @@ elseif(RTPS_PROCESSOR STREQUAL "RP2350" OR PICO_PLATFORM MATCHES "^rp2350(-arm-s
     set(ROSETTE_MICRO_ROS_USE_PICO_TIME ON)
 endif()
 
-# Allow callers (e.g. micropython.cmake) to tell us which time API is
-# available in the final link.  When building inside MicroPython the
-# mp_hal_time_ns / mp_hal_ticks_us symbols are available; for bare Pico SDK
-# builds we fall back to time_us_64 directly.
-option(ROSETTE_MICRO_ROS_USE_MPHAL_TIME
-    "Use MicroPython HAL time functions (mp_hal_time_ns / mp_hal_ticks_us) in the rcutils time patch"
-    OFF)
-
 set(_rosette_micro_ros_common_c_flags
     "${_rosette_micro_ros_arch_flags} -ffunction-sections -fdata-sections ${ROSETTE_MICRO_ROS_EXTRA_C_FLAGS}")
 set(_rosette_micro_ros_common_cxx_flags
@@ -268,10 +260,6 @@ endif()
 set(ROSETTE_MICRO_ROS_USE_PICO_TIME_TEXT "OFF")
 if(ROSETTE_MICRO_ROS_USE_PICO_TIME)
     set(ROSETTE_MICRO_ROS_USE_PICO_TIME_TEXT "ON")
-endif()
-set(ROSETTE_MICRO_ROS_USE_MPHAL_TIME_TEXT "OFF")
-if(ROSETTE_MICRO_ROS_USE_MPHAL_TIME)
-    set(ROSETTE_MICRO_ROS_USE_MPHAL_TIME_TEXT "ON")
 endif()
 set(ROSETTE_MICRO_ROS_RMW_ERROR_HANDLING_TEXT "OFF")
 if(ROSETTE_MICRO_ROS_RMW_ERROR_HANDLING)

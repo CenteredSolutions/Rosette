@@ -1,8 +1,6 @@
 # Functions longer than the 100-line cap in AGENTS.md, with their current length.
 # A listed function may shrink but not grow. Delete its line once it fits the cap.
 # Format: <path>::<function> <length>
-bindings/micropython/rosette_mpy_backend_runtime.cpp::rosette::bindings::micropython::PublisherInit 106
-bindings/micropython/rosette_mpy_schema.cpp::rosette::bindings::micropython::ParseMessageText 115
 include/rosette/ros/agent_locator_xrce.hpp::rosette::detail::parse_info_packet 118
 src/rtps/message_parser.cpp::rosette::rtps::parse_message 212
 src/rtps/spdp.cpp::rosette::rtps::SpdpReader::deserialise 134
