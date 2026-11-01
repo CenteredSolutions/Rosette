@@ -22,11 +22,23 @@
  * A pass is bounded in time, not by how much is waiting. It takes datagrams
  * alternately from the metatraffic and user-data sockets and stops taking
  * them once it has run RTPS_PUMP_PASS_BUDGET_US; datagrams still waiting are
- * taken by the next pass, which follows at once without sleeping. A flood
- * (a whole network of peers announcing or leaving at once) therefore delays
- * `ready`, the lock's other users, and the participant's timers by about one
- * budget, not by the time it takes to drain the flood, and a discovery flood
- * does not hold back the user data queued behind it.
+ * taken by the next pass, which follows after RTPS_PUMP_BACKLOG_YIELD_MS. A
+ * flood (a whole network of peers announcing or leaving at once) therefore
+ * delays `ready`, the lock's other users, and the participant's timers by
+ * about one budget and one yield, not by the time it takes to drain the
+ * flood, and a discovery flood does not hold back the user data queued
+ * behind it.
+ *
+ * The yield between backlogged passes is what keeps a flood that never
+ * drains (a peer answering every ACKNACK with another HEARTBEAT, say) from
+ * holding the CPU: without it the driving thread never blocks, and every
+ * lower-priority thread, a watchdog's feeder among them, starves.
+ * backlogged_passes() counts the passes the budget cut short. The yield does
+ * not consult the participant's timers, so during a backlog a timer can fire
+ * up to one yield late (on FreeRTOS, rounded up to whole ticks). That is the
+ * price of letting lower-priority threads run; the RTPS timers it delays
+ * (HEARTBEAT periods, response delays, resend deadlines) are advisory
+ * schedules that tolerate a millisecond or a tick of lateness.
  *
  * An idle node therefore sleeps: WFE on bare metal, blocked on FreeRTOS,
  * blocked in poll() on POSIX, until data or a deadline needs it.
@@ -56,6 +68,14 @@
 /// WIZnet chip on SPI, and the tick that follows sees timers at most this
 /// late. 0 takes one datagram per pass.
 #  define RTPS_PUMP_PASS_BUDGET_US 10000u
+#endif
+
+#ifndef RTPS_PUMP_BACKLOG_YIELD_MS
+/// Milliseconds spin_until() sleeps after a pass its budget cut short, with
+/// datagrams still waiting, so lower-priority threads run during a flood; on
+/// FreeRTOS any nonzero value blocks for at least one tick. 0 runs the next
+/// pass at once.
+#  define RTPS_PUMP_BACKLOG_YIELD_MS 1u
 #endif
 
 namespace rosette::rtps {
@@ -95,15 +115,20 @@ public:
     /// @brief The wake event, for interrupt handlers and guard conditions.
     rosette::platform::Event& wake_event() noexcept { return wake_; }
 
+    /// @brief Passes whose budget ran out with datagrams still waiting, since construction.
+    uint32_t backlogged_passes() const noexcept { return backlogged_passes_; }
+
     /**
      * @brief Runs the protocol until `ready()` holds or `timeout_ms` passes.
      *
      * Each pass, with the lock held: feeds the participant the datagrams
      * waiting on the transport, up to the pass budget, calls tick(), and
      * evaluates `ready()`. Between passes the lock is released. A pass that
-     * left datagrams waiting is followed at once by the next; otherwise the
-     * caller sleeps until the sooner of the remaining timeout and the
-     * participant's next timer, or until a datagram or wake() ends the sleep.
+     * left datagrams waiting is followed by the next after a plain sleep of
+     * RTPS_PUMP_BACKLOG_YIELD_MS, which the waiting datagrams do not cut
+     * short; otherwise the caller sleeps until the sooner of the remaining
+     * timeout and the participant's next timer, or until a datagram or
+     * wake() ends the sleep.
      *
      * @param[in] ready      Predicate evaluated under the lock; must not block.
      * @param[in] timeout_ms Longest total wait; 0 runs one pass,
@@ -112,8 +137,11 @@ public:
      *
      * Verification:
      * - Correct means: returns within one sleep of a datagram, wake(), or the
-     *   predicate becoming true; never sleeps past a participant timer, nor
-     *   while a datagram it has not taken is waiting.
+     *   predicate becoming true; with no datagram waiting, never sleeps past a
+     *   participant timer; while a datagram it has not taken is waiting,
+     *   sleeps only the backlog yield, at least RTPS_PUMP_BACKLOG_YIELD_MS
+     *   and without regard to timers, once per backlogged pass, and counts
+     *   that pass.
      * - Covered by: TC-DRV-PASS-001..003 (tests/spec), and
      *   rmw_rosette/test/test_guard_condition.cpp,
      *   rmw_rosette/test/test_pub_sub_loopback.cpp, tests/ros2 interop.
@@ -127,11 +155,16 @@ public:
             {
                 rosette::platform::LockGuard guard(mutex_);
                 pass = pump_locked();
+                if (pass.backlog) {
+                    ++backlogged_passes_;
+                }
+
                 if (ready()) {
                     return true;
                 }
 
-                sleep_ms = pass.backlog ? 0u : participant_.ms_until_next_timer(pass.now_ms);
+                sleep_ms = pass.backlog ? RTPS_PUMP_BACKLOG_YIELD_MS
+                                        : participant_.ms_until_next_timer(pass.now_ms);
             }
 
             if (timeout_ms != rosette::platform::kWaitForever) {
@@ -146,7 +179,15 @@ public:
                 }
             }
 
-            if (sleep_ms > 0u) {
+            if (sleep_ms == 0u) {
+                continue;
+            }
+
+            // With datagrams waiting, wait_readable() would return at once
+            // and the thread would never block; a plain sleep yields the CPU.
+            if (pass.backlog) {
+                rosette::platform::sleep_ms(sleep_ms);
+            } else {
                 transport_.wait_readable(wake_, sleep_ms);
             }
         }
@@ -186,6 +227,7 @@ private:
     Octet*                        rx_buffer_;
     uint32_t                      rx_capacity_;
     uint32_t                      pass_budget_us_;
+    uint32_t                      backlogged_passes_ = 0u;
     bool                          next_is_user_ = false;
     rosette::platform::Mutex      mutex_;
     rosette::platform::Event      wake_;
