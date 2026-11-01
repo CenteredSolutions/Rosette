@@ -1,9 +1,9 @@
 # rmw_rosette ROS 2 conformance known failures, jazzy.
 # Checked by tools/ci/check_rmw_conformance.py in the rmw-rosette workflow:
 # a case listed here must fail, a `flaky` case may pass, fail or be absent, a `teardown`
-# case may fail only because launch stopped a process at teardown, and any other failing
-# case fails the job. Remove a line when its case passes. The tests that must report
-# results are listed in conformance_tests_jazzy.txt.
+# case may fail only as its comment below allows, and any other failing case fails the
+# job. Remove a line when its case passes. The tests that must report results are listed
+# in conformance_tests_jazzy.txt.
 # 152 cases must fail, 1 teardown line; 6 skip expressions leave out the tests that cannot pass yet.
 
 # Not run: every test in which an rclcpp process uses rmw_rosette. rclcpp and its
