@@ -25,14 +25,20 @@
  * taken by the next pass, which follows after RTPS_PUMP_BACKLOG_YIELD_MS. A
  * flood (a whole network of peers announcing or leaving at once) therefore
  * delays `ready`, the lock's other users, and the participant's timers by
- * about one budget, not by the time it takes to drain the flood, and a
- * discovery flood does not hold back the user data queued behind it.
+ * about one budget and one yield, not by the time it takes to drain the
+ * flood, and a discovery flood does not hold back the user data queued
+ * behind it.
  *
  * The yield between backlogged passes is what keeps a flood that never
  * drains (a peer answering every ACKNACK with another HEARTBEAT, say) from
  * holding the CPU: without it the driving thread never blocks, and every
  * lower-priority thread, a watchdog's feeder among them, starves.
- * backlogged_passes() counts the passes the budget cut short.
+ * backlogged_passes() counts the passes the budget cut short. The yield does
+ * not consult the participant's timers, so during a backlog a timer can fire
+ * up to one yield late (on FreeRTOS, rounded up to whole ticks). That is the
+ * price of letting lower-priority threads run; the RTPS timers it delays
+ * (HEARTBEAT periods, response delays, resend deadlines) are advisory
+ * schedules that tolerate a millisecond or a tick of lateness.
  *
  * An idle node therefore sleeps: WFE on bare metal, blocked on FreeRTOS,
  * blocked in poll() on POSIX, until data or a deadline needs it.
@@ -131,9 +137,11 @@ public:
      *
      * Verification:
      * - Correct means: returns within one sleep of a datagram, wake(), or the
-     *   predicate becoming true; never sleeps past a participant timer; while
-     *   a datagram it has not taken is waiting, sleeps only the backlog yield,
-     *   once per backlogged pass, and counts that pass.
+     *   predicate becoming true; with no datagram waiting, never sleeps past a
+     *   participant timer; while a datagram it has not taken is waiting,
+     *   sleeps only the backlog yield, at least RTPS_PUMP_BACKLOG_YIELD_MS
+     *   and without regard to timers, once per backlogged pass, and counts
+     *   that pass.
      * - Covered by: TC-DRV-PASS-001..003 (tests/spec), and
      *   rmw_rosette/test/test_guard_condition.cpp,
      *   rmw_rosette/test/test_pub_sub_loopback.cpp, tests/ros2 interop.

@@ -17,6 +17,7 @@
 
 #include "rosette/rtps/participant_driver.hpp"
 
+#include <chrono>
 #include <deque>
 #include <map>
 
@@ -162,19 +163,29 @@ bool tc_drv_pass_001(std::string& err) {
 /// TC-DRV-PASS-002: a pass stops taking datagrams once its budget has run
 /// out, and spin_until() runs the next pass after the backlog yield, without
 /// waiting for data, while datagrams wait; each such pass is counted.
+///
+/// The participant runs on the test clock, but the yield is a real sleep:
+/// the gap between backlogged passes is measured on the steady clock and
+/// must be at least the yield. sleep_ms() never returns early, so a slow
+/// host cannot fail the check; without the yield the gap is microseconds.
 bool tc_drv_pass_002(std::string& err) {
+    static_assert(RTPS_PUMP_BACKLOG_YIELD_MS > 0u, "the yield under test is configured");
+    using SteadyClock = std::chrono::steady_clock;
+
     g_participant_test_now_ms = 100u;
     DrivenParticipant d{10000u};
     CHECK(d.transport.open(), "transport opens on the queued backend");
     d.provider.ms_per_datagram = 3u;
     d.provider.queue(kMetaPort, 10);
 
-    std::vector<size_t> per_pass{};
-    size_t              before = 0u;
-    const bool          drained = d.driver.spin_until(
+    std::vector<size_t>                  per_pass{};
+    std::vector<SteadyClock::time_point> ended{};
+    size_t                               before = 0u;
+    const bool                           drained = d.driver.spin_until(
         [&] {
             per_pass.push_back(d.provider.taken.size() - before);
             before = d.provider.taken.size();
+            ended.push_back(SteadyClock::now());
             return d.provider.waiting() == 0u;
         },
         rosette::platform::kWaitForever);
@@ -183,6 +194,13 @@ bool tc_drv_pass_002(std::string& err) {
           "3 ms datagrams under a 10 ms budget: 4, 4, then the last 2");
     CHECK(d.provider.sleeps == 0, "no wait for data while datagrams wait");
     CHECK(d.driver.backlogged_passes() == 2u, "the two passes the budget cut short are counted");
+
+    const auto yield = std::chrono::milliseconds(RTPS_PUMP_BACKLOG_YIELD_MS);
+    for (size_t pass = 1u; pass < ended.size(); ++pass) {
+        CHECK(ended[pass] - ended[pass - 1u] >= yield,
+              "each backlogged pass is followed by a sleep of at least the backlog yield");
+    }
+
     return true;
 }
 
