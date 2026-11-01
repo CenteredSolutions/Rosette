@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file proxy_pool.cpp
  * @brief ProxyPool free list and admission, compiled once for every proxy type and pool size.

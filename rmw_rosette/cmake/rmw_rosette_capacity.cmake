@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # rmw_rosette capacity model.
 #
 # rmw_rosette allocates nothing at runtime: every entity comes from a fixed

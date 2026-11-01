@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/rp2/rp2_newlib_time.c
  * @brief newlib's clock_gettime() and _gettimeofday() on the RP2040 / RP2350 hardware timer.

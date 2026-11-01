@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 # Runs rmw_lease_rematch_probe.py as role board on the RMW under test and as
 # role watch on a stock RMW, on one host. The board's participant announces
 # itself less often than its lease lasts, so the stock watcher expires it and

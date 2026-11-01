@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_rosette/types.hpp
  * @brief Internal payload structs stored behind each rmw_*_t::data pointer.

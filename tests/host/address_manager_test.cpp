@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file address_manager_test.cpp
  * @brief `AddressManager`: serial list, first-to-bind wins, fall-through on

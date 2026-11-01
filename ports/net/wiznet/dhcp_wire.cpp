@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/net/wiznet/dhcp_wire.cpp
  * @brief DHCPv4 client message codec; see dhcp_wire.hpp.

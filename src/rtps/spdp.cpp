@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/spdp.cpp
  * @brief SPDP implementation — §8.5.3 (OMG formal/2022-04-01).

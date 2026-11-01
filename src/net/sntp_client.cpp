@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file src/net/sntp_client.cpp
  * @brief SntpClient: one bounded exchange per due poll, a distance filter, phase and frequency

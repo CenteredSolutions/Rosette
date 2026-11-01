@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_transport_multicast_interface.cpp
  * @brief TC-TRN-9.6.1-001..002: SPDP multicast is joined on and sent from the interface the

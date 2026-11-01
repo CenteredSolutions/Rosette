@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_writer_8_4_7_release_finished.cpp
  * @brief VOLATILE StatefulWriter: a change every matched reader is done with leaves the history.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/rp2/chip_rp2.cpp
  * @brief RP2040 / RP2350 chip layer of the platform contract.

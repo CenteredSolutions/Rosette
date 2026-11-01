@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file wall_clock.cpp
  * @brief WallClock: one offset over the platform monotonic clock, and rcl's view of it.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file address_upgrade_test.cpp
  * @brief The IPv4 provider list DHCP → link-local under one `AddressManager`:

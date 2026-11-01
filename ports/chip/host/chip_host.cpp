@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/host/chip_host.cpp
  * @brief Host (Linux, macOS) chip layer of the platform contract.

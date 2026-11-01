@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_rosette/argument_checks.hpp
  * @brief The argument and handle checks every rmw_* entry point makes before it acts.

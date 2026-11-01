@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_init.cpp
  * @brief rmw_init/shutdown/context_fini — owns the one RTPSParticipant.

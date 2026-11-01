@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # A small work cell for run_discovery_scale.sh: controller boards, the
 # stations that drive them, a coordinator that watches every board, and an
 # operator panel working with board 0. Stock message types stand in for a

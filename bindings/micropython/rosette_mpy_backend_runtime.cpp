@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file bindings/micropython/rosette_mpy_backend_runtime.cpp
  * @brief Runtime bridge from MicroPython objects into Rosette's micro-ROS backend.

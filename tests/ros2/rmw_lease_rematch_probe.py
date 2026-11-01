@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 """Lease re-match probe: a stock peer must list a node again after losing its lease.
 
 Architecture:

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 """Merge this project's compile_commands.json fragments into one at the repo root.
 
 clangd (and Zed's clangd integration) find `compile_commands.json` by walking

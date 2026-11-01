@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/os/stub/rosette_os_port.hpp
  * @brief Compile-only OS layer: one thread, no interrupts, every wait a spin.

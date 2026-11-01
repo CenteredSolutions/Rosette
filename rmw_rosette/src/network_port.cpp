@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file network_port.cpp
  * @brief The network port: the board network's sockets and IPv4 address and prefix.

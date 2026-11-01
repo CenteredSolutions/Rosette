@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/common/freertos/FreeRTOSConfig.h
  * @brief FreeRTOS kernel configuration for the RTPS stack on RP2040/RP2350.

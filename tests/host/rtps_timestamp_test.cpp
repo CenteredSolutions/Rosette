@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file tests/host/rtps_timestamp_test.cpp
  * @brief rtps::Timestamp::now() and its microsecond-to-fraction conversion, against exact

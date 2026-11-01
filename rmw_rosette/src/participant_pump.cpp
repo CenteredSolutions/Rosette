@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file participant_pump.cpp
  * @brief ParticipantPump: the host thread that runs a participant, and its waiters.

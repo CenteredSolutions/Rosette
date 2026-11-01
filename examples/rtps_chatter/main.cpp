@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file examples/rtps_chatter/main.cpp
  * @brief Agentless ROS 2 talker/listener on a WIZnet board, straight on RTPS.

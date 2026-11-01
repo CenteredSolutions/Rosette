@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rosette/platform/wall_clock.hpp
  * @brief Wall-clock time derived from the platform's single monotonic time base.

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # Enforce the AGENTS.md coding style: clang-format and the blank-line rule on
 # changed lines, the 100-line function cap across the tree, and an SPDX
 # license header on every file (reuse lint).

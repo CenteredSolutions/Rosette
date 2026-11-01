@@ -18,6 +18,7 @@ path = [
     "**/*.txt",
     "**/*.meta.in",
     "**/*.patch",
+    "NOTICE",
 ]
 precedence = "closest"
 SPDX-FileCopyrightText = "2026 Centered Solutions, LLC"

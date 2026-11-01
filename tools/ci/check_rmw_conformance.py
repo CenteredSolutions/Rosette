@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 """Compare rmw_rosette's ROS 2 conformance results with the recorded known failures.
 
 Architecture:

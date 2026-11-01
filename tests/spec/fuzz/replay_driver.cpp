@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file replay_driver.cpp
  * @brief Feeds every file of a corpus directory to a fuzz harness.

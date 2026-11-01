@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # wiznet_udp_echo — RFC 862 UDP echo on a WIZnet board, over IPv4 and, on the
 # W6100 / W6300, IPv6 (link-local and SLAAC global). Proves the chip driver's
 # socket path and address bring-up without any ROS layer on top:

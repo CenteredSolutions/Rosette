@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # ports/net/wiznet — the WIZnet chip's hardware sockets.
 #
 # Included by cmake/rosette_net.cmake with ROSETTE_PORT_DIR set to this

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/stateful_reader.hpp
  * @brief StatefulReader — reliable RTPS reader with per-writer proxy tracking.

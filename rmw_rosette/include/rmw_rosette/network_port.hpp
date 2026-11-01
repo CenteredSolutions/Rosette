@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_rosette/network_port.hpp
  * @brief The build-time network port: which sockets and address rmw_init() uses.

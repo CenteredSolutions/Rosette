@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file src/net/address_manager.cpp
  * @brief The per-family provider list runner; see rosette/net/address_manager.hpp.

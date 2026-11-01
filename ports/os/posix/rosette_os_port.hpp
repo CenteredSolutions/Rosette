@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/os/posix/rosette_os_port.hpp
  * @brief POSIX OS layer of the platform contract (Linux, macOS).

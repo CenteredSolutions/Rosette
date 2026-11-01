@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file src/net/sntp_wire.cpp
  * @brief NTPv4 packet encoding, reply validation, and the on-wire equations; see net/sntp_wire.hpp.

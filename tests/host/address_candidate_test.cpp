@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file address_candidate_test.cpp
  * @brief 32- and 64-bit FNV-1a and the self-assigned address candidates built on it.

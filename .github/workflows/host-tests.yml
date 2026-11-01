@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # Build and run the host test suites, which need nothing but a C++ compiler
 # and CMake: tests/spec checks DDSI-RTPS statements by spec section
 # (TC-<AREA>-<section>-<seq>), tests/host checks the portable and port code

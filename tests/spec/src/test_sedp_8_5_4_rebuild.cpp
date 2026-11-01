@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_sedp_8_5_4_rebuild.cpp
  * @brief SEDP announcements rebuilt for each send instead of stored.

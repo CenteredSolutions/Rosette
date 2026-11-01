@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 # Run every AGENTS.md style check, the same way locally and in CI.
 #
 # Formatting and the blank-line rule apply to lines changed since the merge

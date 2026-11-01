@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/stub/chip_stub.cpp
  * @brief Compile-only chip layer: every hook of the chip contract, doing nothing useful.

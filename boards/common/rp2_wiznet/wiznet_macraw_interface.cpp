@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/common/rp2_wiznet/wiznet_macraw_interface.cpp
  * @brief The WIZnet EVB-Pico boards' FreeRTOS+TCP interface: the chip in MACRAW mode.

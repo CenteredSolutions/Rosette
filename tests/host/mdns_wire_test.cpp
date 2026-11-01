@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file mdns_wire_test.cpp
  * @brief Host checks for the DNS wire codec and the mDNS address policy.

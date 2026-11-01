@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/net/wiznet/arp_cache.cpp
  * @brief The ArpCache state machine; see arp_cache.hpp.

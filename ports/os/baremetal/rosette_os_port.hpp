@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/os/baremetal/rosette_os_port.hpp
  * @brief Bare-metal (no RTOS) OS layer of the platform contract, on the chip's sync hooks.

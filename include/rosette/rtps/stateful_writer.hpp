@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/stateful_writer.hpp
  * @brief StatefulWriter — the reliable RTPS writer of §8.4.1–§8.4.9.

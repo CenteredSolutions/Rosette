@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file platform_contract_test.cpp
  * @brief Conformance test for a platform port (platform.hpp).

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # ports/chip/host — the host chip port (Linux, macOS), with ports/os/posix.
 #
 # Included by cmake/rosette_platform.cmake with ROSETTE_PORT_DIR set to this

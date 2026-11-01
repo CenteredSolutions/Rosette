@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/w6100-evb-pico2/board.h
  * @brief Board bring-up entry points for the WIZnet W6100-EVB-Pico2.

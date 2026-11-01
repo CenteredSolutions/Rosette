@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_sedp_8_5_4_2_endpoint_locator_lists.cpp
  * @brief Where EndpointMatchTable keeps a remote endpoint's announced locators (§8.5.4.2).

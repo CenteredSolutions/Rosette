@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_buf_pool_stats.cpp
  * @brief The buffer pool's usage statistics (rtps/buf_pool_stats.hpp): TC-BUF-STATS-001 to 004.

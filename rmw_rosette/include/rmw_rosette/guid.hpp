@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_rosette/guid.hpp
  * @brief rosette::rtps::Guid <-> rmw_gid_t conversion.

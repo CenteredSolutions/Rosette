@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file bindings/micropython/rosette_mpy_pubsub.cpp
  * @brief `rosette.Publisher` and `rosette.Subscription` implementation unit.

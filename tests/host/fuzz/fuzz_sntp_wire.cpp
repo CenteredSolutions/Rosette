@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file fuzz_sntp_wire.cpp
  * @brief Fuzz harness for the SNTP reply decoder and the on-wire solver.

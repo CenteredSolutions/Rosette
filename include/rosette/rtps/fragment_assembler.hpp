@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/fragment_assembler.hpp
  * @brief Fragment reassembly for DATA_FRAG — §8.4.14 (OMG formal/2022-04-01).

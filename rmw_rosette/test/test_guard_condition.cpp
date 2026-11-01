@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_guard_condition.cpp
  * @brief Unit tests for guard conditions and their readiness in rmw_wait().

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_graph.cpp
  * @brief rmw graph queries: names and types, endpoint counts, per-node lists.

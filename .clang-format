@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # Rosette C/C++ formatting: Google style with the project rules in AGENTS.md
 # ("Coding Style") layered on top. Formatting is pinned to clang-format 18.1.8
 # (`pip install clang-format==18.1.8`); other releases wrap some constructs

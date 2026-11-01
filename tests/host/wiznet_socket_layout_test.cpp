@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file wiznet_socket_layout_test.cpp
  * @brief WIZnet receive-buffer layout and the provider's size-aware socket claim.

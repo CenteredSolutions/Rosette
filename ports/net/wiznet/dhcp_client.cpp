@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/net/wiznet/dhcp_client.cpp
  * @brief The non-blocking DHCPv4 client state machine; see dhcp_client.hpp.

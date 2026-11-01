@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/string_arena.hpp
  * @brief A fixed-capacity arena of interned NUL-terminated strings.

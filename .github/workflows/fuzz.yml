@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # libFuzzer campaigns over the RTPS parsers and discovery code (tests/spec/fuzz) and the
 # DHCP, DNS, SNTP, and Router Advertisement parsers (tests/host/fuzz).
 # Each target builds with Clang, AddressSanitizer, and UndefinedBehaviorSanitizer

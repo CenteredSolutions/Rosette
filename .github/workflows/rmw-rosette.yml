@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # Build and test the rmw_rosette colcon package against every supported ROS 2
 # distribution. Each job runs in the distribution's stock ros-base image, so
 # the feature probes (rmw_rosette/cmake/rmw_rosette_ros_features.cmake) see

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file examples/storage_demo.cpp
  * @brief Exercises the Rosette storage layer on the host.

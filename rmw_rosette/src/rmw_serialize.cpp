@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_serialize.cpp
  * @brief rmw_serialize / rmw_deserialize / rmw_get_serialized_message_size.

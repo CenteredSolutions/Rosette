@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # Host-side unit tests that need only a C++17 toolchain and the Rosette headers.
 #
 #   cmake -S tests/host -B build/tests-host

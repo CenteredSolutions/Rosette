@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_client_gid.cpp
  * @brief rmw_get_gid_for_client() names the client's request writer.

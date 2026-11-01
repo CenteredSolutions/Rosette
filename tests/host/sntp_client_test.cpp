@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file tests/host/sntp_client_test.cpp
  * @brief SntpClient against a simulated server and path: phase, server choice, filter, frequency,

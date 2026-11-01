@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """uasyncio integration for the Rosette MicroPython binding."""
 
 import asyncio

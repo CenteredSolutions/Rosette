@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 ROSETTE_BINDINGS_ROOT := $(USER_C_MODULES)
 ROSETTE_BINDINGS_MOD_DIR := $(USERMOD_DIR)
 ROSETTE_REPO_DIR ?= $(abspath $(ROSETTE_BINDINGS_ROOT)/../..)

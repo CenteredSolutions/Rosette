@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file address_snapshot_test.cpp
  * @brief `AddressSnapshot` / `FamilyAddressSnapshot` equality over the per-family

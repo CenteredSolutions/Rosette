@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 # Runs every libFuzzer target of a build for a fixed time each.
 #
 #   tools/fuzz/run_fuzz_campaign.sh <build-dir> [seconds-per-target]

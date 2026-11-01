@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file storage/device_config.hpp
  * @brief Persistent device configuration the firmware reads at boot.

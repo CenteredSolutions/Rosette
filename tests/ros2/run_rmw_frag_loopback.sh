@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 # Fragmentation acceptance test at a small datagram limit (default 1472, the
 # UDP payload of a 1500-byte Ethernet MTU: what a WIZnet hardware-UDP link
 # carries without IP fragmentation).

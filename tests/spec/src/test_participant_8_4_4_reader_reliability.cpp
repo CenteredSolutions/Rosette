@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_participant_8_4_4_reader_reliability.cpp
  * @brief TC-PART-8.4.4-001: a discovered reader's announced reliability reaches the writer.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/stateful_reader.cpp
  * @brief StatefulReader implementation — §8.4.7–§8.4.9 (OMG formal/2022-04-01).

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # cmake/micro_ros.cmake
 #
 # Bootstraps a micro-ROS static library build using the official

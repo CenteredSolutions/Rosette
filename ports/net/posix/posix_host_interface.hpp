@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/net/posix/posix_host_interface.hpp
  * @brief The one network interface a host process is on: `ROSETTE_INTERFACE`, else the default

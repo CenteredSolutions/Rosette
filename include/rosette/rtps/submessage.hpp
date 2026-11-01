@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/submessage.hpp
  * @brief RTPS submessage wire-layout structs and the RTPS message header.

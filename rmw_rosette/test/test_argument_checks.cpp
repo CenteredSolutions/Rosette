@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_argument_checks.cpp
  * @brief Unit tests for the argument checks every rmw_* entry point makes.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/net/wiznet/dhcp_provider.cpp
  * @brief The WIZnet DHCP address provider; see dhcp_provider.hpp.

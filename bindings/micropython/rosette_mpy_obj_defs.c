@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file bindings/micropython/rosette_mpy_obj_defs.c
  * @brief Pure-C definitions for MicroPython function objects and locals dicts.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file tests/host/wall_clock_concurrency_test.cpp
  * @brief WallClock's lock-free reads under concurrent writes: no torn offset, ever.

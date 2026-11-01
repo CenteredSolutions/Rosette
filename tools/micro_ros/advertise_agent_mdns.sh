@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 #
 # Advertise a running micro-ROS Agent over mDNS / DNS-SD so a Rosette board can
 # find it with MdnsAgentLocator (see include/rosette/ros/agent_locator_mdns.hpp).

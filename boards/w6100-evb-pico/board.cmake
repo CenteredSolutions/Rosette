@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # Ports (ports/<axis>/<name>/): the chip, the OS layer, and the IP stack. No
 # RTOS: the W6100 runs the TCP/IP stack in hardware, and the firmware is a
 # cooperative superloop.

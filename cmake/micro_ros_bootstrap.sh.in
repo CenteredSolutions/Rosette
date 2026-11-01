@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 set -euo pipefail
 
 ROS_SETUP="@ROSETTE_MICRO_ROS_ROS_SETUP@"

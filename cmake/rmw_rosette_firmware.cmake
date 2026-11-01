@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # rmw_rosette_firmware — stock ROS 2 C client libraries over rmw_rosette,
 # linked into a firmware image.
 #

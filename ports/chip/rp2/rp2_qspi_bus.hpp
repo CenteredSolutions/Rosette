@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/rp2/rp2_qspi_bus.hpp
  * @brief WIZnet W6300 QSPI bus for RP2040 / RP2350 — single-lane (phase 1).

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file src/support/fnv1a.cpp
  * @brief 32- and 64-bit FNV-1a; see rosette/support/fnv1a.hpp.

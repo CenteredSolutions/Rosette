@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_implementation_info.cpp
  * @brief Implementation-wide queries: optional features, log severity, GID equality.

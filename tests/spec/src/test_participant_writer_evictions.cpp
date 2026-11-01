@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_participant_writer_evictions.cpp
  * @brief TC-PART-8.5.1-014: the participant's total of evicted unacknowledged changes.

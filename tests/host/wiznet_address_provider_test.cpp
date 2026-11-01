@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file wiznet_address_provider_test.cpp
  * @brief Compile + light behavioural coverage for the WIZnet address stack:

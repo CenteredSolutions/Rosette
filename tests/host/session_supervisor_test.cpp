@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file session_supervisor_test.cpp
  * @brief `SessionSupervisor`: when the application's session is created, kept, and rebuilt.

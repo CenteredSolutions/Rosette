@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/proxy_pool.hpp
  * @brief A fixed pool of matched-endpoint proxies shared by a participant's endpoints.

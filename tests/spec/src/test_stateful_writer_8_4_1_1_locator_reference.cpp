@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_writer_8_4_1_1_locator_reference.cpp
  * @brief ReaderProxy addresses its reader through a reference to the matched locator list.

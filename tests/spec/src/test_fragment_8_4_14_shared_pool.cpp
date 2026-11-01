@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_fragment_8_4_14_shared_pool.cpp
  * @brief Readers sharing one fragment assembly pool (§8.4.14, §8.3.3.1).

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_rosette/cdr_stream.hpp
  * @brief Bounds-checked little-endian XCDR1 (PLAIN_CDR) byte streams.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file platform/littlefs_platform.hpp
  * @brief Platform-owned LittleFS block-device contract for Rosette.

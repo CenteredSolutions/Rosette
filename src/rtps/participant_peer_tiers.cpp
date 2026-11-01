@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/participant_peer_tiers.cpp
  * @brief Which known peers are active: admission, parking and reactivation.

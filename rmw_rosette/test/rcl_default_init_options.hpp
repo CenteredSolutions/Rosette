@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rcl_default_init_options.hpp
  * @brief Init options as rcl_init() hands them to rmw_init() with no environment set.

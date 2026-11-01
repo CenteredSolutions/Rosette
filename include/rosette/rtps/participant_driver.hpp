@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rosette/rtps/participant_driver.hpp
  * @brief Runs a participant: receive, tick, and sleep until something happens.

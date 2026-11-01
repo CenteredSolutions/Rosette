@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # cmake/rosette_prelude.cmake
 #
 # Board selection and toolchain setup that MUST run before the first project()

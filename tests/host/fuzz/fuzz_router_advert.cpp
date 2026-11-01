@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file fuzz_router_advert.cpp
  * @brief Fuzz harness for the IPv6 Router Advertisement decoder.

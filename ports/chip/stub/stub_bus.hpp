@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/stub/stub_bus.hpp
  * @brief Compile-only register bus for the WIZnet driver: reads return 0xFF, writes vanish.

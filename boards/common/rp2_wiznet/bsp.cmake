@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # boards/common/rp2_wiznet — the composition the WIZnet EVB-Pico boards share.
 #
 # A board selects it with ROSETTE_BOARD_COMMON=rp2_wiznet in its board.cmake;

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file storage/volume.hpp
  * @brief RAII handle for the board's mounted LittleFS configuration volume.

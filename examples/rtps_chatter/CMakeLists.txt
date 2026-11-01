@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # rtps_chatter — agentless ROS 2 talker/listener on the Rosette RTPS core over
 # WIZnet hardware UDP sockets (no micro-ROS, no agent). Built from the repo
 # root for a WIZnet Pico board:

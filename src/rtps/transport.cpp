@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/transport_freertos.cpp
  * @brief RTPS UDP transport implemented on top of the shared socket module.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_participant_waiting_matches.cpp
  * @brief Waiting matches: a pair a proxy pool refuses binds later, oldest first.

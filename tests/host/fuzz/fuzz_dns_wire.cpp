@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file fuzz_dns_wire.cpp
  * @brief Fuzz harness for the DNS/mDNS reader that agent discovery uses.

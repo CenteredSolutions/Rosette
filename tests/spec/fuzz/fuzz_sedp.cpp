@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file fuzz_sedp.cpp
  * @brief Fuzz harness for SEDP endpoint-data decoding and withdrawal.

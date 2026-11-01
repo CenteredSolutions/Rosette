@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file tests/host/wall_clock_tick_test.cpp
  * @brief WallClock reads the tick and the offset together, even when a time source sets the

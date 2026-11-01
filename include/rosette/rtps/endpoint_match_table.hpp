@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/endpoint_match_table.hpp
  * @brief Endpoint discovery data and matching — §8.5.4–§8.5.5

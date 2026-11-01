@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_subscription.cpp
  * @brief rmw_create_subscription / rmw_take(_with_info) family.

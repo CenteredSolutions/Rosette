@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_buf_pool_debug_alloc.cpp
  * @brief The buffer pool's debug allocation macros, called as a firmware calls them:

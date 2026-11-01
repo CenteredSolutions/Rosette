@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_proxy_pool_admission.cpp
  * @brief ProxyPool: free list, endpoint lists, floors and caps (rtps/proxy_pool.hpp).

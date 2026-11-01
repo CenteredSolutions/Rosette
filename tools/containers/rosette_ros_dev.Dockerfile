@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # Development and interop image for one ROS 2 distribution.
 #
 # The image carries everything the host-side rmw_rosette build and the

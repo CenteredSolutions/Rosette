@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """rosette — MicroPython ROS2/micro-ROS client library.
 
 Typical usage with a known agent address::

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file posix_board_network_prefix_test.cpp
  * @brief The host board network reports the netmask of the interface holding its address.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file sedp_recorded_endpoints.hpp
  * @brief A LocalEndpointSource for SEDP tests, and a SedpWriter that uses it in rebuild builds.

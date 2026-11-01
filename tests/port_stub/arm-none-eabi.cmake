@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # Cross toolchain for tests/port_stub: bare Arm Cortex-M with newlib, no SDK.
 #
 # newlib supplies the C and C++ libraries and nothing else: no sockets, no

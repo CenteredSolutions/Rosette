@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/stub/stub_littlefs.cpp
  * @brief Compile-only LittleFS block device: the volume never mounts.

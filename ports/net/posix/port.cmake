@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # ports/net/posix — the host's IP stack through BSD sockets (Linux, macOS).
 #
 # Included by cmake/rosette_net.cmake with ROSETTE_PORT_DIR set to this

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_rosette/introspection_c_codec.hpp
  * @brief CDR encoding of C ROS messages by walking their introspection metadata.
