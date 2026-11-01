@@ -5,7 +5,8 @@
 # base with BASE_REF (default origin/main), including uncommitted edits, so
 # untouched code is held to them once it is edited. The function-length check
 # covers the whole tree against tools/style/function_length_baseline.txt, and the
-# port-boundary check against tools/style/port_boundary_baseline.txt.
+# port-boundary check against tools/style/port_boundary_baseline.txt. `reuse lint`
+# requires every file to name its copyright holder and license (REUSE.toml).
 #
 # Setup:  python3 -m pip install -r tools/style/requirements.txt
 # Usage:  tools/style/run_style_checks.sh [BASE_REF]
@@ -31,5 +32,12 @@ python3 "$here/check_function_length.py" || status=1
 
 echo "== port boundaries"
 python3 "$here/check_port_boundaries.py" || status=1
+
+echo "== license headers (REUSE)"
+if ! reuse lint --quiet; then
+    reuse lint --lines
+    echo "Run: tools/license/apply_license_headers.py"
+    status=1
+fi
 
 exit "$status"

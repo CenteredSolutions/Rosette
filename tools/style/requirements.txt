@@ -1,3 +1,4 @@
 # Pinned so local runs and CI format identically; see .clang-format.
 clang-format==18.1.8
 lizard==1.24.0
+reuse==6.3.0

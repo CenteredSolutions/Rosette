@@ -1,0 +1,24 @@
+version = 1
+SPDX-PackageName = "Rosette"
+SPDX-PackageSupplier = "Centered Solutions, LLC"
+SPDX-PackageDownloadLocation = "https://github.com/CenteredSolutions/Rosette"
+
+# Files that cannot carry a comment header, or where one would be noise:
+# documentation, JSON, ROS interface definitions, package manifests, and data
+# files read by tools. A file with its own SPDX header takes precedence over
+# these entries. Source files carry their header in place; see
+# tools/license/apply_license_headers.py.
+[[annotations]]
+path = [
+    "**/*.md",
+    "**/*.json",
+    "**/*.srv",
+    "**/*.msg",
+    "**/*.xml",
+    "**/*.txt",
+    "**/*.meta.in",
+    "**/*.patch",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 Centered Solutions, LLC"
+SPDX-License-Identifier = "Apache-2.0"

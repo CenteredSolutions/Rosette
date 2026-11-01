@@ -1,0 +1,9 @@
+Rosette
+Copyright 2026 Centered Solutions, LLC
+
+This product includes software developed at Centered Solutions, LLC
+(https://github.com/CenteredSolutions/Rosette).
+
+The Pico SDK board headers under boards/*/wiznet_w6*_evb_pico*.h are derived
+from the Raspberry Pi Pico SDK, Copyright (c) 2020 Raspberry Pi (Trading) Ltd.,
+and are distributed under the BSD-3-Clause license (LICENSES/BSD-3-Clause.txt).
