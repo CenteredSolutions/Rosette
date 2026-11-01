@@ -1,0 +1,5 @@
+# Commits git blame skips: run `git config blame.ignoreRevsFile .git-blame-ignore-revs`
+# once per clone (GitHub applies this file automatically).
+
+# Add SPDX license headers to every source file (mechanical)
+e06a3ad41e271e4747a21f8ca4d7ca1a9103d508

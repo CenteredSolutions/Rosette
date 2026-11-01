@@ -19,6 +19,7 @@ path = [
     "**/*.meta.in",
     "**/*.patch",
     "NOTICE",
+    ".git-blame-ignore-revs",
 ]
 precedence = "closest"
 SPDX-FileCopyrightText = "2026 Centered Solutions, LLC"
