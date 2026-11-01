@@ -136,28 +136,28 @@ do not need to be redesigned when subscriptions come online.
 
 ## File Map
 
-- [micropython.mk](path/to/Rosette/bindings/micropython/micropython.mk):
+- [micropython.mk](micropython.mk):
   classic user module integration for Make-based MicroPython ports
-- [micropython.cmake](path/to/Rosette/bindings/micropython/micropython.cmake):
+- [micropython.cmake](micropython.cmake):
   CMake-based user module integration
-- [rosette_mpy_types.h](path/to/Rosette/bindings/micropython/rosette_mpy_types.h):
+- [rosette_mpy_types.h](rosette_mpy_types.h):
   concrete MicroPython object layouts and runtime descriptors
-- [rosette_mpy_backend.hpp](path/to/Rosette/bindings/micropython/rosette_mpy_backend.hpp):
+- [rosette_mpy_backend.hpp](rosette_mpy_backend.hpp):
   C++ backend entry points that connect the binding to Rosette's micro-ROS
   layer
-- [modrosette.c](path/to/Rosette/bindings/micropython/modrosette.c):
+- [modrosette.c](modrosette.c):
   MicroPython module registration surface
-- [rosette_mpy_context.cpp](path/to/Rosette/bindings/micropython/rosette_mpy_context.cpp):
+- [rosette_mpy_context.cpp](rosette_mpy_context.cpp):
   `Context` type implementation
-- [rosette_mpy_node.cpp](path/to/Rosette/bindings/micropython/rosette_mpy_node.cpp):
+- [rosette_mpy_node.cpp](rosette_mpy_node.cpp):
   `Node` type implementation
-- [rosette_mpy_pubsub.cpp](path/to/Rosette/bindings/micropython/rosette_mpy_pubsub.cpp):
+- [rosette_mpy_pubsub.cpp](rosette_mpy_pubsub.cpp):
   `Publisher` and `Subscription` type implementation
-- [rosette_mpy_schema.cpp](path/to/Rosette/bindings/micropython/rosette_mpy_schema.cpp):
+- [rosette_mpy_schema.cpp](rosette_mpy_schema.cpp):
   runtime `.msg` parser and schema-driven codecs
-- [rosette_mpy_transport.cpp](path/to/Rosette/bindings/micropython/rosette_mpy_transport.cpp):
+- [rosette_mpy_transport.cpp](rosette_mpy_transport.cpp):
   custom transport callbacks that drive a MicroPython socket object
-- [rosette_mpy_stream.cpp](path/to/Rosette/bindings/micropython/rosette_mpy_stream.cpp):
+- [rosette_mpy_stream.cpp](rosette_mpy_stream.cpp):
   poll and stream integration for subscriptions
 
 ## Build Shape
@@ -177,7 +177,7 @@ The build glue understands three important knobs:
 
 If those paths are not supplied explicitly, the Make and CMake integration
 will look for cached values in
-`path/to/Rosette/build-micro-ros/CMakeCache.txt`. The real
+`build-micro-ros/CMakeCache.txt` at the repository root. The real
 backend is enabled only when both the include tree and `libmicroros.a` exist.
 Otherwise the user module falls back to the compileable backend stub.
 
