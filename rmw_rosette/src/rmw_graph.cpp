@@ -16,6 +16,7 @@
  * the thread driving the participant.
  */
 
+#include "rmw_rosette/argument_checks.hpp"
 #include "rmw_rosette/identifier.h"
 #include "rmw_rosette/ros_features.h"
 #include "rmw_rosette/topic_naming.hpp"
@@ -28,8 +29,6 @@
 #include <rmw/names_and_types.h>
 #include <rmw/topic_endpoint_info_array.h>
 #include <rmw/validate_full_topic_name.h>
-
-#include <cstring>
 
 namespace {
 
@@ -70,15 +69,10 @@ using ComposeDdsName = bool (*)(char* out, size_t cap, const char* ros_name) noe
  */
 rmw_ret_t count_endpoints(const rmw_node_t* node, const char* ros_name, ComposeDdsName compose,
                           bool writers, size_t* count, const char* caller) noexcept {
-    if (!node || !node->data || !ros_name || !count) {
-        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING("rmw_rosette: %s: null argument", caller);
-        return RMW_RET_INVALID_ARGUMENT;
-    }
-
-    if (!node->implementation_identifier
-        || std::strcmp(node->implementation_identifier, rmw_rosette_identifier) != 0) {
-        RMW_SET_ERROR_MSG_WITH_FORMAT_STRING("rmw_rosette: %s: node from another rmw", caller);
-        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    const rmw_ret_t checked = rmw_rosette::check_handle(
+        node, caller, "node", {{ros_name, "topic_name"}, {count, "count"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
     }
 
     int validation = RMW_TOPIC_VALID;

@@ -3,6 +3,7 @@
  * @brief Implementation-wide queries: optional features, log severity, GID equality.
  */
 
+#include "rmw_rosette/argument_checks.hpp"
 #include "rmw_rosette/identifier.h"
 
 #include <rmw/error_handling.h>
@@ -65,12 +66,19 @@ rmw_ret_t rmw_set_log_severity(rmw_log_severity_t severity) {
  * - rmw/rmw.h (Humble), `rmw_compare_gids_equal`
  */
 rmw_ret_t rmw_compare_gids_equal(const rmw_gid_t* gid1, const rmw_gid_t* gid2, bool* result) {
-    if (!gid1 || !gid2 || !result) return RMW_RET_INVALID_ARGUMENT;
-    if (gid1->implementation_identifier != rmw_rosette_identifier ||
-        gid2->implementation_identifier != rmw_rosette_identifier) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_compare_gids_equal: foreign GID");
-        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    if (gid1 == nullptr || gid2 == nullptr || result == nullptr) {
+        return rmw_rosette::refuse_argument(__func__,
+                                            gid1 == nullptr   ? "gid1"
+                                            : gid2 == nullptr ? "gid2"
+                                                              : "result",
+                                            rmw_rosette::ArgumentFault::null);
     }
+
+    if (!rmw_rosette::is_rosette_identifier(gid1->implementation_identifier)
+        || !rmw_rosette::is_rosette_identifier(gid2->implementation_identifier)) {
+        return rmw_rosette::refuse_argument(__func__, "gid", rmw_rosette::ArgumentFault::foreign);
+    }
+
     *result = std::memcmp(gid1->data, gid2->data, RMW_GID_STORAGE_SIZE) == 0;
     return RMW_RET_OK;
 }

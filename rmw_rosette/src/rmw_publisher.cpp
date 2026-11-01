@@ -3,12 +3,13 @@
  * @brief rmw_create_publisher / rmw_publish / matched-subscription queries.
  */
 
+#include "rmw_rosette/argument_checks.hpp"
 #include "rmw_rosette/guid.hpp"
 #include "rmw_rosette/identifier.h"
+#include "rmw_rosette/message_codec.hpp"
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/qos.hpp"
 #include "rmw_rosette/topic_naming.hpp"
-#include "rmw_rosette/message_codec.hpp"
 #include "rmw_rosette/types.hpp"
 
 #include <rmw/rmw.h>
@@ -60,9 +61,10 @@ extern "C" {
  * @param[in] topic_name Fully-qualified ROS 2 topic name, as rcl passes it.
  * @param[in] qos_policies Requested QoS profile.
  * @param[in] publisher_options Copied verbatim into the resulting
- *   `rmw_publisher_t::options`.
- * @return The new publisher, or `nullptr` if any required argument is
- *   null, the type support offers no supported typesupport family, the
+ *   `rmw_publisher_t::options`; must be non-null.
+ * @return The new publisher, or `nullptr` if check_endpoint_arguments() refuses
+ *   the node, type support, name or QoS, the options are null, the type
+ *   support offers no supported typesupport family, the
  *   participant's writer table is full, the publisher pool is exhausted,
  *   or the updated `ros_discovery_info` message cannot be written.
  */
@@ -72,8 +74,14 @@ rmw_publisher_t* rmw_create_publisher(
     const char* topic_name,
     const rmw_qos_profile_t* qos_policies,
     const rmw_publisher_options_t* publisher_options) {
-    if (!node || !node->data || !type_support || !topic_name || !qos_policies) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_publisher: null argument");
+    if (rmw_rosette::check_endpoint_arguments(node, type_support, topic_name, qos_policies,
+                                              __func__)
+        != RMW_RET_OK) {
+        return nullptr;
+    }
+
+    if (rmw_rosette::check_not_null(publisher_options, __func__, "publisher_options")
+        != RMW_RET_OK) {
         return nullptr;
     }
 
@@ -135,7 +143,7 @@ rmw_publisher_t* rmw_create_publisher(
     slot->pub.implementation_identifier = rmw_rosette_identifier;
     slot->pub.data = &slot->impl;
     slot->pub.topic_name = slot->impl.mangled_topic_name;
-    if (publisher_options) slot->pub.options = *publisher_options;
+    slot->pub.options = *publisher_options;
     slot->pub.can_loan_messages = false;
 
     return &slot->pub;
@@ -149,7 +157,7 @@ rmw_publisher_t* rmw_create_publisher(
  * remote subscriptions unmatch it promptly instead of at lease expiry, and
  * frees its writer-table slot for reuse.
  *
- * @param[in] node Unused; kept for ABI symmetry with `rmw_create_publisher()`.
+ * @param[in] node The node the endpoint was created in; checked as a handle, not compared.
  * @param[in] publisher Publisher to destroy.
  * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `publisher` is null.
  *
@@ -162,8 +170,12 @@ rmw_publisher_t* rmw_create_publisher(
  * - rmw/rmw.h (Humble), `rmw_destroy_publisher`
  */
 rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
-    (void)node;
-    if (!publisher || !publisher->data) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked =
+        rmw_rosette::check_node_and_handle(node, publisher, __func__, "publisher");
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     if (impl->node && impl->writer) {
@@ -195,7 +207,11 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
 rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
                        rmw_publisher_allocation_t* allocation) {
     (void)allocation;
-    if (!publisher || !publisher->data || !ros_message) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked =
+        rmw_rosette::check_handle(publisher, __func__, "publisher", {{ros_message, "ros_message"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
 
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
@@ -248,7 +264,11 @@ rmw_ret_t rmw_publish_serialized_message(const rmw_publisher_t* publisher,
                                           const rmw_serialized_message_t* serialized_message,
                                           rmw_publisher_allocation_t* allocation) {
     (void)allocation;
-    if (!publisher || !publisher->data || !serialized_message) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(
+        publisher, __func__, "publisher", {{serialized_message, "serialized_message"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
 
     constexpr size_t hdr = rmw_rosette::kRtpsEncapsulationHeaderSize;
     const uint8_t* buf = serialized_message->buffer;
@@ -281,7 +301,12 @@ rmw_ret_t rmw_publish_serialized_message(const rmw_publisher_t* publisher,
  */
 rmw_ret_t rmw_publisher_count_matched_subscriptions(const rmw_publisher_t* publisher,
                                                      size_t* subscription_count) {
-    if (!publisher || !publisher->data || !subscription_count) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(
+        publisher, __func__, "publisher", {{subscription_count, "subscription_count"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     const auto* impl = static_cast<const rmw_rosette::Publisher*>(publisher->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     *subscription_count = impl->writer ? impl->writer->matched_reader_count() : 0u;
@@ -297,7 +322,12 @@ rmw_ret_t rmw_publisher_count_matched_subscriptions(const rmw_publisher_t* publi
  *   argument is null.
  */
 rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t* gid) {
-    if (!publisher || !publisher->data || !gid) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked =
+        rmw_rosette::check_handle(publisher, __func__, "publisher", {{gid, "gid"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     rmw_rosette::guid_to_rmw_gid(impl->writer->guid(), *gid);
@@ -315,7 +345,12 @@ rmw_ret_t rmw_get_gid_for_publisher(const rmw_publisher_t* publisher, rmw_gid_t*
  * - rmw/rmw.h (Humble), `rmw_publisher_get_actual_qos`
  */
 rmw_ret_t rmw_publisher_get_actual_qos(const rmw_publisher_t* publisher, rmw_qos_profile_t* qos) {
-    if (!publisher || !publisher->data || !qos) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked =
+        rmw_rosette::check_handle(publisher, __func__, "publisher", {{qos, "qos"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     *qos = static_cast<const rmw_rosette::Publisher*>(publisher->data)->qos;
     return RMW_RET_OK;
 }
@@ -335,7 +370,11 @@ rmw_ret_t rmw_publisher_get_actual_qos(const rmw_publisher_t* publisher, rmw_qos
  * - OMG DDSI-RTPS 2.5 §8.4.13 (writer liveliness)
  */
 rmw_ret_t rmw_publisher_assert_liveliness(const rmw_publisher_t* publisher) {
-    if (!publisher || !publisher->data) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(publisher, __func__, "publisher");
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     return RMW_RET_OK;
 }
 
@@ -366,7 +405,11 @@ rmw_ret_t rmw_publisher_assert_liveliness(const rmw_publisher_t* publisher) {
  */
 rmw_ret_t rmw_publisher_wait_for_all_acked(const rmw_publisher_t* publisher,
                                            rmw_time_t wait_timeout) {
-    if (!publisher || !publisher->data) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(publisher, __func__, "publisher");
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
 
     uint32_t timeout_ms = rosette::platform::kWaitForever;

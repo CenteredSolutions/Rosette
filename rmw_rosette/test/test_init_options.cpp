@@ -15,6 +15,7 @@
  * before it creates anything.
  */
 
+#include "rmw_rosette/identifier.h"
 #include "rmw_rosette/ros_features.h"
 
 #include <gtest/gtest.h>
@@ -31,6 +32,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 namespace {
 
@@ -158,6 +160,23 @@ TEST_F(InitOptionsTest, RepeatedSessionsReturnEveryAllocation) {
     EXPECT_EQ(g_live, 0);
 }
 
+// TC-RMW-INITOPT-015: options whose identifier is rmw_rosette's name in other storage copy,
+// and the copy carries the static identifier, so it finalizes after that storage is gone.
+TEST_F(InitOptionsTest, CopyStampsTheStaticIdentifier) {
+    rmw_init_options_t source = options_with_strings();
+    std::string        identifier = rmw_rosette_identifier;
+    source.implementation_identifier = identifier.c_str();
+    rmw_init_options_t copy = rmw_get_zero_initialized_init_options();
+    ASSERT_EQ(rmw_init_options_copy(&source, &copy), RMW_RET_OK);
+    EXPECT_EQ(copy.implementation_identifier, rmw_rosette_identifier);
+
+    source.implementation_identifier = rmw_rosette_identifier;
+    identifier.assign(identifier.size(), 'x');
+    EXPECT_EQ(rmw_init_options_fini(&copy), RMW_RET_OK);
+    EXPECT_EQ(rmw_init_options_fini(&source), RMW_RET_OK);
+    EXPECT_EQ(g_live, 0);
+}
+
 // TC-RMW-INITOPT-004: copying into initialized options is refused, and nothing is allocated.
 TEST_F(InitOptionsTest, CopyRefusesAnInitializedDestination) {
     rmw_init_options_t source = options_with_strings();
@@ -171,13 +190,44 @@ TEST_F(InitOptionsTest, CopyRefusesAnInitializedDestination) {
     EXPECT_EQ(g_live, 0);
 }
 
-// TC-RMW-INITOPT-005: finalizing zero-initialized or already-finalized options is harmless.
-TEST_F(InitOptionsTest, FiniOfEmptyOptionsIsANoOp) {
+// TC-RMW-INITOPT-005: finalizing zero-initialized or already-finalized options is refused, as
+// the stock rmws refuse it, and frees nothing twice.
+TEST_F(InitOptionsTest, FiniRefusesOptionsThatAreNotInitialized) {
     rmw_init_options_t options = rmw_get_zero_initialized_init_options();
-    EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
+    EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_INVALID_ARGUMENT);
     rmw_init_options_t used = options_with_strings();
     EXPECT_EQ(rmw_init_options_fini(&used), RMW_RET_OK);
-    EXPECT_EQ(rmw_init_options_fini(&used), RMW_RET_OK);
+    EXPECT_EQ(rmw_init_options_fini(&used), RMW_RET_INVALID_ARGUMENT);
+    EXPECT_EQ(g_live, 0);
+}
+
+// TC-RMW-INITOPT-014: init and copy refuse what the rmw API calls invalid before touching
+// anything: an invalid allocator, options initialized twice, an uninitialized source, and a
+// source whose identifier names another rmw (compared by content, not by address).
+TEST_F(InitOptionsTest, InitAndCopyRefuseInvalidArguments) {
+    rmw_init_options_t options = rmw_get_zero_initialized_init_options();
+    EXPECT_EQ(rmw_init_options_init(&options, rcutils_get_zero_initialized_allocator()),
+              RMW_RET_INVALID_ARGUMENT);
+    EXPECT_EQ(options.implementation_identifier, nullptr);
+    ASSERT_EQ(rmw_init_options_init(&options, counting_allocator()), RMW_RET_OK);
+    EXPECT_EQ(rmw_init_options_init(&options, counting_allocator()), RMW_RET_INVALID_ARGUMENT);
+
+    rmw_init_options_t empty = rmw_get_zero_initialized_init_options();
+    rmw_init_options_t destination = rmw_get_zero_initialized_init_options();
+    EXPECT_EQ(rmw_init_options_copy(&empty, &destination), RMW_RET_INVALID_ARGUMENT);
+
+    const std::string same_name = options.implementation_identifier;
+    const char* const own_identifier = options.implementation_identifier;
+    options.implementation_identifier = same_name.c_str();
+    EXPECT_EQ(rmw_init_options_copy(&options, &destination), RMW_RET_OK);
+    EXPECT_EQ(rmw_init_options_fini(&destination), RMW_RET_OK);
+    options.implementation_identifier = "rmw_other_implementation";
+    EXPECT_EQ(rmw_init_options_copy(&options, &destination), RMW_RET_INCORRECT_RMW_IMPLEMENTATION);
+    EXPECT_EQ(destination.implementation_identifier, nullptr);
+    rmw_reset_error();
+
+    options.implementation_identifier = own_identifier;
+    EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
     EXPECT_EQ(g_live, 0);
 }
 
@@ -250,8 +300,7 @@ TEST_F(InitOptionsTest, InitLeavesTheDomainForRclToResolve) {
 
 // TC-RMW-INITOPT-010: rmw_init() refuses a domain above 232, whose ports would not fit in 16 bits.
 TEST_F(InitOptionsTest, RmwInitRefusesADomainAbove232) {
-    rmw_init_options_t options = rmw_get_zero_initialized_init_options();
-    ASSERT_EQ(rmw_init_options_init(&options, counting_allocator()), RMW_RET_OK);
+    rmw_init_options_t options = options_with_strings();
     options.domain_id = 233u;
 #if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
     // A valid range, so the refusal is the domain's.
@@ -282,6 +331,7 @@ rmw_ret_t init_and_fini(const rmw_init_options_t& options) {
 TEST_F(InitOptionsTest, InitChecksTheDiscoveryRange) {
     rmw_init_options_t options = rmw_get_zero_initialized_init_options();
     ASSERT_EQ(rmw_init_options_init(&options, rcutils_get_default_allocator()), RMW_RET_OK);
+    options.enclave = rcutils_strdup("/", options.allocator);
     options.domain_id = 77;
 
     options.discovery_options.automatic_discovery_range = RMW_AUTOMATIC_DISCOVERY_RANGE_SUBNET;
@@ -306,13 +356,14 @@ TEST_F(InitOptionsTest, InitChecksTheDiscoveryRange) {
     EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
 }
 
-// TC-RMW-INITOPT-013: fresh options pass rmw_init() unmodified, as the stock
+// TC-RMW-INITOPT-013: fresh options pass rmw_init() with only the enclave set, as the stock
 // rmws' do; the range is this middleware's default, which rcl replaces.
 TEST_F(InitOptionsTest, FreshOptionsPassRmwInit) {
     rmw_init_options_t options = rmw_get_zero_initialized_init_options();
     ASSERT_EQ(rmw_init_options_init(&options, rcutils_get_default_allocator()), RMW_RET_OK);
     EXPECT_EQ(options.discovery_options.automatic_discovery_range,
               RMW_AUTOMATIC_DISCOVERY_RANGE_SYSTEM_DEFAULT);
+    options.enclave = rcutils_strdup("/", options.allocator);
     options.domain_id = 78;
     EXPECT_EQ(init_and_fini(options), RMW_RET_OK);
     EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);

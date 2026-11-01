@@ -119,6 +119,23 @@ public:
         return true;
     }
 
+    /**
+     * @brief Size in bytes of the oldest buffered change's payload.
+     *
+     * Lets a take size its output before pop() removes the change, so an
+     * output it cannot grow leaves the change buffered.
+     *
+     * @return The payload size of the change pop() would remove next; 0 when
+     *   the ring is empty.
+     */
+    uint32_t oldest_size() const noexcept {
+        if (count_ == 0u) {
+            return 0u;
+        }
+
+        return slots_[tail()].payload.size;
+    }
+
     /// @brief True when at least one change is waiting; rmw_wait() readiness.
     bool ready() const noexcept { return count_ != 0u; }
 

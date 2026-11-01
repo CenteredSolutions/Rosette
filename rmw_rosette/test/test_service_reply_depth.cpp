@@ -52,6 +52,7 @@ protected:
         rmw_init_options_t options = rmw_get_zero_initialized_init_options();
         ASSERT_EQ(rmw_rosette_test::init_options_as_rcl(&options), RMW_RET_OK);
         ASSERT_EQ(rmw_init(&options, &context_), RMW_RET_OK);
+        ASSERT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
         node_ = rmw_create_node(&context_, "reply_depth_test", "/");
         ASSERT_NE(node_, nullptr);
         wait_set_ = rmw_create_wait_set(&context_, kClients + 1);
@@ -71,6 +72,7 @@ protected:
 
         EXPECT_EQ(rmw_destroy_wait_set(wait_set_), RMW_RET_OK);
         EXPECT_EQ(rmw_destroy_node(node_), RMW_RET_OK);
+        EXPECT_EQ(rmw_shutdown(&context_), RMW_RET_OK);
         EXPECT_EQ(rmw_context_fini(&context_), RMW_RET_OK);
     }
 
