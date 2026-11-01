@@ -19,11 +19,11 @@ skip ^test_([a-z]+_)*[a-z]+__(rclpy__)?rclcpp__rmw_[a-z]+_cpp__rmw_rosette$
 skip ^test_([a-z]+_)*[a-z]+__rclpy__rclcpp__rmw_rosette$
 
 # A test_communication AfterShutdown case checks the exit code of every process the test
-# launched. One that is still running when the test ends, such as a publisher whose
-# subscriber has finished, is stopped with SIGINT and, if it has not exited within
-# launch's timeouts, SIGTERM and SIGKILL; whether it exits in time depends on the runner's
-# speed. A process stopped by one of those signals is allowed; a crash or an error exit is
-# not, and neither is a subscriber failure, which the test's main class does not check.
+# launched, which the main case does not. It may fail when launch had to stop a process at
+# teardown (SIGINT, SIGTERM, SIGKILL), which depends on the runner's speed, or when the
+# main case of the same parameter is a listed failure that failed too: a process that gave
+# up exits 1 if it does so before launch stops it. Any other failure, such as a crash in a
+# test whose main case passes, fails the job.
 teardown *::test_communication.*AfterShutdown.test_processes_finished_gracefully[*]
 
 # C++ type support in the rmw serialization gtests: rmw_rosette encodes from C introspection

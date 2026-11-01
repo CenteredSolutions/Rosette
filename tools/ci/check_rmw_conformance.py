@@ -27,13 +27,16 @@ Architecture:
     case whose outcome depends on timing rather than on rmw_rosette's
     behaviour; a test process that aborts part-way reports fewer cases, so a
     flaky case is not always in the results. A line prefixed with `teardown `
-    is narrower: its case may pass or be absent, and may fail only because
-    launch had to stop a test process at teardown, which is a matter of how
-    fast the runner tears down; any other failure of the case, such as a
-    process that crashed or exited with an error, fails the check. launch
-    reports each process as "Proc <name> exited with code <n>", and the
-    teardown outcomes are the signals launch sends when it stops a process:
-    SIGINT (-2), SIGTERM (-15) and SIGKILL (-9). Flaky and teardown lines may
+    is narrower, for the post-shutdown cases that check every launched
+    process's exit code ("Proc <name> exited with code <n>"): its case may
+    pass or be absent, and may fail only for one of two reasons. Either
+    launch had to stop a process at teardown, with one of the signals it
+    sends (SIGINT -2, SIGTERM -15, SIGKILL -9), which is a matter of the
+    runner's speed; or a case of the same test and parameter that is a
+    listed failure failed too, so the exit code reports that known failure
+    again, and whether the process gave up before launch stopped it is a
+    matter of timing. A crash or an error exit in a test whose other cases
+    pass fails the check. Flaky and teardown lines may
     use `*` to match any run of characters, for a family of cases that share
     one cause, such as every AfterShutdown case; a must-fail line names one
     case exactly, so it still goes stale when that case passes or
@@ -256,6 +259,33 @@ def is_teardown_failure(message: str) -> bool:
     return bool(codes) and all(code in TEARDOWN_EXIT_CODES for code in codes)
 
 
+def shares_known_failure(name: str, known_failed: set[str]) -> bool:
+    """Tells whether another case of the same test and parameter is a known failure that failed.
+
+    Args:
+        name: The case name, `<result file stem>::<classname>.<name>[<parameter>]`.
+        known_failed: The listed must-fail cases that failed in these results.
+
+    Returns:
+        True when a case in `known_failed` has the same result file stem and
+        the same trailing `[<parameter>]` (or neither has one).
+
+    Verification:
+        Correct means: `t::c.AfterShutdown.x[Empty]` is covered by a failed
+        `t::c.Main.y[Empty]`, and not by `t::c.Main.y[Arrays]` or by a case of
+        another test.
+    """
+    stem, _, case = name.partition("::")
+    parameter = case[case.rfind("["):] if case.endswith("]") else ""
+    for other in known_failed:
+        other_stem, _, other_case = other.partition("::")
+        other_parameter = other_case[other_case.rfind("["):] if other_case.endswith("]") else ""
+        if other_stem == stem and other_parameter == parameter:
+            return True
+
+    return False
+
+
 def report(title: str, names: set[str]) -> None:
     """Prints a sorted, indented list of case names under a title."""
     print(title)
@@ -297,8 +327,11 @@ def compare(args: argparse.Namespace, known: Known, cases: dict[str, Case]) -> i
           f"{len(known.teardown)} teardown lines, {len(known.skip)} skip expressions")
 
     unlisted = {name for name in failed - known.failing if not is_flaky(name, known.flaky)}
+    known_failed = known.failing & failed
     teardown = {name for name in unlisted
-                if is_flaky(name, known.teardown) and is_teardown_failure(cases[name].message)}
+                if is_flaky(name, known.teardown)
+                and (is_teardown_failure(cases[name].message)
+                     or shares_known_failure(name, known_failed))}
     exempt = (failed - known.failing - unlisted) | teardown
     new = unlisted - teardown
     fixed = {name for name in known.failing if name in cases and cases[name].passed}
@@ -313,7 +346,7 @@ def compare(args: argparse.Namespace, known: Known, cases: dict[str, Case]) -> i
     if new:
         report("new failures (fix them, or list them with a reason):", new)
         for name in sorted(n for n in new if is_flaky(n, known.teardown)):
-            print(f"  {name} failed for a reason other than teardown:")
+            print(f"  {name} failed with no teardown signal and no known failure beside it:")
             for line in cases[name].message.strip().splitlines()[:5]:
                 print(f"    {line}")
 
