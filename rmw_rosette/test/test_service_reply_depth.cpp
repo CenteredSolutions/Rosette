@@ -105,6 +105,16 @@ protected:
         return service().reply_writer->cache().size();
     }
 
+    /// Whether the participant pump thread runs this context: built in, and
+    /// not turned off by RMW_ROSETTE_PUMP_THREAD=0 in the environment.
+    bool pump_running() const {
+#if RMW_ROSETTE_PUMP_THREAD
+        return service().node->context->pump.running();
+#else
+        return false;
+#endif
+    }
+
     /// The reply writer's history capacity; fixed when the service is created.
     size_t reply_capacity() const { return service().reply_writer->cache().capacity(); }
 
@@ -193,12 +203,13 @@ TEST_F(ServiceReplyDepth, EveryReplyInFlightArrives) {
         ASSERT_EQ(rmw_send_response(service_, &header.request_id, &res), RMW_RET_OK);
     }
 
-    // With a pump thread, any number of the replies may already be acknowledged
-    // here; the delivery count below is what shows that none was evicted.
-#if !RMW_ROSETTE_PUMP_THREAD
-    EXPECT_EQ(replies_held(), RMW_ROSETTE_REPLY_DEPTH)
-        << "every reply is held until its client acknowledges it";
-#endif
+    // With the pump thread running, any number of the replies may already be
+    // acknowledged here; the delivery count below is what shows that none was
+    // evicted. Without it nothing runs the participant between these calls.
+    if (!pump_running()) {
+        EXPECT_EQ(replies_held(), RMW_ROSETTE_REPLY_DEPTH)
+            << "every reply is held until its client acknowledges it";
+    }
 
     int received[kClients] = {};
     int replies = 0;

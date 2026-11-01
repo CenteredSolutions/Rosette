@@ -380,8 +380,10 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
  *
  * Verification:
  * - Correct means: returns as soon as a subscription has data or a guard
- *   condition is triggered, reports exactly those entries, and never
- *   returns RMW_RET_TIMEOUT with a ready entry left unreported.
+ *   condition is triggered, reports exactly those entries, never returns
+ *   RMW_RET_TIMEOUT with a ready entry left unreported, and never returns
+ *   it before the deadline, even when another thread takes what ended the
+ *   wait before the report is made.
  * - Covered by: rmw_rosette/test/test_guard_condition.cpp,
  *   rmw_rosette/test/test_pub_sub_loopback.cpp,
  *   rmw_rosette/test/test_live_context_refusals.cpp (TC-RMW-ARG-008),
@@ -414,16 +416,34 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
 
     // Readiness is evaluated under the participant lock after every protocol
     // pass, whichever thread runs the passes. The wait only decides when to
-    // stop; the report, and with it the status, is taken afresh under the lock.
-    (void)rmw_rosette::wait_until_ready(
-        ctx,
-        [&]() noexcept { return any_ready(subscriptions, guard_conditions, services, clients); },
-        timeout_ms);
+    // stop; the report, and with it the status, is decided afresh under the
+    // lock. Another thread may take what ended the wait before the lock is
+    // retaken, so a wait whose deadline has not passed waits again, its
+    // arrays still intact, instead of reporting a timeout early.
+    const uint32_t start_ms = rosette::platform::monotonic_ms();
+    uint32_t       remaining_ms = timeout_ms;
+    for (;;) {
+        (void)rmw_rosette::wait_until_ready(
+            ctx,
+            [&]() noexcept {
+                return any_ready(subscriptions, guard_conditions, services, clients);
+            },
+            remaining_ms);
 
-    rmw_rosette::ContextLock lock(ctx);
-    const bool               reported =
-        finalize_ready(subscriptions, guard_conditions, services, clients, events);
-    return reported ? RMW_RET_OK : RMW_RET_TIMEOUT;
+        rmw_rosette::ContextLock lock(ctx);
+        const uint32_t           elapsed_ms = rosette::platform::monotonic_ms() - start_ms;
+        const bool               expired =
+            timeout_ms != rosette::platform::kWaitForever && elapsed_ms >= timeout_ms;
+        if (expired || any_ready(subscriptions, guard_conditions, services, clients)) {
+            const bool reported =
+                finalize_ready(subscriptions, guard_conditions, services, clients, events);
+            return reported ? RMW_RET_OK : RMW_RET_TIMEOUT;
+        }
+
+        if (timeout_ms != rosette::platform::kWaitForever) {
+            remaining_ms = timeout_ms - elapsed_ms;
+        }
+    }
 }
 
 }  // extern "C"

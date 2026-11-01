@@ -209,6 +209,9 @@ if(BUILD_TESTING)
         RESULT_FILE ${_rr_result}
         TIMEOUT 60
         ENV RMW_ROSETTE_PUMP_THREAD=0)
+      # Both runs use the same topic and service names in the same domain;
+      # under ctest -j one could match the other's endpoints.
+      set_tests_properties(${test_name} ${test_name}_direct PROPERTIES RESOURCE_LOCK ${test_name})
     endforeach()
   endif()
 endif()
