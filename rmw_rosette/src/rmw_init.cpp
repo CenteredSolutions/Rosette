@@ -21,6 +21,7 @@
 #endif
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 // 1 when the paired rcl is micro-ROS', built without command-line support,
 // whose rcl_init() leaves the enclave null; cmake/rmw_rosette_firmware.cmake sets it.
@@ -224,6 +225,32 @@ uint32_t effective_max_datagram_size() noexcept {
     return limit;
 }
 
+#if RMW_ROSETTE_PUMP_THREAD
+/**
+ * @brief Whether rmw_init() starts the participant pump thread.
+ *
+ * A host build runs the participant on the pump thread by default, as stock
+ * DDS implementations do. RMW_ROSETTE_PUMP_THREAD=0 in the environment
+ * leaves it to the thread in rmw_wait() instead, as on a board: the
+ * deterministic choice for one executor that spins for the life of the
+ * context (participant_pump.hpp states that contract). Any other value, or
+ * none, keeps the pump.
+ *
+ * @return false only when the environment sets RMW_ROSETTE_PUMP_THREAD=0.
+ *
+ * Verification:
+ * - Correct means: with the variable set to 0, no thread is started and
+ *   rmw_wait() runs the passes; the rmw_rosette tests pass in both modes.
+ * - Covered by: rmw_rosette/CMakeLists.txt registers every rmw_rosette test
+ *   but test_participant_pump a second time, as <name>_direct, with
+ *   RMW_ROSETTE_PUMP_THREAD=0.
+ */
+bool pump_thread_requested() noexcept {
+    const char* env = std::getenv("RMW_ROSETTE_PUMP_THREAD");
+    return env == nullptr || std::strcmp(env, "0") != 0;
+}
+#endif
+
 /**
  * @brief Prints the transport's datagram counters when requested.
  *
@@ -274,7 +301,8 @@ void report_writer_evictions(const rtps::RTPSParticipant& participant) noexcept 
 }
 
 /**
- * @brief Destroys a context's driver, participant, and transport, in that order.
+ * @brief Stops the pump thread, then destroys a context's driver, participant,
+ *   and transport, in that order.
  *
  * rmw_context_fini() and rmw_init()'s failure path share this one teardown,
  * so the participant's destructor, which is large on firmware, is emitted once.
@@ -283,6 +311,9 @@ void report_writer_evictions(const rtps::RTPSParticipant& participant) noexcept 
  *   `constructed` is cleared on return.
  */
 void destroy_participant(rmw_rosette::Context& ctx) noexcept {
+#if RMW_ROSETTE_PUMP_THREAD
+    ctx.pump.stop();
+#endif
     ctx.driver->~ParticipantDriver();
     ctx.participant->~RTPSParticipant();
     ctx.transport->~SocketUdpTransport();
@@ -351,6 +382,76 @@ rmw_ret_t check_discovery_options(const rmw_discovery_options_t& options) noexce
     return RMW_RET_OK;
 }
 #endif
+
+/**
+ * @brief Checks rmw_init()'s arguments before anything is acquired.
+ *
+ * rmw_init() refuses a call before it takes a context slot or opens a
+ * socket, so a refused init leaves nothing to release. The checks run in the
+ * order the stock rmws make them: null arguments, the options' identifier,
+ * the enclave, a context already initialized, then the discovery options.
+ *
+ * A null enclave is refused only where the paired rcl always supplies one.
+ * Stock rcl sets it in rcl_init(), to the --enclave argument or "/".
+ * micro-ROS builds rcl with RCL_COMMAND_LINE_ENABLED off, which compiles
+ * that step out, so on firmware every rclc program reaches rmw_init() with a
+ * null enclave; the firmware build defines RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE
+ * and the enclave is then optional. rmw_rosette reads the enclave nowhere
+ * else, and a null one is copied and finalized as absent.
+ *
+ * @param[in] options The init options; may be null.
+ * @param[in] context The context to initialize; may be null.
+ * @return RMW_RET_OK when init may proceed; otherwise the refusal's code
+ *   (INCORRECT_RMW_IMPLEMENTATION for foreign options, INVALID_ARGUMENT for
+ *   the rest), with the error state set.
+ *
+ * Verification:
+ * - Correct means: every refused call returns before context_pool() is touched,
+ *   and a stock rclc firmware initializes with the null enclave its rcl passes.
+ * - Covered by: test_rmw_implementation's TestInitShutdown.init_with_bad_arguments
+ *   (host); examples/led_files and examples/rclc_chatter reaching "session up"
+ *   on a board (firmware).
+ *
+ * References:
+ * - rmw/init.h (Humble, Jazzy), `rmw_init`
+ * - rcl/src/rcl/init.c (ros2/rcl and micro-ROS/rcl, Humble), `rcl_init`, the enclave step
+ */
+rmw_ret_t check_init_arguments(const rmw_init_options_t* options,
+                               const rmw_context_t*      context) noexcept {
+    // Refusals name the entry point the caller called.
+    constexpr const char* kFunction = "rmw_init";
+    if (options == nullptr || context == nullptr) {
+        return rmw_rosette::refuse_argument(kFunction, options == nullptr ? "options" : "context",
+                                            ArgumentFault::null);
+    }
+
+    if (options->implementation_identifier == nullptr) {
+        return rmw_rosette::refuse_argument(kFunction, "options", ArgumentFault::uninitialized);
+    }
+
+    if (!rmw_rosette::is_rosette_identifier(options->implementation_identifier)) {
+        return rmw_rosette::refuse_argument(kFunction, "options", ArgumentFault::foreign);
+    }
+
+#if !RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE
+    if (options->enclave == nullptr) {
+        return rmw_rosette::refuse_argument(kFunction, "options enclave", ArgumentFault::null);
+    }
+#endif
+
+    if (context->implementation_identifier != nullptr) {
+        return rmw_rosette::refuse_argument(kFunction, "context", ArgumentFault::already_in_use);
+    }
+
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
+    const rmw_ret_t discovery_ret = check_discovery_options(options->discovery_options);
+    if (discovery_ret != RMW_RET_OK) {
+        return discovery_ret;
+    }
+#endif
+
+    return RMW_RET_OK;
+}
 
 }  // namespace
 
@@ -623,16 +724,9 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * node created on this context reports to. The context's graph guard
  * condition is triggered by every graph change the participant reports.
  *
- * A null enclave is refused only where the paired rcl always supplies one.
- * Stock rcl sets it in rcl_init(), to the --enclave argument or "/".
- * micro-ROS builds rcl with RCL_COMMAND_LINE_ENABLED off, which compiles
- * that step out, so on firmware every rclc program reaches rmw_init() with a
- * null enclave; the firmware build defines RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE
- * and the enclave is then optional. rmw_rosette reads the enclave nowhere
- * else, and a null one is copied and finalized as absent.
- *
  * @param[in] options Init options from rmw_init_options_init(), with the
- *   `enclave` rcl_init() sets, or a null one on firmware; `domain_id` and `instance_id` are used,
+ *   `enclave` rcl_init() sets, or a null one on firmware
+ *   (check_init_arguments()); `domain_id` and `instance_id` are used,
  *   and `discovery_options` where the headers have them
  *   (check_discovery_options()). `domain_id` is 0 to 232, or
  *   RMW_DEFAULT_DOMAIN_ID for domain 0.
@@ -664,38 +758,12 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * References:
  * - rmw/init.h (Humble, Jazzy), `rmw_init`
  * - OMG DDSI-RTPS 2.5 §8.5.3 (SPDP), §9.6.1.1 (port mapping)
- * - rcl/src/rcl/init.c (ros2/rcl and micro-ROS/rcl, Humble), `rcl_init`, the enclave step
  */
 rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
-    if (options == nullptr || context == nullptr) {
-        return rmw_rosette::refuse_argument(__func__, options == nullptr ? "options" : "context",
-                                            ArgumentFault::null);
+    const rmw_ret_t checked = check_init_arguments(options, context);
+    if (checked != RMW_RET_OK) {
+        return checked;
     }
-
-    if (options->implementation_identifier == nullptr) {
-        return rmw_rosette::refuse_argument(__func__, "options", ArgumentFault::uninitialized);
-    }
-
-    if (!rmw_rosette::is_rosette_identifier(options->implementation_identifier)) {
-        return rmw_rosette::refuse_argument(__func__, "options", ArgumentFault::foreign);
-    }
-
-#if !RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE
-    if (options->enclave == nullptr) {
-        return rmw_rosette::refuse_argument(__func__, "options enclave", ArgumentFault::null);
-    }
-#endif
-
-    if (context->implementation_identifier != nullptr) {
-        return rmw_rosette::refuse_argument(__func__, "context", ArgumentFault::already_in_use);
-    }
-
-#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
-    const rmw_ret_t discovery_ret = check_discovery_options(options->discovery_options);
-    if (discovery_ret != RMW_RET_OK) {
-        return discovery_ret;
-    }
-#endif
 
     uint8_t domain_id = 0u;
     if (!resolve_domain_id(options->domain_id, domain_id)) {
@@ -754,6 +822,15 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
         context_pool().release(impl);
         return RMW_RET_ERROR;
     }
+
+#if RMW_ROSETTE_PUMP_THREAD
+    if (pump_thread_requested() && !ctx.pump.start(*ctx.driver)) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: cannot start the participant pump thread");
+        destroy_participant(ctx);
+        context_pool().release(impl);
+        return RMW_RET_ERROR;
+    }
+#endif
 
     context->instance_id = options->instance_id;
     context->implementation_identifier = rmw_rosette_identifier;
@@ -831,6 +908,10 @@ rmw_ret_t rmw_context_fini(rmw_context_t* context) {
 
     rmw_rosette::Context& ctx = impl->rosette_context;
     if (ctx.constructed) {
+#if RMW_ROSETTE_PUMP_THREAD
+        // The reports read counters the pump updates; stop it first.
+        ctx.pump.stop();
+#endif
         report_transport_stats(*ctx.transport);
         report_writer_evictions(*ctx.participant);
         destroy_participant(ctx);

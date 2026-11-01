@@ -11,6 +11,10 @@
  * wait returns on whichever comes first, a datagram or a signal
  * (PosixSocketProvider::wait_readable()). Writing to a pipe is also
  * async-signal-safe, so signal handlers may signal an Event.
+ *
+ * Thread is a POSIX-only addition to the contract: a host library that must
+ * run protocol work while the program's own threads do not (rmw_rosette's
+ * participant pump) starts one. Boards run that work from their executor.
  */
 
 #pragma once
@@ -21,10 +25,37 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include <signal.h>
 #include <time.h>
 #include <unistd.h>
 
 namespace rosette::platform {
+
+/**
+ * @brief Converts a platform timeout to poll()'s signed millisecond timeout.
+ *
+ * poll() takes an int, so a finite wait longer than INT32_MAX milliseconds
+ * (about 24.8 days) would turn negative and block forever. Such a wait is
+ * capped instead: poll() returns early as on a timeout, and every caller
+ * waits in a loop that recomputes what remains of its own deadline.
+ *
+ * @param[in] timeout_ms Longest wait; UINT32_MAX (kWaitForever) blocks.
+ * @return -1 for UINT32_MAX, otherwise `timeout_ms` capped at INT32_MAX.
+ *
+ * Verification:
+ * - Correct means: no finite timeout yields a negative result.
+ * - Covered by: inspection; the cap needs 24.8 days to observe.
+ *
+ * References:
+ * - POSIX.1-2017 poll(), the `timeout` argument
+ */
+inline int poll_timeout_ms(uint32_t timeout_ms) noexcept {
+    if (timeout_ms == UINT32_MAX) {
+        return -1;
+    }
+
+    return timeout_ms > static_cast<uint32_t>(INT32_MAX) ? INT32_MAX : static_cast<int>(timeout_ms);
+}
 
 /**
  * @brief Non-recursive mutex over pthread_mutex_t.
@@ -90,8 +121,8 @@ public:
      */
     bool wait_for(uint32_t timeout_ms) noexcept {
         pollfd p{fds_[0], POLLIN, 0};
-        const int t = (timeout_ms == UINT32_MAX) ? -1 : static_cast<int>(timeout_ms);
-        int rc;
+        const int t = poll_timeout_ms(timeout_ms);
+        int       rc;
         do {
             rc = poll(&p, 1, t);
         } while (rc < 0 && errno == EINTR);
@@ -115,6 +146,75 @@ public:
 
 private:
     int fds_[2] = {-1, -1};
+};
+
+/**
+ * @brief A joinable thread that never takes an asynchronous signal.
+ *
+ * A library thread must not take the signals the program installs handlers
+ * for: rclcpp and rclpy handle SIGINT on the program's threads, and a
+ * handler running on a library thread that holds a library lock can
+ * deadlock. start() therefore blocks every signal around pthread_create(),
+ * so the new thread inherits a fully blocked mask, and restores the
+ * caller's mask before it returns.
+ *
+ * Verification:
+ * - Correct means: `entry(argument)` runs once on a new thread whose signal
+ *   mask blocks every signal; join() returns after `entry` returns.
+ * - Covered by: rmw_rosette/test/test_participant_pump.cpp (TC-RMW-PUMP-001),
+ *   which runs the participant pump on one.
+ *
+ * References:
+ * - POSIX.1-2017 pthread_create(), pthread_sigmask(), pthread_join()
+ */
+class Thread {
+public:
+    Thread() noexcept = default;
+    Thread(const Thread&) = delete;
+    Thread& operator=(const Thread&) = delete;
+
+    /**
+     * @brief Runs `entry(argument)` on a new thread.
+     *
+     * @param[in] entry    The thread's body; it returns when the thread is to exit.
+     * @param[in] argument Passed to `entry`; must stay valid until join() returns.
+     * @param[in] name     Debugger and `top` name, at most 15 characters; static storage.
+     * @return true when the thread runs; false when the OS refused to create it.
+     */
+    bool start(void (*entry)(void*), void* argument, const char* name) noexcept {
+        entry_ = entry;
+        argument_ = argument;
+        sigset_t all;
+        sigset_t previous;
+        sigfillset(&all);
+        pthread_sigmask(SIG_SETMASK, &all, &previous);
+        const int created = pthread_create(&thread_, nullptr, &Thread::trampoline, this);
+        pthread_sigmask(SIG_SETMASK, &previous, nullptr);
+        if (created != 0) {
+            return false;
+        }
+
+#if defined(__linux__)
+        (void)pthread_setname_np(thread_, name);
+#else
+        (void)name;
+#endif
+        return true;
+    }
+
+    /// @brief Waits for a started thread's `entry` to return.
+    void join() noexcept { (void)pthread_join(thread_, nullptr); }
+
+private:
+    static void* trampoline(void* self) noexcept {
+        auto& thread = *static_cast<Thread*>(self);
+        thread.entry_(thread.argument_);
+        return nullptr;
+    }
+
+    pthread_t thread_{};
+    void (*entry_)(void*) = nullptr;
+    void* argument_ = nullptr;
 };
 
 /**

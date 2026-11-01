@@ -181,7 +181,7 @@ rmw_node_t* rmw_create_node(rmw_context_t* context, const char* name,
     slot->node.namespace_ = slot->impl.namespace_;
     slot->node.context = context;
 
-    rmw_rosette::ContextLock lock(*slot->impl.context);
+    rmw_rosette::ContextUpdateLock lock(*slot->impl.context);
     if (!slot->impl.context->discovery_info.add_node(slot->impl)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_node: cannot publish ros_discovery_info "
                           "(buffer pool exhausted)");
@@ -220,7 +220,7 @@ rmw_ret_t rmw_destroy_node(rmw_node_t* node) {
 
     auto* impl = static_cast<rmw_rosette::Node*>(node->data);
     {
-        rmw_rosette::ContextLock lock(*impl->context);
+        rmw_rosette::ContextUpdateLock lock(*impl->context);
         impl->context->discovery_info.remove_node(*impl);
         impl->context->graph_guard.trigger();
     }

@@ -146,44 +146,74 @@ bool any_ready(const rmw_subscriptions_t* subscriptions,
 /**
  * @brief Applies rmw_wait()'s output contract: nulls every entry not ready.
  *
+ * Runs under the participant lock after the wait ends, and is the one
+ * decision of what rmw_wait() reports: a pass on another thread may deliver a
+ * sample between the wait and this call, and that sample is reported here.
  * Triggered guard conditions are consumed (flag cleared) as they are
- * reported, so each trigger wakes exactly one wait. Events are always
- * nulled (see the file comment).
+ * reported, so each trigger wakes exactly one wait. Events are always nulled
+ * (see the file comment).
+ *
+ * @return true when any entry was left non-null, so rmw_wait() returns
+ *   RMW_RET_OK exactly when it reports something.
  */
-void finalize_ready(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* guard_conditions,
+bool finalize_ready(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* guard_conditions,
                     rmw_services_t* services, rmw_clients_t* clients,
                     rmw_events_t* events) noexcept {
+    bool any = false;
     if (subscriptions) {
         for (size_t i = 0; i < subscriptions->subscriber_count; ++i) {
             const auto* sub = static_cast<const rmw_rosette::Subscription*>(
                 subscriptions->subscribers[i]);
-            if (!sub || !sub->received.ready()) subscriptions->subscribers[i] = nullptr;
+            if (!sub || !sub->received.ready()) {
+                subscriptions->subscribers[i] = nullptr;
+            } else {
+                any = true;
+            }
         }
     }
+
     if (guard_conditions) {
         for (size_t i = 0; i < guard_conditions->guard_condition_count; ++i) {
             auto* gc = static_cast<rmw_rosette::GuardCondition*>(
                 guard_conditions->guard_conditions[i]);
-            if (!gc || !gc->triggered.exchange(false)) guard_conditions->guard_conditions[i] = nullptr;
+            if (!gc || !gc->triggered.exchange(false)) {
+                guard_conditions->guard_conditions[i] = nullptr;
+            } else {
+                any = true;
+            }
         }
     }
+
     if (services) {
         for (size_t i = 0; i < services->service_count; ++i) {
             const auto* srv = static_cast<const rmw_rosette::Service*>(services->services[i]);
-            if (!srv || !srv->requests.ready()) services->services[i] = nullptr;
+            if (!srv || !srv->requests.ready()) {
+                services->services[i] = nullptr;
+            } else {
+                any = true;
+            }
         }
     }
+
     if (clients) {
         for (size_t i = 0; i < clients->client_count; ++i) {
             const auto* cli = static_cast<const rmw_rosette::Client*>(clients->clients[i]);
-            if (!cli || !cli->replies.ready()) clients->clients[i] = nullptr;
+            if (!cli || !cli->replies.ready()) {
+                clients->clients[i] = nullptr;
+            } else {
+                any = true;
+            }
         }
     }
-    if (events) {
-        for (size_t i = 0; i < events->event_count; ++i) events->events[i] = nullptr;
-    }
-}
 
+    if (events) {
+        for (size_t i = 0; i < events->event_count; ++i) {
+            events->events[i] = nullptr;
+        }
+    }
+
+    return any;
+}
 
 struct WaitSetSlot {
     rmw_wait_set_t ws{};
@@ -200,6 +230,39 @@ rmw_rosette::Pool<WaitSetSlot, RMW_ROSETTE_MAX_WAIT_SETS>& wait_set_pool() {
 /// struct itself).
 WaitSetSlot* slot_from(rmw_wait_set_t* ws) noexcept {
     return reinterpret_cast<WaitSetSlot*>(ws);
+}
+
+/**
+ * @brief Converts an rmw_wait() timeout to the participant's millisecond wait.
+ *
+ * rmw_wait() must not return RMW_RET_TIMEOUT before the requested time has
+ * passed. The participant measures its wait on a truncating millisecond
+ * clock, so a wait that starts late in one millisecond can end up to one
+ * millisecond early in real time; the conversion rounds the request up to
+ * whole milliseconds and adds that one millisecond.
+ *
+ * @param[in] timeout The caller's timeout; {0, 0} means check once.
+ * @return 0 for a zero timeout; otherwise the rounded-up milliseconds plus
+ *   one, capped one below rosette::platform::kWaitForever so a long finite
+ *   timeout never reads as "forever".
+ *
+ * Verification:
+ * - Correct means: a finite rmw_wait() with nothing ready returns
+ *   RMW_RET_TIMEOUT no sooner than its timeout, measured on steady_clock.
+ * - Covered by: TC-RMW-PUMP-003 in rmw_rosette/test/test_participant_pump.cpp.
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_wait`, wait_timeout
+ */
+uint32_t wait_timeout_ms(const rmw_time_t& timeout) noexcept {
+    if (timeout.sec == 0u && timeout.nsec == 0u) {
+        return 0u;
+    }
+
+    const uint64_t ms =
+        static_cast<uint64_t>(timeout.sec) * 1000u + (timeout.nsec + 999999u) / 1000000u + 1u;
+    return ms >= rosette::platform::kWaitForever ? rosette::platform::kWaitForever - 1u
+                                                 : static_cast<uint32_t>(ms);
 }
 
 }  // namespace
@@ -276,11 +339,13 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
  * @brief Runs the participant until an entity in the wait set is ready or
  * the timeout elapses.
  *
- * The blocking primitive every executor builds its spin loop on, and the
- * place the RTPS state machine advances: rosette::rtps::ParticipantDriver drains
- * received datagrams, ticks, and checks readiness under the participant
- * lock, then sleeps until a datagram arrives, a guard condition is
- * triggered, or the participant's next timer is due.
+ * The blocking primitive every executor builds its spin loop on. On a host
+ * the context's pump thread runs the participant (participant_pump.hpp), and
+ * this sleeps until the pump finds an entity ready after a pass. On a board
+ * this is where the RTPS state machine advances: rosette::rtps::ParticipantDriver
+ * drains received datagrams, ticks, and checks readiness under the
+ * participant lock, then sleeps until a datagram arrives, a guard condition
+ * is triggered, or the participant's next timer is due.
  *
  * Per `rmw_wait()`'s contract (rmw/rmw.h), every entry in each input
  * array starts non-null and this function nulls out entries that are
@@ -315,11 +380,14 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
  *
  * Verification:
  * - Correct means: returns as soon as a subscription has data or a guard
- *   condition is triggered, reports exactly those entries, and never
- *   returns RMW_RET_TIMEOUT with a ready entry left unreported.
+ *   condition is triggered, reports exactly those entries, never returns
+ *   RMW_RET_TIMEOUT with a ready entry left unreported, and never returns
+ *   it before the deadline, even when another thread takes what ended the
+ *   wait before the report is made.
  * - Covered by: rmw_rosette/test/test_guard_condition.cpp,
  *   rmw_rosette/test/test_pub_sub_loopback.cpp,
- *   rmw_rosette/test/test_live_context_refusals.cpp (TC-RMW-ARG-008).
+ *   rmw_rosette/test/test_live_context_refusals.cpp (TC-RMW-ARG-008),
+ *   rmw_rosette/test/test_participant_pump.cpp.
  *
  * References:
  * - rmw/rmw.h (Humble), `rmw_wait`
@@ -340,26 +408,42 @@ rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* g
     rmw_rosette::Context& ctx = *impl->context;
 
     // rmw_wait()'s contract (rmw/rmw.h): NULL wait_timeout blocks until
-    // something is ready; {0,0} checks once; otherwise wait up to that long.
+    // something is ready; {0,0} checks once; otherwise wait at least that long.
     uint32_t timeout_ms = rosette::platform::kWaitForever;
     if (wait_timeout != nullptr) {
-        const uint64_t ms = static_cast<uint64_t>(wait_timeout->sec) * 1000u +
-                            wait_timeout->nsec / 1000000u;
-        timeout_ms = ms >= rosette::platform::kWaitForever
-            ? rosette::platform::kWaitForever - 1u : static_cast<uint32_t>(ms);
+        timeout_ms = wait_timeout_ms(*wait_timeout);
     }
 
-    // The driver receives, ticks, and evaluates readiness under the
-    // participant lock, sleeping in between until a datagram, a guard
-    // condition trigger (which signals the driver's wake event), or the next
-    // RTPS timer.
-    const bool ready = ctx.driver->spin_until(
-        [&]() noexcept { return any_ready(subscriptions, guard_conditions, services, clients); },
-        timeout_ms);
+    // Readiness is evaluated under the participant lock after every protocol
+    // pass, whichever thread runs the passes. The wait only decides when to
+    // stop; the report, and with it the status, is decided afresh under the
+    // lock. Another thread may take what ended the wait before the lock is
+    // retaken, so a wait whose deadline has not passed waits again, its
+    // arrays still intact, instead of reporting a timeout early.
+    const uint32_t start_ms = rosette::platform::monotonic_ms();
+    uint32_t       remaining_ms = timeout_ms;
+    for (;;) {
+        (void)rmw_rosette::wait_until_ready(
+            ctx,
+            [&]() noexcept {
+                return any_ready(subscriptions, guard_conditions, services, clients);
+            },
+            remaining_ms);
 
-    rmw_rosette::ContextLock lock(ctx);
-    finalize_ready(subscriptions, guard_conditions, services, clients, events);
-    return ready ? RMW_RET_OK : RMW_RET_TIMEOUT;
+        rmw_rosette::ContextLock lock(ctx);
+        const uint32_t           elapsed_ms = rosette::platform::monotonic_ms() - start_ms;
+        const bool               expired =
+            timeout_ms != rosette::platform::kWaitForever && elapsed_ms >= timeout_ms;
+        if (expired || any_ready(subscriptions, guard_conditions, services, clients)) {
+            const bool reported =
+                finalize_ready(subscriptions, guard_conditions, services, clients, events);
+            return reported ? RMW_RET_OK : RMW_RET_TIMEOUT;
+        }
+
+        if (timeout_ms != rosette::platform::kWaitForever) {
+            remaining_ms = timeout_ms - elapsed_ms;
+        }
+    }
 }
 
 }  // extern "C"

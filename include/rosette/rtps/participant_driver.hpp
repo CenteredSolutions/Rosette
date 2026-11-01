@@ -43,8 +43,10 @@
  * An idle node therefore sleeps: WFE on bare metal, blocked on FreeRTOS,
  * blocked in poll() on POSIX, until data or a deadline needs it.
  *
- * Nothing else runs the participant, so it sends its first SPDP announcement
- * and reads its first discovery traffic in the first rmw_wait(). A firmware
+ * On a board nothing else runs the participant, so it sends its first SPDP
+ * announcement and reads its first discovery traffic in the first
+ * rmw_wait(). (On a POSIX host rmw_rosette runs it from a thread of its own,
+ * from rmw_init() on; see rmw_rosette/participant_pump.hpp.) A firmware
  * that creates all of its entities before it first waits (rclc does, before
  * the executor spins) is discovered with all of them, and every SEDP
  * announcement a peer replays to it arrives after its local endpoints exist.
@@ -148,6 +150,41 @@ public:
      */
     template <typename Ready>
     bool spin_until(Ready ready, uint32_t timeout_ms) noexcept {
+        return spin_until(ready, timeout_ms, wake_);
+    }
+
+    /**
+     * @brief spin_until(), sleeping on `wake`, and optionally not on the sockets.
+     *
+     * Lets two threads share the participant on a POSIX host
+     * (rmw_rosette/participant_pump.hpp). A thread blocked in rmw_wait()
+     * receives itself: it sleeps on the sockets and an event of its own, so
+     * the datagram it waits for wakes it directly. Meanwhile the pump thread
+     * sleeps on the driver's wake event and the participant's timers only,
+     * with `receive` false, so it neither wakes for that datagram nor takes
+     * the lock from the thread that does. Either thread's pass still drains
+     * whatever is waiting on the sockets.
+     *
+     * @param[in] ready      As for spin_until().
+     * @param[in] timeout_ms As for spin_until().
+     * @param[in] wake       Event that ends this caller's sleep; owned by the
+     *   caller and outliving the call.
+     * @param[in] receive    true to also end the sleep when a datagram
+     *   arrives; false to sleep until `wake`, a participant timer, or the
+     *   timeout only.
+     * @return As for spin_until().
+     *
+     * Verification:
+     * - Correct means: the contract of spin_until(), with `wake` in place of
+     *   wake(), and with datagrams ending the sleep only when `receive`
+     *   holds; the backlog yield is the same plain sleep whatever `receive`
+     *   and `wake` are; passes of two spinning threads never overlap.
+     * - Covered by: rmw_rosette/test/test_participant_pump.cpp
+     *   (TC-RMW-PUMP-001..004) and the rmw_rosette round-trip tests.
+     */
+    template <typename Ready>
+    bool spin_until(Ready ready, uint32_t timeout_ms, rosette::platform::Event& wake,
+                    bool receive = true) noexcept {
         const uint32_t start_ms = rosette::platform::monotonic_ms();
         for (;;) {
             Pass     pass;
@@ -187,8 +224,10 @@ public:
             // and the thread would never block; a plain sleep yields the CPU.
             if (pass.backlog) {
                 rosette::platform::sleep_ms(sleep_ms);
+            } else if (receive) {
+                transport_.wait_readable(wake, sleep_ms);
             } else {
-                transport_.wait_readable(wake_, sleep_ms);
+                (void)wake.wait_for(sleep_ms);
             }
         }
     }

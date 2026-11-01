@@ -4,11 +4,13 @@
  *
  * A service and its clients (as many as RMW_ROSETTE_REPLY_DEPTH and
  * RMW_ROSETTE_MAX_CLIENTS allow) share one rmw_rosette context over real UDP
- * loopback, using the generated std_srvs/SetBool type support. rmw_rosette
- * runs the participant only inside rmw_wait(), so replies sent between two
- * waits stay unacknowledged until the next one: answering RMW_ROSETTE_REPLY_DEPTH
- * requests before waiting puts that many replies in flight at once, as
- * concurrent requests to a busy service do.
+ * loopback, using the generated std_srvs/SetBool type support. Answering
+ * RMW_ROSETTE_REPLY_DEPTH requests back to back puts up to that many replies
+ * in flight at once, as concurrent requests to a busy service do. Where the
+ * executor runs the participant (no pump thread), replies sent between two
+ * waits stay unacknowledged until the next one, so all of them are in flight
+ * together; on a host the pump thread may deliver and acknowledge some before
+ * the last is sent, and the history then holds the rest.
  *
  * Verification:
  * - Correct means: the reply writer's depth and the depth it reports are
@@ -87,16 +89,34 @@ protected:
         EXPECT_TRUE(ret == RMW_RET_OK || ret == RMW_RET_TIMEOUT);
     }
 
-    /// Requests the service's request ring keeps between takes: the KEEP_LAST
-    /// depth of its actual QoS, at most RMW_ROSETTE_MAX_PENDING_CHANGES.
-    int request_ring_depth() const {
-        const auto* service = static_cast<const rmw_rosette::Service*>(service_->data);
-        return static_cast<int>(service->requests.depth());
+    /// The service's rmw_rosette state.
+    const rmw_rosette::Service& service() const {
+        return *static_cast<const rmw_rosette::Service*>(service_->data);
     }
 
-    const rosette::rtps::HistoryCache& reply_history() const {
-        return static_cast<const rmw_rosette::Service*>(service_->data)->reply_writer->cache();
+    /// Requests the service's request ring keeps between takes: the KEEP_LAST
+    /// depth of its actual QoS, at most RMW_ROSETTE_MAX_PENDING_CHANGES.
+    int request_ring_depth() const { return static_cast<int>(service().requests.depth()); }
+
+    /// Replies the service's writer holds, read under the participant lock
+    /// because the pump thread (on a host) changes the history concurrently.
+    size_t replies_held() const {
+        rosette::platform::LockGuard guard(service().node->context->driver->mutex());
+        return service().reply_writer->cache().size();
     }
+
+    /// Whether the participant pump thread runs this context: built in, and
+    /// not turned off by RMW_ROSETTE_PUMP_THREAD=0 in the environment.
+    bool pump_running() const {
+#if RMW_ROSETTE_PUMP_THREAD
+        return service().node->context->pump.running();
+#else
+        return false;
+#endif
+    }
+
+    /// The reply writer's history capacity; fixed when the service is created.
+    size_t reply_capacity() const { return service().reply_writer->cache().capacity(); }
 
     rmw_context_t   context_ = rmw_get_zero_initialized_context();
     rmw_node_t*     node_ = nullptr;
@@ -118,7 +138,7 @@ TEST_F(ServiceReplyDepth, ReplyDepthIgnoresRequestedQos) {
     EXPECT_EQ(actual.depth, static_cast<size_t>(RMW_ROSETTE_REPLY_DEPTH));
     EXPECT_EQ(actual.history, RMW_QOS_POLICY_HISTORY_KEEP_LAST);
     EXPECT_EQ(actual.durability, RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL);
-    EXPECT_EQ(reply_history().capacity(), RMW_ROSETTE_REPLY_DEPTH);
+    EXPECT_EQ(reply_capacity(), RMW_ROSETTE_REPLY_DEPTH);
 }
 
 TEST_F(ServiceReplyDepth, EveryReplyInFlightArrives) {
@@ -183,8 +203,13 @@ TEST_F(ServiceReplyDepth, EveryReplyInFlightArrives) {
         ASSERT_EQ(rmw_send_response(service_, &header.request_id, &res), RMW_RET_OK);
     }
 
-    EXPECT_EQ(reply_history().size(), RMW_ROSETTE_REPLY_DEPTH)
-        << "every reply is held until its client acknowledges it";
+    // With the pump thread running, any number of the replies may already be
+    // acknowledged here; the delivery count below is what shows that none was
+    // evicted. Without it nothing runs the participant between these calls.
+    if (!pump_running()) {
+        EXPECT_EQ(replies_held(), RMW_ROSETTE_REPLY_DEPTH)
+            << "every reply is held until its client acknowledges it";
+    }
 
     int received[kClients] = {};
     int replies = 0;
@@ -210,9 +235,9 @@ TEST_F(ServiceReplyDepth, EveryReplyInFlightArrives) {
         EXPECT_EQ(received[c], expected[c]) << "client " << c << " got the wrong number of replies";
     }
 
-    for (int i = 0; i < 20 && !reply_history().is_empty(); ++i) {
+    for (int i = 0; i < 20 && replies_held() != 0u; ++i) {
         pump();
     }
 
-    EXPECT_TRUE(reply_history().is_empty()) << "acknowledged replies stay in the history";
+    EXPECT_EQ(replies_held(), 0u) << "acknowledged replies stay in the history";
 }

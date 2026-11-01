@@ -220,7 +220,7 @@ rmw_subscription_t* rmw_create_subscription(
     }
 
     auto* node_impl = static_cast<rmw_rosette::Node*>(node->data);
-    rmw_rosette::ContextLock lock(*node_impl->context);
+    rmw_rosette::ContextUpdateLock lock(*node_impl->context);
 
     SubscriptionSlot* slot = subscription_pool().acquire();
     if (!slot) {
@@ -300,7 +300,7 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
     }
 
     auto* impl = static_cast<rmw_rosette::Subscription*>(subscription->data);
-    rmw_rosette::ContextLock lock(*impl->node->context);
+    rmw_rosette::ContextUpdateLock lock(*impl->node->context);
     if (impl->node && impl->reader) {
         impl->node->context->discovery_info.remove_endpoints(&impl->reader->guid(), nullptr);
         impl->node->context->participant->delete_reader(impl->reader);

@@ -495,19 +495,22 @@ public:
             pollfd pfd{};
             pfd.fd = fd_;
             pfd.events = POLLIN;
-            const int ready = ::poll(&pfd, 1u, static_cast<int>(remaining));
-            if (ready == 0) {
-                last_error_ = SocketError::timed_out;
-                return -1;
-            }
+            // poll() takes an int of milliseconds, so a longer timeout is
+            // waited out in capped slices; an expired slice loops back to
+            // the deadline check above, which alone reports timed_out.
+            const int ready =
+                ::poll(&pfd, 1u, static_cast<int>(remaining > INT32_MAX ? INT32_MAX : remaining));
             if (ready < 0) {
                 if (errno == EINTR) {
                     continue;
                 }
+
                 last_error_ = map_errno(errno);
                 return -1;
             }
-            // Readable (or an error is pending): loop and let recvfrom report it.
+
+            // Readable, an error pending, or a slice expired: loop, and let
+            // recvfrom or the deadline check report it.
         }
     }
 
@@ -577,8 +580,8 @@ void PosixSocketProvider::wait_readable(Socket* const* sockets, std::size_t coun
             fds[n++] = pollfd{socket->native_handle(), POLLIN, 0};
         }
     }
-    const int timeout = (timeout_ms == rosette::platform::kWaitForever)
-        ? -1 : static_cast<int>(timeout_ms);
+
+    const int timeout = rosette::platform::poll_timeout_ms(timeout_ms);
     int rc;
     do {
         rc = ::poll(fds, n, timeout);

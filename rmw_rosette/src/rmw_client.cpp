@@ -98,7 +98,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node,
     }
 
     auto* node_impl = static_cast<rmw_rosette::Node*>(node->data);
-    rmw_rosette::ContextLock lock(*node_impl->context);
+    rmw_rosette::ContextUpdateLock lock(*node_impl->context);
 
     ClientSlot* slot = client_pool().acquire();
     if (!slot) {
@@ -158,7 +158,7 @@ rmw_ret_t rmw_destroy_client(rmw_node_t* node, rmw_client_t* client) {
     }
 
     auto* impl = static_cast<rmw_rosette::Client*>(client->data);
-    rmw_rosette::ContextLock lock(*impl->node->context);
+    rmw_rosette::ContextUpdateLock lock(*impl->node->context);
     if (impl->node) {
         rmw_rosette::destroy_service_endpoints(*impl->node, impl->request_writer,
                                                impl->reply_reader);
@@ -194,7 +194,7 @@ rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request,
     }
 
     auto* impl = static_cast<rmw_rosette::Client*>(client->data);
-    rmw_rosette::ContextLock lock(*impl->node->context);
+    rmw_rosette::ContextUpdateLock lock(*impl->node->context);
 
     rtps::BufRef payload = rmw_rosette::serialize_to_pool(impl->request_codec, ros_request);
     if (!payload.valid()) {
