@@ -114,8 +114,21 @@ protected:
         return ret;
     }
 
-    const rosette::rtps::HistoryCache& reply_history() const {
-        return static_cast<const rmw_rosette::Service*>(service_->data)->reply_writer->cache();
+    /// The service's request reader matches this many client writers, read
+    /// under the participant lock because the pump thread (on a host) removes
+    /// a departed writer concurrently.
+    size_t matched_request_writers() const {
+        const auto* impl = static_cast<const rmw_rosette::Service*>(service_->data);
+        rosette::platform::LockGuard guard(impl->node->context->driver->mutex());
+        return impl->request_reader->matched_writer_count();
+    }
+
+    /// Whether the service's reply writer holds no reply, read under the
+    /// participant lock for the same reason.
+    bool reply_history_empty() const {
+        const auto* impl = static_cast<const rmw_rosette::Service*>(service_->data);
+        rosette::platform::LockGuard guard(impl->node->context->driver->mutex());
+        return impl->reply_writer->cache().is_empty();
     }
 
     rmw_context_t context_ = rmw_get_zero_initialized_context();
@@ -155,13 +168,12 @@ TEST_F(ServiceDepartedClient, ReplyToDepartedClientLeavesNothing) {
 
     ASSERT_EQ(rmw_destroy_client(node_, client_), RMW_RET_OK);
     client_ = nullptr;
-    auto* impl = static_cast<rmw_rosette::Service*>(service_->data);
-    for (int i = 0; i < 50 && impl->request_reader->matched_writer_count() > 0u; ++i) {
+    for (int i = 0; i < 50 && matched_request_writers() > 0u; ++i) {
         pump();
     }
 
-    ASSERT_EQ(impl->request_reader->matched_writer_count(), 0u) << "the client never unmatched";
+    ASSERT_EQ(matched_request_writers(), 0u) << "the client never unmatched";
 
     EXPECT_EQ(respond(header), RMW_RET_OK);
-    EXPECT_TRUE(reply_history().is_empty()) << "a reply to a departed client is held";
+    EXPECT_TRUE(reply_history_empty()) << "a reply to a departed client is held";
 }

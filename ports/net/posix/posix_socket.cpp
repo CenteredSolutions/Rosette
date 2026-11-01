@@ -495,20 +495,22 @@ public:
             pollfd pfd{};
             pfd.fd = fd_;
             pfd.events = POLLIN;
+            // poll() takes an int of milliseconds, so a longer timeout is
+            // waited out in capped slices; an expired slice loops back to
+            // the deadline check above, which alone reports timed_out.
             const int ready =
                 ::poll(&pfd, 1u, static_cast<int>(remaining > INT32_MAX ? INT32_MAX : remaining));
-            if (ready == 0) {
-                last_error_ = SocketError::timed_out;
-                return -1;
-            }
             if (ready < 0) {
                 if (errno == EINTR) {
                     continue;
                 }
+
                 last_error_ = map_errno(errno);
                 return -1;
             }
-            // Readable (or an error is pending): loop and let recvfrom report it.
+
+            // Readable, an error pending, or a slice expired: loop, and let
+            // recvfrom or the deadline check report it.
         }
     }
 
