@@ -111,10 +111,15 @@ if(rosidl_typesupport_microxrcedds_c_FOUND)
     rosidl_typesupport_microxrcedds_c::rosidl_typesupport_microxrcedds_c)
 endif()
 
-# Registers the package in the ament index so RMW_IMPLEMENTATION=rmw_rosette
-# resolves; rmw_implementation then loads librmw_rosette.so by name.
-ament_index_register_resource("rmw_implementation" CONTENT_FILE
-  "${CMAKE_CURRENT_SOURCE_DIR}/resource/rmw_rosette")
+# Lists rmw_rosette in the ament index as an rmw implementation, with the type
+# supports it reads, exactly as stock rmws do. ROS tooling that enumerates rmws
+# reads this index: get_available_rmw_implementations() (rmw_implementation_cmake),
+# and through it test_rmw_implementation and test_communication. Messages are
+# encoded from C introspection metadata (message_codec.cpp), so only the C
+# type supports are declared; RMW_IMPLEMENTATION=rmw_rosette itself needs no
+# index entry, since rmw_implementation loads librmw_rosette.so by name.
+register_rmw_implementation(
+  "c:rosidl_typesupport_c:rosidl_typesupport_introspection_c")
 
 install(
   DIRECTORY include/

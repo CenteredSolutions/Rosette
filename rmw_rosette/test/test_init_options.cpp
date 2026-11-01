@@ -306,6 +306,18 @@ TEST_F(InitOptionsTest, InitChecksTheDiscoveryRange) {
     EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
 }
 
+// TC-RMW-INITOPT-013: fresh options pass rmw_init() unmodified, as the stock
+// rmws' do; the range is this middleware's default, which rcl replaces.
+TEST_F(InitOptionsTest, FreshOptionsPassRmwInit) {
+    rmw_init_options_t options = rmw_get_zero_initialized_init_options();
+    ASSERT_EQ(rmw_init_options_init(&options, rcutils_get_default_allocator()), RMW_RET_OK);
+    EXPECT_EQ(options.discovery_options.automatic_discovery_range,
+              RMW_AUTOMATIC_DISCOVERY_RANGE_SYSTEM_DEFAULT);
+    options.domain_id = 78;
+    EXPECT_EQ(init_and_fini(options), RMW_RET_OK);
+    EXPECT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
+}
+
 // TC-RMW-INITOPT-012: a copy owns its own static peer list; finalizing both frees everything once.
 TEST_F(InitOptionsTest, CopyDuplicatesTheStaticPeers) {
     rmw_init_options_t  source = options_with_strings();
