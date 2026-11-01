@@ -177,15 +177,25 @@ void FragmentAssembler::schedule_repair(const Guid& writer_guid, const SequenceN
     if (slot != nullptr) {
         slot->repairDueMs = due_ms;
         slot->repairsLeft = rounds;
+        repairs_pending_ = repairs_pending_ || rounds != 0u;
     }
 }
 
 bool FragmentAssembler::take_due_repair(uint32_t now_ms, uint32_t retry_ms, Guid& writer,
                                         SequenceNumber& sn, FragmentNumberSet& missing) noexcept {
+    if (!repairs_pending_) {
+        return false;
+    }
+
+    bool pending = false;
     for (uint16_t i = 0; i < pool_.capacity_; ++i) {
         AssemblySlot& slot = pool_.slots_[i];
-        if (!slot.change.is_active() || slot.owner != this || slot.repairsLeft == 0u
-            || ms_until(slot.repairDueMs, now_ms) != 0u) {
+        if (!slot.change.is_active() || slot.owner != this || slot.repairsLeft == 0u) {
+            continue;
+        }
+
+        pending = true;
+        if (ms_until(slot.repairDueMs, now_ms) != 0u) {
             continue;
         }
 
@@ -197,23 +207,31 @@ bool FragmentAssembler::take_due_repair(uint32_t now_ms, uint32_t retry_ms, Guid
         return true;
     }
 
+    repairs_pending_ = pending;
     return false;
 }
 
 uint32_t FragmentAssembler::ms_until_repair_due(uint32_t now_ms) const noexcept {
     uint32_t next = UINT32_MAX;
+    if (!repairs_pending_) {
+        return next;
+    }
+
+    bool pending = false;
     for (uint16_t i = 0; i < pool_.capacity_; ++i) {
         const AssemblySlot& slot = pool_.slots_[i];
         if (!slot.change.is_active() || slot.owner != this || slot.repairsLeft == 0u) {
             continue;
         }
 
+        pending = true;
         const uint32_t wait = ms_until(slot.repairDueMs, now_ms);
         if (wait < next) {
             next = wait;
         }
     }
 
+    repairs_pending_ = pending;
     return next;
 }
 

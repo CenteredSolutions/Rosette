@@ -592,7 +592,8 @@ public:
      * NACK_FRAG for each sample it returns. Each call spends one of the
      * sample's rounds and, while rounds remain, sets its next deadline
      * `retry_ms` after `now_ms`, so a NACK_FRAG or a repair lost on the way
-     * is asked for again.
+     * is asked for again. Like ms_until_repair_due(), it reads the shared
+     * pool only while repairs_pending_ is set.
      *
      * @param[in]  now_ms   Monotonic time, in milliseconds.
      * @param[in]  retry_ms Delay to the next round when this one goes unanswered.
@@ -617,9 +618,22 @@ public:
     /**
      * @brief Time until the earliest repair deadline of this assembler's samples.
      *
+     * The reader folds this into ms_until_next_timer(), which the driver
+     * calls on every pass, so it must cost nothing for a reader that is not
+     * repairing a sample. While repairs_pending_ is false it returns at once
+     * without reading the shared pool; otherwise it scans the pool for this
+     * assembler's slots with rounds left, and clears repairs_pending_ when
+     * it finds none.
+     *
      * @param[in] now_ms Monotonic time, in milliseconds.
      * @return Milliseconds until take_due_repair() has a sample to return, 0
      *   when one is due now, or UINT32_MAX when no sample has rounds left.
+     *
+     * Verification:
+     * - Correct means: the result equals the minimum deadline over this
+     *   assembler's slots with rounds left, and is UINT32_MAX for a reader
+     *   that has never received a DATA_FRAG.
+     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-006.
      */
     uint32_t ms_until_repair_due(uint32_t now_ms) const noexcept;
 
@@ -663,6 +677,15 @@ private:
 
     FragmentAssemblyPool& pool_;
     uint16_t limit_;
+
+    /// Whether a sample of this assembler may be waiting for a repair round.
+    /// Slots record their owner, so only a scan of the shared pool tells
+    /// which belong to this assembler; this flag lets the reader's timer
+    /// pass skip that scan while no repair is pending. schedule_repair() sets
+    /// it, and a scan that finds no slot with rounds left clears it. It may
+    /// be true with nothing pending, which costs one scan, but is never false
+    /// while a repair is pending.
+    mutable bool repairs_pending_ = false;
 };
 
 namespace detail {
