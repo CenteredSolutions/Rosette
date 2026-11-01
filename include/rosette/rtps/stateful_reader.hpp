@@ -46,10 +46,10 @@
  * fragments, in answer to a HEARTBEAT_FRAG or, for a sample the writer's
  * HEARTBEAT shows as missing, alongside the ACKNACK (send_acknack()). A
  * reliable writer's partial sample that receives no fragment for
- * RTPS_FRAGMENT_REPAIR_DELAY_MS is requested unprompted
- * (send_due_fragment_repairs()), so a lost last fragment costs one quiet
- * period rather than one HEARTBEAT period. Un-matching a writer discards its
- * partial samples.
+ * RTPS_FRAGMENT_REPAIR_DELAY_MS is requested unprompted, with the wait
+ * doubling after each request (send_due_fragment_repairs()), so a lost last
+ * fragment costs one quiet period rather than one HEARTBEAT period.
+ * Un-matching a writer discards its partial samples.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -467,10 +467,15 @@ private:
      * shows only when the writer's next HEARTBEAT or HEARTBEAT_FRAG reports
      * the sample, which Fast DDS sends every 3 s by default. So each partial
      * sample of a reliable writer carries a deadline that its arriving
-     * fragments push RTPS_FRAGMENT_REPAIR_DELAY_MS ahead (on_data_frag());
-     * once it passes, the sample's missing fragments are requested, and
-     * again every RTPS_FRAGMENT_REPAIR_DELAY_MS for up to
-     * RTPS_FRAGMENT_REPAIR_ROUNDS rounds while none arrives. A sample the
+     * fragments push ahead (on_data_frag()); once it passes, the sample's
+     * missing fragments are requested. The first wait is
+     * RTPS_FRAGMENT_REPAIR_DELAY_MS and each request doubles it, up to
+     * RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times: 50, 100, 200 and 400 ms
+     * with the defaults, for up to RTPS_FRAGMENT_REPAIR_ROUNDS rounds while
+     * no fragment arrives. An arriving fragment restores the rounds but not
+     * the wait, so a writer pacing its fragments further apart than the
+     * first wait is asked early only until the wait outgrows its pacing,
+     * and a new sample starts again at the first wait. A sample the
      * reader has since received whole, or that a GAP or HEARTBEAT declared
      * irrelevant, is discarded instead.
      *
@@ -479,10 +484,12 @@ private:
      * Verification:
      * - Correct means: nothing is sent while fragments keep arriving within
      *   the delay; after a quiet delay exactly one NACK_FRAG per partial
-     *   sample names its missing fragments, including the last; at most
-     *   RTPS_FRAGMENT_REPAIR_ROUNDS are sent without a fragment in answer;
-     *   a best-effort reader never sends one.
-     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-006.
+     *   sample names its missing fragments, including the last; unanswered
+     *   requests follow the doubling waits and stop after
+     *   RTPS_FRAGMENT_REPAIR_ROUNDS; a fragment arriving after a request
+     *   restarts the current wait, not the first; a best-effort reader
+     *   never sends one.
+     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-006, TC-SRR-8.4.12-007.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.12 (reader may send NACK_FRAG for missing

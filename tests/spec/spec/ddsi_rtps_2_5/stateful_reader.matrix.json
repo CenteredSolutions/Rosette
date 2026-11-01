@@ -147,9 +147,9 @@
       "id": "REQ-SRR-8.4.12-NACKFRAG-ON-QUIET",
       "section": "8.4.12",
       "normativity": "may",
-      "statement": "A reliable StatefulReader requests the missing fragments of a partial change with a NACK_FRAG once RTPS_FRAGMENT_REPAIR_DELAY_MS pass without a fragment of it arriving, repeats it at that interval for at most RTPS_FRAGMENT_REPAIR_ROUNDS rounds while none arrives, and restores the rounds when a fragment arrives; a best-effort reader never does.",
+      "statement": "A reliable StatefulReader requests the missing fragments of a partial change with a NACK_FRAG once RTPS_FRAGMENT_REPAIR_DELAY_MS pass without a fragment of it arriving, repeats it with the wait doubling after each request, up to RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times, for at most RTPS_FRAGMENT_REPAIR_ROUNDS rounds while none arrives, and restores the rounds but keeps the doubled wait when a fragment arrives; a new change starts at the first wait; a best-effort reader never does.",
       "status": "implemented",
-      "test_ids": ["TC-SRR-8.4.12-005", "TC-SRR-8.4.12-006"]
+      "test_ids": ["TC-SRR-8.4.12-005", "TC-SRR-8.4.12-006", "TC-SRR-8.4.12-007"]
     }
   ]
 }

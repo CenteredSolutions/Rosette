@@ -310,10 +310,9 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     // fragments stop arriving (fragment_assembler.hpp, quiet-period repair).
     if (!complete) {
         if (proxy != nullptr && reliability_ == ReliabilityKind::RELIABLE) {
-            assembler_.schedule_repair(
-                writer_guid, msg.writerSN,
-                rosette::platform::monotonic_ms() + RTPS_FRAGMENT_REPAIR_DELAY_MS,
-                static_cast<uint8_t>(RTPS_FRAGMENT_REPAIR_ROUNDS));
+            assembler_.schedule_repair(writer_guid, msg.writerSN, rosette::platform::monotonic_ms(),
+                                       RTPS_FRAGMENT_REPAIR_DELAY_MS,
+                                       static_cast<uint8_t>(RTPS_FRAGMENT_REPAIR_ROUNDS));
         }
 
         return;

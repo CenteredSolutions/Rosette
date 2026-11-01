@@ -172,16 +172,17 @@ uint16_t FragmentAssembler::active_count() const noexcept {
 }
 
 void FragmentAssembler::schedule_repair(const Guid& writer_guid, const SequenceNumber& writer_sn,
-                                        uint32_t due_ms, uint8_t rounds) noexcept {
+                                        uint32_t now_ms, uint32_t delay_ms,
+                                        uint8_t rounds) noexcept {
     AssemblySlot* slot = find_slot(writer_guid, writer_sn);
     if (slot != nullptr) {
-        slot->repairDueMs = due_ms;
+        slot->repairDueMs = now_ms + (delay_ms << slot->repairDoublings);
         slot->repairsLeft = rounds;
         repairs_pending_ = repairs_pending_ || rounds != 0u;
     }
 }
 
-bool FragmentAssembler::take_due_repair(uint32_t now_ms, uint32_t retry_ms, Guid& writer,
+bool FragmentAssembler::take_due_repair(uint32_t now_ms, uint32_t delay_ms, Guid& writer,
                                         SequenceNumber& sn, FragmentNumberSet& missing) noexcept {
     if (!repairs_pending_) {
         return false;
@@ -200,7 +201,11 @@ bool FragmentAssembler::take_due_repair(uint32_t now_ms, uint32_t retry_ms, Guid
         }
 
         --slot.repairsLeft;
-        slot.repairDueMs = now_ms + retry_ms;
+        if (slot.repairDoublings < RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS) {
+            ++slot.repairDoublings;
+        }
+
+        slot.repairDueMs = now_ms + (delay_ms << slot.repairDoublings);
         writer = slot.change.writerGuid;
         sn = slot.change.sequenceNumber;
         slot.change.missing_fragments(UINT32_MAX, missing);
@@ -339,6 +344,7 @@ FragmentedChange* FragmentAssembler::alloc_slot(const Guid& wg, const SequenceNu
     slot->owner = this;
     slot->stamp = pool_.next_stamp_++;
     slot->repairsLeft = 0u;
+    slot->repairDoublings = 0u;
     return &change;
 }
 

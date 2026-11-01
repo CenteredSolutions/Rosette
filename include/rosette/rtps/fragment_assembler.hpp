@@ -33,7 +33,11 @@
  *   fragments. Its slot carries a repair deadline that each arriving
  *   fragment pushes out (schedule_repair()); when it passes, the reader
  *   asks for the missing fragments with a NACK_FRAG instead of waiting for
- *   the writer's next HEARTBEAT (take_due_repair()). This is what repairs a
+ *   the writer's next HEARTBEAT (take_due_repair()). The wait doubles after
+ *   each NACK_FRAG, up to RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times, and stays
+ *   doubled when a fragment then arrives: a lost repair is asked for again
+ *   quickly, while a writer that paces its fragments further apart than the
+ *   first wait is asked early at most a few times. This is what repairs a
  *   lost last fragment promptly: no later fragment shows the gap, and the
  *   writer's HEARTBEAT period (3 s by default in Fast DDS) would otherwise
  *   set the latency. A receive buffer smaller than a sample's burst, such
@@ -308,26 +312,40 @@ static_assert(RTPS_ASSEMBLY_SLOTS_PER_READER >= 1u
                   && RTPS_ASSEMBLY_SLOTS_PER_READER <= RTPS_ASSEMBLY_SLOTS,
               "RTPS_ASSEMBLY_SLOTS_PER_READER must be 1 to RTPS_ASSEMBLY_SLOTS");
 
-/// How long a partial sample may receive no fragment before the reader asks
-/// for its missing fragments with a NACK_FRAG, in milliseconds. A writer
+/// How long a partial sample may receive no fragment before the reader first
+/// asks for its missing fragments with a NACK_FRAG, in milliseconds. A writer
 /// sends a sample's fragments back to back, so the delay need only exceed the
 /// gap between two fragments of one burst, including a receive pass on a busy
-/// board; a writer whose flow controller paces fragments further apart than
-/// this is asked for fragments still on their way, and resends them.
+/// board and a host writer's scheduling jitter; a writer whose flow
+/// controller paces fragments further apart is asked for fragments still on
+/// their way, and the doubling below soon outgrows its pacing.
 #ifndef RTPS_FRAGMENT_REPAIR_DELAY_MS
-#  define RTPS_FRAGMENT_REPAIR_DELAY_MS 250u
+#  define RTPS_FRAGMENT_REPAIR_DELAY_MS 50u
 #endif
 
-/// NACK_FRAG rounds a reader sends for a partial sample, RTPS_FRAGMENT_REPAIR_DELAY_MS
-/// apart, while no fragment arrives in answer. Each arriving fragment restores
-/// them. Once they are spent the sample waits for the writer's HEARTBEAT, so a
-/// writer that no longer holds the sample is not asked for it indefinitely.
+/// Times the wait doubles after successive NACK_FRAGs for one sample. With
+/// the defaults the reader asks 50, 100, 200 and 400 ms apart, so four
+/// unanswered rounds end 750 ms after the last fragment, well inside a
+/// writer's HEARTBEAT period.
+#ifndef RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS
+#  define RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS 3u
+#endif
+
+/// NACK_FRAG rounds a reader sends for a partial sample while no fragment
+/// arrives in answer. Each arriving fragment restores them. Once they are
+/// spent the sample waits for the writer's HEARTBEAT, so a writer that no
+/// longer holds the sample is not asked for it indefinitely.
 #ifndef RTPS_FRAGMENT_REPAIR_ROUNDS
 #  define RTPS_FRAGMENT_REPAIR_ROUNDS 4u
 #endif
 
-static_assert(RTPS_FRAGMENT_REPAIR_DELAY_MS >= 1u && RTPS_FRAGMENT_REPAIR_DELAY_MS < 0x80000000u,
-              "RTPS_FRAGMENT_REPAIR_DELAY_MS must be 1 ms to 2^31 - 1 ms");
+static_assert(RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS <= 8u,
+              "RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS must be 0 to 8");
+static_assert(RTPS_FRAGMENT_REPAIR_DELAY_MS >= 1u
+                  && (RTPS_FRAGMENT_REPAIR_DELAY_MS << RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS)
+                         < 0x80000000u,
+              "RTPS_FRAGMENT_REPAIR_DELAY_MS, doubled RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times, "
+              "must be 1 ms to 2^31 - 1 ms");
 static_assert(RTPS_FRAGMENT_REPAIR_ROUNDS <= 255u, "RTPS_FRAGMENT_REPAIR_ROUNDS must be 0 to 255");
 
 class FragmentAssembler;
@@ -347,6 +365,10 @@ struct AssemblySlot {
     uint32_t                 repairDueMs = 0;
     /// Unprompted NACK_FRAG rounds left; 0 leaves repair to the writer's HEARTBEAT.
     uint8_t                  repairsLeft = 0;
+    /// Doublings of the repair wait so far: NACK_FRAGs sent for this sample,
+    /// up to RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS. Zero for a new sample;
+    /// arriving fragments leave it unchanged.
+    uint8_t                  repairDoublings = 0;
 };
 
 /**
@@ -563,40 +585,46 @@ public:
      * @brief Sets when the reader asks for a partial sample's missing fragments unprompted.
      *
      * The reader calls this after every fragment of a sample that leaves it
-     * incomplete, with `due_ms` one quiet period ahead, so the deadline is
-     * reached only once the writer's burst has stopped arriving. It restores
-     * the sample's rounds, since an arriving fragment shows the writer is
-     * still answering. A sample this assembler does not hold, because it was
-     * refused or has completed, is left alone.
+     * incomplete, so the deadline is reached only once the writer's burst
+     * has stopped arriving. The wait is `delay_ms` doubled once per
+     * NACK_FRAG already sent for the sample (repairDoublings), so a writer
+     * that answered a NACK_FRAG, or paces its fragments, is not asked again
+     * sooner than the last wait. It restores the sample's rounds, since an
+     * arriving fragment shows the writer is still answering. A sample this
+     * assembler does not hold, because it was refused or has completed, is
+     * left alone.
      *
      * @param[in] writer_guid Writer of the sample.
      * @param[in] writer_sn   Sequence number of the sample.
-     * @param[in] due_ms      Monotonic time, in milliseconds, of the first NACK_FRAG.
+     * @param[in] now_ms      Monotonic time, in milliseconds, of the arriving fragment.
+     * @param[in] delay_ms    Wait before the first NACK_FRAG, in milliseconds.
      * @param[in] rounds      NACK_FRAG rounds allowed; 0 disables unprompted repair.
      *
      * Verification:
-     * - Correct means: a held sample's deadline is `due_ms` and its rounds
-     *   `rounds` afterwards; no other slot changes.
-     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-006.
+     * - Correct means: a held sample's deadline is `now_ms` plus `delay_ms`
+     *   doubled repairDoublings times, its rounds are `rounds`, and its
+     *   doublings are unchanged; no other slot changes.
+     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-007.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.12 (NACK_FRAG), §8.4.14
      */
-    void schedule_repair(const Guid& writer_guid, const SequenceNumber& writer_sn, uint32_t due_ms,
-                         uint8_t rounds) noexcept;
+    void schedule_repair(const Guid& writer_guid, const SequenceNumber& writer_sn, uint32_t now_ms,
+                         uint32_t delay_ms, uint8_t rounds) noexcept;
 
     /**
      * @brief Hands out one partial sample whose repair deadline has passed, and spends a round.
      *
      * The reader's timer pass calls this until it returns false and sends a
      * NACK_FRAG for each sample it returns. Each call spends one of the
-     * sample's rounds and, while rounds remain, sets its next deadline
-     * `retry_ms` after `now_ms`, so a NACK_FRAG or a repair lost on the way
-     * is asked for again. Like ms_until_repair_due(), it reads the shared
-     * pool only while repairs_pending_ is set.
+     * sample's rounds, doubles its wait (up to
+     * RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times), and sets its next deadline
+     * that wait after `now_ms`, so a NACK_FRAG or a repair lost on the way
+     * is asked for again, later each time. Like ms_until_repair_due(), it
+     * reads the shared pool only while repairs_pending_ is set.
      *
      * @param[in]  now_ms   Monotonic time, in milliseconds.
-     * @param[in]  retry_ms Delay to the next round when this one goes unanswered.
+     * @param[in]  delay_ms The undoubled wait, as passed to schedule_repair().
      * @param[out] writer   Writer of the returned sample.
      * @param[out] sn       Sequence number of the returned sample.
      * @param[out] missing  The sample's missing fragments, ready for a NACK_FRAG.
@@ -606,13 +634,15 @@ public:
      * Verification:
      * - Correct means: a sample is returned at most once per call to
      *   schedule_repair() plus once per retry, never before its deadline,
-     *   and never after its rounds are spent.
-     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-006.
+     *   and never after its rounds are spent; successive unanswered rounds
+     *   are `delay_ms` × 2, × 4, ... apart, the factor capped at
+     *   2^RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS.
+     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-006, TC-SRR-8.4.12-007.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.12 (NACK_FRAG)
      */
-    bool take_due_repair(uint32_t now_ms, uint32_t retry_ms, Guid& writer, SequenceNumber& sn,
+    bool take_due_repair(uint32_t now_ms, uint32_t delay_ms, Guid& writer, SequenceNumber& sn,
                          FragmentNumberSet& missing) noexcept;
 
     /**

@@ -19,7 +19,7 @@
  * reliable reader does not wait for the writer's HEARTBEAT: once a partial
  * change has received nothing for RTPS_FRAGMENT_REPAIR_DELAY_MS it sends a
  * NACK_FRAG for the missing fragments on its own, for a bounded number of
- * rounds.
+ * rounds, doubling the wait after each one.
  */
 
 #include "spec_test_common.hpp"
@@ -287,8 +287,10 @@ static bool tc_srr_8_4_12_005(std::string& err) {
 }
 
 // §8.4.12: unanswered, the quiet-period NACK_FRAG is repeated at most
-// RTPS_FRAGMENT_REPAIR_ROUNDS times, after which the writer's HEARTBEAT
-// drives repair; a best-effort reader, whose writer never repairs, sends none.
+// RTPS_FRAGMENT_REPAIR_ROUNDS times, each wait double the last up to
+// RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS doublings, after which the writer's
+// HEARTBEAT drives repair; a best-effort reader, whose writer never repairs,
+// sends none.
 static bool tc_srr_8_4_12_006(std::string& err) {
     CaptureTransport      tx{};
     const Guid            reader = make_guid(0xB3u, make_entity(1u, 2u, 3u, 0x04u));
@@ -299,13 +301,20 @@ static bool tc_srr_8_4_12_006(std::string& err) {
 
     g_stateful_reader_test_now_ms = 0u;
     deliver_fragment(r, reader, writer, 1, 1u);
-    for (uint32_t round = 1u; round <= RTPS_FRAGMENT_REPAIR_ROUNDS + 2u; ++round) {
-        r.tick(round * RTPS_FRAGMENT_REPAIR_DELAY_MS);
+    uint32_t due = 0u;
+    for (uint32_t round = 0u; round < RTPS_FRAGMENT_REPAIR_ROUNDS; ++round) {
+        const uint32_t doublings =
+            round < RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS ? round : RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS;
+        due += RTPS_FRAGMENT_REPAIR_DELAY_MS << doublings;
+        r.tick(due - 1u);
+        CHECK(tx.unicast_msgs.size() == round, "no NACK_FRAG before the doubled wait ends");
+        r.tick(due);
+        CHECK(tx.unicast_msgs.size() == round + 1u, "one NACK_FRAG when the doubled wait ends");
     }
 
-    CHECK(tx.unicast_msgs.size() == RTPS_FRAGMENT_REPAIR_ROUNDS,
-          "one NACK_FRAG per quiet period, up to the round limit");
-    CHECK(r.ms_until_next_timer(10u * RTPS_FRAGMENT_REPAIR_DELAY_MS) == UINT32_MAX,
+    r.tick(due + (RTPS_FRAGMENT_REPAIR_DELAY_MS << 9u));
+    CHECK(tx.unicast_msgs.size() == RTPS_FRAGMENT_REPAIR_ROUNDS, "none after the round limit");
+    CHECK(r.ms_until_next_timer(due + 1u) == UINT32_MAX,
           "with the rounds spent no deadline remains");
 
     CaptureTransport      be_tx{};
@@ -316,6 +325,41 @@ static bool tc_srr_8_4_12_006(std::string& err) {
     deliver_fragment(be, be_reader, writer, 1, 1u);
     be.tick(10u * RTPS_FRAGMENT_REPAIR_DELAY_MS);
     CHECK(be_tx.unicast_msgs.empty(), "a best-effort reader never asks for fragments");
+    return true;
+}
+
+// §8.4.12: a fragment arriving after a NACK_FRAG restores the rounds but
+// keeps the doubled wait, so a writer pacing its fragments further apart than
+// RTPS_FRAGMENT_REPAIR_DELAY_MS is not asked again at the first wait; a new
+// sample starts again at the first wait.
+static bool tc_srr_8_4_12_007(std::string& err) {
+    CaptureTransport      tx{};
+    const Guid            reader = make_guid(0xE6u, make_entity(1u, 2u, 3u, 0x04u));
+    const Guid            writer = make_guid(0xF7u, make_entity(4u, 5u, 6u, 0x03u));
+    DefaultStatefulReader r(reader, ReliabilityKind::RELIABLE, tx);
+    CHECK(r.matched_writer_add(writer, &kLoc, 1u), "match");
+    tx.unicast_msgs.clear();
+
+    constexpr uint32_t kDelay = RTPS_FRAGMENT_REPAIR_DELAY_MS;
+    g_stateful_reader_test_now_ms = 0u;
+    deliver_fragment(r, reader, writer, 1, 1u);
+    r.tick(kDelay);
+    CHECK(tx.unicast_msgs.size() == 1u, "the first NACK_FRAG after one quiet period");
+
+    const uint32_t paced = kDelay + 1u;
+    g_stateful_reader_test_now_ms = paced;
+    deliver_fragment(r, reader, writer, 1, 2u);
+    CHECK(r.ms_until_next_timer(paced) == 2u * kDelay,
+          "a fragment after a NACK_FRAG waits the doubled period");
+    r.tick(paced + kDelay);
+    CHECK(tx.unicast_msgs.size() == 1u, "nothing is asked at the first wait");
+    r.tick(paced + 2u * kDelay);
+    CHECK(tx.unicast_msgs.size() == 2u, "the NACK_FRAG follows the doubled wait");
+
+    const uint32_t next = paced + 3u * kDelay;
+    g_stateful_reader_test_now_ms = next;
+    deliver_fragment(r, reader, writer, 2, 1u);
+    CHECK(r.ms_until_next_timer(next) == kDelay, "a new sample starts at the first wait");
     return true;
 }
 
@@ -340,9 +384,13 @@ void append_stateful_reader_tests_8_4_12_nack_frag_on_heartbeat(std::vector<Test
                      "lost last fragment, with no HEARTBEAT.",
                      tc_srr_8_4_12_005});
     tests.push_back({"TC-SRR-8.4.12-006",
-                     "§8.4.12: unanswered quiet-period NACK_FRAGs stop after "
-                     "RTPS_FRAGMENT_REPAIR_ROUNDS; a best-effort reader sends none.",
+                     "§8.4.12: unanswered quiet-period NACK_FRAGs follow doubling waits and stop "
+                     "after RTPS_FRAGMENT_REPAIR_ROUNDS; a best-effort reader sends none.",
                      tc_srr_8_4_12_006});
+    tests.push_back({"TC-SRR-8.4.12-007",
+                     "§8.4.12: a fragment arriving after a NACK_FRAG keeps the doubled wait; a "
+                     "new sample starts again at RTPS_FRAGMENT_REPAIR_DELAY_MS.",
+                     tc_srr_8_4_12_007});
 }
 
 }  // namespace spec_test
