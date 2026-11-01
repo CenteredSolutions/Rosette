@@ -10,6 +10,7 @@
  * (rmw_qos_event.cpp).
  */
 
+#include "rmw_rosette/argument_checks.hpp"
 #include "rmw_rosette/identifier.h"
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/types.hpp"
@@ -24,6 +25,85 @@
 #endif
 
 namespace {
+
+/**
+ * @brief Refuses one rmw_wait() condition array that holds a null entry.
+ *
+ * @param[in] count   The array's entry count.
+ * @param[in] entries The array; may be null only when `count` is 0.
+ * @param[in] name    The argument's name for the error message.
+ * @return RMW_RET_OK when every entry is non-null; otherwise RMW_RET_INVALID_ARGUMENT
+ *   with the error state set.
+ */
+rmw_ret_t check_wait_entries(size_t count, void* const* entries, const char* name) noexcept {
+    if (count != 0u && entries == nullptr) {
+        return rmw_rosette::refuse_argument("rmw_wait", name, rmw_rosette::ArgumentFault::null);
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        if (entries[i] == nullptr) {
+            return rmw_rosette::refuse_argument("rmw_wait", name, rmw_rosette::ArgumentFault::null);
+        }
+    }
+
+    return RMW_RET_OK;
+}
+
+/**
+ * @brief Refuses rmw_wait() condition arrays that hold a null entry.
+ *
+ * rmw_wait() treats a null entry as invalid before the wait and nulls the
+ * entries that did not trigger after it, so a null entry on the way in is a
+ * caller reusing an output array; it is refused before the participant runs,
+ * where it would otherwise count as not ready and could leave the wait to
+ * block until its timeout.
+ *
+ * @param[in] subscriptions    Subscriptions to wait on; may be null.
+ * @param[in] guard_conditions Guard conditions to wait on; may be null.
+ * @param[in] services         Services to wait on; may be null.
+ * @param[in] clients          Clients to wait on; may be null.
+ * @param[in] events           Events to wait on; may be null.
+ * @return RMW_RET_OK when every supplied array is fully populated; otherwise
+ *   RMW_RET_INVALID_ARGUMENT with the error state naming the array.
+ *
+ * Verification:
+ * - Correct means: a null entry in any array is refused without waiting and
+ *   leaves every array as given.
+ * - Covered by: rmw_rosette/test/test_live_context_refusals.cpp (TC-RMW-ARG-008).
+ *
+ * References:
+ * - rmw/rmw.h (Humble, Jazzy), `rmw_wait` ("NULL entries in arrays prior to
+ *   wait are considered invalid")
+ */
+rmw_ret_t check_wait_arrays(const rmw_subscriptions_t*    subscriptions,
+                            const rmw_guard_conditions_t* guard_conditions,
+                            const rmw_services_t* services, const rmw_clients_t* clients,
+                            const rmw_events_t* events) noexcept {
+    rmw_ret_t ret = RMW_RET_OK;
+    if (subscriptions != nullptr) {
+        ret = check_wait_entries(subscriptions->subscriber_count, subscriptions->subscribers,
+                                 "subscriptions entry");
+    }
+
+    if (ret == RMW_RET_OK && guard_conditions != nullptr) {
+        ret = check_wait_entries(guard_conditions->guard_condition_count,
+                                 guard_conditions->guard_conditions, "guard_conditions entry");
+    }
+
+    if (ret == RMW_RET_OK && services != nullptr) {
+        ret = check_wait_entries(services->service_count, services->services, "services entry");
+    }
+
+    if (ret == RMW_RET_OK && clients != nullptr) {
+        ret = check_wait_entries(clients->client_count, clients->clients, "clients entry");
+    }
+
+    if (ret == RMW_RET_OK && events != nullptr) {
+        ret = check_wait_entries(events->event_count, events->events, "events entry");
+    }
+
+    return ret;
+}
 
 /**
  * @brief Reports whether any listed subscription or guard condition is ready.
@@ -133,13 +213,20 @@ extern "C" {
  *   poll for this wait set.
  * @param[in] max_conditions Unused; wait_set_pool()'s capacity is fixed
  *   at compile time via `RMW_ROSETTE_MAX_WAIT_SETS` (pool.hpp).
- * @return The new wait set, or `nullptr` if `context`/its `impl` is null
- *   or the wait set pool is exhausted.
+ * @return The new wait set, or `nullptr` if check_context() refuses
+ *   `context` (null, not initialized, another rmw's, or shut down) or the
+ *   wait set pool is exhausted.
+ *
+ * Verification:
+ * - Correct means: no wait set is created in a context that was shut down.
+ * - Covered by: rmw_rosette/test/test_live_context_refusals.cpp (TC-RMW-ARG-005).
+ *
+ * References:
+ * - rmw/rmw.h (Humble), `rmw_create_wait_set`
  */
 rmw_wait_set_t* rmw_create_wait_set(rmw_context_t* context, size_t max_conditions) {
     (void)max_conditions;
-    if (!context || !context->impl) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_wait_set: null context");
+    if (rmw_rosette::check_context(context, __func__, true) != RMW_RET_OK) {
         return nullptr;
     }
 
@@ -160,11 +247,27 @@ rmw_wait_set_t* rmw_create_wait_set(rmw_context_t* context, size_t max_condition
 /**
  * @brief Destroys a wait set and returns its slot to the pool.
  *
+ * Refuses before releasing anything, so a wait set of another
+ * implementation stays with its owner.
+ *
  * @param[in] wait_set Wait set to destroy.
- * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `wait_set` is null.
+ * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` if `wait_set` is null or
+ *   not initialized; `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` for another rmw's.
+ *
+ * Verification:
+ * - Correct means: a refused destroy leaves the slot allocated, and the
+ *   destroy that follows with the identifier restored succeeds.
+ * - Covered by: test_rmw_implementation's test_wait_set (rmw_destroy_wait_set).
+ *
+ * References:
+ * - rmw/rmw.h (Humble, Jazzy), `rmw_destroy_wait_set`
  */
 rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
-    if (!wait_set) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(wait_set, __func__, "wait_set");
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     wait_set_pool().release(slot_from(wait_set));
     return RMW_RET_OK;
 }
@@ -207,14 +310,16 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
  * @return `RMW_RET_OK` if any entity became ready (or `wait_timeout` was
  *   `nullptr` and one eventually did); `RMW_RET_TIMEOUT` if the deadline
  *   passed with nothing ready; `RMW_RET_INVALID_ARGUMENT` if `wait_set`
- *   or its `data` is null.
+ *   or its `data` is null, or a supplied array holds a null entry, without
+ *   waiting.
  *
  * Verification:
  * - Correct means: returns as soon as a subscription has data or a guard
  *   condition is triggered, reports exactly those entries, and never
  *   returns RMW_RET_TIMEOUT with a ready entry left unreported.
  * - Covered by: rmw_rosette/test/test_guard_condition.cpp,
- *   rmw_rosette/test/test_pub_sub_loopback.cpp.
+ *   rmw_rosette/test/test_pub_sub_loopback.cpp,
+ *   rmw_rosette/test/test_live_context_refusals.cpp (TC-RMW-ARG-008).
  *
  * References:
  * - rmw/rmw.h (Humble), `rmw_wait`
@@ -222,7 +327,14 @@ rmw_ret_t rmw_destroy_wait_set(rmw_wait_set_t* wait_set) {
 rmw_ret_t rmw_wait(rmw_subscriptions_t* subscriptions, rmw_guard_conditions_t* guard_conditions,
                    rmw_services_t* services, rmw_clients_t* clients, rmw_events_t* events,
                    rmw_wait_set_t* wait_set, const rmw_time_t* wait_timeout) {
-    if (!wait_set || !wait_set->data) return RMW_RET_INVALID_ARGUMENT;
+    rmw_ret_t checked = rmw_rosette::check_handle(wait_set, __func__, "wait_set");
+    if (checked == RMW_RET_OK) {
+        checked = check_wait_arrays(subscriptions, guard_conditions, services, clients, events);
+    }
+
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
 
     auto* impl = static_cast<rmw_rosette::WaitSet*>(wait_set->data);
     rmw_rosette::Context& ctx = *impl->context;

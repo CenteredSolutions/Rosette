@@ -21,6 +21,8 @@
 
 #include <gtest/gtest.h>
 
+#include "rcl_default_init_options.hpp"
+
 #include <rmw/rmw.h>
 
 #include <std_srvs/srv/set_bool.h>
@@ -34,8 +36,9 @@ class ServiceDepartedClient : public ::testing::Test {
 protected:
     void SetUp() override {
         rmw_init_options_t options = rmw_get_zero_initialized_init_options();
-        ASSERT_EQ(rmw_init_options_init(&options, rcutils_get_default_allocator()), RMW_RET_OK);
+        ASSERT_EQ(rmw_rosette_test::init_options_as_rcl(&options), RMW_RET_OK);
         ASSERT_EQ(rmw_init(&options, &context_), RMW_RET_OK);
+        ASSERT_EQ(rmw_init_options_fini(&options), RMW_RET_OK);
         node_ = rmw_create_node(&context_, "departed_client_test", "/");
         ASSERT_NE(node_, nullptr);
 
@@ -66,6 +69,7 @@ protected:
         EXPECT_EQ(rmw_destroy_wait_set(wait_set_), RMW_RET_OK);
         EXPECT_EQ(rmw_destroy_service(node_, service_), RMW_RET_OK);
         EXPECT_EQ(rmw_destroy_node(node_), RMW_RET_OK);
+        EXPECT_EQ(rmw_shutdown(&context_), RMW_RET_OK);
         EXPECT_EQ(rmw_context_fini(&context_), RMW_RET_OK);
     }
 

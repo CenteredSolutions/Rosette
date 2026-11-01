@@ -29,9 +29,12 @@ mkdir -p "${LOG_DIR}"
 PROBE_BIN="${LOG_DIR}/rcl_graph_wait_probe"
 ROS_INC="${AMENT_PREFIX_PATH%%:*}/include"
 [[ -d "/opt/ros/${ROS_DISTRO:-humble}/include" ]] && ROS_INC="/opt/ros/${ROS_DISTRO:-humble}/include"
+# ROS 2 installs each package's headers under include/<pkg>/, and which
+# packages rcl's headers reach differs by distribution (Jazzy's rcl/node.h
+# includes type_description_interfaces), so every package directory is on the path.
 INCLUDES=()
-for pkg in rcl rcutils rmw rcl_yaml_param_parser rosidl_runtime_c rosidl_typesupport_interface; do
-  INCLUDES+=("-I${ROS_INC}/${pkg}")
+for pkg_dir in "${ROS_INC}"/*/; do
+  INCLUDES+=("-I${pkg_dir%/}")
 done
 g++ -std=c++17 -O1 "${SCRIPT_DIR}/rcl_graph_wait_probe.cpp" "${INCLUDES[@]}" \
   -L"$(dirname "${ROS_INC}")/lib" -lrcl -lrmw_implementation -lrmw -lrcutils -o "${PROBE_BIN}"

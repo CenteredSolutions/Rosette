@@ -26,6 +26,7 @@ find_package(rosidl_typesupport_introspection_c REQUIRED)
 find_package(rosidl_typesupport_microxrcedds_c QUIET)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmw_rosette_capacity.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmw_rosette_ros_features.cmake)
 
 # Root of the Rosette repository, which provides the RTPS core and platform glue.
 set(ROSETTE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH
@@ -38,6 +39,7 @@ set(ROSETTE_RTPS_SOURCES
   ${ROSETTE_RTPS_IO_SOURCES}
   ${ROSETTE_ROOT}/src/rtps/rtps_stderr_log.cpp
   ${ROSETTE_ROOT}/ports/net/posix/posix_socket.cpp
+  ${ROSETTE_ROOT}/ports/net/posix/posix_host_interface.cpp
   ${ROSETTE_ROOT}/ports/net/posix/posix_board_network.cpp
   ${ROSETTE_ROOT}/src/net/network_config.cpp
   ${ROSETTE_ROOT}/src/net/address_list.cpp
@@ -47,6 +49,7 @@ add_library(rmw_rosette SHARED
   src/introspection_c_codec.cpp
   src/message_codec.cpp
   src/rmw_init.cpp
+  src/argument_checks.cpp
   src/rmw_node.cpp
   src/rmw_publisher.cpp
   src/rmw_subscription.cpp
@@ -92,6 +95,10 @@ target_compile_definitions(rmw_rosette PRIVATE
 
 rmw_rosette_apply_capacity(rmw_rosette)
 
+# Features of the ROS 2 distribution being built against (rmw_rosette/ros_features.h).
+rmw_rosette_probe_ros_features(rmw_rosette
+  LIBRARIES rcutils::rcutils rmw::rmw rosidl_runtime_c::rosidl_runtime_c)
+
 target_link_libraries(rmw_rosette PUBLIC
   rcutils::rcutils
   rmw::rmw
@@ -105,10 +112,15 @@ if(rosidl_typesupport_microxrcedds_c_FOUND)
     rosidl_typesupport_microxrcedds_c::rosidl_typesupport_microxrcedds_c)
 endif()
 
-# Registers the package in the ament index so RMW_IMPLEMENTATION=rmw_rosette
-# resolves; rmw_implementation then loads librmw_rosette.so by name.
-ament_index_register_resource("rmw_implementation" CONTENT_FILE
-  "${CMAKE_CURRENT_SOURCE_DIR}/resource/rmw_rosette")
+# Lists rmw_rosette in the ament index as an rmw implementation, with the type
+# supports it reads, exactly as stock rmws do. ROS tooling that enumerates rmws
+# reads this index: get_available_rmw_implementations() (rmw_implementation_cmake),
+# and through it test_rmw_implementation and test_communication. Messages are
+# encoded from C introspection metadata (message_codec.cpp), so only the C
+# type supports are declared; RMW_IMPLEMENTATION=rmw_rosette itself needs no
+# index entry, since rmw_implementation loads librmw_rosette.so by name.
+register_rmw_implementation(
+  "c:rosidl_typesupport_c:rosidl_typesupport_introspection_c")
 
 install(
   DIRECTORY include/
@@ -137,15 +149,22 @@ if(BUILD_TESTING)
 
   # Each test binary links librmw_rosette directly, so it exercises this
   # implementation without going through rmw_implementation's loader.
-  foreach(test_name test_introspection_c_codec test_guard_condition test_pub_sub_loopback
-                    test_change_ring test_local_node_entities test_service_departed_client
-                    test_service_reply_depth
-                    test_init_options)
+  set(_rmw_rosette_tests test_introspection_c_codec test_guard_condition test_pub_sub_loopback
+                         test_change_ring test_local_node_entities test_service_departed_client
+                         test_service_reply_depth test_init_options test_argument_checks
+                         test_live_context_refusals)
+  # Entry points the ROS 2 headers declare only from some distribution on.
+  if(RMW_ROSETTE_HAS_CLIENT_GID)
+    list(APPEND _rmw_rosette_tests test_client_gid)
+  endif()
+
+  foreach(test_name ${_rmw_rosette_tests})
     ament_add_gtest(${test_name} test/${test_name}.cpp TIMEOUT 60)
     target_link_libraries(${test_name} rmw_rosette)
     # Tests include rmw_rosette headers whose layouts depend on the capacity model.
     rmw_rosette_apply_capacity(${test_name})
-    target_include_directories(${test_name} PRIVATE ${ROSETTE_ROOT}/include)
+    target_include_directories(${test_name} PRIVATE ${ROSETTE_ROOT}/include
+                               ${CMAKE_CURRENT_BINARY_DIR}/rmw_rosette_generated)
     # Same platform selection as the library, without a second copy of its
     # state: the OS and chip ports' definitions, and their include
     # directories, where platform.hpp finds rosette_os_port.hpp.

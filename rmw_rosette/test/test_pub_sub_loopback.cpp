@@ -15,6 +15,8 @@
 
 #include <gtest/gtest.h>
 
+#include "rcl_default_init_options.hpp"
+
 #include <rmw/rmw.h>
 
 #include <rosidl_runtime_c/string_functions.h>
@@ -22,10 +24,11 @@
 
 TEST(RmwRosetteLoopback, PublishAndTake) {
     rmw_init_options_t init_options = rmw_get_zero_initialized_init_options();
-    ASSERT_EQ(rmw_init_options_init(&init_options, rcutils_get_default_allocator()), RMW_RET_OK);
+    ASSERT_EQ(rmw_rosette_test::init_options_as_rcl(&init_options), RMW_RET_OK);
 
     rmw_context_t context = rmw_get_zero_initialized_context();
     ASSERT_EQ(rmw_init(&init_options, &context), RMW_RET_OK);
+    ASSERT_EQ(rmw_init_options_fini(&init_options), RMW_RET_OK);
 
     rmw_node_t* node = rmw_create_node(&context, "loopback_test_node", "/");
     ASSERT_NE(node, nullptr);
@@ -83,5 +86,6 @@ TEST(RmwRosetteLoopback, PublishAndTake) {
     rmw_destroy_subscription(node, sub);
     rmw_destroy_publisher(node, pub);
     rmw_destroy_node(node);
+    rmw_shutdown(&context);
     rmw_context_fini(&context);
 }

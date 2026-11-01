@@ -11,6 +11,7 @@
  * rmw_fastrtps_cpp uses, so stock clients call rosette services directly.
  */
 
+#include "rmw_rosette/argument_checks.hpp"
 #include "rmw_rosette/guid.hpp"
 #include "rmw_rosette/identifier.h"
 #include "rmw_rosette/message_codec.hpp"
@@ -60,7 +61,8 @@ extern "C" {
  * @param[in] service_name Fully-qualified service name, as rcl passes it.
  * @param[in] qos_policies QoS for both endpoints (rcl defaults to
  *   rmw_qos_profile_services_default: RELIABLE, VOLATILE, KEEP_LAST(10)).
- * @return The new service, or `nullptr` when an argument is null, the type
+ * @return The new service, or `nullptr` when check_endpoint_arguments()
+ *   refuses an argument, the type
  *   resolves to no codec, the service pool (kServiceCapacity) is exhausted,
  *   or the participant tables are full.
  *
@@ -76,10 +78,12 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node,
                                   const rosidl_service_type_support_t* type_support,
                                   const char* service_name,
                                   const rmw_qos_profile_t* qos_policies) {
-    if (!node || !node->data || !type_support || !service_name || !qos_policies) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_service: null argument");
+    if (rmw_rosette::check_endpoint_arguments(node, type_support, service_name, qos_policies,
+                                              __func__)
+        != RMW_RET_OK) {
         return nullptr;
     }
+
     auto* node_impl = static_cast<rmw_rosette::Node*>(node->data);
     rmw_rosette::ContextLock lock(*node_impl->context);
 
@@ -127,7 +131,7 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node,
 /**
  * @brief Destroys a service, withdrawing both endpoints from discovery.
  *
- * @param[in] node    Unused; kept for ABI symmetry.
+ * @param[in] node The node the endpoint was created in; checked as a handle, not compared.
  * @param[in] service Service to destroy.
  * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `service` is null.
  *
@@ -135,8 +139,12 @@ rmw_service_t* rmw_create_service(const rmw_node_t* node,
  * - rmw/rmw.h (Humble), `rmw_destroy_service`
  */
 rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
-    (void)node;
-    if (!service || !service->data) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked =
+        rmw_rosette::check_node_and_handle(node, service, __func__, "service");
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     auto* impl = static_cast<rmw_rosette::Service*>(service->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     if (impl->node) {
@@ -168,9 +176,13 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
  */
 rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* request_header,
                            void* ros_request, bool* taken) {
-    if (!service || !service->data || !request_header || !ros_request || !taken) {
-        return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(
+        service, __func__, "service",
+        {{request_header, "request_header"}, {ros_request, "ros_request"}, {taken, "taken"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
     }
+
     *taken = false;
     auto* impl = static_cast<rmw_rosette::Service*>(service->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
@@ -229,9 +241,13 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
  */
 rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* request_header,
                             void* ros_response) {
-    if (!service || !service->data || !request_header || !ros_response) {
-        return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(
+        service, __func__, "service",
+        {{request_header, "request_header"}, {ros_response, "ros_response"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
     }
+
     auto* impl = static_cast<rmw_rosette::Service*>(service->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     const rtps::Guid request_writer =
@@ -262,7 +278,12 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
 /// @brief Reports the effective QoS of the request reader.
 rmw_ret_t rmw_service_request_subscription_get_actual_qos(const rmw_service_t* service,
                                                           rmw_qos_profile_t* qos) {
-    if (!service || !service->data || !qos) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked =
+        rmw_rosette::check_handle(service, __func__, "service", {{qos, "qos"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     *qos = rmw_rosette::effective_qos(static_cast<const rmw_rosette::Service*>(service->data)->qos,
                                       false, RMW_ROSETTE_MAX_PENDING_CHANGES);
     return RMW_RET_OK;
@@ -289,8 +310,10 @@ rmw_ret_t rmw_service_request_subscription_get_actual_qos(const rmw_service_t* s
  */
 rmw_ret_t rmw_service_response_publisher_get_actual_qos(const rmw_service_t* service,
                                                         rmw_qos_profile_t* qos) {
-    if (!service || !service->data || !qos) {
-        return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked =
+        rmw_rosette::check_handle(service, __func__, "service", {{qos, "qos"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
     }
 
     *qos = rmw_rosette::effective_qos(static_cast<const rmw_rosette::Service*>(service->data)->qos,

@@ -87,6 +87,7 @@ void append_participant_waiting_match_tests(std::vector<TestCase>& tests);
 void append_participant_writer_eviction_tests(std::vector<TestCase>& tests);
 void append_participant_reader_reliability_tests(std::vector<TestCase>& tests);
 void append_participant_driver_pass_budget_tests(std::vector<TestCase>& tests);
+void append_transport_multicast_interface_tests(std::vector<TestCase>& tests);
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests);
 
 void register_all_participant_tests(std::vector<TestCase>& tests);

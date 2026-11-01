@@ -3,9 +3,11 @@
  * @brief rmw_init/shutdown/context_fini — owns the one RTPSParticipant.
  */
 
+#include "rmw_rosette/argument_checks.hpp"
 #include "rmw_rosette/identifier.h"
 #include "rmw_rosette/network_port.hpp"
 #include "rmw_rosette/pool.hpp"
+#include "rmw_rosette/ros_features.h"
 #include "rmw_rosette/types.hpp"
 
 #include <rcutils/strdup.h>
@@ -14,10 +16,20 @@
 #include <rmw/init_options.h>
 #include <rmw/rmw.h>
 #include <rmw/security_options.h>
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
+#  include <rmw/discovery_options.h>
+#endif
 #include <cstdio>
 #include <cstdlib>
 
+// 1 when the paired rcl is micro-ROS', built without command-line support,
+// whose rcl_init() leaves the enclave null; cmake/rmw_rosette_firmware.cmake sets it.
+#ifndef RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE
+#  define RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE 0
+#endif
+
 namespace rtps = rosette::rtps;
+using rmw_rosette::ArgumentFault;
 
 // rmw_context_impl_s is defined in types.hpp, not here: rmw_node.cpp and
 // rmw_wait_set.cpp also dereference context->impl->rosette_context, and
@@ -153,8 +165,13 @@ rmw_rosette::Pool<rmw_context_impl_s, RMW_ROSETTE_MAX_CONTEXTS>& context_pool() 
  *
  * Placement-news a SocketUdpTransport into `ctx.transport_storage` for each
  * candidate ID, keeps the first one that opens, and destroys the others.
+ * Each transport joins and sends SPDP multicast on the interface holding
+ * `address`, the address the participant advertises, so peers hear the
+ * announcement on the same network they are asked to answer on.
  *
  * @param[in,out] ctx            Context whose transport storage is used.
+ * @param[in]     address        Host-order IPv4 address the participant
+ *   advertises (network_ipv4_address()); never 0.
  * @param[out]    participant_id Receives the chosen ID on success.
  * @return `true` with `ctx.transport` open; `false` when every ID up to
  *   kMaxParticipantId whose ports fit in 16 bits is taken, or the SPDP
@@ -167,7 +184,8 @@ rmw_rosette::Pool<rmw_context_impl_s, RMW_ROSETTE_MAX_CONTEXTS>& context_pool() 
  * References:
  * - OMG DDSI-RTPS 2.5 §9.6.1.1 (participantId in the port mapping)
  */
-bool open_transport_on_free_ports(rmw_rosette::Context& ctx, uint8_t& participant_id) noexcept {
+bool open_transport_on_free_ports(rmw_rosette::Context& ctx, uint32_t address,
+                                  uint8_t& participant_id) noexcept {
     for (uint8_t id = 0; id <= kMaxParticipantId; ++id) {
         // In the highest domains the last participant IDs' ports pass 65535.
         if (7400u + 250u * ctx.domain_id + 11u + 2u * id > 65535u) {
@@ -178,6 +196,7 @@ bool open_transport_on_free_ports(rmw_rosette::Context& ctx, uint8_t& participan
             rtps::SocketUdpTransport(*ctx.provider, metatraffic_unicast_port(ctx.domain_id, id),
                                      default_unicast_port(ctx.domain_id, id), kSpdpMulticastAddr,
                                      spdp_multicast_port(ctx.domain_id));
+        ctx.transport->set_multicast_interface(address);
         if (ctx.transport->open()) {
             participant_id = id;
             return true;
@@ -282,6 +301,57 @@ void trigger_graph_guard(void* graph_guard) noexcept {
     static_cast<rmw_rosette::GuardCondition*>(graph_guard)->trigger();
 }
 
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
+/**
+ * @brief Checks that the requested discovery scope is one this participant provides.
+ *
+ * rcl fills `discovery_options` from ROS_AUTOMATIC_DISCOVERY_RANGE and
+ * ROS_STATIC_PEERS (default: SUBNET, no peers). The participant discovers over
+ * SPDP multicast and the unicast locators of the network port, which is the
+ * SUBNET range, and is also what SYSTEM_DEFAULT names for this middleware. A
+ * narrower range (LOCALHOST, OFF) or a static peer list would need the
+ * transport to restrict or extend where SPDP is sent; until it does, those
+ * requests are refused, so a node never discovers wider than it was asked to.
+ *
+ * @param[in] options Discovery options from rmw_init()'s init options.
+ * @return `RMW_RET_OK` for SUBNET or SYSTEM_DEFAULT without static peers;
+ *   `RMW_RET_INVALID_ARGUMENT` for NOT_SET, which rmw/discovery_options.h says
+ *   an implementation must reject; `RMW_RET_UNSUPPORTED` for LOCALHOST, OFF,
+ *   or any static peer. The rmw error message names the refused setting.
+ *
+ * Verification:
+ * - Correct means: rmw_init() succeeds under rcl's defaults and fails, with
+ *   the context untouched, for each refused setting.
+ * - Covered by: rmw_rosette/test/test_init_options.cpp (TC-RMW-INITOPT-011).
+ *
+ * References:
+ * - rmw/discovery_options.h (Jazzy), `rmw_automatic_discovery_range_t`
+ * - rcl/src/rcl/init.c (Jazzy), `rcl_init` (environment to discovery options)
+ */
+rmw_ret_t check_discovery_options(const rmw_discovery_options_t& options) noexcept {
+    switch (options.automatic_discovery_range) {
+        case RMW_AUTOMATIC_DISCOVERY_RANGE_SUBNET:
+        case RMW_AUTOMATIC_DISCOVERY_RANGE_SYSTEM_DEFAULT:
+            break;
+        case RMW_AUTOMATIC_DISCOVERY_RANGE_NOT_SET:
+            RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: automatic_discovery_range is not set");
+            return RMW_RET_INVALID_ARGUMENT;
+        default:
+            RMW_SET_ERROR_MSG(
+                "rmw_rosette: rmw_init: only the SUBNET and SYSTEM_DEFAULT "
+                "discovery ranges are supported");
+            return RMW_RET_UNSUPPORTED;
+    }
+
+    if (options.static_peers_count != 0u) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: static discovery peers are not supported");
+        return RMW_RET_UNSUPPORTED;
+    }
+
+    return RMW_RET_OK;
+}
+#endif
+
 }  // namespace
 
 extern "C" {
@@ -304,25 +374,51 @@ const char* rmw_get_serialization_format(void) {
  * passing the options on. `domain_id` starts as RMW_DEFAULT_DOMAIN_ID, the
  * value rcl_init() replaces with ROS_DOMAIN_ID (or 0 when unset); any other
  * value would make rcl skip that lookup, so every rcl, rclc and rclcpp
- * program would ignore ROS_DOMAIN_ID.
+ * program would ignore ROS_DOMAIN_ID. Where the headers have discovery
+ * options, the range is SYSTEM_DEFAULT (this middleware's own default, the
+ * subnet) with no static peers, so options from here pass rmw_init() as
+ * they are, as the stock rmws' do; a caller that drives the rmw directly,
+ * such as test_rmw_implementation, relies on that. rcl_init_options_init()
+ * resets the range to NOT_SET afterwards, so rcl_init() still applies
+ * ROS_AUTOMATIC_DISCOVERY_RANGE.
  *
- * @param[out] init_options Options struct to fill.
- * @param[in] allocator Allocator to record on the options; unused beyond
- *   that, since nothing here allocates.
+ * @param[out] init_options Options struct to fill; must be zero-initialized
+ *   (rmw_get_zero_initialized_init_options()).
+ * @param[in] allocator Allocator to record on the options and to free the
+ *   strings rcl later puts into them; must be valid.
  * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `init_options`
- *   is null.
+ *   is null or already initialized, or `allocator` is invalid; the options
+ *   are untouched on failure.
  *
  * Verification:
  * - Correct means: `domain_id` is RMW_DEFAULT_DOMAIN_ID, so a program
- *   started with ROS_DOMAIN_ID=65 binds domain 65's ports (7400 + 250 * 65).
- * - Covered by: rmw_rosette/test/test_init_options.cpp (TC-RMW-INITOPT-009).
+ *   started with ROS_DOMAIN_ID=65 binds domain 65's ports (7400 + 250 * 65),
+ *   and rmw_init() accepts the options unmodified.
+ * - Covered by: rmw_rosette/test/test_init_options.cpp (TC-RMW-INITOPT-009,
+ *   TC-RMW-INITOPT-013, TC-RMW-INITOPT-014); test_rmw_implementation's
+ *   test_init_options and test_init_shutdown.
  *
  * References:
  * - rmw/init_options.h, rmw/domain_id.h (Humble), RMW_DEFAULT_DOMAIN_ID
  * - rcl/src/rcl/init.c (Humble), rcl_init(): the ROS_DOMAIN_ID lookup
+ * - rmw/discovery_options.h (Jazzy), `rmw_automatic_discovery_range_t`;
+ *   rmw/src/discovery_options.c, `rmw_discovery_options_init` (stock default)
+ * - rcl/src/rcl/init_options.c (Jazzy), `rcl_init_options_init` (NOT_SET reset)
  */
 rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_allocator_t allocator) {
-    if (!init_options) return RMW_RET_INVALID_ARGUMENT;
+    if (init_options == nullptr) {
+        return rmw_rosette::refuse_argument(__func__, "init_options", ArgumentFault::null);
+    }
+
+    if (!rcutils_allocator_is_valid(&allocator)) {
+        return rmw_rosette::refuse_argument(__func__, "allocator", ArgumentFault::invalid);
+    }
+
+    if (init_options->implementation_identifier != nullptr) {
+        return rmw_rosette::refuse_argument(__func__, "init_options",
+                                            ArgumentFault::already_in_use);
+    }
+
     init_options->instance_id = 0;
     init_options->implementation_identifier = rmw_rosette_identifier;
     init_options->allocator = allocator;
@@ -330,63 +426,78 @@ rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_alloca
     init_options->enclave = nullptr;
     init_options->domain_id = RMW_DEFAULT_DOMAIN_ID;
     init_options->security_options = rmw_get_zero_initialized_security_options();
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
+    init_options->discovery_options = rmw_get_zero_initialized_discovery_options();
+    init_options->discovery_options.automatic_discovery_range =
+        RMW_AUTOMATIC_DISCOVERY_RANGE_SYSTEM_DEFAULT;
+#endif
+
     return RMW_RET_OK;
 }
 
 /**
- * @brief Deep-copies an rmw_init_options_t, including the strings the options own.
+ * @brief Deep-copies an rmw_init_options_t, including the memory the options own.
  *
- * The options own two heap strings: `enclave` and
- * `security_options.security_root_path`. rcl_init() fills `enclave` with
- * rcutils_strdup() in the context's own copy of the options, and
- * rcl_context_fini() finalizes that copy through rmw_init_options_fini(),
- * so the copy duplicates both strings with `src`'s allocator and
- * rmw_init_options_fini() frees them; a shallow copy would leave two
- * owners of one string.
+ * The options own two heap strings, `enclave` and
+ * `security_options.security_root_path`, and, where the headers have
+ * discovery options, the `discovery_options.static_peers` array. rcl_init()
+ * fills `enclave` with rcutils_strdup() and the peers from ROS_STATIC_PEERS in
+ * the context's own copy of the options, and rcl_context_fini() finalizes that
+ * copy through rmw_init_options_fini(), so the copy duplicates each of them
+ * with `src`'s allocator and rmw_init_options_fini() frees them; a shallow
+ * copy would leave two owners of one allocation.
  *
  * @param[in] src Options to copy from; initialized by rmw_init_options_init().
  * @param[out] dst Options to copy into; must be zero-initialized
  *   (rmw_get_zero_initialized_init_options()). Untouched on failure.
  * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` if either argument is
- *   null, `dst` is already initialized or `src`'s allocator is invalid;
+ *   null, `src` is not initialized, `dst` is already initialized or `src`'s
+ *   allocator is invalid;
  *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` if `src` is another rmw's;
- *   `RMW_RET_BAD_ALLOC` if a string cannot be duplicated.
+ *   `RMW_RET_BAD_ALLOC` if a string or the peer list cannot be duplicated.
  *
  * Verification:
  * - Correct means: `dst` equals `src` field for field except that its
- *   strings are its own copies, and finalizing both returns every byte
- *   they allocated.
+ *   strings are its own copies and its identifier is the static
+ *   rmw_rosette_identifier, whatever storage `src`'s identifier lives in,
+ *   and finalizing both returns every byte they allocated.
  * - Covered by: rmw_rosette/test/test_init_options.cpp
- *   (TC-RMW-INITOPT-002, -004, -007, -008).
+ *   (TC-RMW-INITOPT-002, -004, -007, -008, -012, -014, -015); test_rmw_implementation's
+ *   TestInitOptions.copy_with_bad_arguments.
  *
  * References:
- * - rmw/init_options.h (Humble), `rmw_init_options_copy`, `rmw_init_options_fini`
+ * - rmw/init_options.h (Humble, Jazzy), `rmw_init_options_copy`, `rmw_init_options_fini`
  * - rmw/security_options.h (Humble), `rmw_security_options_copy`
+ * - rmw/discovery_options.h (Jazzy), `rmw_discovery_options_copy`
  * - rcl/src/rcl/init.c (Humble), `rcl_init` (the enclave rcutils_strdup)
  */
 rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_t* dst) {
-    if (!src || !dst) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_copy: null argument");
-        return RMW_RET_INVALID_ARGUMENT;
+    if (src == nullptr || dst == nullptr) {
+        return rmw_rosette::refuse_argument(__func__, src == nullptr ? "src" : "dst",
+                                            ArgumentFault::null);
     }
 
-    if (src->implementation_identifier != rmw_rosette_identifier) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_copy: options of another rmw");
-        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    if (src->implementation_identifier == nullptr) {
+        return rmw_rosette::refuse_argument(__func__, "src", ArgumentFault::uninitialized);
+    }
+
+    if (!rmw_rosette::is_rosette_identifier(src->implementation_identifier)) {
+        return rmw_rosette::refuse_argument(__func__, "src", ArgumentFault::foreign);
     }
 
     if (dst->implementation_identifier != nullptr) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_copy: destination already initialized");
-        return RMW_RET_INVALID_ARGUMENT;
+        return rmw_rosette::refuse_argument(__func__, "dst", ArgumentFault::already_in_use);
     }
 
     const rcutils_allocator_t* allocator = &src->allocator;
     if (!rcutils_allocator_is_valid(allocator)) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_copy: invalid allocator");
-        return RMW_RET_INVALID_ARGUMENT;
+        return rmw_rosette::refuse_argument(__func__, "src allocator", ArgumentFault::invalid);
     }
 
+    // The source may carry the identifier in storage of its own; the copy is
+    // stamped with the static one so it stays valid after the source is gone.
     rmw_init_options_t copy = *src;
+    copy.implementation_identifier = rmw_rosette_identifier;
     copy.enclave = nullptr;
     copy.security_options = rmw_get_zero_initialized_security_options();
     if (src->enclave != nullptr) {
@@ -403,25 +514,40 @@ rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_
         return RMW_RET_BAD_ALLOC;
     }
 
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
+    // The peer list records its allocator by value; the copy takes a mutable one.
+    rcutils_allocator_t peers_allocator = *allocator;
+    copy.discovery_options = rmw_get_zero_initialized_discovery_options();
+    if (rmw_discovery_options_copy(&src->discovery_options, &peers_allocator,
+                                   &copy.discovery_options)
+        != RMW_RET_OK) {
+        allocator->deallocate(copy.enclave, allocator->state);
+        (void)rmw_security_options_fini(&copy.security_options, allocator);
+        return RMW_RET_BAD_ALLOC;
+    }
+#endif
+
     *dst = copy;
     return RMW_RET_OK;
 }
 
 /**
- * @brief Releases an rmw_init_options_t and the strings it owns.
+ * @brief Releases an rmw_init_options_t and the memory it owns.
  *
  * Frees `enclave` and `security_options.security_root_path` with the
- * options' allocator (see rmw_init_options_copy() for who fills them),
+ * options' allocator, and the discovery peer list with the allocator recorded
+ * beside it (see rmw_init_options_copy() for who fills them),
  * then resets the options. Options that were never initialized, or were
- * already finalized, carry no implementation identifier, own nothing and
- * are only reset. Options stamped by another rmw are rejected before any
- * of their fields is read, because their layout and ownership rules are
- * not this rmw's.
+ * already finalized, carry no implementation identifier and are refused, as
+ * the stock rmws refuse them. Options stamped by another rmw are rejected
+ * before any of their fields is read, because their layout and ownership
+ * rules are not this rmw's.
  *
  * @param[in,out] init_options Options to finalize; reset to the
  *   zero-initialized state on return, and untouched on failure.
  * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` if `init_options` is
- *   null, or owns a string but has no valid allocator to free it with;
+ *   null or not initialized, or owns a string but has no valid allocator to
+ *   free it with;
  *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` if the options are another
  *   rmw's.
  *
@@ -431,22 +557,25 @@ rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_
  *   restart check, `rcl_heap` equal from one session to the next. Foreign
  *   options come back with every field and allocation unchanged.
  * - Covered by: rmw_rosette/test/test_init_options.cpp
- *   (TC-RMW-INITOPT-001, -003, -005, -006).
+ *   (TC-RMW-INITOPT-001, -003, -005, -006); test_rmw_implementation's
+ *   TestInitOptions.fini_with_bad_arguments.
  *
  * References:
- * - rmw/init_options.h (Humble), `rmw_init_options_fini`
+ * - rmw/init_options.h (Humble, Jazzy), `rmw_init_options_fini`
  * - rmw/security_options.h (Humble), `rmw_security_options_fini`
+ * - rmw/discovery_options.h (Jazzy), `rmw_discovery_options_fini`
  */
 rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
-    if (!init_options) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_fini: null argument");
-        return RMW_RET_INVALID_ARGUMENT;
+    if (init_options == nullptr) {
+        return rmw_rosette::refuse_argument(__func__, "init_options", ArgumentFault::null);
     }
 
-    if (init_options->implementation_identifier != nullptr
-        && init_options->implementation_identifier != rmw_rosette_identifier) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_fini: options of another rmw");
-        return RMW_RET_INCORRECT_RMW_IMPLEMENTATION;
+    if (init_options->implementation_identifier == nullptr) {
+        return rmw_rosette::refuse_argument(__func__, "init_options", ArgumentFault::uninitialized);
+    }
+
+    if (!rmw_rosette::is_rosette_identifier(init_options->implementation_identifier)) {
+        return rmw_rosette::refuse_argument(__func__, "init_options", ArgumentFault::foreign);
     }
 
     const bool owns_strings = init_options->enclave != nullptr
@@ -454,13 +583,22 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
     const rcutils_allocator_t* allocator = &init_options->allocator;
     if (owns_strings) {
         if (!rcutils_allocator_is_valid(allocator)) {
-            RMW_SET_ERROR_MSG("rmw_rosette: rmw_init_options_fini: invalid allocator");
-            return RMW_RET_INVALID_ARGUMENT;
+            return rmw_rosette::refuse_argument(__func__, "init_options allocator",
+                                                ArgumentFault::invalid);
         }
 
         allocator->deallocate(init_options->enclave, allocator->state);
         (void)rmw_security_options_fini(&init_options->security_options, allocator);
     }
+
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
+    // The peer list records its own allocator, so it is released whether or
+    // not the options own a string.
+    if (init_options->discovery_options.static_peers != nullptr
+        && rmw_discovery_options_fini(&init_options->discovery_options) != RMW_RET_OK) {
+        return RMW_RET_INVALID_ARGUMENT;
+    }
+#endif
 
     *init_options = rmw_get_zero_initialized_init_options();
     return RMW_RET_OK;
@@ -477,39 +615,99 @@ rmw_ret_t rmw_init_options_fini(rmw_init_options_t* init_options) {
  * over the build's socket backend (network_socket_provider()) on the first
  * free participant ID (open_transport_on_free_ports()), then placement-news
  * the `RTPSParticipant` that borrows it. The participant advertises the
- * network port's IPv4 address (network_ipv4_address()) rather than loopback:
- * stock DDS implementations ignore loopback locators from participants they
- * cannot prove are local. The participant's first user writer is the
+ * network port's IPv4 address (network_ipv4_address()) rather than loopback,
+ * since stock DDS implementations ignore loopback locators from participants
+ * they cannot prove are local, and its transport joins and sends SPDP on the
+ * interface holding that address. The participant's first user writer is the
  * `ros_discovery_info` writer (ros_discovery_info_writer.hpp), which every
  * node created on this context reports to. The context's graph guard
  * condition is triggered by every graph change the participant reports.
  *
- * @param[in] options Init options; `domain_id` and `instance_id` are used.
- *   `domain_id` is 0 to 232, or RMW_DEFAULT_DOMAIN_ID for domain 0.
- * @param[out] context Context to initialize.
+ * A null enclave is refused only where the paired rcl always supplies one.
+ * Stock rcl sets it in rcl_init(), to the --enclave argument or "/".
+ * micro-ROS builds rcl with RCL_COMMAND_LINE_ENABLED off, which compiles
+ * that step out, so on firmware every rclc program reaches rmw_init() with a
+ * null enclave; the firmware build defines RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE
+ * and the enclave is then optional. rmw_rosette reads the enclave nowhere
+ * else, and a null one is copied and finalized as absent.
+ *
+ * @param[in] options Init options from rmw_init_options_init(), with the
+ *   `enclave` rcl_init() sets, or a null one on firmware; `domain_id` and `instance_id` are used,
+ *   and `discovery_options` where the headers have them
+ *   (check_discovery_options()). `domain_id` is 0 to 232, or
+ *   RMW_DEFAULT_DOMAIN_ID for domain 0.
+ * @param[out] context Context to initialize; must be zero-initialized
+ *   (rmw_get_zero_initialized_context()). Untouched on failure.
  * @return `RMW_RET_OK` on success; `RMW_RET_INVALID_ARGUMENT` if either
- *   argument is null or `domain_id` is above 232; `RMW_RET_ERROR` if the context pool is exhausted,
+ *   argument is null, the options are not initialized or (on a host) have
+ *   no enclave,
+ *   the context is already initialized, no discovery range is set, or
+ *   `domain_id` is above 232; `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` if the
+ *   options are another rmw's;
+ *   `RMW_RET_UNSUPPORTED` for a discovery range or static peers this
+ *   participant cannot provide; `RMW_RET_ERROR` if the network holds no IPv4
+ *   address (on a host, `ROSETTE_INTERFACE` names no usable interface), the
+ *   context pool is exhausted,
  *   no participant ID with free ports was found, or the participant cannot
  *   hold the `ros_discovery_info` writer.
  *
  * Verification:
  * - Correct means: a stock RMW in the same domain discovers this
- *   participant and matches its endpoints.
- * - Covered by: tests/ros2/run_rmw_interop_loopback.sh.
+ *   participant and matches its endpoints, a refused call takes no
+ *   context slot, and a stock rclc firmware initializes with the null
+ *   enclave its rcl passes.
+ * - Covered by: tests/ros2/run_rmw_interop_loopback.sh; test_rmw_implementation's
+ *   TestInitShutdown.init_with_bad_arguments and init_shutdown (host);
+ *   examples/led_files and examples/rclc_chatter reaching "session up" on a
+ *   board (firmware).
  *
  * References:
- * - rmw/init.h (Humble), `rmw_init`
+ * - rmw/init.h (Humble, Jazzy), `rmw_init`
  * - OMG DDSI-RTPS 2.5 §8.5.3 (SPDP), §9.6.1.1 (port mapping)
+ * - rcl/src/rcl/init.c (ros2/rcl and micro-ROS/rcl, Humble), `rcl_init`, the enclave step
  */
 rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
-    if (!options || !context) {
-        return RMW_RET_INVALID_ARGUMENT;
+    if (options == nullptr || context == nullptr) {
+        return rmw_rosette::refuse_argument(__func__, options == nullptr ? "options" : "context",
+                                            ArgumentFault::null);
     }
+
+    if (options->implementation_identifier == nullptr) {
+        return rmw_rosette::refuse_argument(__func__, "options", ArgumentFault::uninitialized);
+    }
+
+    if (!rmw_rosette::is_rosette_identifier(options->implementation_identifier)) {
+        return rmw_rosette::refuse_argument(__func__, "options", ArgumentFault::foreign);
+    }
+
+#if !RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE
+    if (options->enclave == nullptr) {
+        return rmw_rosette::refuse_argument(__func__, "options enclave", ArgumentFault::null);
+    }
+#endif
+
+    if (context->implementation_identifier != nullptr) {
+        return rmw_rosette::refuse_argument(__func__, "context", ArgumentFault::already_in_use);
+    }
+
+#if RMW_ROSETTE_HAS(DISCOVERY_OPTIONS)
+    const rmw_ret_t discovery_ret = check_discovery_options(options->discovery_options);
+    if (discovery_ret != RMW_RET_OK) {
+        return discovery_ret;
+    }
+#endif
 
     uint8_t domain_id = 0u;
     if (!resolve_domain_id(options->domain_id, domain_id)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: domain_id above 232");
         return RMW_RET_INVALID_ARGUMENT;
+    }
+
+    // Without an address no peer could answer; the network port has said why.
+    const uint32_t address = rmw_rosette::network_ipv4_address();
+    if (address == 0u) {
+        RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: the network holds no IPv4 address");
+        return RMW_RET_ERROR;
     }
 
     rmw_context_impl_s* impl = context_pool().acquire();
@@ -523,7 +721,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     ctx.domain_id = domain_id;
     ctx.provider = &rmw_rosette::network_socket_provider();
     uint8_t participant_id = 0;
-    if (!open_transport_on_free_ports(ctx, participant_id)) {
+    if (!open_transport_on_free_ports(ctx, address, participant_id)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: no free RTPS participant ports "
                           "in this domain");
         context_pool().release(impl);
@@ -540,8 +738,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     // RMW_ROSETTE_STRICT_LINK rehearses such a link's losses on a host: every
     // received datagram above the limit is discarded, as the wire would.
     ctx.transport->set_strict_link(std::getenv("RMW_ROSETTE_STRICT_LINK") != nullptr);
-    ctx.participant->add_ipv4_address(rmw_rosette::network_ipv4_address(),
-                                      rmw_rosette::network_ipv4_prefix_len());
+    ctx.participant->add_ipv4_address(address, rmw_rosette::network_ipv4_prefix_len());
     ctx.driver = new (ctx.driver_storage) rtps::ParticipantDriver(
         *ctx.participant, *ctx.transport, *ctx.provider, ctx.rx_buffer, sizeof(ctx.rx_buffer));
     ctx.constructed = true;
@@ -568,18 +765,37 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
 /**
  * @brief Marks a context as no longer accepting new work.
  *
+ * After shutdown no entity may be created in the context, entities may still
+ * be destroyed, and rmw_context_fini() is allowed. Shutting down twice is not
+ * an error.
+ *
  * `RTPSParticipant` has no explicit departure announcement — matched
  * peers learn of this participant going away only through SPDP lease
  * expiry, at the configured `leaseDuration` (see
  * `SPDPdiscoveredParticipantData` in rtps/types.hpp), regardless of when
  * `rmw_shutdown()` is called relative to `rmw_context_fini()`.
  *
- * @param[in] context Context to shut down.
- * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `context` or its
- *   `impl` is null.
+ * @param[in,out] context Context to shut down.
+ * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` if `context` is null or
+ *   not initialized; `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` if it is another
+ *   rmw's.
+ *
+ * Verification:
+ * - Correct means: after shutdown, creating a node in the context is refused
+ *   and finalizing it succeeds; a second shutdown returns `RMW_RET_OK`.
+ * - Covered by: test_rmw_implementation's TestInitShutdown.shutdown_with_bad_arguments
+ *   and init_shutdown.
+ *
+ * References:
+ * - rmw/init.h (Humble, Jazzy), `rmw_shutdown`
  */
 rmw_ret_t rmw_shutdown(rmw_context_t* context) {
-    if (!context || !context->impl) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t ret = rmw_rosette::check_context(context, __func__, false);
+    if (ret != RMW_RET_OK) {
+        return ret;
+    }
+
+    context->impl->rosette_context.shut_down.store(true);
     return RMW_RET_OK;
 }
 
@@ -587,22 +803,41 @@ rmw_ret_t rmw_shutdown(rmw_context_t* context) {
  * @brief Tears down the RTPS participant and transport behind a context
  * and returns its slot to the pool.
  *
- * @param[in,out] context Context to finalize; `impl` is set to `nullptr`
- *   on return.
- * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `context` or its
- *   `impl` is null.
+ * @param[in,out] context Context to finalize, after rmw_shutdown(); reset to
+ *   the zero-initialized state on return, so it may be initialized again.
+ * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` if `context` is null, not
+ *   initialized or not shut down; `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` if
+ *   it is another rmw's. The context is untouched on failure.
+ *
+ * Verification:
+ * - Correct means: the context slot returns to the pool exactly once, so
+ *   init, shutdown and fini can repeat indefinitely.
+ * - Covered by: test_rmw_implementation's TestInitShutdown.context_fini_with_bad_arguments
+ *   and init_shutdown.
+ *
+ * References:
+ * - rmw/init.h (Humble, Jazzy), `rmw_context_fini`
  */
 rmw_ret_t rmw_context_fini(rmw_context_t* context) {
-    if (!context || !context->impl) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t ret = rmw_rosette::check_context(context, __func__, false);
+    if (ret != RMW_RET_OK) {
+        return ret;
+    }
+
     rmw_context_impl_s* impl = context->impl;
+    if (!impl->rosette_context.shut_down.load()) {
+        return rmw_rosette::refuse_argument(__func__, "context", ArgumentFault::invalid);
+    }
+
     rmw_rosette::Context& ctx = impl->rosette_context;
     if (ctx.constructed) {
         report_transport_stats(*ctx.transport);
         report_writer_evictions(*ctx.participant);
         destroy_participant(ctx);
     }
+
     context_pool().release(impl);
-    context->impl = nullptr;
+    *context = rmw_get_zero_initialized_context();
     return RMW_RET_OK;
 }
 

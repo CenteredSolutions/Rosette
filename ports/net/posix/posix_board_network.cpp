@@ -10,23 +10,19 @@
  * program that does call it gets the same ready/timeout semantics as a
  * board, which lets firmware-shaped applications run on the host unchanged.
  *
- * The host address is the `ROSETTE_LOCAL_IP` override, else the address the
- * routing table picks for outbound traffic, else loopback. Its prefix length
- * is the netmask of the interface that holds it.
+ * The host address is that of the one interface the process is on:
+ * `ROSETTE_INTERFACE`, by name or address, else the default route's, else
+ * loopback (posix_host_interface.hpp). The socket backend joins and sends
+ * discovery multicast on the same interface, because rmw_init() passes this
+ * address to the transport.
  */
 
 #include "rosette/net/board_network.hpp"
 
 #include <array>
 #include <cstdio>
-#include <cstdlib>
 
-#include <arpa/inet.h>
-#include <ifaddrs.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
+#include "posix_host_interface.hpp"
 #include "posix_socket.hpp"
 #include "rosette/platform/platform.hpp"
 
@@ -35,133 +31,6 @@ namespace {
 
 namespace pf = rosette::platform;
 
-/**
- * @brief Parses a dotted-quad string into a host-order IPv4 address.
- *
- * @param[in] text Candidate address string; may be null.
- * @return The parsed address in host byte order, or 0 when `text` is not a
- *   valid IPv4 literal.
- */
-uint32_t ipv4_host_from_string(const char* text) noexcept {
-    if (text == nullptr) {
-        return 0u;
-    }
-
-    in_addr addr{};
-    if (inet_pton(AF_INET, text, &addr) != 1) {
-        return 0u;
-    }
-
-    return ntohl(addr.s_addr);
-}
-
-/**
- * @brief Asks the kernel which local IPv4 address would route to the internet.
- *
- * Opens an unconnected UDP socket, `connect()`s it toward a well-known public
- * address (no packets are sent), and reads the source address the routing
- * table selected.
- *
- * @return The selected local IPv4 address in host byte order, or 0 on failure.
- */
-uint32_t detect_local_ipv4_host() noexcept {
-    const int fd = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (fd < 0) {
-        return 0u;
-    }
-
-    sockaddr_in remote{};
-    remote.sin_family = AF_INET;
-    remote.sin_port = htons(53u);
-    (void)inet_pton(AF_INET, "8.8.8.8", &remote.sin_addr);
-    (void)::connect(fd, reinterpret_cast<const sockaddr*>(&remote), sizeof(remote));
-
-    sockaddr_in local{};
-    socklen_t local_len = static_cast<socklen_t>(sizeof(local));
-    const int rc = ::getsockname(fd, reinterpret_cast<sockaddr*>(&local), &local_len);
-    (void)::close(fd);
-
-    return (rc == 0) ? ntohl(local.sin_addr.s_addr) : 0u;
-}
-
-/**
- * @brief The host's IPv4 address, computed once per process.
- *
- * @return `ROSETTE_LOCAL_IP` if set and valid, else the routing table's
- *   choice, else 127.0.0.1; in host byte order.
- */
-uint32_t host_ipv4() noexcept {
-    static const uint32_t value = [] {
-        if (const uint32_t forced = ipv4_host_from_string(std::getenv("ROSETTE_LOCAL_IP"))) {
-            return forced;
-        }
-
-        if (const uint32_t detected = detect_local_ipv4_host()) {
-            return detected;
-        }
-
-        return static_cast<uint32_t>(0x7F000001u);  // 127.0.0.1
-    }();
-    return value;
-}
-
-/**
- * @brief The on-link prefix length of one of the host's IPv4 addresses.
- *
- * Reads the netmask of the interface holding `host` from the operating
- * system's interface list (getifaddrs()).
- *
- * @param[in] host An address in host byte order.
- * @return The number of leading one bits in that interface's netmask (24 for
- *   255.255.255.0), or 0 when no interface holds `host` or the list cannot
- *   be read.
- *
- * Verification:
- * - Correct means: 127.0.0.1 gives 8 (the loopback interface's 255.0.0.0),
- *   and an address no interface holds gives 0.
- * - Covered by: tests/host/posix_board_network_test.cpp (TC-NET-BRD-002),
- *   tests/host/posix_board_network_prefix_test.cpp (TC-NET-BRD-004).
- *
- * References:
- * - POSIX getifaddrs(3) (Linux, BSD, macOS); RFC 4632 §3.1
- */
-uint8_t host_ipv4_prefix_len(uint32_t host) noexcept {
-    ifaddrs* list = nullptr;
-    if (::getifaddrs(&list) != 0) {
-        return 0u;
-    }
-
-    uint8_t prefix_len = 0u;
-    for (const ifaddrs* ifa = list; ifa != nullptr; ifa = ifa->ifa_next) {
-        if ((ifa->ifa_addr == nullptr) || (ifa->ifa_netmask == nullptr)
-            || (ifa->ifa_addr->sa_family != AF_INET)) {
-            continue;
-        }
-
-        const auto* addr = reinterpret_cast<const sockaddr_in*>(ifa->ifa_addr);
-        if (ntohl(addr->sin_addr.s_addr) != host) {
-            continue;
-        }
-
-        const auto* mask = reinterpret_cast<const sockaddr_in*>(ifa->ifa_netmask);
-        prefix_len = static_cast<uint8_t>(__builtin_popcount(mask->sin_addr.s_addr));
-        break;
-    }
-
-    ::freeifaddrs(list);
-    return prefix_len;
-}
-
-/**
- * @brief The prefix length of host_ipv4(), computed once per process as it is.
- *
- * @return host_ipv4_prefix_len(host_ipv4()).
- */
-uint8_t host_prefix_len() noexcept {
-    static const uint8_t value = host_ipv4_prefix_len(host_ipv4());
-    return value;
-}
-
 /// The config bring-up accepted; `ready_when` is null until then.
 NetworkConfig g_config{};
 bool g_started = false;
@@ -169,14 +38,14 @@ bool g_started = false;
 /**
  * @brief The host's address as a snapshot, rebuilt from the operating system's.
  *
- * @return The live snapshot: one `manual` IPv4 entry while the host holds an
- *   address, with the prefix length of the interface holding it (0 when no
- *   interface does, as for a `ROSETTE_LOCAL_IP` override no interface
- *   holds), none otherwise.
+ * @return The live snapshot: one `manual` IPv4 entry, the address and
+ *   prefix length of the process's interface (posix_host_interface.hpp),
+ *   while it has one; none when `ROSETTE_INTERFACE` names no usable interface.
  */
 AddressSnapshot& host_snapshot() noexcept {
     static AddressSnapshot snapshot{};
-    const uint32_t host = host_ipv4();
+    const posix::HostInterface& chosen = posix::host_interface();
+    const uint32_t              host = chosen.address;
     snapshot.active = true;
     snapshot.assigned = host != 0u;
     snapshot.v4.source = AddressSource::manual;
@@ -186,7 +55,7 @@ AddressSnapshot& host_snapshot() noexcept {
         const std::array<uint8_t, 16> address{
             static_cast<uint8_t>(host >> 24), static_cast<uint8_t>(host >> 16),
             static_cast<uint8_t>(host >> 8), static_cast<uint8_t>(host)};
-        (void)snapshot.v4.addresses.add(AddressFamily::ipv4, address, host_prefix_len());
+        (void)snapshot.v4.addresses.add(AddressFamily::ipv4, address, chosen.prefix_len);
     }
 
     return snapshot;
@@ -266,7 +135,7 @@ rosette::net::SocketProvider& board_socket_provider() noexcept {
 }
 
 uint32_t board_ipv4_address() noexcept {
-    return host_ipv4();
+    return posix::host_interface().address;
 }
 
 const AddressSnapshot& board_address_snapshot() noexcept {

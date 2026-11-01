@@ -12,11 +12,13 @@
  * reply with request.
  */
 
+#include "rmw_rosette/argument_checks.hpp"
 #include "rmw_rosette/guid.hpp"
 #include "rmw_rosette/identifier.h"
 #include "rmw_rosette/message_codec.hpp"
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/qos.hpp"
+#include "rmw_rosette/ros_features.h"
 #include "rmw_rosette/service_endpoints.hpp"
 #include "rmw_rosette/types.hpp"
 
@@ -72,7 +74,8 @@ extern "C" {
  * @param[in] type_support Service type support from rosidl-generated code.
  * @param[in] service_name Fully-qualified service name, as rcl passes it.
  * @param[in] qos_policies QoS for both endpoints.
- * @return The new client, or `nullptr` when an argument is null, the type
+ * @return The new client, or `nullptr` when check_endpoint_arguments()
+ *   refuses an argument, the type
  *   resolves to no codec, the client pool (kClientCapacity) is exhausted,
  *   or the participant tables are full.
  *
@@ -88,10 +91,12 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node,
                                 const rosidl_service_type_support_t* type_support,
                                 const char* service_name,
                                 const rmw_qos_profile_t* qos_policies) {
-    if (!node || !node->data || !type_support || !service_name || !qos_policies) {
-        RMW_SET_ERROR_MSG("rmw_rosette: rmw_create_client: null argument");
+    if (rmw_rosette::check_endpoint_arguments(node, type_support, service_name, qos_policies,
+                                              __func__)
+        != RMW_RET_OK) {
         return nullptr;
     }
+
     auto* node_impl = static_cast<rmw_rosette::Node*>(node->data);
     rmw_rosette::ContextLock lock(*node_impl->context);
 
@@ -139,7 +144,7 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node,
 /**
  * @brief Destroys a client, withdrawing both endpoints from discovery.
  *
- * @param[in] node   Unused; kept for ABI symmetry.
+ * @param[in] node The node the endpoint was created in; checked as a handle, not compared.
  * @param[in] client Client to destroy.
  * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` if `client` is null.
  *
@@ -147,8 +152,11 @@ rmw_client_t* rmw_create_client(const rmw_node_t* node,
  * - rmw/rmw.h (Humble), `rmw_destroy_client`
  */
 rmw_ret_t rmw_destroy_client(rmw_node_t* node, rmw_client_t* client) {
-    (void)node;
-    if (!client || !client->data) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_node_and_handle(node, client, __func__, "client");
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     auto* impl = static_cast<rmw_rosette::Client*>(client->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     if (impl->node) {
@@ -179,9 +187,12 @@ rmw_ret_t rmw_destroy_client(rmw_node_t* node, rmw_client_t* client) {
  */
 rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request,
                            int64_t* sequence_id) {
-    if (!client || !client->data || !ros_request || !sequence_id) {
-        return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(
+        client, __func__, "client", {{ros_request, "ros_request"}, {sequence_id, "sequence_id"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
     }
+
     auto* impl = static_cast<rmw_rosette::Client*>(client->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
 
@@ -226,9 +237,13 @@ rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request,
  */
 rmw_ret_t rmw_take_response(const rmw_client_t* client, rmw_service_info_t* request_header,
                             void* ros_response, bool* taken) {
-    if (!client || !client->data || !request_header || !ros_response || !taken) {
-        return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(
+        client, __func__, "client",
+        {{request_header, "request_header"}, {ros_response, "ros_response"}, {taken, "taken"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
     }
+
     *taken = false;
     auto* impl = static_cast<rmw_rosette::Client*>(client->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
@@ -258,18 +273,23 @@ rmw_ret_t rmw_take_response(const rmw_client_t* client, rmw_service_info_t* requ
  * request reader and the reply reader has matched its reply writer; before
  * then a request could be sent but its reply would be lost.
  *
- * @param[in]  node         Unused; the client carries its endpoints.
+ * @param[in]  node         The node the client was created in; checked as a handle.
  * @param[in]  client       Client to check.
  * @param[out] is_available `true` when both endpoints are matched.
- * @return `RMW_RET_OK`, or `RMW_RET_INVALID_ARGUMENT` for null arguments.
+ * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` for null arguments;
+ *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` for another rmw's node or client.
  *
  * References:
  * - rmw/rmw.h (Humble), `rmw_service_server_is_available`
  */
 rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_client_t* client,
                                           bool* is_available) {
-    (void)node;
-    if (!client || !client->data || !is_available) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_node_and_handle(node, client, __func__, "client",
+                                                                 {{is_available, "is_available"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     const auto* impl = static_cast<const rmw_rosette::Client*>(client->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     *is_available = impl->request_writer && impl->reply_reader &&
@@ -281,7 +301,11 @@ rmw_ret_t rmw_service_server_is_available(const rmw_node_t* node, const rmw_clie
 /// @brief Reports the effective QoS of the request writer.
 rmw_ret_t rmw_client_request_publisher_get_actual_qos(const rmw_client_t* client,
                                                       rmw_qos_profile_t* qos) {
-    if (!client || !client->data || !qos) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(client, __func__, "client", {{qos, "qos"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     *qos = rmw_rosette::effective_qos(static_cast<const rmw_rosette::Client*>(client->data)->qos,
                                       true, 0);
     return RMW_RET_OK;
@@ -290,10 +314,49 @@ rmw_ret_t rmw_client_request_publisher_get_actual_qos(const rmw_client_t* client
 /// @brief Reports the effective QoS of the reply reader.
 rmw_ret_t rmw_client_response_subscription_get_actual_qos(const rmw_client_t* client,
                                                           rmw_qos_profile_t* qos) {
-    if (!client || !client->data || !qos) return RMW_RET_INVALID_ARGUMENT;
+    const rmw_ret_t checked = rmw_rosette::check_handle(client, __func__, "client", {{qos, "qos"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
     *qos = rmw_rosette::effective_qos(static_cast<const rmw_rosette::Client*>(client->data)->qos,
                                       false, RMW_ROSETTE_MAX_PENDING_CHANGES);
     return RMW_RET_OK;
 }
+
+#if RMW_ROSETTE_HAS(CLIENT_GID)
+/**
+ * @brief Reports a client's GID: the GUID of its request writer.
+ *
+ * A server sees the same GUID in the `writer_guid` of every request this
+ * client sends (rmw_take_request()), so rcl's service introspection can tie a
+ * client to the requests it made, as it does with stock rmws.
+ *
+ * @param[in]  client Client to query.
+ * @param[out] gid    Receives the request writer's GUID via guid_to_rmw_gid().
+ * @return `RMW_RET_OK`; `RMW_RET_INVALID_ARGUMENT` if any argument is null;
+ *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` for another rmw's client.
+ *
+ * Verification:
+ * - Correct means: the first 16 octets of the GID equal the `writer_guid` the
+ *   server reads from this client's requests.
+ * - Covered by: rmw_rosette/test/test_client_gid.cpp.
+ *
+ * References:
+ * - rmw/rmw.h (Jazzy), `rmw_get_gid_for_client`
+ * - rmw_fastrtps_shared_cpp/src/rmw_client.cpp (Jazzy), `__rmw_get_gid_for_client`
+ */
+rmw_ret_t rmw_get_gid_for_client(const rmw_client_t* client, rmw_gid_t* gid) {
+    const rmw_ret_t checked = rmw_rosette::check_handle(client, __func__, "client", {{gid, "gid"}});
+    if (checked != RMW_RET_OK) {
+        return checked;
+    }
+
+    const auto*              impl = static_cast<const rmw_rosette::Client*>(client->data);
+    rmw_rosette::ContextLock lock(*impl->node->context);
+    rmw_rosette::guid_to_rmw_gid(impl->request_writer->guid(), *gid);
+    return RMW_RET_OK;
+}
+#endif
 
 }  // extern "C"

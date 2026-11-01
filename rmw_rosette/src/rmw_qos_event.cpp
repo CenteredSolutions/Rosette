@@ -17,9 +17,11 @@
  * unaffected.
  *
  * References:
- * - rmw/event.h, rmw/rmw.h (Humble)
+ * - rmw/event.h, rmw/rmw.h (Humble, Jazzy)
  * - rclcpp/src/rclcpp/publisher_base.cpp (Humble), `bind_event_callbacks`
  */
+
+#include "rmw_rosette/ros_features.h"
 
 #include <rmw/event.h>
 #include <rmw/event_callback_type.h>
@@ -41,6 +43,26 @@ rmw_ret_t rmw_subscription_event_init(rmw_event_t* rmw_event,
     (void)rmw_event; (void)subscription; (void)event_type;
     return RMW_RET_UNSUPPORTED;
 }
+
+#if RMW_ROSETTE_HAS(EVENT_TYPE_QUERY)
+/**
+ * @brief Reports that no QoS event type is supported.
+ *
+ * rcl asks before initializing an event, and the answer agrees with
+ * rmw_publisher_event_init() and rmw_subscription_event_init(), which refuse
+ * every type.
+ *
+ * @param[in] rmw_event_type Event type asked about; every value gets the same answer.
+ * @return `false`.
+ *
+ * References:
+ * - rmw/event.h (Jazzy), `rmw_event_type_is_supported`
+ */
+bool rmw_event_type_is_supported(rmw_event_type_t rmw_event_type) {
+    (void)rmw_event_type;
+    return false;
+}
+#endif
 
 /// @brief Unsupported: no event can be initialized, so none can be taken.
 rmw_ret_t rmw_take_event(const rmw_event_t* event_handle, void* event_info, bool* taken) {

@@ -3,7 +3,7 @@
  * @brief The host board network reports the netmask of the interface holding its address.
  *
  * The host address is computed once per process, so this runs in its own
- * executable with `ROSETTE_LOCAL_IP` pinned to 127.0.0.1, which every POSIX
+ * executable with `ROSETTE_INTERFACE` naming 127.0.0.1, which every POSIX
  * host holds on its loopback interface with netmask 255.0.0.0.
  *
  * References: rosette/net/board_network.hpp; ports/net/posix/posix_board_network.cpp;
@@ -30,7 +30,7 @@ void reports_the_interface_prefix() {
 }  // namespace
 
 int main() {
-    setenv("ROSETTE_LOCAL_IP", "127.0.0.1", 1);
+    setenv("ROSETTE_INTERFACE", "127.0.0.1", 1);
     reports_the_interface_prefix();
     return test_summary();
 }

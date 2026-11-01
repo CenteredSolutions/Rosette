@@ -3,10 +3,15 @@
  * @brief rosette::rtps::Guid <-> rmw_gid_t conversion.
  *
  * rosette::rtps::Guid is exactly 16 bytes (12-octet GuidPrefix + 4-octet EntityId —
- * see rtps/types.hpp), which fits inside rmw_gid_t's 24-byte storage
- * (RMW_GID_STORAGE_SIZE) with room to spare. The remaining bytes are
- * zero-padded; only `implementation_identifier` distinguishes gids across
- * rmw vendors, not the padding.
+ * see rtps/types.hpp). It fills rmw_gid_t's storage (RMW_GID_STORAGE_SIZE: 24
+ * octets on Humble, 16 from Iron on) and any remaining bytes are zero padding;
+ * only `implementation_identifier` distinguishes gids across rmw vendors, not
+ * the padding.
+ *
+ * `rmw_request_id_t::writer_guid` holds the same 16 octets, typed `int8_t[16]`
+ * on Humble and `uint8_t[RMW_GID_STORAGE_SIZE]` from Iron on. The request-writer
+ * helpers take the field's own type (RequestWriterGuid), so each distribution's
+ * header decides it.
  */
 
 #pragma once
@@ -17,6 +22,7 @@
 #include <rmw/types.h>
 
 #include <cstring>
+#include <type_traits>
 
 namespace rmw_rosette {
 
@@ -51,19 +57,46 @@ inline void guid_to_rmw_gid(const rosette::rtps::Guid& guid, rmw_gid_t& out) noe
         guid.entityId.entityKind;
 }
 
+/// `rmw_request_id_t::writer_guid`, as the rmw headers in use declare it.
+using RequestWriterGuid = decltype(rmw_request_id_t::writer_guid);
+
+/// Element type of RequestWriterGuid (`int8_t` on Humble, `uint8_t` from Iron on).
+using RequestWriterOctet = std::remove_extent_t<RequestWriterGuid>;
+
+static_assert(sizeof(RequestWriterGuid) >= 16,
+              "rmw_request_id_t::writer_guid cannot hold an RTPS GUID");
+
 /**
  * @brief Writes an RTPS GUID as the 16-octet form rmw_request_id_t uses.
  *
  * Service request IDs name the request's writer by GUID; stock RMWs store
  * the 12-octet prefix followed by the 4-octet EntityId, and so does this.
+ * Octets past the first 16, in a field declared longer than that, are
+ * zeroed.
  *
  * @param[in]  guid RTPS GUID.
- * @param[out] out  Destination `rmw_request_id_t::writer_guid`.
+ * @param[out] out  Destination `rmw_request_id_t::writer_guid`; fully overwritten.
+ *
+ * Verification:
+ * - Correct means: guid_from_request_writer() returns `guid` unchanged, and
+ *   the first 16 octets equal what rmw_fastrtps_cpp writes for the same writer.
+ * - Covered by: rmw_rosette/test/test_service_departed_client.cpp and
+ *   test_service_reply_depth.cpp (a reply reaches the client that sent the request).
+ *
+ * References:
+ * - rmw/types.h, `rmw_request_id_t`
+ * - rmw_fastrtps_shared_cpp/guid_utils.hpp, `copy_from_fastrtps_guid_to_byte_array`
  */
-inline void guid_to_request_writer(const rosette::rtps::Guid& guid, int8_t out[16]) noexcept {
+inline void guid_to_request_writer(const rosette::rtps::Guid& guid,
+                                   RequestWriterGuid&         out) noexcept {
     std::memcpy(out, guid.prefix.value, 12);
     std::memcpy(out + 12, guid.entityId.entityKey, 3);
-    out[15] = static_cast<int8_t>(guid.entityId.entityKind);
+    out[15] = static_cast<RequestWriterOctet>(guid.entityId.entityKind);
+
+    // Every distribution so far declares exactly 16 octets, so this costs no code.
+    if constexpr (sizeof(RequestWriterGuid) > 16) {
+        std::memset(out + 16, 0, sizeof(RequestWriterGuid) - 16);
+    }
 }
 
 /**
@@ -72,7 +105,7 @@ inline void guid_to_request_writer(const rosette::rtps::Guid& guid, int8_t out[1
  * @param[in] in `rmw_request_id_t::writer_guid`.
  * @return The GUID written by guid_to_request_writer().
  */
-inline rosette::rtps::Guid guid_from_request_writer(const int8_t in[16]) noexcept {
+inline rosette::rtps::Guid guid_from_request_writer(const RequestWriterGuid& in) noexcept {
     rosette::rtps::Guid g{};
     std::memcpy(g.prefix.value, in, 12);
     std::memcpy(g.entityId.entityKey, in + 12, 3);

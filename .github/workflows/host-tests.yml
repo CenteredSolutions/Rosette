@@ -13,6 +13,12 @@ on:
   push:
     branches: [main]
 
+# A newer push to a pull request cancels that pull request's run in progress;
+# runs on main and scheduled runs each get their own group and always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   host-tests:
     runs-on: ubuntu-24.04
