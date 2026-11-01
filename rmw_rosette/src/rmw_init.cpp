@@ -458,10 +458,11 @@ rmw_ret_t rmw_init_options_init(rmw_init_options_t* init_options, rcutils_alloca
  *
  * Verification:
  * - Correct means: `dst` equals `src` field for field except that its
- *   strings are its own copies, and finalizing both returns every byte
- *   they allocated.
+ *   strings are its own copies and its identifier is the static
+ *   rmw_rosette_identifier, whatever storage `src`'s identifier lives in,
+ *   and finalizing both returns every byte they allocated.
  * - Covered by: rmw_rosette/test/test_init_options.cpp
- *   (TC-RMW-INITOPT-002, -004, -007, -008, -012, -014); test_rmw_implementation's
+ *   (TC-RMW-INITOPT-002, -004, -007, -008, -012, -014, -015); test_rmw_implementation's
  *   TestInitOptions.copy_with_bad_arguments.
  *
  * References:
@@ -493,7 +494,10 @@ rmw_ret_t rmw_init_options_copy(const rmw_init_options_t* src, rmw_init_options_
         return rmw_rosette::refuse_argument(__func__, "src allocator", ArgumentFault::invalid);
     }
 
+    // The source may carry the identifier in storage of its own; the copy is
+    // stamped with the static one so it stays valid after the source is gone.
     rmw_init_options_t copy = *src;
+    copy.implementation_identifier = rmw_rosette_identifier;
     copy.enclave = nullptr;
     copy.security_options = rmw_get_zero_initialized_security_options();
     if (src->enclave != nullptr) {

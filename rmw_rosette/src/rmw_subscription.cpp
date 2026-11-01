@@ -12,6 +12,7 @@
 #include "rmw_rosette/topic_naming.hpp"
 #include "rmw_rosette/types.hpp"
 
+#include <rcutils/allocator.h>
 #include <rcutils/types/uint8_array.h>
 #include <rmw/rmw.h>
 
@@ -110,26 +111,44 @@ rmw_ret_t take_message(rmw_rosette::Subscription& impl, void* ros_message, bool*
  * The body rmw_take_serialized_message() and its _with_info variant share
  * once each has checked its own arguments.
  *
+ * The output is checked and grown before the change is popped, so a refused
+ * or failed take leaves the change buffered for the next one.
+ *
  * @param[in]     impl               The checked subscription's state.
  * @param[in,out] serialized_message Receives the change's CDR bytes, encapsulation
  *   header included; grown with its own allocator when too small.
  * @param[out]    taken              true when a change was taken.
  * @param[out]    message_info       Filled when non-null and a change was taken.
- * @return RMW_RET_OK, including when nothing was buffered; RMW_RET_BAD_ALLOC when
- *   `serialized_message` cannot be grown to hold the change.
+ * @return RMW_RET_OK, including when nothing was buffered; RMW_RET_INVALID_ARGUMENT
+ *   when `serialized_message`'s allocator is invalid (a zero-initialized
+ *   container); RMW_RET_BAD_ALLOC when `serialized_message` cannot be grown to
+ *   hold the change.
+ *
+ * Verification:
+ * - Correct means: a refused or failed take leaves the subscription's buffered
+ *   changes exactly as they were.
+ * - Covered by: rmw_rosette/test/test_live_context_refusals.cpp (TC-RMW-ARG-007).
+ *
+ * References:
+ * - rmw/rmw.h (Humble, Jazzy), `rmw_take_serialized_message`
+ * - rcutils/types/uint8_array.h, `rcutils_uint8_array_resize`
  */
 rmw_ret_t take_serialized(rmw_rosette::Subscription& impl,
                           rmw_serialized_message_t* serialized_message, bool* taken,
                           rmw_message_info_t* message_info) noexcept {
     *taken = false;
+    if (!rcutils_allocator_is_valid(&serialized_message->allocator)) {
+        return rmw_rosette::refuse_argument("rmw_take_serialized_message",
+                                            "serialized_message allocator",
+                                            rmw_rosette::ArgumentFault::invalid);
+    }
 
-    rmw_rosette::ContextLock   lock(*impl.node->context);
-    rmw_rosette::PendingChange change;
-    if (!impl.received.pop(change)) {
+    rmw_rosette::ContextLock lock(*impl.node->context);
+    const uint32_t           size = impl.received.oldest_size();
+    if (!impl.received.ready()) {
         return RMW_RET_OK;
     }
 
-    const uint32_t size = change.payload.size;
     if (serialized_message->buffer_capacity < size
         && rcutils_uint8_array_resize(serialized_message, size) != RCUTILS_RET_OK) {
         RMW_SET_ERROR_MSG(
@@ -138,6 +157,8 @@ rmw_ret_t take_serialized(rmw_rosette::Subscription& impl,
         return RMW_RET_BAD_ALLOC;
     }
 
+    rmw_rosette::PendingChange change;
+    (void)impl.received.pop(change);
     std::memcpy(serialized_message->buffer, change.payload.data, size);
     serialized_message->buffer_length = size;
     fill_message_info(change, message_info);
@@ -306,7 +327,8 @@ rmw_ret_t rmw_destroy_subscription(rmw_node_t* node, rmw_subscription_t* subscri
  *   publisher GID; must be non-null.
  * @param[in] allocation Unused; this path performs no loaned-message allocation.
  * @return `RMW_RET_OK` on success (including the nothing-buffered case);
- *   `RMW_RET_INVALID_ARGUMENT` if any argument but `allocation` is null;
+ *   `RMW_RET_INVALID_ARGUMENT` if any argument but `allocation` is null or
+ *   `serialized_message`'s allocator is invalid, with no change taken;
  *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` for another rmw's subscription;
  *   `RMW_RET_ERROR` if deserialization failed.
  */
@@ -358,7 +380,8 @@ rmw_ret_t rmw_take(const rmw_subscription_t* subscription, void* ros_message, bo
  *   publisher GID; must be non-null.
  * @param[in] allocation Unused; this path performs no loaned-message allocation.
  * @return `RMW_RET_OK` on success (including the nothing-buffered case);
- *   `RMW_RET_INVALID_ARGUMENT` if any argument but `allocation` is null;
+ *   `RMW_RET_INVALID_ARGUMENT` if any argument but `allocation` is null or
+ *   `serialized_message`'s allocator is invalid, with no change taken;
  *   `RMW_RET_INCORRECT_RMW_IMPLEMENTATION` for another rmw's subscription;
  *   `RMW_RET_BAD_ALLOC` if `serialized_message` could not be grown (with
  *   its own allocator) to hold the change.
@@ -471,7 +494,7 @@ rmw_ret_t rmw_take_serialized_message(const rmw_subscription_t* subscription,
  * - Correct means: after N changes are buffered, a take of count >= N
  *   returns exactly N messages in arrival order, and a refused take leaves
  *   every buffered change in place.
- * - Covered by: rmw_rosette/test/test_creation_after_shutdown.cpp
+ * - Covered by: rmw_rosette/test/test_live_context_refusals.cpp
  *   (TC-RMW-ARG-006).
  *
  * References:

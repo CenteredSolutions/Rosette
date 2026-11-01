@@ -180,8 +180,10 @@ rmw_ret_t check_context(const rmw_context_t* context, const char* function,
  * slot. The name must be a fully qualified ROS name unless the QoS profile
  * sets `avoid_ros_namespace_conventions`, in which case it is passed to
  * DDS as given and only has to be non-empty. A profile whose history,
- * reliability, durability or liveliness is UNKNOWN (rmw_qos_profile_unknown)
- * describes no endpoint and is refused.
+ * reliability, durability or liveliness is UNKNOWN (rmw_qos_profile_unknown),
+ * or a value outside the enumeration the paired distribution's rmw/types.h
+ * defines, describes no endpoint and is refused; BEST_AVAILABLE is accepted
+ * where that distribution defines it.
  *
  * @param[in] node         The node to create in; must be rmw_rosette's, initialized, and in a
  *   context that has not been shut down.
@@ -199,7 +201,7 @@ rmw_ret_t check_context(const rmw_context_t* context, const char* function,
  *   returns nullptr and leaves the entity pools as they were, and a node kept
  *   past rmw_shutdown() creates no endpoint.
  * - Covered by: rmw_rosette/test/test_argument_checks.cpp (TC-RMW-ARG-004),
- *   rmw_rosette/test/test_creation_after_shutdown.cpp (TC-RMW-ARG-005), and
+ *   rmw_rosette/test/test_live_context_refusals.cpp (TC-RMW-ARG-005), and
  *   test_rmw_implementation's TestPublisher, TestSubscription, TestClient and
  *   TestService create_with_bad_arguments.
  *
@@ -207,6 +209,7 @@ rmw_ret_t check_context(const rmw_context_t* context, const char* function,
  * - rmw/rmw.h (Humble, Jazzy), `rmw_create_publisher` and the other factories
  * - rmw/validate_full_topic_name.h, `rmw_validate_full_topic_name`
  * - rmw/qos_profiles.h, `rmw_qos_profile_unknown`
+ * - rmw/types.h, `rmw_qos_history_policy_e` and the other policy enumerations
  */
 rmw_ret_t check_endpoint_arguments(const rmw_node_t* node, const void* type_support,
                                    const char* name, const rmw_qos_profile_t* qos,

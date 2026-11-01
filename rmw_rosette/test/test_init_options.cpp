@@ -15,6 +15,7 @@
  * before it creates anything.
  */
 
+#include "rmw_rosette/identifier.h"
 #include "rmw_rosette/ros_features.h"
 
 #include <gtest/gtest.h>
@@ -156,6 +157,23 @@ TEST_F(InitOptionsTest, RepeatedSessionsReturnEveryAllocation) {
         ASSERT_EQ(rmw_init_options_fini(&user), RMW_RET_OK);
     }
 
+    EXPECT_EQ(g_live, 0);
+}
+
+// TC-RMW-INITOPT-015: options whose identifier is rmw_rosette's name in other storage copy,
+// and the copy carries the static identifier, so it finalizes after that storage is gone.
+TEST_F(InitOptionsTest, CopyStampsTheStaticIdentifier) {
+    rmw_init_options_t source = options_with_strings();
+    std::string        identifier = rmw_rosette_identifier;
+    source.implementation_identifier = identifier.c_str();
+    rmw_init_options_t copy = rmw_get_zero_initialized_init_options();
+    ASSERT_EQ(rmw_init_options_copy(&source, &copy), RMW_RET_OK);
+    EXPECT_EQ(copy.implementation_identifier, rmw_rosette_identifier);
+
+    source.implementation_identifier = rmw_rosette_identifier;
+    identifier.assign(identifier.size(), 'x');
+    EXPECT_EQ(rmw_init_options_fini(&copy), RMW_RET_OK);
+    EXPECT_EQ(rmw_init_options_fini(&source), RMW_RET_OK);
     EXPECT_EQ(g_live, 0);
 }
 

@@ -1,13 +1,15 @@
 /**
- * @file test_creation_after_shutdown.cpp
+ * @file test_live_context_refusals.cpp
  * @brief Refusals the entry points make on a live context: no creation after
- *        rmw_shutdown(), and no sample consumed by a refused take.
+ *        rmw_shutdown(), no sample consumed by a refused take, and no wait on
+ *        an array with a null entry.
  *
  * rcl stops creating entities once its context is invalid, but the rmw API is
  * public, and a program may keep a node past rmw_shutdown(). Every factory
  * refuses such a context before it takes a pool slot, while destruction stays
  * allowed so the program can tear down. A take that refuses an argument
- * leaves the subscription's buffered samples as they were.
+ * leaves the subscription's buffered samples as they were, and rmw_wait()
+ * refuses a null entry before it waits.
  */
 
 #include <gtest/gtest.h>
@@ -17,6 +19,7 @@
 #include <rcutils/allocator.h>
 #include <rmw/error_handling.h>
 #include <rmw/rmw.h>
+#include <rmw/serialized_message.h>
 #include <rosidl_runtime_c/string_functions.h>
 #include <std_msgs/msg/string.h>
 #include <std_srvs/srv/trigger.h>
@@ -47,6 +50,35 @@ protected:
         EXPECT_EQ(rmw_shutdown(&context_), RMW_RET_OK);
         EXPECT_EQ(rmw_context_fini(&context_), RMW_RET_OK);
         rmw_reset_error();
+    }
+
+    /**
+     * @brief Publishes `message` until `sub` reports a sample in `wait_set`.
+     *
+     * @return true once the loopback sample is buffered; false after 50 tries.
+     */
+    static bool publish_until_buffered(rmw_publisher_t* pub, rmw_subscription_t* sub,
+                                       rmw_wait_set_t* wait_set, const void* message) {
+        for (int attempt = 0; attempt < 50; ++attempt) {
+            if (rmw_publish(pub, message, nullptr) != RMW_RET_OK) {
+                return false;
+            }
+
+            void*               subs_data[] = {sub->data};
+            rmw_subscriptions_t subs{1, subs_data};
+            rmw_time_t          timeout{0, 100000000};
+            const rmw_ret_t     waited =
+                rmw_wait(&subs, nullptr, nullptr, nullptr, nullptr, wait_set, &timeout);
+            if (waited != RMW_RET_OK && waited != RMW_RET_TIMEOUT) {
+                return false;
+            }
+
+            if (subs.subscribers[0] != nullptr) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     rmw_context_t context_{};
@@ -109,19 +141,8 @@ TEST_F(LiveContextTest, RefusedTakeSequenceLeavesTheSampleBuffered) {
     std_msgs__msg__String out{};
     std_msgs__msg__String__init(&out);
     rosidl_runtime_c__String__assign(&out.data, "still here");
-    bool ready = false;
-    for (int attempt = 0; attempt < 50 && !ready; ++attempt) {
-        ASSERT_EQ(rmw_publish(pub, &out, nullptr), RMW_RET_OK);
-        void*               subs_data[] = {sub->data};
-        rmw_subscriptions_t subs{1, subs_data};
-        rmw_time_t          timeout{0, 100000000};
-        const rmw_ret_t     waited =
-            rmw_wait(&subs, nullptr, nullptr, nullptr, nullptr, wait_set, &timeout);
-        ASSERT_TRUE(waited == RMW_RET_OK || waited == RMW_RET_TIMEOUT);
-        ready = subs.subscribers[0] != nullptr;
-    }
-
-    ASSERT_TRUE(ready) << "the loopback sample never arrived";
+    ASSERT_TRUE(publish_until_buffered(pub, sub, wait_set, &out))
+        << "the loopback sample never arrived";
 
     rcutils_allocator_t         allocator = rcutils_get_default_allocator();
     rmw_message_sequence_t      messages = rmw_get_zero_initialized_message_sequence();
@@ -148,4 +169,79 @@ TEST_F(LiveContextTest, RefusedTakeSequenceLeavesTheSampleBuffered) {
     EXPECT_EQ(rmw_destroy_wait_set(wait_set), RMW_RET_OK);
     EXPECT_EQ(rmw_destroy_subscription(node_, sub), RMW_RET_OK);
     EXPECT_EQ(rmw_destroy_publisher(node_, pub), RMW_RET_OK);
+}
+
+// TC-RMW-ARG-007: rmw_take_serialized_message() into a zero-initialized
+// container, whose allocator is invalid, is refused before it takes anything,
+// so the buffered sample is still there for a take into a valid container.
+TEST_F(LiveContextTest, RefusedSerializedTakeLeavesTheSampleBuffered) {
+    const rosidl_message_type_support_t* ts = ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String);
+    rmw_qos_profile_t                    qos = rmw_qos_profile_default;
+    qos.depth = 1;
+    const rmw_publisher_options_t    pub_options = rmw_get_default_publisher_options();
+    const rmw_subscription_options_t sub_options = rmw_get_default_subscription_options();
+    rmw_publisher_t*                 pub =
+        rmw_create_publisher(node_, ts, "/refused_serialized", &qos, &pub_options);
+    rmw_subscription_t* sub =
+        rmw_create_subscription(node_, ts, "/refused_serialized", &qos, &sub_options);
+    rmw_wait_set_t* wait_set = rmw_create_wait_set(&context_, 1);
+    ASSERT_NE(pub, nullptr);
+    ASSERT_NE(sub, nullptr);
+    ASSERT_NE(wait_set, nullptr);
+
+    std_msgs__msg__String out{};
+    std_msgs__msg__String__init(&out);
+    rosidl_runtime_c__String__assign(&out.data, "still here");
+    ASSERT_TRUE(publish_until_buffered(pub, sub, wait_set, &out))
+        << "the loopback sample never arrived";
+
+    rmw_serialized_message_t zeroed = rmw_get_zero_initialized_serialized_message();
+    bool                     taken = true;
+    EXPECT_EQ(rmw_take_serialized_message(sub, &zeroed, &taken, nullptr), RMW_RET_INVALID_ARGUMENT);
+    EXPECT_FALSE(taken);
+    rmw_reset_error();
+
+    rcutils_allocator_t      allocator = rcutils_get_default_allocator();
+    rmw_serialized_message_t valid = rmw_get_zero_initialized_serialized_message();
+    ASSERT_EQ(rmw_serialized_message_init(&valid, 0, &allocator), RMW_RET_OK);
+    ASSERT_EQ(rmw_take_serialized_message(sub, &valid, &taken, nullptr), RMW_RET_OK);
+    EXPECT_TRUE(taken);
+    EXPECT_GT(valid.buffer_length, 0u);
+
+    EXPECT_EQ(rmw_serialized_message_fini(&valid), RMW_RET_OK);
+    std_msgs__msg__String__fini(&out);
+    EXPECT_EQ(rmw_destroy_wait_set(wait_set), RMW_RET_OK);
+    EXPECT_EQ(rmw_destroy_subscription(node_, sub), RMW_RET_OK);
+    EXPECT_EQ(rmw_destroy_publisher(node_, pub), RMW_RET_OK);
+}
+
+// TC-RMW-ARG-008: rmw_wait() refuses a null entry in any condition array
+// without waiting, even with no timeout, and leaves the arrays as given.
+TEST_F(LiveContextTest, WaitRefusesANullEntry) {
+    rmw_guard_condition_t* guard = rmw_create_guard_condition(&context_);
+    rmw_wait_set_t*        wait_set = rmw_create_wait_set(&context_, 2);
+    ASSERT_NE(guard, nullptr);
+    ASSERT_NE(wait_set, nullptr);
+
+    void*                  guard_data[] = {guard->data, nullptr};
+    rmw_guard_conditions_t guards{2, guard_data};
+    EXPECT_EQ(rmw_wait(nullptr, &guards, nullptr, nullptr, nullptr, wait_set, nullptr),
+              RMW_RET_INVALID_ARGUMENT);
+    EXPECT_NE(std::string(rmw_get_error_string().str).find("guard_conditions entry is null"),
+              std::string::npos);
+    EXPECT_EQ(guard_data[0], guard->data);
+    rmw_reset_error();
+
+    void*               no_subscriber[] = {nullptr};
+    rmw_subscriptions_t subs{1, no_subscriber};
+    EXPECT_EQ(rmw_wait(&subs, nullptr, nullptr, nullptr, nullptr, wait_set, nullptr),
+              RMW_RET_INVALID_ARGUMENT);
+    rmw_reset_error();
+    rmw_events_t events{1, nullptr};
+    EXPECT_EQ(rmw_wait(nullptr, nullptr, nullptr, nullptr, &events, wait_set, nullptr),
+              RMW_RET_INVALID_ARGUMENT);
+    rmw_reset_error();
+
+    EXPECT_EQ(rmw_destroy_wait_set(wait_set), RMW_RET_OK);
+    EXPECT_EQ(rmw_destroy_guard_condition(guard), RMW_RET_OK);
 }

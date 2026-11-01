@@ -36,3 +36,6 @@
 
 /// `rmw_take_dynamic_message` and its family are declared (rmw/dynamic_message_type_support.h).
 #define RMW_ROSETTE_FEATURE_DYNAMIC_TYPESUPPORT() (@RMW_ROSETTE_HAS_DYNAMIC_TYPESUPPORT@)
+
+/// The BEST_AVAILABLE reliability, durability and liveliness policies exist (rmw/types.h).
+#define RMW_ROSETTE_FEATURE_QOS_BEST_AVAILABLE() (@RMW_ROSETTE_HAS_QOS_BEST_AVAILABLE@)

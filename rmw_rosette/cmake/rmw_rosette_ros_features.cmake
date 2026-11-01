@@ -104,13 +104,21 @@ const void * probe(void) { return (const void *)&rmw_event_type_is_supported; }
 const void * probe(void) { return (const void *)&rmw_take_dynamic_message; }
 ]])
 
+  # rmw/types.h (Iron+): the BEST_AVAILABLE reliability, durability and
+  # liveliness policies, which match whatever the discovered peers offer.
+  _rmw_rosette_probe(RMW_ROSETTE_HAS_QOS_BEST_AVAILABLE [[
+#include <rmw/types.h>
+int probe(void) { return (int)RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE; }
+]])
+
   foreach(_feature
       RMW_ROSETTE_HAS_DISCOVERY_OPTIONS
       RMW_ROSETTE_HAS_TYPE_HASH
       RMW_ROSETTE_HAS_SERVICE_ENDPOINT_COUNTS
       RMW_ROSETTE_HAS_CLIENT_GID
       RMW_ROSETTE_HAS_EVENT_TYPE_QUERY
-      RMW_ROSETTE_HAS_DYNAMIC_TYPESUPPORT)
+      RMW_ROSETTE_HAS_DYNAMIC_TYPESUPPORT
+      RMW_ROSETTE_HAS_QOS_BEST_AVAILABLE)
     message(STATUS "rmw_rosette ROS feature ${_feature}=${${_feature}}")
   endforeach()
 

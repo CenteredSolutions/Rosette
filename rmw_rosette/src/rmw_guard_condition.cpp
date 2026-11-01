@@ -55,7 +55,7 @@ extern "C" {
  * - Correct means: a fresh guard condition is not reported ready by
  *   rmw_wait(), and none is created in a context that was shut down.
  * - Covered by: rmw_rosette/test/test_guard_condition.cpp, and
- *   rmw_rosette/test/test_creation_after_shutdown.cpp (TC-RMW-ARG-005).
+ *   rmw_rosette/test/test_live_context_refusals.cpp (TC-RMW-ARG-005).
  *
  * References:
  * - rmw/rmw.h (Humble), `rmw_create_guard_condition`

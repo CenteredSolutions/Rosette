@@ -8,6 +8,7 @@
 #include "rmw_rosette/argument_checks.hpp"
 
 #include "rmw_rosette/identifier.h"
+#include "rmw_rosette/ros_features.h"
 #include "rmw_rosette/types.hpp"
 
 #include <rcutils/error_handling.h>
@@ -40,21 +41,95 @@ const char* describe(ArgumentFault fault) noexcept {
     return "is invalid";
 }
 
-/// @brief Whether a profile leaves a policy the endpoint needs UNKNOWN.
-bool has_unknown_policy(const rmw_qos_profile_t& qos) noexcept {
-    return qos.history == RMW_QOS_POLICY_HISTORY_UNKNOWN
-           || qos.reliability == RMW_QOS_POLICY_RELIABILITY_UNKNOWN
-           || qos.durability == RMW_QOS_POLICY_DURABILITY_UNKNOWN
-           || qos.liveliness == RMW_QOS_POLICY_LIVELINESS_UNKNOWN;
+/// @brief Whether `history` names a history policy an endpoint can have.
+bool is_endpoint_history(rmw_qos_history_policy_t history) noexcept {
+    switch (history) {
+        case RMW_QOS_POLICY_HISTORY_SYSTEM_DEFAULT:
+        case RMW_QOS_POLICY_HISTORY_KEEP_LAST:
+        case RMW_QOS_POLICY_HISTORY_KEEP_ALL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// @brief Whether `reliability` names a reliability policy an endpoint can have.
+bool is_endpoint_reliability(rmw_qos_reliability_policy_t reliability) noexcept {
+    switch (reliability) {
+        case RMW_QOS_POLICY_RELIABILITY_SYSTEM_DEFAULT:
+        case RMW_QOS_POLICY_RELIABILITY_RELIABLE:
+        case RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT:
+#if RMW_ROSETTE_HAS(QOS_BEST_AVAILABLE)
+        case RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE:
+#endif
+            return true;
+        default:
+            return false;
+    }
+}
+
+/// @brief Whether `durability` names a durability policy an endpoint can have.
+bool is_endpoint_durability(rmw_qos_durability_policy_t durability) noexcept {
+    switch (durability) {
+        case RMW_QOS_POLICY_DURABILITY_SYSTEM_DEFAULT:
+        case RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL:
+        case RMW_QOS_POLICY_DURABILITY_VOLATILE:
+#if RMW_ROSETTE_HAS(QOS_BEST_AVAILABLE)
+        case RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE:
+#endif
+            return true;
+        default:
+            return false;
+    }
+}
+
+/**
+ * @brief Whether `liveliness` names a liveliness policy an endpoint can have.
+ *
+ * MANUAL_BY_NODE is deprecated but still part of the enumeration, so it is
+ * accepted; it is compared by value to stay clear of the deprecation warning
+ * its enumerator carries.
+ */
+bool is_endpoint_liveliness(rmw_qos_liveliness_policy_t liveliness) noexcept {
+    constexpr int kManualByNode = 2;
+    switch (liveliness) {
+        case RMW_QOS_POLICY_LIVELINESS_SYSTEM_DEFAULT:
+        case RMW_QOS_POLICY_LIVELINESS_AUTOMATIC:
+        case RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC:
+#if RMW_ROSETTE_HAS(QOS_BEST_AVAILABLE)
+        case RMW_QOS_POLICY_LIVELINESS_BEST_AVAILABLE:
+#endif
+            return true;
+        default:
+            return static_cast<int>(liveliness) == kManualByNode;
+    }
+}
+
+/**
+ * @brief Whether every policy of a profile names one an endpoint can have.
+ *
+ * UNKNOWN (rmw_qos_profile_unknown) and values outside the enumerations the
+ * paired distribution defines describe no endpoint; BEST_AVAILABLE is
+ * accepted where that distribution defines it.
+ */
+bool is_endpoint_profile(const rmw_qos_profile_t& qos) noexcept {
+    return is_endpoint_history(qos.history) && is_endpoint_reliability(qos.reliability)
+           && is_endpoint_durability(qos.durability) && is_endpoint_liveliness(qos.liveliness);
 }
 
 }  // namespace
 
 rmw_ret_t refuse_argument(const char* function, const char* argument,
                           ArgumentFault fault) noexcept {
-    char message[128];
-    (void)rcutils_snprintf(message, sizeof(message), "rmw_rosette: %s: %s %s", function, argument,
-                           describe(fault));
+    // A message longer than the buffer is truncated, which still names the
+    // function and argument; only an encoding failure leaves no message.
+    char      message[128];
+    const int written = rcutils_snprintf(message, sizeof(message), "rmw_rosette: %s: %s %s",
+                                         function, argument, describe(fault));
+    if (written < 0) {
+        message[0] = '\0';
+    }
+
     rcutils_set_error_state(message, __FILE__, __LINE__);
     return fault == ArgumentFault::foreign ? RMW_RET_INCORRECT_RMW_IMPLEMENTATION
                                            : RMW_RET_INVALID_ARGUMENT;
@@ -128,7 +203,7 @@ rmw_ret_t check_endpoint_arguments(const rmw_node_t* node, const void* type_supp
         }
     }
 
-    if (has_unknown_policy(*qos)) {
+    if (!is_endpoint_profile(*qos)) {
         return refuse_argument(function, "qos_profile", ArgumentFault::invalid);
     }
 

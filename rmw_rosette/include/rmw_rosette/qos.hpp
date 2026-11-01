@@ -14,6 +14,7 @@
 #pragma once
 
 #include "rmw_rosette/capacity.hpp"
+#include "rmw_rosette/ros_features.h"
 #include "rosette/rtps/endpoint_match_table.hpp"
 #include "rosette/rtps/participant.hpp"
 #include "types.hpp"
@@ -30,10 +31,10 @@ namespace rmw_rosette {
  * an `rmw_qos_profile_t` into the config structs `RTPSParticipant::
  * create_writer<>()`/`create_reader()` accept.
  *
- * `SYSTEM_DEFAULT`, `BEST_AVAILABLE` (guarded — not part of the humble
- * ABI this project targets by default; see `ROSETTE_MICRO_ROS_DISTRO` in
- * `cmake/micro_ros.cmake`), and `UNKNOWN` all resolve to `RELIABLE`,
- * matching `rmw_microxrcedds_c`'s own default profile.
+ * `SYSTEM_DEFAULT`, `BEST_AVAILABLE` (on distributions whose headers
+ * define it, RMW_ROSETTE_HAS(QOS_BEST_AVAILABLE)), and `UNKNOWN` all
+ * resolve to `RELIABLE`, matching `rmw_microxrcedds_c`'s own default
+ * profile.
  *
  * @param[in] policy Reliability policy from an `rmw_qos_profile_t`.
  * @return The corresponding `rosette::rtps::ReliabilityKind`.
@@ -45,7 +46,7 @@ inline rosette::rtps::ReliabilityKind to_rtps_reliability(
             return rosette::rtps::ReliabilityKind::BEST_EFFORT;
         case RMW_QOS_POLICY_RELIABILITY_RELIABLE:
         case RMW_QOS_POLICY_RELIABILITY_SYSTEM_DEFAULT:
-#ifdef RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE
+#if RMW_ROSETTE_HAS(QOS_BEST_AVAILABLE)
         case RMW_QOS_POLICY_RELIABILITY_BEST_AVAILABLE:
 #endif
         case RMW_QOS_POLICY_RELIABILITY_UNKNOWN:
@@ -60,7 +61,7 @@ inline rosette::rtps::ReliabilityKind to_rtps_reliability(
  * Used the same way as to_rtps_reliability(), and by
  * qos_profiles_compatible() when checking a publisher/subscription pair.
  *
- * `SYSTEM_DEFAULT`, `BEST_AVAILABLE` (guarded, see to_rtps_reliability()),
+ * `SYSTEM_DEFAULT`, `BEST_AVAILABLE` (where defined, see to_rtps_reliability()),
  * and `UNKNOWN` all resolve to `VOLATILE`. `TRANSIENT`/`PERSISTENT` have
  * no rmw-level counterpart (the rmw QoS enum stops at TRANSIENT_LOCAL),
  * so they are unreachable from this translation direction.
@@ -75,7 +76,7 @@ inline rosette::rtps::DurabilityKind to_rtps_durability(
             return rosette::rtps::DurabilityKind::TRANSIENT_LOCAL;
         case RMW_QOS_POLICY_DURABILITY_VOLATILE:
         case RMW_QOS_POLICY_DURABILITY_SYSTEM_DEFAULT:
-#ifdef RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE
+#if RMW_ROSETTE_HAS(QOS_BEST_AVAILABLE)
         case RMW_QOS_POLICY_DURABILITY_BEST_AVAILABLE:
 #endif
         case RMW_QOS_POLICY_DURABILITY_UNKNOWN:

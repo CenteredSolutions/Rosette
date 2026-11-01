@@ -12,6 +12,7 @@
 
 #include "rmw_rosette/argument_checks.hpp"
 #include "rmw_rosette/identifier.h"
+#include "rmw_rosette/ros_features.h"
 #include "rmw_rosette/types.hpp"
 
 #include <gtest/gtest.h>
@@ -123,8 +124,9 @@ TEST(ArgumentChecks, CheckContextRefusesInOrder) {
 }
 
 // TC-RMW-ARG-004: the endpoint factories' shared checks, in the stock order,
-// with ROS name rules waived by avoid_ros_namespace_conventions, and no
-// endpoint for a node whose context was shut down.
+// with ROS name rules waived by avoid_ros_namespace_conventions, QoS policies
+// held to the distribution's enumerations, and no endpoint for a node whose
+// context was shut down.
 TEST(ArgumentChecks, CheckEndpointArgumentsRefusesInOrder) {
     rmw_context_impl_t impl{};
     rmw_context_t      context = rmw_get_zero_initialized_context();
@@ -149,6 +151,21 @@ TEST(ArgumentChecks, CheckEndpointArgumentsRefusesInOrder) {
     EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, check("/foo bar", &qos));
     EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, check("/chatter", nullptr));
     EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, check("/chatter", &rmw_qos_profile_unknown));
+    rmw_qos_profile_t out_of_range = qos;
+    out_of_range.history = static_cast<rmw_qos_history_policy_t>(42);
+    EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, check("/chatter", &out_of_range));
+    out_of_range = qos;
+    out_of_range.reliability = static_cast<rmw_qos_reliability_policy_t>(42);
+    EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, check("/chatter", &out_of_range));
+    out_of_range = qos;
+    out_of_range.durability = static_cast<rmw_qos_durability_policy_t>(42);
+    EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, check("/chatter", &out_of_range));
+    out_of_range = qos;
+    out_of_range.liveliness = static_cast<rmw_qos_liveliness_policy_t>(42);
+    EXPECT_EQ(RMW_RET_INVALID_ARGUMENT, check("/chatter", &out_of_range));
+#if RMW_ROSETTE_HAS(QOS_BEST_AVAILABLE)
+    EXPECT_EQ(RMW_RET_OK, check("/chatter", &rmw_qos_profile_best_available));
+#endif
 
     qos.avoid_ros_namespace_conventions = true;
     EXPECT_EQ(RMW_RET_OK, check("chatter", &qos));
