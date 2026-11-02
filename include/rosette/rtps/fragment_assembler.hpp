@@ -29,9 +29,11 @@
  *
  * Quiet-period repair:
  *   A writer sends a sample's fragments back to back, so a partial sample
- *   that has received nothing for RTPS_FRAGMENT_REPAIR_DELAY_MS has lost
- *   fragments. Its slot carries a repair deadline that each arriving
- *   fragment pushes out (schedule_repair()); when it passes, the reader
+ *   that has received no new fragment for RTPS_FRAGMENT_REPAIR_DELAY_MS has
+ *   lost fragments. Its slot carries a repair deadline that each newly
+ *   stored fragment pushes out (schedule_repair()); a duplicate or rejected
+ *   fragment does not, so repeated traffic cannot postpone the repair. When
+ *   the deadline passes, the reader
  *   asks for the missing fragments with a NACK_FRAG instead of waiting for
  *   the writer's next HEARTBEAT (take_due_repair()). The wait doubles after
  *   each NACK_FRAG, up to RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times, and stays
@@ -312,7 +314,7 @@ static_assert(RTPS_ASSEMBLY_SLOTS_PER_READER >= 1u
                   && RTPS_ASSEMBLY_SLOTS_PER_READER <= RTPS_ASSEMBLY_SLOTS,
               "RTPS_ASSEMBLY_SLOTS_PER_READER must be 1 to RTPS_ASSEMBLY_SLOTS");
 
-/// How long a partial sample may receive no fragment before the reader first
+/// How long a partial sample may receive no new fragment before the reader first
 /// asks for its missing fragments with a NACK_FRAG, in milliseconds. A writer
 /// sends a sample's fragments back to back, so the delay need only exceed the
 /// gap between two fragments of one burst, including a receive pass on a busy
@@ -331,8 +333,9 @@ static_assert(RTPS_ASSEMBLY_SLOTS_PER_READER >= 1u
 #  define RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS 3u
 #endif
 
-/// NACK_FRAG rounds a reader sends for a partial sample while no fragment
-/// arrives in answer. Each arriving fragment restores them. Once they are
+/// NACK_FRAG rounds a reader sends for a partial sample while no new fragment
+/// arrives in answer. Each newly stored fragment restores them; a duplicate
+/// or rejected one does not. Once they are
 /// spent the sample waits for the writer's HEARTBEAT, so a writer that no
 /// longer holds the sample is not asked for it indefinitely.
 #ifndef RTPS_FRAGMENT_REPAIR_ROUNDS
@@ -341,9 +344,12 @@ static_assert(RTPS_ASSEMBLY_SLOTS_PER_READER >= 1u
 
 static_assert(RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS <= 8u,
               "RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS must be 0 to 8");
+// The bound is checked before shifting, so a delay whose doubled value would
+// wrap is rejected rather than wrapping to a small wait. Deadlines are
+// compared modulo 2^32 (ms_until()), so the longest wait must stay below 2^31.
 static_assert(RTPS_FRAGMENT_REPAIR_DELAY_MS >= 1u
-                  && (RTPS_FRAGMENT_REPAIR_DELAY_MS << RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS)
-                         < 0x80000000u,
+                  && RTPS_FRAGMENT_REPAIR_DELAY_MS
+                         <= (0x7fffffffu >> RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS),
               "RTPS_FRAGMENT_REPAIR_DELAY_MS, doubled RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times, "
               "must be 1 ms to 2^31 - 1 ms");
 static_assert(RTPS_FRAGMENT_REPAIR_ROUNDS <= 255u, "RTPS_FRAGMENT_REPAIR_ROUNDS must be 0 to 255");
@@ -522,6 +528,11 @@ public:
      * @param[in]  source_ts        Source timestamp (INFO_TS), or invalid.
      * @param[out] out_change       The completed sample, written only when this returns true.
      * @param[in]  inline_qos       This fragment's inline QoS, or null when it carried none.
+     * @param[out] stored_new       When not null, set true when the submessage stored at least
+     *   one fragment the sample did not already hold, and false otherwise: for a refused or
+     *   invalid submessage and for one carrying only fragments already received. The reader
+     *   uses it to tell a writer still delivering the sample from repeated or rejected
+     *   traffic, which must not delay the sample's repair (schedule_repair()).
      * @return true when the sample is complete and `out_change` holds it;
      *   false while fragments are outstanding, and when the fields are
      *   invalid, the sample has more than 256 fragments, `frag_size` or
@@ -531,8 +542,11 @@ public:
      *
      * Verification:
      * - Correct means: a sample completes exactly once, with its fragments
-     *   at their offsets; a refused or invalid fragment takes no slot.
-     * - Covered by: TC-FAS-8.4.14-001…010, TC-FAS-8.3.3.1-001.
+     *   at their offsets; a refused or invalid fragment takes no slot;
+     *   `stored_new` is true exactly when a fragment's received bit went
+     *   from clear to set.
+     * - Covered by: TC-FAS-8.4.14-001…010, TC-FAS-8.3.3.1-001,
+     *   TC-SRR-8.4.12-008.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.14, §9.4.5.4
@@ -540,7 +554,8 @@ public:
     bool on_data_frag(const Guid& writer_guid, const SequenceNumber& writer_sn, uint32_t frag_start,
                       uint16_t frags_in_submsg, uint16_t frag_size, uint32_t data_size,
                       const Octet* payload, uint32_t payload_len, const Timestamp& source_ts,
-                      CacheChange& out_change, const InlineQos* inline_qos = nullptr) noexcept;
+                      CacheChange& out_change, const InlineQos* inline_qos = nullptr,
+                      bool* stored_new = nullptr) noexcept;
 
     /**
      * @brief Lists the fragments of a partial sample that have not arrived, for a NACK_FRAG.
@@ -584,15 +599,18 @@ public:
     /**
      * @brief Sets when the reader asks for a partial sample's missing fragments unprompted.
      *
-     * The reader calls this after every fragment of a sample that leaves it
-     * incomplete, so the deadline is reached only once the writer's burst
-     * has stopped arriving. The wait is `delay_ms` doubled once per
-     * NACK_FRAG already sent for the sample (repairDoublings), so a writer
-     * that answered a NACK_FRAG, or paces its fragments, is not asked again
-     * sooner than the last wait. It restores the sample's rounds, since an
-     * arriving fragment shows the writer is still answering. A sample this
-     * assembler does not hold, because it was refused or has completed, is
-     * left alone.
+     * The reader calls this after every submessage that stores a fragment
+     * the sample lacked and leaves it incomplete, so the deadline is reached
+     * only once the writer's burst has stopped making progress. A duplicate
+     * or rejected fragment does not count: a repeated resend of fragments
+     * already held, or a stream of malformed ones, must not hold the
+     * NACK_FRAG for the fragments still missing back indefinitely. The wait
+     * is `delay_ms` doubled once per NACK_FRAG already sent for the sample
+     * (repairDoublings), so a writer that answered a NACK_FRAG, or paces its
+     * fragments, is not asked again sooner than the last wait. It restores
+     * the sample's rounds, since a new fragment shows the writer is still
+     * answering. A sample this assembler does not hold, because it was
+     * refused or has completed, is left alone.
      *
      * @param[in] writer_guid Writer of the sample.
      * @param[in] writer_sn   Sequence number of the sample.
@@ -604,7 +622,8 @@ public:
      * - Correct means: a held sample's deadline is `now_ms` plus `delay_ms`
      *   doubled repairDoublings times, its rounds are `rounds`, and its
      *   doublings are unchanged; no other slot changes.
-     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-007.
+     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-007, TC-SRR-8.4.12-008,
+     *   TC-SRR-8.4.12-009.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.12 (NACK_FRAG), §8.4.14

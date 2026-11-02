@@ -51,8 +51,12 @@ bool FragmentAssembler::on_data_frag(const Guid& writer_guid, const SequenceNumb
                                      uint32_t frag_start, uint16_t frags_in_submsg,
                                      uint16_t frag_size, uint32_t data_size, const Octet* payload,
                                      uint32_t payload_len, const Timestamp& source_ts,
-                                     CacheChange& out_change,
-                                     const InlineQos* inline_qos) noexcept {
+                                     CacheChange& out_change, const InlineQos* inline_qos,
+                                     bool* stored_new) noexcept {
+    if (stored_new != nullptr) {
+        *stored_new = false;
+    }
+
     if (frag_start == 0 || frag_size == 0 || data_size == 0) {
         return false;
     }
@@ -101,8 +105,13 @@ bool FragmentAssembler::on_data_frag(const Guid& writer_guid, const SequenceNumb
         }
 
         // Only a fragment actually stored counts toward completion.
+        const bool was_received = slot->is_received(frag_num);
         if (!slot->write_fragment(frag_num, payload + src_off, frag_byte_len)) {
             break;
+        }
+
+        if (!was_received && stored_new != nullptr) {
+            *stored_new = true;
         }
 
         if (inline_qos != nullptr && !inline_qos->empty() && slot->inlineQos.empty()) {

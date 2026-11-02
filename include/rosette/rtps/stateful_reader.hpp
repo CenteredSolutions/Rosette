@@ -466,13 +466,15 @@ private:
      * sample shows once a later fragment arrives, but a lost last fragment
      * shows only when the writer's next HEARTBEAT or HEARTBEAT_FRAG reports
      * the sample, which Fast DDS sends every 3 s by default. So each partial
-     * sample of a reliable writer carries a deadline that its arriving
-     * fragments push ahead (on_data_frag()); once it passes, the sample's
+     * sample of a reliable writer carries a deadline that each fragment it
+     * did not already hold pushes ahead (on_data_frag()); a duplicate or
+     * rejected fragment does not, so repeated traffic cannot postpone the
+     * request. Once the deadline passes, the sample's
      * missing fragments are requested. The first wait is
      * RTPS_FRAGMENT_REPAIR_DELAY_MS and each request doubles it, up to
      * RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times: 50, 100, 200 and 400 ms
      * with the defaults, for up to RTPS_FRAGMENT_REPAIR_ROUNDS rounds while
-     * no fragment arrives. An arriving fragment restores the rounds but not
+     * no new fragment arrives. A new fragment restores the rounds but not
      * the wait, so a writer pacing its fragments further apart than the
      * first wait is asked early only until the wait outgrows its pacing,
      * and a new sample starts again at the first wait. A sample the
@@ -483,13 +485,15 @@ private:
      *
      * Verification:
      * - Correct means: nothing is sent while fragments keep arriving within
-     *   the delay; after a quiet delay exactly one NACK_FRAG per partial
+     *   the delay; duplicate or rejected fragments neither delay a request
+     *   nor restore spent rounds; after a quiet delay exactly one NACK_FRAG per partial
      *   sample names its missing fragments, including the last; unanswered
      *   requests follow the doubling waits and stop after
      *   RTPS_FRAGMENT_REPAIR_ROUNDS; a fragment arriving after a request
      *   restarts the current wait, not the first; a best-effort reader
-     *   never sends one.
-     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-006, TC-SRR-8.4.12-007.
+     *   never sends one; a sample received whole, or declared irrelevant
+     *   by a HEARTBEAT or GAP, is requested no more and its slot is freed.
+     * - Covered by: TC-SRR-8.4.12-005…010.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.12 (reader may send NACK_FRAG for missing

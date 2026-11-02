@@ -293,23 +293,19 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     // §8.4.14, p. 156: on_data_frag() returns true when the sample
     // is complete; out_change is populated with the assembled payload.
     CacheChange out_change{};
-    const bool complete = assembler_.on_data_frag(
-        writer_guid,
-        msg.writerSN,
-        msg.fragmentStartingNum,
-        msg.fragmentsInSubmessage,
-        msg.fragmentSize,
-        msg.dataSize,
-        msg.fragmentPayload,
-        msg.fragmentPayloadSize,
-        ctx.sourceTimestamp,
-        out_change,
-        msg.inlineQosPresent ? &msg.inlineQos : nullptr);
+    bool        stored_new = false;
+    const bool  complete = assembler_.on_data_frag(
+        writer_guid, msg.writerSN, msg.fragmentStartingNum, msg.fragmentsInSubmessage,
+        msg.fragmentSize, msg.dataSize, msg.fragmentPayload, msg.fragmentPayloadSize,
+        ctx.sourceTimestamp, out_change, msg.inlineQosPresent ? &msg.inlineQos : nullptr,
+        &stored_new);
 
-    // An incomplete sample of a reliable writer is asked for again once its
+    // An incomplete sample of a reliable writer is asked for again once new
     // fragments stop arriving (fragment_assembler.hpp, quiet-period repair).
+    // A duplicate or rejected fragment is not progress and leaves the
+    // deadline and the remaining rounds as they are.
     if (!complete) {
-        if (proxy != nullptr && reliability_ == ReliabilityKind::RELIABLE) {
+        if (stored_new && proxy != nullptr && reliability_ == ReliabilityKind::RELIABLE) {
             assembler_.schedule_repair(writer_guid, msg.writerSN, rosette::platform::monotonic_ms(),
                                        RTPS_FRAGMENT_REPAIR_DELAY_MS,
                                        static_cast<uint8_t>(RTPS_FRAGMENT_REPAIR_ROUNDS));
