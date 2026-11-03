@@ -18,7 +18,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Skip the build jobs when a pull request changes documentation only
+  # (tools/ci/classify_changed_paths.py). Pushes to main always build.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - id: classify
+        run: python3 tools/ci/classify_changed_paths.py "${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+
   port-stub:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -54,3 +70,15 @@ jobs:
                 -DROSETTE_WERROR=ON \
                 -DROSETTE_RTPS_LOG_LEVEL=5
           cmake --build build-port-stub-trace -j "$(nproc)"
+
+  # The check branch protection requires: every job passed, or was skipped
+  # because the change is documentation only.
+  result:
+    name: port-stub result
+    if: always()
+    needs: [changes, port-stub]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every job to pass or be skipped
+        run: >
+          test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = false
