@@ -8,7 +8,7 @@ code execution bug. Reports are welcome and are handled privately until a fix is
 Do not open a public issue, pull request, or discussion for a suspected vulnerability.
 
 - Preferred: GitHub's private reporting, from the repository's **Security** tab, **Report a vulnerability**.
-- Or email jared.hancock@centeredsolutions.com with "Rosette security" in the subject.
+- Or email software@centeredsolutions.com with "Rosette security" in the subject.
 
 Include what you can of:
 
