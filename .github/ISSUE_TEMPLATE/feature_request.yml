@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
+name: Feature request
+description: A board, port, rmw feature, or capability Rosette does not have.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you are trying to do
+      description: The application or system, and what Rosette keeps you from doing today.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: >
+        The behavior you want. For a new board or network stack, PORTING.md describes the contracts a
+        port implements.
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints
+      description: Flash and RAM budget, MCU, RTOS, network chip, and the ROS 2 distribution on the other side.
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you contribute it?
+      options:
+        - "Yes, with guidance"
+        - "Possibly"
+        - "No"
