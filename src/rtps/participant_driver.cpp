@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file participant_driver.cpp
  * @brief ParticipantDriver: construction and one locked protocol pass.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rosette/platform/platform.hpp
  * @brief The platform contract: everything Rosette needs from the OS and chip.

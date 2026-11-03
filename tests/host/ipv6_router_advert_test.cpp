@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ipv6_router_advert_test.cpp
  * @brief `parse_router_advert()` against captured and constructed advertisements.

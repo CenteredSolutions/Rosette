@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 # Runs rcl_graph_wait_probe (RMW under test) against rmw_graph_peer.py (stock
 # RMW) on one host. The probe blocks on its node's graph guard condition,
 # waiting for a publisher and then a subscription, while the peer creates one

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # ports/chip/rp2/prelude.cmake — the rp2 port's setup before project().
 #
 # Included by cmake/rosette_prelude.cmake, before the first project() call, so

@@ -2,10 +2,10 @@
 
 Scope: how an `rmw_rosette` participant stays reachable by every peer on a
 network with more participants than it can afford full discovery state for.
-The motivating network is a machine of 70 to 90 participants: a few dozen
-controller boards, each running an example firmware based on RP2350, plus
-camera and ML nodes, control nodes, a few orchestrators, and a handheld
-operator console. Each board matches only a handful of them.
+The design target is a network of 70 to 90 participants: a few dozen
+controller boards plus camera, perception and control nodes, a few
+orchestrators, and an operator console. Each board matches only a handful
+of them.
 
 ## The problem
 
@@ -22,15 +22,14 @@ with two slots, two filler participants that share nothing with it, and a late
 participant that calls the board's service. It fails on every run with the
 filler slots taken, and passes with a free slot.
 
-Raising `RTPS_MAX_PEERS` to the network size is the alternative this design
-avoids; the RAM budget below shows why.
+Raising `RTPS_MAX_PEERS` to the network size is the alternative two tiers
+avoid; the RAM budget below shows why.
 
 ## The RAM budget
 
-Measured on an example firmware based on RP2040 (264 KB of SRAM, 256 KB of it
-in the main banks), built with 8 peer slots, 8 matches per local endpoint, 18
-local writers and 13 local readers, before the locator savings of #9 and the
-origin change that follows it. `.data`, `.bss` and the heap and stack
+Measured on an RP2040 firmware (264 KB of SRAM, 256 KB of it in the main
+banks), built with 8 full peer slots, 8 matches per local endpoint, 18 local
+writers and 13 local readers. `.data`, `.bss` and the heap and stack
 reserves take 199 KB of the 256 KB, which leaves about 57 KB free.
 
 The participant itself is 84.5 KB, and most of it does not depend on the
@@ -53,19 +52,18 @@ is on the network.
 
 | Peers the board can hold | Per-peer RAM | Free of the 57 KB |
 |---|---|---|
-| 8 full slots (today) | 4.2 KB | 57 KB |
-| 90 full slots, today's sizes | 47.5 KB | about 14 KB |
-| 90 full slots, after #9 and step 3 (about 430 B each, estimated) | 38.7 KB | about 22 KB |
-| 90 known-peer records + 12 active slots (this design) | 6.1 + 4.8 = 10.9 KB | about 50 KB |
+| 8 full slots | 4.2 KB | 57 KB |
+| 90 full slots | 47.5 KB | about 14 KB |
+| 90 known-peer records + 12 active slots | 6.1 + 4.8 = 10.9 KB | about 50 KB |
 
 Ninety full slots would technically fit, but leave too little headroom for
 the application and for a board that matches a few more endpoints than
 planned. Two tiers keep the per-peer cost at the size of a small record, and
 spend the full 400 B only on the peers the board actually exchanges data with.
 
-A separate lever, not part of this design: matches per local endpoint. Every
-writer slot reserves 8 reader proxies even when only one or two peers read
-it. Lowering that limit to 4 would save about 13 KB on this firmware.
+The other lever is matches per local endpoint: with per-endpoint arrays,
+every writer slot reserves 8 reader proxies even when only one or two peers
+read it. `shared_proxy_pools.md` covers that one.
 
 ## Goals
 
@@ -78,7 +76,8 @@ it. Lowering that limit to 4 would save about 13 KB on this firmware.
   small fixed record per known peer.
 * Peers see a conforming RTPS participant. Nothing here needs cooperation
   from, or a configuration change on, a stock Fast DDS or Cyclone DDS peer.
-* A host build with room for every peer behaves exactly as it does today.
+* A host build with room for every peer behaves exactly as a single-tier
+  table.
 
 Not a goal: making a board match more endpoints at once than its
 `RTPS_MAX_MATCHED_READERS` and match-table limits allow. A board that really
@@ -98,8 +97,8 @@ working with also holds an **active slot**.
 | Our `ros_discovery_info` writer → their reader | reader entity ID, highest sequence number acknowledged | a `ReaderProxy` in the writer |
 | Vendor ID, builtin endpoint set | builtin set as three flag bits | full values |
 
-The active slot is everything today's `PeerEntry` and the per-peer SEDP
-proxies hold. The known-peer record is what is left once both directions of
+The active slot is the full per-peer discovery state: the discovered
+participant and its SEDP proxies. The known-peer record is what is left once both directions of
 the exchange have settled: enough to recognise the peer, keep its lease, and
 resume either direction exactly where it stopped.
 
@@ -134,8 +133,7 @@ when it is needed again. One mechanism serves all three pairs in the table:
   change, the parked reader is owed it and is caught up (below).
 * **Our `ros_discovery_info` writer, their reader.** Identical to the SEDP
   writer case, with the reader's entity ID stored as well, since stock
-  participants create that reader with an ordinary entity ID. This is the
-  rule settled on 2026-10-04: once a reader has acknowledged the current
+  participants create that reader with an ordinary entity ID. Once a reader has acknowledged the current
   sample, its `ReaderProxy` is released and the acknowledged number is kept,
   so a later change to the board's nodes reaches it without the peer staying
   active. Because the parked number is the one the reader acknowledged (taken
@@ -179,11 +177,11 @@ reader slots, a few at a time:
 
 The peer itself is not promoted: only one proxy is borrowed, for one round
 trip. A writer's matched-reader slots are therefore a working pool, not a
-limit on how many peers can read it. This also removes a limit that exists
-today: the `ros_discovery_info` writer has `RTPS_MAX_MATCHED_READERS` reader
-slots (8 in the firmware profile, 16 on a host), and `matched_reader_add()`
-refuses a reader when they are full, so on a network of 70 participants all
-but the first few never receive the board's node list. The section below
+limit on how many peers can read it. Without parking, the
+`ros_discovery_info` writer's `RTPS_MAX_MATCHED_READERS` reader slots (8 in
+the firmware profile, 16 on a host) would cap how many peers receive the
+board's node list, since `matched_reader_add()` refuses a reader when they
+are full. The section below
 covers what this writer costs at that scale.
 
 Catch-up is ordered oldest owed first, so a burst of changes (a node created
@@ -236,16 +234,15 @@ participants' node names is a separate design.
 An SPDP announcement from an unknown participant creates a known-peer record.
 The record table is sized for the whole network (`RTPS_MAX_KNOWN_PEERS`); at
 about 68 B a record (estimate below), 96 records cost about 6.5 KB. A full
-record table is the only remaining lockout, and it is logged and counted as
-it is today.
+record table is the only remaining lockout, and it is logged and counted.
 
 A new peer needs an active slot for its first exchange, since nothing about
 its endpoints is known yet. If a slot is free it gets one at once. If not, a
 settled active peer is parked to make room (see "Making room"). If no active
 peer can be parked, the new peer waits in the record table, and it is
 admitted on its next SPDP announcement after a slot frees. While it waits,
-its SEDP traffic is dropped as it is today for an unmatched writer, and this
-side sends it no SEDP. It is not locked out, only delayed.
+its SEDP traffic is dropped as for any unmatched writer, and this side
+sends it no SEDP. It is not locked out, only delayed.
 
 ### Settled
 
@@ -271,8 +268,8 @@ only when a new peer or a promotion needs one and none is free. The settled
 peer that has been active the longest without an exchange is parked first.
 
 Parking on demand means a host build, or a board on a small network, never
-parks anyone and behaves exactly as today. On the motivating network, the first
-boot wave parks peers about as fast as they settle.
+parks anyone and behaves exactly as a single-tier table. On a large network,
+the first boot wave parks peers about as fast as they settle.
 
 Parking a peer:
 
@@ -309,10 +306,10 @@ nobody here uses) settles again and is parked again on the next demand.
 
 ### Lease and disposal
 
-The lease stays in the record, so it is kept in both tiers exactly as today.
+The lease stays in the record, so it is kept the same way in both tiers.
 When it expires or the peer disposes itself, the record, any active slot, and
 the peer's remote endpoint records go, and the matches dissolve through
-`on_spdp_peer_removed()` as they do now. A participant that comes back after
+`on_spdp_peer_removed()`. A participant that comes back after
 that is a new participant, and the `ros_discovery_info` rematch republish
 (`RosDiscoveryInfoWriter::on_reader_rematched()`) still applies to it.
 
@@ -324,8 +321,8 @@ Measured on the same board: reading a datagram over SPI takes about 0.3 ms,
 and decoding an SEDP sample 0.4 to 1.8 ms. With 90 participants announcing
 every 3 s, about 30 SPDP datagrams a second arrive by multicast, whatever the
 board does with them. At about 1.5 ms each, that is 4 to 5 % of the CPU in
-stalls of up to 1.5 ms at a time, and a whole burst at once when the machine
-powers up.
+stalls of up to 1.5 ms at a time, and a whole burst at once when the whole
+network powers up.
 
 Four rules keep discovery out of the way of matched traffic:
 
@@ -346,7 +343,7 @@ Four rules keep discovery out of the way of matched traffic:
    occasional SEDP HEARTBEAT, answered from its record without a decode.
 4. **The active tier bounds the boot burst.** Only peers with an active slot
    exchange SEDP, so at most `RTPS_MAX_PEERS` peers' endpoint announcements
-   are in flight at once, instead of every participant on the machine
+   are in flight at once, instead of every participant on the network
    announcing its endpoints to the board in the same second.
 
 ## What peers see
@@ -368,8 +365,8 @@ retransmissions.
 
 ## Known-peer record
 
-All figures are estimates for Cortex-M0+; the ARM `sizeof` probe confirms
-them before and after the change.
+The table gives the design figures for Cortex-M0+; the paragraph after it
+gives the record as built.
 
 Known-peer record, about 68 B:
 
@@ -405,10 +402,10 @@ it really matches, plus a few for peers in their first exchange.
 ## Configuration
 
 * `RTPS_MAX_KNOWN_PEERS`: known-peer records; size it for the whole network.
-* `RTPS_MAX_PEERS`: active slots; unchanged meaning (full discovery state).
-  `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` keeps setting it, and a new
-  `RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` sets the record table. A host default of
-  equal values reproduces today's behaviour.
+* `RTPS_MAX_PEERS`: active slots (full discovery state).
+  `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` sets it, and
+  `RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` sets the record table. Equal values
+  give a single-tier table.
 * `RTPS_PEER_SETTLE_MS`: how long a peer must stay settled before it can be
   parked; one SPDP period by default.
 
@@ -416,9 +413,9 @@ it really matches, plus a few for peers in their first exchange.
 
 Acceptance: `tests/ros2/run_rmw_peer_lockout_loopback.sh` passes with the
 two-active-slot build and two fillers, and with six fillers when the record
-table holds eight peers. It fails on `main` today.
+table holds eight peers. With a single-tier table it fails.
 
-Spec tests, IDs assigned when written:
+Spec tests:
 
 * SPDP (`TC-SPDP-8.5.3-*`): a new peer at a full active tier is admitted by
   parking a settled peer; a peer with a real match is never parked; with no
@@ -432,7 +429,7 @@ Spec tests, IDs assigned when written:
 * SEDP and `ros_discovery_info` writers (`TC-SWR-8.4.1.4-*`): a change owed
   to parked readers reaches each of them through the slot pool; a parked
   reader is never sent a change it acknowledged; a reader that acknowledges
-  less than its parked number is treated as started over, as it is today.
+  less than its parked number is treated as started over.
 * Settling: a peer between two endpoint announcements is not parked; a peer
   with unacknowledged SEDP is not parked.
 
@@ -440,39 +437,18 @@ Interop: a stock participant parked on the board lists the board's node with
 `ros2 node list`, and lists a node the board creates after the peer was
 parked.
 
-## Measure before building
-
-1. **A network at scale, on one host.** `rclpy` can open many contexts in
-   one process, and each is a stock participant, so 90 participants with the
-   motivating network's topics fit on a workstation. That scales the lockout
-   test to the target size and gives the active-peer count per board, with
-   the network's topology as an input rather than a measurement.
-2. **Per-peer cost after #9 and step 3.** Re-run the ARM `sizeof` probe; the
-   430 B figure above is arithmetic.
-5. **Discovery load on the board.** With the board on the LAN and 90
-   simulated participants on a workstation, the time the board spends per
-   SPDP datagram (decoded and skipped), and the round trip of a service call
-   from a matched peer with and without that load.
-3. **Fast DDS 2.6 SEDP HEARTBEATs to a fully acknowledged reader.** Whether
-   they keep coming, how often, and whether they carry the FinalFlag decides
-   how much traffic parked peers still cost.
-4. **The `ros_discovery_info` reader limit.** Confirm with 20 stock peers on
-   the default host build that only 16 of them list the board's node, and
-   measure the size of the board's `ParticipantEntitiesInfo` sample.
-
 ## Decisions
 
-* **Parking on demand, not eagerly** (recommended above). Eager parking would
+* **Parking on demand, not eagerly.** Eager parking would
   save no RAM, since slots are allocated statically, and would add churn on
   small networks.
 * **Stored remote endpoint records stay displaceable.** A late local endpoint
   finds a parked peer only while its records survive; once the table has
   displaced them, Fast DDS can resend them on an ACKNACK with base 0, and that
   path is built only if a host use case needs it.
-* **Active-tier priority.** Peers with a real match are never parked. The
-  open question is whether some peers (the operator console, orchestrators) should
-  also be pinned active by configuration so that their first exchange never
-  waits for a slot.
+* **Active-tier priority.** Peers with a real match are never parked. No
+  peer is pinned active by configuration: stock `rclc` has no way to name
+  one.
 
 ## References
 

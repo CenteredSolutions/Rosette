@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_reader_8_4_12_nack_frag_on_heartbeat.cpp
  * @brief Reliable StatefulReader: a partly received change is requested fragment by fragment.

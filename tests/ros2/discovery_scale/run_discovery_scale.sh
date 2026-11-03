@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 # Runs one device under test inside a simulated ROS 2 network on one host.
 #
 # The device is one participant of the topology (ROSETTE_DEVICE, default

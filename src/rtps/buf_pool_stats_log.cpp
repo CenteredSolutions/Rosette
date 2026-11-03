@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/buf_pool_stats_log.cpp
  * @brief Logs the buffer pool's per-class usage statistics (rtps/buf_pool_stats.hpp).

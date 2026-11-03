@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/locator_ranking.cpp
  * @brief LocalSubnets: ranks remote locators by reachability (RFC 6724 §6).

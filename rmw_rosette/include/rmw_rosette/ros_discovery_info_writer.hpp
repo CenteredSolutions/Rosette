@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_rosette/ros_discovery_info_writer.hpp
  * @brief Publishes this participant's nodes on the `ros_discovery_info` topic.

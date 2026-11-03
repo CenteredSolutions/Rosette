@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_spdp_8_5_3_locator_ranking.cpp
  * @brief Peer locator lists ranked by reachability from this participant's

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_writer_8_4_9_announcing.cpp
  * @brief Reliable StatefulWriter: periodic HEARTBEATs only while a reader is announcing.

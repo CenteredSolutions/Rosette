@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_introspection_c_codec.cpp
  * @brief Unit tests for message_codec.hpp and the introspection_c CDR codec.

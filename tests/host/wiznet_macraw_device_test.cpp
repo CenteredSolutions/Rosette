@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file wiznet_macraw_device_test.cpp
  * @brief `WiznetMacrawDevice` against the rosette::net::MacDevice contract, on a register-file

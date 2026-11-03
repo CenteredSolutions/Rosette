@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file src/net/address_list.cpp
  * @brief `AddressList` insertion and primary-address selection; see rosette/net/address_state.hpp.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file tests/port_stub/stub_image.cpp
  * @brief Entry point of the stub-port image, and the WIZnet driver instantiated on the stub bus.

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 """CDR layout and decode parity between rmw_rosette and a stock RMW.
 
 Serializes a fixed corpus of populated ROS 2 messages through

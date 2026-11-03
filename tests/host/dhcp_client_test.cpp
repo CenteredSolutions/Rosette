@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file dhcp_client_test.cpp
  * @brief The WIZnet DHCP client against a scripted socket: wire format, the

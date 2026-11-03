@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rosette/net/board_network.hpp
  * @brief The board's network (link, IP addresses, sockets), brought up once from a NetworkConfig.

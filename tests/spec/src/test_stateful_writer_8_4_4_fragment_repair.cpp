@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_writer_8_4_4_fragment_repair.cpp
  * @brief Reliable StatefulWriter: a NACK_FRAG is repaired with exactly the fragments it names.

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # ports/os/stub — the compile-only OS port (rosette_os_port.hpp).
 #
 # Included by cmake/rosette_platform.cmake with ROSETTE_PORT_DIR set to this

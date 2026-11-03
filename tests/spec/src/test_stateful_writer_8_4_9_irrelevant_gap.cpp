@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_writer_8_4_9_irrelevant_gap.cpp
  * @brief Reliable StatefulWriter: requested changes a reader can never get are sent as GAP.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_buf_pool_debug_alloc.cpp
  * @brief The buffer pool's debug allocation macros, called as a firmware calls them:
@@ -8,7 +11,7 @@
  * calls both macros from functions in the global namespace with no `rtps` alias in scope: each
  * macro must name the stack by its full namespace to compile here. The tests then check what the
  * debug build records for each allocation, the per-class live count and high-water mark that size
- * a firmware's pool classes (docs/design/imxrt_memory_budget.md, step 4).
+ * a firmware's pool classes (docs/mcu_memory_model.md).
  *
  *   ./buf_pool_debug_spec_tests
  */

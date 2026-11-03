@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # rosette_platform — the build-time platform port (include/rosette/platform/platform.hpp).
 #
 # Inputs (normally set by the board's board.cmake):

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rcl_graph_wait_probe.cpp
  * @brief Waits on the ROS graph through stock rcl, as rclcpp and rclc do.

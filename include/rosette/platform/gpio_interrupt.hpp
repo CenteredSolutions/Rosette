@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file platform/gpio_interrupt.hpp
  * @brief Chip contract: call a handler from interrupt context on a GPIO's falling edge.

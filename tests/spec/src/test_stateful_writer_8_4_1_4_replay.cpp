@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_writer_8_4_1_4_replay.cpp
  * @brief Spec tests: a TRANSIENT_LOCAL writer replays its history to a new

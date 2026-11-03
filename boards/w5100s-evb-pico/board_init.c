@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/w5100s-evb-pico/board_init.c
  * @brief Board bring-up for the WIZnet W5100S-EVB-Pico (RP2040), no-RTOS build.

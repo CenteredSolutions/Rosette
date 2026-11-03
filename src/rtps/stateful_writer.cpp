@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file stateful_writer.cpp
  * @brief StatefulWriter behavior (§8.4.1–§8.4.9), compiled once for every depth.

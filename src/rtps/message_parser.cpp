@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/message_parser.cpp
  * @brief RTPS message parser implementation — §9.4 (OMG formal/2022-04-01).

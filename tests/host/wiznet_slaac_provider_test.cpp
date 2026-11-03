@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file wiznet_slaac_provider_test.cpp
  * @brief `WiznetSlaacProvider` against a register-file model of the W6100.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file buf_pool_class_test.cpp
  * @brief Size-class selection in the RTPS buffer pool (rtps/buf_pool.hpp).

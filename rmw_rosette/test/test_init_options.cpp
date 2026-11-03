@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_init_options.cpp
  * @brief Unit tests for who owns an rmw_init_options_t's strings.

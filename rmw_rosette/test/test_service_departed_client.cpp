@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_service_departed_client.cpp
  * @brief rmw_send_response() replies only to a client that is still there.

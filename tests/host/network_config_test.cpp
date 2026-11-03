@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file network_config_test.cpp
  * @brief `NetworkConfig`: checking a config against a backend, ordering providers by it, and the

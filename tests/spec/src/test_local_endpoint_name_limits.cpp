@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_local_endpoint_name_limits.cpp
  * @brief What happens when the match table's local name arena is full: TC-SEDP-8.5.5.1-015 and

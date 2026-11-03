@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/gap_encoding.hpp
  * @brief Encoding and decoding the set of sequence numbers a GAP declares irrelevant.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file tests/storage/device_config_test.cpp
  * @brief DeviceConfig records: a version-2 round trip, and a stored version-1 record still loading.

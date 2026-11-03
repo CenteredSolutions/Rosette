@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/w6100-evb-pico/board_config.h
  * @brief Hardware pin mapping for the WIZnet W6100-EVB-Pico (RP2040).

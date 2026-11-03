@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # rosette_rtps — the DDSI-RTPS core (src/rtps) for firmware builds.
 #
 # rmw_rosette compiles the same sources with its own capacity model

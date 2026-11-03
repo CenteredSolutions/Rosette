@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file net/wiznet/link.hpp
  * @brief WIZnet chip bring-up: verify the part and put it in socket mode with the board's MAC.

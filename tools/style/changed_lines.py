@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """Find the source lines a branch adds or modifies relative to a base revision.
 
 Architecture:

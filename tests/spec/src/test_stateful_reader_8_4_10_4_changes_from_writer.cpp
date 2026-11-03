@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_reader_8_4_10_4_changes_from_writer.cpp
  * @brief WriterProxy changes_from_writer: which changes a reader still expects.

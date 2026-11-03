@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_rosette/service_endpoints.hpp
  * @brief RTPS endpoint pairs behind ROS 2 services and clients.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file storage/file_store.hpp
  * @brief A content-agnostic keyed blob store over one directory of a volume.

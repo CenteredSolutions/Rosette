@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 # Runs rmw_peer_lockout_probe.py on one host: a board on the RMW under test,
 # built with two active peer slots, then ROSETTE_FILLERS stock filler
 # participants that share nothing with it, then one late stock participant

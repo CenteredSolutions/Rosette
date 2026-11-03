@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file examples/wiznet_udp_echo/main.cpp
  * @brief RFC 862 UDP echo on a WIZnet board, over IPv4 and hardware IPv6.

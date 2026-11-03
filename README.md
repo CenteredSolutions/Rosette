@@ -190,4 +190,43 @@ starting your own firmware project.
 | [tests/ros2/README.md](tests/ros2/README.md) | the interop harness |
 | [docs/design/network_address_bringup.md](docs/design/network_address_bringup.md) | how the address layer is built: providers, DHCP, link-local, SLAAC, conflicts |
 | [docs/design/wiznet_w61xx_w63xx.md](docs/design/wiznet_w61xx_w63xx.md) | the W6100/W6300 driver and its hardware IPv6 |
+| [docs/design/two_tier_peer_table.md](docs/design/two_tier_peer_table.md) | staying discoverable on networks larger than the peer table |
+| [docs/design/shared_proxy_pools.md](docs/design/shared_proxy_pools.md) | per-match state from shared pools: floors, caps, waiting matches |
+| [PORTING.md](PORTING.md) | the chip, OS and network contracts, the boundary rules, and adding a port |
 | [docs/micro_ros_agent_client.md](docs/micro_ros_agent_client.md) | the agent-based micro-ROS examples |
+
+## License
+
+Rosette is licensed under the [Apache License, Version 2.0](LICENSE).
+Copyright Centered Solutions, LLC; see [NOTICE](NOTICE). Every file states its
+license with an SPDX tag, following the [REUSE](https://reuse.software)
+specification. The Pico SDK board headers keep their BSD-3-Clause license.
+
+Firmware images also link dependencies under their own licenses: the Raspberry
+Pi Pico SDK and littlefs (BSD-3-Clause), the micro-ROS C client stack (`rcl`,
+`rclc`, Micro XRCE-DDS Client; Apache-2.0), and the FreeRTOS kernel and
+FreeRTOS+TCP (MIT) on boards that use them. Whoever distributes a firmware
+image carries those notices with it.
+
+## Development and intellectual property
+
+Rosette is developed and maintained by Centered Solutions, LLC. AI-assisted
+engineering tools are a substantial part of the implementation process; system
+architecture, technical direction, requirements, review, integration,
+validation on hardware, and maintenance are the engineering team's.
+[AI_ASSISTANCE.md](AI_ASSISTANCE.md) describes the tools and how their output
+is verified.
+
+Rosette is an independent implementation of published standards and
+interfaces: OMG DDSI-RTPS 2.5, OMG CDR as profiled by DDS-XTypes, the ROS 2
+middleware interface (`rmw`), and OMG DDS-XRCE through micro-ROS; its socket
+layer is modeled on the POSIX sockets interface. It does not claim ownership
+of those standards or of the intellectual property of their owners. ROS is a
+trademark of Open Robotics, which does not endorse this project.
+
+Copyright in the copyrightable portions of this project is held by Centered
+Solutions, LLC, subject to applicable third-party rights and the limitations
+of copyright protection for AI-generated material. The project is released
+under the Apache License, Version 2.0, to encourage adoption, collaboration,
+modification, and further engineering by the community. Contributions are
+welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) and [AUTHORS.md](AUTHORS.md).

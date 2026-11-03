@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file agent_session_gate_test.cpp
  * @brief `AgentSessionGate`: locating the agent, the liveness pings, and the time-sync schedule.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file tests/host/sntp_config_default_test.cpp
  * @brief SntpConfig's defaults, built once plain and once with ROSETTE_ROS_BACKEND_AGENT.

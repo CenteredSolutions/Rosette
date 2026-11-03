@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps_loopback_smoke.cpp
  * @brief Two in-process RTPSParticipants, wired directly to each other's

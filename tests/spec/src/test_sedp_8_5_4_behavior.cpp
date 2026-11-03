@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 #include "sedp_peer_driver.hpp"
 #include "sedp_recorded_endpoints.hpp"
 #include "spec_test_common.hpp"

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_service_reply_depth.cpp
  * @brief A service reply writer holds RMW_ROSETTE_REPLY_DEPTH replies in flight.

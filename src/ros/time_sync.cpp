@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file src/ros/time_sync.cpp
  * @brief ros/time_sync.hpp over platform::WallClock, the one clock every time source sets.

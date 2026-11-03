@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/message_parser.hpp
  * @brief RTPS message deserialisation — §9.4 (OMG formal/2022-04-01).

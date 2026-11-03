@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 #include "rosette/rtps/message_parser.hpp"
 
 #include <stddef.h>

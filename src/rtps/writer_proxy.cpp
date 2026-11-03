@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/writer_proxy.cpp
  * @brief WriterProxy: changes_from_writer and HEARTBEAT handling (§8.4.10.4).

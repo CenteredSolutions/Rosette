@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_writer_8_4_1_4_rematch.cpp
  * @brief Reliable StatefulWriter: a reader whose acknowledgement goes backwards is matched afresh.

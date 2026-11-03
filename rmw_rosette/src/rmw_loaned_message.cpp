@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_loaned_message.cpp
  * @brief Loaned-message entry points, which rmw_rosette does not offer.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file wiznet_header_test.cpp
  * @brief Host checks for the WIZnet chip traits' SPI frame encoding.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file sedp_peer_driver.hpp
  * @brief Plays a remote participant's SEDP announcers against a SedpReader.

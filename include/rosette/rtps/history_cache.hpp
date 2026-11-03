@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/history_cache.hpp
  * @brief CacheChange and HistoryCache — the RTPS writer history.

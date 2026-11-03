@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file wiznet_udp_socket_test.cpp
  * @brief `WiznetDevice` UDP receive and send against a register-file model of

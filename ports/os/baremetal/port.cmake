@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # ports/os/baremetal — the OS layer for a superloop with no RTOS, on the chip's sync hooks.
 #
 # Included by cmake/rosette_platform.cmake with ROSETTE_PORT_DIR set to this

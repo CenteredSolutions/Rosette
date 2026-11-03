@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/participant.hpp
  * @brief RTPSParticipant — §8.5.1 (OMG formal/2022-04-01).

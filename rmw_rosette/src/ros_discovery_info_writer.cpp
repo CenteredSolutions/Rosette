@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ros_discovery_info_writer.cpp
  * @brief RosDiscoveryInfoWriter: publishes ParticipantEntitiesInfo on

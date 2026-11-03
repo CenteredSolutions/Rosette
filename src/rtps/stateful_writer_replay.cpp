@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file stateful_writer_replay.cpp
  * @brief StatefulWriter's TRANSIENT_LOCAL replay (§8.7.2.2), sent from tick() a budget at a time.

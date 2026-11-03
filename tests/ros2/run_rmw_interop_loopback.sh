@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 # Runs a single-host rmw interop session: rmw_interop_probe.py as role alpha on
 # the RMW under test and as role beta on a stock RMW, in the same DDS domain.
 # Passes only when both sides load their requested RMW, each receives at

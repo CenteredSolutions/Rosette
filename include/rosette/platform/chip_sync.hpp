@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file platform/chip_sync.hpp
  * @brief Chip contract: the critical section and event wait an OS-less build runs on.

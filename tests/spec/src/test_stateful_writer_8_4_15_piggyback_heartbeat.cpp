@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_writer_8_4_15_piggyback_heartbeat.cpp
  * @brief Reliable StatefulWriter: every depth/2-th write carries a HEARTBEAT in the DATA's datagram.

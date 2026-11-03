@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file support/inplace_function.hpp
  * @brief A fixed-capacity, non-allocating callable — `std::function` without the heap.

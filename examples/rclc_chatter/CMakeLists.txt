@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # rclc_chatter — a stock rclc application on a WIZnet board, with rmw_rosette
 # as its middleware (no agent). Built from the repo root with the cross-built
 # ROS 2 C client stack:

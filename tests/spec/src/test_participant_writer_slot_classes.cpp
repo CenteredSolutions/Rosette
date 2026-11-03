@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_participant_writer_slot_classes.cpp
  * @brief TC-PART-8.5.1-013: the participant's deep and shallow writer slots.

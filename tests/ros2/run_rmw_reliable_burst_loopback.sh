@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 # Runs rmw_reliable_burst_probe.py on one host: a stock-RMW publisher sends one
 # reliable burst while the rmw_rosette subscription is not taking, and the
 # subscription must then take exactly the newest min(count, depth) samples.

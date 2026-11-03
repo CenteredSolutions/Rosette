@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file tests/net/sntp_live_probe.cpp
  * @brief SntpClient over host sockets against a real NTP server, checked against the host's clock.

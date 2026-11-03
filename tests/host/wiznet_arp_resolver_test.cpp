@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file wiznet_arp_resolver_test.cpp
  * @brief IPv4 sends through the ARP cache on the W5100S and the W6100: no

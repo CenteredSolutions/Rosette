@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # rmw_rosette_ros_features: what the ROS 2 headers rmw_rosette builds against provide.
 #
 # rmw_rosette builds from one source tree against every supported ROS 2

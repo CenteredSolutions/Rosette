@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_writer_8_4_7_undelivered_eviction.cpp
  * @brief A change KEEP_LAST evicts before its readers have it is lost, and counted.

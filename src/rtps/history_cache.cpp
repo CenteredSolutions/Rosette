@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file history_cache.cpp
  * @brief HistoryCache operations over caller-provided slots (§8.3.1).

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file tests/host/sntp_wire_test.cpp
  * @brief The NTPv4 packet encoding, reply checks, timestamp conversion, and on-wire equations.

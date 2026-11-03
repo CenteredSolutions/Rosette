@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # cmake/boards.cmake
 #
 # Defines rosette_select_board(BOARD_NAME), which loads boards/<name>/board.cmake

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file network_address_test.cpp
  * @brief `NetworkAddress`: combines the per-family managers into one snapshot,

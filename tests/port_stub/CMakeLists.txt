@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # tests/port_stub — the portable core, built and linked on the stub port.
 #
 # Builds every portable library (RTPS, the network core with DHCP and SNTP,

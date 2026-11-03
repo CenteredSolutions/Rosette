@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_sedp_8_5_5_1_local_names.cpp
  * @brief TC-SEDP-8.5.5.1-014: local endpoint names interned in the match table's arena

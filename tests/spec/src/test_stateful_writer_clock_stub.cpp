@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_writer_clock_stub.cpp
  * @brief Test chip layer for StatefulWriter and SEDP tests: a clock the tests set explicitly.

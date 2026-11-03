@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_sedp_8_5_4_repairs.cpp
  * @brief SEDP builtin reader reliability: holes, GAPs, and narrow repairs.

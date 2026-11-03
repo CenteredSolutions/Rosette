@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file service_endpoints.cpp
  * @brief Creation and teardown of the RTPS endpoint pair behind a service or client.

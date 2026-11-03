@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file tests/agent/agent_live_probe.cpp
  * @brief A stock rclc application on the micro-ROS agent backend, run on a host against a real

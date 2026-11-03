@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/rp2/rp2_spi_bus.hpp
  * @brief WIZnet register bus over an RP2040 / RP2350 hardware SPI peripheral.

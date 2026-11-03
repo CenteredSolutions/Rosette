@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 # Runs agent_live_probe (stock rclc on the micro-ROS agent backend, over
 # Rosette's POSIX sockets) against a stock micro_ros_agent in Docker and a
 # stock rclpy echo peer. The probe exchanges traffic, checks its clock against

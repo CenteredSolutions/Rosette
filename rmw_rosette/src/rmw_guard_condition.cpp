@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_guard_condition.cpp
  * @brief rmw_create_guard_condition / rmw_destroy_guard_condition /

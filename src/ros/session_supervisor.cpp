@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file src/ros/session_supervisor.cpp
  * @brief The session state machine; see rosette/ros/session_supervisor.hpp.

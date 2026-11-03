@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file examples/rclc_chatter/main.cpp
  * @brief Stock rclc talker/listener on a WIZnet board over rmw_rosette, under a session supervisor.

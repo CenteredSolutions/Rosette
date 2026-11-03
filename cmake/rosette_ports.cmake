@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # cmake/rosette_ports.cmake
 #
 # rosette_find_port(<out> <axis> <name>) sets <out> to the directory of the

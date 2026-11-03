@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file posix_host_interface_test.cpp
  * @brief `ROSETTE_INTERFACE` resolution, and multicast sent on the chosen interface.

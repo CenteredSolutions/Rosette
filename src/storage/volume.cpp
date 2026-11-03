@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file storage/volume.cpp
  * @brief LittleFS file operations behind `rosette::storage::Volume`.

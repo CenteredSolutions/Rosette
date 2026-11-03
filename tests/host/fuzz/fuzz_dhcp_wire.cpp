@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file fuzz_dhcp_wire.cpp
  * @brief Fuzz harness for the DHCP client's reply decoder.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file introspection_c_codec.cpp
  * @brief XCDR1 encode/decode of C ROS messages driven by introspection_c metadata.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file src/ros/agent_rmw_link.cpp
  * @brief `rmw_agent_link()`: the agent gate's operations over rmw_microxrcedds.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/common/rp2_wiznet/wiznet_board_network.cpp
  * @brief The board network on a WIZnet chip; see rosette/net/board_network.hpp.

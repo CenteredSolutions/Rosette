@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/w6300-evb-pico2/board_init.c
  * @brief Board bring-up for the WIZnet W6300-EVB-Pico2 (RP2350), no-RTOS build.

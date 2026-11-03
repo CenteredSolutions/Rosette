@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # Build the portable core on the stub port (tests/port_stub): a bare Cortex-M0+
 # with newlib and no Pico SDK, RTOS, or POSIX. A portable file that reaches a
 # chip SDK or host OS fails to link here.

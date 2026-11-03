@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file tests/host/ros_time_stamp_test.cpp
  * @brief ros::time_stamp() and the epoch readers over WallClock, at instants the test sets.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_local_node_entities.cpp
  * @brief Unit tests for LocalNodeEntities (local_node_entities.hpp).

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file src/net/address_candidate.cpp
  * @brief Self-assigned address candidates; see rosette/net/address_candidate.hpp.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_wait_set.cpp
  * @brief rmw_create_wait_set / rmw_wait — the executor's blocking entry point.

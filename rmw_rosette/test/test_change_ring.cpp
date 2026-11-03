@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_change_ring.cpp
  * @brief Unit tests for ChangeRing, the KEEP_LAST history behind rmw takes.

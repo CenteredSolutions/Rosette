@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file examples/led_files/main.cpp
  * @brief Stock rclc services on a WIZnet board: an LED and a file store, on either ROS 2 backend.

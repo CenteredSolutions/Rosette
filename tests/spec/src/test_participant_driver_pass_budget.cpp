@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_participant_driver_pass_budget.cpp
  * @brief TC-DRV-PASS-001..003: a ParticipantDriver pass is bounded in time and fair between

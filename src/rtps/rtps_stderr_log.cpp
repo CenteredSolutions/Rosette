@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps_stderr_log.cpp
  * @brief rtps_log_write() sink on stderr, for hosts (rmw_rosette, host tools).

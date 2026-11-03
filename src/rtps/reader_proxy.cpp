@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file reader_proxy.cpp
  * @brief ReaderProxy change tracking as sequence-number bounds (§8.4.1.1, §8.4.6).

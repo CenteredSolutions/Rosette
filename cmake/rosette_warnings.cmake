@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # Compiler warnings for Rosette's own code.
 #
 #   cmake -S tests/spec -B build/tests-spec -DROSETTE_WERROR=ON

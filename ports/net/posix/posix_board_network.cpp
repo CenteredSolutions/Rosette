@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/net/posix/posix_board_network.cpp
  * @brief The board network on a host: BSD sockets and the operating system's address.

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # The RTPS core's source files, listed once for every build that compiles it.
 #
 # The core is compiled by each consumer rather than linked as one library,

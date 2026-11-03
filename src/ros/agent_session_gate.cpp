@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file src/ros/agent_session_gate.cpp
  * @brief The micro-ROS agent's discovery, liveness, and time-sync schedule; see

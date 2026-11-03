@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rtps/spdp_peer_records.cpp
  * @brief Known-peer records and active slots of the SPDP peer table.

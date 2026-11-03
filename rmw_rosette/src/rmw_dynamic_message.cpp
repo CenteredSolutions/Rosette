@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file rmw_dynamic_message.cpp
  * @brief Runtime (dynamic) type support entry points, which rmw_rosette refuses.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file net/wiznet/w6x00.hpp
  * @brief Register traits for the WIZnet W6100 and W6300 (1-bit SPI).

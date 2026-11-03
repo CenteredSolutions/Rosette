@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 """Flash a UF2 onto a Pico over USB without pressing BOOTSEL, then watch its console.
 
 Architecture:

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # cmake/rosette_net.cmake
 #
 # Defines `rosette_net`: the portable network core (rosette::net sockets,

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # Platform contract conformance test (host port).
 #
 # Builds tests/platform/platform_contract_test.cpp against the POSIX OS layer

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 """tcpdump-based RTPS packet capture for ROS 2 interop sessions.
 
 Architecture:

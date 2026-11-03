@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_pub_sub_loopback.cpp
  * @brief One rmw_rosette context, publish -> wait -> take over real UDP

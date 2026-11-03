@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 """Service call latency of the examples/led_files board, from a stock rclpy client.
 
 examples/led_files is one rclc source that builds against either ROS 2 backend

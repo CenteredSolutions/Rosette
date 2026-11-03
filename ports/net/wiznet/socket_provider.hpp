@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file net/wiznet/socket_provider.hpp
  * @brief Template `SocketProvider` over the WIZnet hardware UDP sockets.

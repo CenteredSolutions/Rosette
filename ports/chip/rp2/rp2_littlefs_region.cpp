@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/rp2/rp2_littlefs_region.cpp
  * @brief LittleFS block device for the RP2040 / RP2350 on-board flash.

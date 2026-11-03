@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file test_stateful_reader_8_4_9_gap_ranges.cpp
  * @brief Reliable StatefulReader: every change a GAP names becomes irrelevant.
