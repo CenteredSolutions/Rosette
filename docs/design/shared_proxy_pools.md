@@ -3,13 +3,13 @@
 Scope: how a participant stores the per-match state of its local writers and
 readers, so that a microcontroller can host the endpoints of a large ROS 2
 graph, spend RAM only on the matches that exist, and still bound the work any
-one match costs. The motivating firmware is an example firmware based on
-RP2040 with 18 local writers and 13 local readers, most of them services that
+one match costs. The sizing example throughout is an RP2040 firmware with
+18 local writers and 13 local readers, most of them services that
 one client uses now and then, on a network of 70 to 90 participants.
 
-## The problem
+## Per-endpoint proxy arrays
 
-Every local endpoint carries the proxies for the most matches it could ever
+Without pools, every local endpoint carries the proxies for the most matches it could ever
 have, `RTPS_MAX_MATCHED_READERS` reader proxies in each writer and
 `RTPS_MAX_MATCHED_WRITERS` writer proxies in each reader (§8.4.1.1, §8.4.7.1).
 `rmw_rosette` sets both from `RMW_ROSETTE_MAX_MATCHED_ENDPOINTS`, 8 on the
@@ -28,21 +28,20 @@ service may have a few clients; a locate service or an I/O configuration
 service has one client for a minute a day; a status publisher may have a
 dozen subscribers. The per-endpoint limit is therefore wrong in both
 directions: it reserves 7 idle proxies in each rarely used service, and it
-refuses the 9th subscriber of the one topic the whole machine reads.
+refuses the 9th subscriber of the one topic every peer reads.
 
-Fragment assembly is sized the same way, and the bound it reserves cannot be
+Per-reader fragment assembly is sized the same way, and the bound it reserves cannot be
 reached: a fragmented sample is larger than one datagram, so it is reassembled
 into one buffer-pool block of the datagram class or larger, and the firmware pool has 4 datagram blocks and 2
 large blocks (`RMW_ROSETTE_LARGE_BUFFERS`), shared with every received datagram
 and every unacknowledged large sample. At most 6 of the 104 assembly slots can
 ever hold a buffer.
 
-Two refusals are also permanent today. When a writer's proxies are full,
-`StatefulWriter::matched_reader_add()` logs "reader proxy table full" and
-returns. The match record stays in `EndpointMatchTable`, so the pair counts as
+Per-endpoint arrays also make two refusals permanent. When a writer's
+proxies are full, the reader is refused, but the match record stays in `EndpointMatchTable`, so the pair counts as
 reported, but no proxy is ever bound to it: when another reader leaves, the
 refused reader is still never served. When the match record table is full,
-`EndpointMatchTable::report()` drops the pair and nothing re-derives it. A
+the pair is dropped and nothing re-derives it. A
 remote endpoint is announced again only when it changes, so a pair refused at
 either point stays unmatched until the remote endpoint changes or is
 re-created.
@@ -60,10 +59,10 @@ re-created.
 * Every operation on the publish and receive path keeps its present bound.
   Binding a waiting match adds a bounded amount of work to `tick()`.
 * Application code is stock `rclc`. Nothing here needs a per-endpoint setting
-  that `rclc` cannot express, and the defaults reproduce today's capacity
-  exactly.
+  that `rclc` cannot express, and the defaults reproduce the capacity of
+  per-endpoint arrays exactly.
 * One compiled `StatefulWriter` and one compiled `StatefulReader` serve every
-  endpoint, builtin or user, as they do today.
+  endpoint, builtin or user.
 
 ## Pools
 
@@ -100,10 +99,10 @@ proxy from its endpoint's list, O(k), the same cost as the GUID lookup that
 finds it.
 
 User endpoints are `SharedPoolStatefulWriter<Depth>` (a history; proxies from
-the participant's pool) and `SharedPoolStatefulReader`. The proxy count is no
-longer part of their layout: on the example firmware a writer slot shrinks
-from 1,680 B to 1,048 B and a reader slot from 1,600 B to 1,092 B (Cortex-M0+,
-measured). `StatefulWriterStorage<Depth, MaxReaders>` and
+the participant's pool) and `SharedPoolStatefulReader`. The proxy count is not
+part of their layout: on the example firmware a writer slot is 1,048 B
+instead of 1,680 B with an array, and a reader slot 1,092 B instead of
+1,600 B (Cortex-M0+, measured). `StatefulWriterStorage<Depth, MaxReaders>` and
 `BoundedStatefulReader<N>` keep their meaning for an endpoint whose capacity
 is its own: each owns a private pool of MaxReaders or N proxies, all promised
 to it.
@@ -113,8 +112,8 @@ to it.
 The SEDP writers and readers match exactly one endpoint per active peer
 (`RTPS_MAX_PEERS`), and discovery must never wait for a proxy. Each builtin
 endpoint gets a private `ProxyPoolStorage` of `RTPS_MAX_PEERS` proxies with its
-floor equal to its cap, which is the capacity it has today, through the same
-compiled code.
+floor equal to its cap, the same capacity as a per-endpoint array, through
+the same compiled code.
 
 The `ros_discovery_info` writer is a user writer in the participant's pool,
 with floor and cap both `RTPS_MAX_PEERS`: every active peer reads it, and
@@ -162,9 +161,8 @@ pool larger.
 
 The floor and the cap are uniform across user endpoints. A larger floor for
 one endpoint (a motion service that must always serve three clients) needs a
-way to name that endpoint that stock `rclc` does not have. That is the same
-open question as pinning a peer active in the two-tier peer table, and both
-are left to one mechanism decided later.
+way to name that endpoint that stock `rclc` does not have, and so does
+pinning a peer active in the two-tier peer table. Neither is provided.
 
 ## Waiting matches
 
@@ -243,7 +241,7 @@ server does not discard a reply because its client's reader matched late.
 
 ## Deadlines
 
-| Operation | Today | With pools |
+| Operation | Per-endpoint arrays | With pools |
 |---|---|---|
 | Send, HEARTBEAT, ACKNACK, NACK handling | O(cap) over the proxy array | O(k) over the k bound proxies |
 | Find a proxy by GUID on receive | O(cap) | O(k) |
@@ -333,7 +331,7 @@ An assembly slot is the 128 B `FragmentedChange` plus its owner and age. The
 two SEDP readers' private assembly pools shrink from 8 slots to 5, a further
 672 B. Measured whole, the `rclc_chatter` firmware for RP2040 (11 readers, 12
 writers) loses 11,008 B of `.bss` to the assembly pool, and 2.2 KB of `.text`
-because the assembler is no longer a template. The 32 reader proxies cover the 8 the `ros_discovery_info` writer
+because the assembler is not a template. The 32 reader proxies cover the 8 the `ros_discovery_info` writer
 reserves, one floor for each of the other 17 writers, and 7 to borrow. At the
 default pool sizes, which hold every endpoint at its cap, the participant is
 83,272 B: the pools cost 880 B over per-endpoint arrays, the per-proxy links
@@ -360,7 +358,7 @@ matches.
 With the defaults the pools hold every endpoint at its cap at once, and the
 `ros_discovery_info` writer at one proxy per active peer, so every floor is
 met and nothing borrows beyond a cap: a build that sets nothing serves every
-match a per-endpoint array would, with the two permanent refusals fixed.
+match a per-endpoint array would, without its two permanent refusals.
 `rmw_rosette/include/rmw_rosette/capacity.hpp` `static_assert`s the floor
 sums, and `docs/mcu_memory_model.md` gives the sizing step: list the
 endpoints that need more than one match and add their extra to the floors.
@@ -375,7 +373,7 @@ endpoints that need more than one match and add their extra to the floors.
 
 ## Verification
 
-New spec tests, under the areas they belong to:
+Spec tests, under the areas they belong to:
 
 * Pool admission (`tests/spec`, writer and reader): an endpoint below its
   floor binds with every unreserved proxy borrowed; above its floor it binds
@@ -405,24 +403,15 @@ New spec tests, under the areas they belong to:
   from a reliable writer is requested whole and completes after repair.
 * Every existing spec suite, and the loopback suites against `rmw_fastrtps_cpp`
   (interop, lockout, lease re-match, graph), pass unchanged at the default
-  sizes, which reproduce today's capacity.
+  sizes, which reproduce per-endpoint capacity.
 * `tests/ros2/discovery_scale` with the example firmware sizes and a topic
-  read by more subscribers than the per-endpoint cap of today: every
+  read by more subscribers than a per-endpoint cap: every
   subscriber up to the pool's capacity is served.
-
-## Steps
-
-1. Proxy pools for user writers and readers, with floors and caps; builtin
-   endpoints on private pools.
-2. Waiting matches, then the record-overflow rescan.
-3. The participant-wide reassembly pool.
-4. Firmware sizing in `docs/mcu_memory_model.md` and the example firmware's
-   capacity settings.
 
 ## Decisions
 
 * One shared pool per proxy type, sized by the firmware; the library's
-  defaults reproduce today's capacity.
+  defaults reproduce per-endpoint capacity.
 * A uniform floor reserved for every endpoint slot, proven at compile time,
   and a uniform per-endpoint cap.
 * A refused match waits and binds oldest first when a proxy frees; it is never

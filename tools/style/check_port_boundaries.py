@@ -11,7 +11,7 @@ Architecture:
     a host OS lives under ports/<axis>/<name>/; everything else in the tree is
     portable and reaches the port only through the contracts in
     include/rosette/platform and include/rosette/net
-    (docs/design/ports_move_plan.md, "Rules").
+    (PORTING.md, "Rules").
 
     This check reads every C and C++ file in the tree and reports three kinds
     of violation:
@@ -46,7 +46,7 @@ Verification:
     src/rtps/participant.cpp (fails, naming that file and family).
 
 References:
-    docs/design/ports_move_plan.md, "Rules" (the zone table mirrored below).
+    PORTING.md, "Rules" (the zone table mirrored below).
     AGENTS.md, "Architecture Direction".
     FreeRTOS kernel, portable/<compiler>/<arch>/portmacro.h: the fixed-name
     per-port header pattern this layout follows.
@@ -337,7 +337,7 @@ def write_baseline(violations: dict) -> None:
     lines = [
         "# Port-boundary violations the tree still carries (check_port_boundaries.py).",
         "# An entry may be deleted but not added by hand: fix new code instead.",
-        "# Format: <path> <kind> <detail>; see docs/design/ports_move_plan.md.",
+        "# Format: <path> <kind> <detail>; see PORTING.md.",
         "",
     ]
     lines.extend(" ".join(key) for key in sorted(violations))
@@ -379,7 +379,7 @@ def main() -> int:
         print(f"stale baseline entry (delete it): {path} {kind} {detail}")
 
     if new:
-        print(f"{len(new)} port-boundary violation(s); see docs/design/ports_move_plan.md, \"Rules\".")
+        print(f"{len(new)} port-boundary violation(s); see PORTING.md, \"Rules\".")
         return 1
 
     return 0

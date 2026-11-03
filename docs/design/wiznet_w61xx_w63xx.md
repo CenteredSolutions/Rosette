@@ -8,11 +8,10 @@ hardware. 4-bit QSPI for the W6300 is scoped below and not implemented.
 
 ## Why
 
-The register-level WIZnet driver (`include/rosette/net/wiznet/`) was built
-around one part, the W5100S. The W6100 and W6300 are the current-generation
-WIZnet controllers — 8 sockets, larger socket memory, IPv4/IPv6 — and the
-W6300-EVB-Pico2 (RP2350) is the natural successor board. This change adds both
-parts as compile-time `Chip` traits so a board selects one with
+The register-level WIZnet driver (`include/rosette/net/wiznet/`) supports the
+W5100S and the current-generation W6100 and W6300 — 8 sockets, larger socket
+memory, IPv4/IPv6 — whose W6300-EVB-Pico2 (RP2350) is the reference board for
+the newer parts. The W6100 and W6300 are compile-time `Chip` traits so a board selects one with
 `#define ROSETTE_WIZNET_CHIP W6100` (or `W6300`), reusing the whole
 `WiznetDevice` / `WiznetSocketProvider` / `WiznetLink` / `Dhcp*` stack unchanged.
 

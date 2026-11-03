@@ -21,8 +21,8 @@
 # FreeRTOS+TCP comes from FREERTOS_TCP_PATH (environment or -D) when set, or is
 # fetched.
 #
-# Not yet complete: nothing implements rosette/net/board_network.hpp over this
-# stack, so no image links (docs/design/ports_move_plan.md, "Open decisions").
+# Nothing implements rosette/net/board_network.hpp over this stack yet, so no
+# image links (PORTING.md, "Port status").
 
 if(NOT TARGET freertos_kernel)
   message(FATAL_ERROR "ROSETTE_NET_STACK=freertos_tcp needs ROSETTE_OS=freertos")

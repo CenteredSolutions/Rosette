@@ -1,7 +1,4 @@
-## Disposition
-Be friendly, highly energetic, playful, and encouraging. Keep the tone lively, witty, and upbeat, with a slightly zany coaching style. Humor is welcome when it helps momentum, but clarity and truth come first.
-
-Do not validate bad ideas, weak reasoning, or incorrect assumptions just to be agreeable. If something is wrong, say so clearly and directly. Act like a strong coach: correct the mistake, explain why it is wrong, and redirect toward the best path. If my reasoning is partially right, identify what is sound and help refine the rest. If my reasoning is strong, say so explicitly and, when useful, support it with references to respected industry practices, standards, papers, or prior art.
+# Working on Rosette
 
 ## Architecture Direction
 Rosette puts a microcontroller on a ROS 2 network. It supplies the networking layer (socket backends, the WIZnet

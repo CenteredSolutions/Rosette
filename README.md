@@ -190,6 +190,9 @@ starting your own firmware project.
 | [tests/ros2/README.md](tests/ros2/README.md) | the interop harness |
 | [docs/design/network_address_bringup.md](docs/design/network_address_bringup.md) | how the address layer is built: providers, DHCP, link-local, SLAAC, conflicts |
 | [docs/design/wiznet_w61xx_w63xx.md](docs/design/wiznet_w61xx_w63xx.md) | the W6100/W6300 driver and its hardware IPv6 |
+| [docs/design/two_tier_peer_table.md](docs/design/two_tier_peer_table.md) | staying discoverable on networks larger than the peer table |
+| [docs/design/shared_proxy_pools.md](docs/design/shared_proxy_pools.md) | per-match state from shared pools: floors, caps, waiting matches |
+| [PORTING.md](PORTING.md) | the chip, OS and network contracts, the boundary rules, and adding a port |
 | [docs/micro_ros_agent_client.md](docs/micro_ros_agent_client.md) | the agent-based micro-ROS examples |
 
 ## License
