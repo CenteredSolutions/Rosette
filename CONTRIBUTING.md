@@ -1,7 +1,9 @@
 # Contributing to Rosette
 
 Thank you for helping. This page covers the legal terms of a contribution and
-the checks a pull request must pass.
+the checks a pull request must pass. Everyone taking part follows the
+[Code of Conduct](CODE_OF_CONDUCT.md). Report a suspected vulnerability
+privately, as [SECURITY.md](SECURITY.md) describes, not in a public issue.
 
 ## License of contributions
 

@@ -24,3 +24,10 @@ path = [
 precedence = "closest"
 SPDX-FileCopyrightText = "2026 Centered Solutions, LLC"
 SPDX-License-Identifier = "Apache-2.0"
+
+# The Contributor Covenant 2.1, unmodified except for the reporting contact.
+[[annotations]]
+path = "CODE_OF_CONDUCT.md"
+precedence = "override"
+SPDX-FileCopyrightText = "Contributor Covenant contributors <https://www.contributor-covenant.org>"
+SPDX-License-Identifier = "CC-BY-4.0"
