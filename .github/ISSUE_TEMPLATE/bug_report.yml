@@ -67,6 +67,7 @@ body:
     attributes:
       label: Logs and captures
       description: >
-        Board serial output, host logs with `RCUTILS_LOGGING_SEVERITY=DEBUG`, and a packet capture
+        Board serial output, host application logs (run with `--ros-args --log-level debug`),
+        RTPS logs (for `rmw_rosette`, rebuild with `-DRMW_ROSETTE_RTPS_LOG_LEVEL=4`), and a packet capture
         (`tcpdump -w rosette.pcap udp`) if discovery or delivery is involved.
       render: text
