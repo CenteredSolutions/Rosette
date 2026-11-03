@@ -23,7 +23,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Skip the build jobs when a pull request changes documentation only
+  # (tools/ci/classify_changed_paths.py). Pushes to main always build.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - id: classify
+        run: python3 tools/ci/classify_changed_paths.py "${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+
   colcon:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -73,6 +89,8 @@ jobs:
   # marks `skip` (rclcpp on rmw_rosette, until the C++ introspection codec
   # exists) are not run.
   conformance:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -156,3 +174,15 @@ jobs:
           path: |
             ws/build/test_rmw_implementation/test_results
             ws/build/test_communication/test_results
+
+  # The check branch protection requires: every job passed, or was skipped
+  # because the change is documentation only.
+  result:
+    name: rmw-rosette result
+    if: always()
+    needs: [changes, colcon, conformance]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every job to pass or be skipped
+        run: >
+          test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = false
