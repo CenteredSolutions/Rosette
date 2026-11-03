@@ -35,10 +35,9 @@ First public release, under the Apache License 2.0.
 
 ### Notes
 
-- The history before this release was prepared for publication: internal
-  project names and links to private tooling were removed from commit messages
-  and earlier file versions, author addresses were unified, and commits were
-  signed off. Dates and code are otherwise as written.
+- The development history is published in full. For publication, references
+  to unrelated private projects were removed, author addresses were unified,
+  and commits were signed off; dates are as recorded.
 
 [Unreleased]: https://github.com/CenteredSolutions/Rosette/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/CenteredSolutions/Rosette/releases/tag/v0.1.0
