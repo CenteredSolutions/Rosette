@@ -7,7 +7,7 @@ version may change the public API.
 
 ## [Unreleased]
 
-## [0.1.0]
+## [0.1.0] - 2026-11-02
 
 First public release, under the Apache License 2.0.
 
@@ -19,8 +19,10 @@ First public release, under the Apache License 2.0.
   than its peer table, and shared proxy pools size per-match state by the
   matches that exist.
 - `rmw_rosette`: a ROS 2 middleware implementation over it, for stock `rclc`
-  firmware and for `rclcpp` / `rclpy` on POSIX hosts, built and tested in CI on
-  ROS 2 Humble and Jazzy.
+  firmware and for `rcl`, `rclc` and `rclpy` programs on POSIX hosts, built and
+  tested in CI on ROS 2 Humble and Jazzy. It has C type support only, so
+  `rclcpp` programs reach Rosette nodes over another rmw; the README lists this
+  and the other known limitations.
 - A micro-ROS agent backend (`rmw_microxrcedds`) for firmware built against the
   same `rclc` application code.
 - A register-level WIZnet driver for the W5100S, W6100 and W6300, with DHCP,
@@ -31,7 +33,8 @@ First public release, under the Apache License 2.0.
   `w6300-evb-pico2`. `PORTING.md` describes the port contracts.
 - A LittleFS volume and file store for on-board configuration.
 - Conformance tests keyed to DDSI-RTPS spec sections, fuzzing of the network
-  parsers, and interoperability tests against stock `rmw_fastrtps_cpp`.
+  parsers, and interoperability tests against stock `rmw_fastrtps_cpp` and
+  `rmw_cyclonedds_cpp` using the upstream ROS 2 test suites.
 
 ### Notes
 
