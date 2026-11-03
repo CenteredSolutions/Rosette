@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
+name: Bug report
+description: Something on a board or a host does not behave as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. A suspected vulnerability goes through private reporting instead
+        (see SECURITY.md). Check the README's "Known limitations" first: those are known.
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: ROS 2 backend
+      options:
+        - rmw_rosette on a board
+        - rmw_rosette on a host
+        - micro-ROS agent (rmw_microxrcedds)
+        - rosette::rtps directly, no rmw
+        - networking or storage only
+    validations:
+      required: true
+
+  - type: input
+    id: target
+    attributes:
+      label: Board or host
+      description: The `ROSETTE_BOARD` (for example `w5100s-evb-pico2`), or the host OS and CPU.
+      placeholder: w5100s-evb-pico2
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Rosette commit or release, and ROS 2 distribution
+      placeholder: v0.1.0, Humble
+    validations:
+      required: true
+
+  - type: input
+    id: peer
+    attributes:
+      label: What the board talks to
+      description: The rmw and distribution on the other side, for example `rmw_fastrtps_cpp` on Jazzy.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The smallest program or command sequence that shows it, with any non-default CMake options.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and captures
+      description: >
+        Board serial output, host application logs (run with `--ros-args --log-level debug`),
+        RTPS logs (for `rmw_rosette`, rebuild with `-DRMW_ROSETTE_RTPS_LOG_LEVEL=4`), and a packet capture
+        (`tcpdump -w rosette.pcap udp`) if discovery or delivery is involved.
+      render: text

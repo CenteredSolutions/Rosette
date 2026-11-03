@@ -8,8 +8,10 @@ participants, with no agent and no bridge. It provides:
 - **`rmw_rosette`**: a ROS 2 middleware implementation over it.
 
 Applications are ordinary ROS 2 programs. A firmware is a stock `rclc`
-program linked with `rmw_rosette`; on a host, any `rclcpp` or `rclpy` program
-runs on it with `RMW_IMPLEMENTATION=rmw_rosette`. Stock tools on the rest of
+program linked with `rmw_rosette`; on a host, `rclpy` and C (`rcl`, `rclc`)
+programs run on it with `RMW_IMPLEMENTATION=rmw_rosette`. `rclcpp` programs
+need C++ type support, which `rmw_rosette` does not have yet (see
+[Known limitations](#known-limitations)). Stock tools on the rest of
 the network (`ros2 topic echo`, `ros2 node list`, Fast DDS nodes) see the board
 as just another node.
 
@@ -77,13 +79,33 @@ $ ros2 node list
 | Dual-stack networking on an RP2040 + W6100 board: DHCP, IPv6 link-local and SLAAC global, ping and UDP echo over each | `examples/wiznet_udp_echo` on the W6100-EVB-Pico |
 | DDSI-RTPS protocol statements, by spec section | `tests/spec` (`TC-<AREA>-<section>-<seq>`) |
 
-Open gaps (graph queries for remote node names, QoS events, a FreeRTOS+TCP
-network port) are listed in [`rmw_rosette/README.md`](rmw_rosette/README.md#known-gaps).
+### Known limitations
+
+- **No `rclcpp` on `rmw_rosette`.** It encodes messages from C introspection
+  type support only. `rclcpp` processes on Fast DDS or Cyclone DDS talk to
+  Rosette nodes normally; an `rclcpp` process cannot itself load `rmw_rosette`.
+- **Graph queries and QoS events.** `rmw_get_node_names` and the
+  `*_names_and_types` queries return `RMW_RET_UNSUPPORTED` on a Rosette node,
+  and QoS events are not offered. Stock tools on other nodes see Rosette nodes
+  normally.
+- **Sample size.** A sample is at most `RMW_ROSETTE_MAX_SAMPLE_SIZE` bytes:
+  65,532 on a host and 4,096 in the firmware profile by default. A larger
+  sample is refused on publish and dropped on receipt.
+- **Reported QoS.** Actual QoS is reported as requested (system defaults are
+  not resolved, and depth is capped by the history pool), and
+  `ignore_local_publications` is not applied.
+- **Network stacks.** Boards use WIZnet hardware sockets, and hosts use BSD
+  sockets. The FreeRTOS+TCP port compiles but no board links it, and there is
+  no lwIP port ([PORTING.md](PORTING.md#port-status)).
+
+Each limitation is tracked against the upstream ROS 2 conformance suites in
+`rmw_rosette/test/conformance_known_failures_<distro>.txt`, and described in
+[`rmw_rosette/README.md`](rmw_rosette/README.md#known-gaps).
 
 ## Architecture in one picture
 
 ```
- rclc firmware / rclcpp / rclpy
+ rclc firmware / rclpy
  stock rcl, rclc, type supports
  ─────────────────────────────── rmw ABI
  rmw_rosette          entity pools, CDR, services, graph, take rings

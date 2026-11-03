@@ -1,7 +1,7 @@
 # rmw_rosette
 
 An `rmw` implementation over `rosette::rtps` (`include/rosette/rtps`,
-`src/rtps` at the repo root). Stock `rcl`, `rclc`, `rclcpp`, and `rclpy` load it
+`src/rtps` at the repo root). Stock `rcl`, `rclc`, and `rclpy` load it
 with `RMW_IMPLEMENTATION=rmw_rosette` and join the ROS 2 graph directly as an
 RTPS participant, with no `micro_ros_agent` in the loop.
 
@@ -124,7 +124,21 @@ the same relationships.
    table keeps only as keys; those report `RMW_RET_UNSUPPORTED`.
 3. **QoS events and listeners.** Event initialization reports
    `RMW_RET_UNSUPPORTED`, which both client libraries accept.
-4. **FreeRTOS+TCP board network.** The network port forwards to the board
+4. **C++ type support.** Messages are encoded from
+   `rosidl_typesupport_introspection_c` metadata only (`message_codec.cpp`).
+   `rclcpp` and its parameter services use `rosidl_typesupport_cpp`, so an
+   `rclcpp` process cannot load `rmw_rosette`; it reaches Rosette nodes over
+   Fast DDS or Cyclone DDS. A `rosidl_typesupport_introspection_cpp` codec
+   closes this, together with the `skip` section of the conformance known
+   failures.
+5. **Sample size.** A sample larger than `RMW_ROSETTE_MAX_SAMPLE_SIZE` (at most
+   65,532 bytes) is refused on publish, and evicted on receipt before a reader
+   takes it.
+6. **Reported QoS.** The actual-QoS queries report the requested policies:
+   system defaults are not resolved, depth is capped by the history pool, and
+   durability is reported as requested. `ignore_local_publications` is not
+   applied.
+7. **FreeRTOS+TCP board network.** The network port forwards to the board
    network (`rosette/net/board_network.hpp`), which hosts and WIZnet boards
    implement; FreeRTOS+TCP boards do not yet.
 
