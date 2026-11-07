@@ -19,7 +19,7 @@
 
 // ── WIZnet part ──────────────────────────────────────────────────────────────
 // Names the chip-trait struct (rosette::net::wiznet::<token>) the register-level
-// driver builds against; see boards/common/rp2_wiznet/wiznet_board_types.hpp.
+// driver builds against; see boards/common/wiznet/wiznet_board_types.hpp.
 #define ROSETTE_WIZNET_CHIP        W6100
 
 // ── SPI peripheral ───────────────────────────────────────────────────────────

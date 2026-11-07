@@ -7,10 +7,11 @@
  *
  * These pin the exact bytes `WiznetDevice` puts on the wire for the W5100S,
  * W6100 and W6300 register traits — the address/control phase of every SPI
- * transaction. The W5100S vectors are a regression guard for the `device.hpp`
- * refactor that added the per-part reset / buffer-addressing / interrupt-ack
- * seams; the W61xx/W63xx vectors are hand-derived from the WIZnet
- * io(6)Library `WIZCHIP_READ` / `WIZCHIP_WRITE` and register `#define`s.
+ * transaction. The W5500 vectors are hand-derived from the W5500 datasheet
+ * §2.2 (SPI frame) and §3 (block select bits). The W5100S vectors are a regression guard for the
+ * `device.hpp` refactor that added the per-part reset / buffer-addressing / interrupt-ack seams;
+ * the W61xx/W63xx vectors are hand-derived from the WIZnet io(6)Library `WIZCHIP_READ` /
+ * `WIZCHIP_WRITE` and register `#define`s.
  *
  * Build and run standalone:
  * @code
@@ -23,6 +24,7 @@
 #include "fake_clock.hpp"
 
 #include "ports/net/wiznet/w5100s.hpp"
+#include "ports/net/wiznet/w5500.hpp"
 #include "ports/net/wiznet/w6x00.hpp"
 
 #include <algorithm>
@@ -117,10 +119,8 @@ void check_common_frames(const char* name)
     }
 }
 
-}  // namespace
-
-int main()
-{
+/// The W5100S's frames { 0xF0 | 0x0F, addr_hi, addr_lo } and its shared-region buffer layout.
+void check_w5100s_frames() {
     // ── W5100S: regression guard (bytes must not move) ──────────────────────
     {
         using Device = wiz::WiznetDevice<wiz::W5100S, RecordingBus>;
@@ -162,10 +162,62 @@ int main()
         check(raw.socket_tx_capacity(0) == 8192u && raw.socket_rx_capacity(0) == 8192u,
               "W5100S MACRAW: socket 0 capacity cached at the full 8 KiB");
     }
+}
 
+/// The W5500's frames { addr_hi, addr_lo, (BSB<<3)|(RWB<<2)|OM }, reset, and buffer layout.
+void check_w5500_frames() {
+    check_common_frames<wiz::W5500>("W5500");
+
+    using C = wiz::W5500;
+    static_assert(C::common_version() == 0x003900u, "W5500 VERSIONR packed addr");
+    static_assert(C::common_link_status() == 0x002E00u, "W5500 PHYCFGR packed addr");
+    static_assert(C::socket_mode(1) == 0x000005u, "W5500 Sn_MR(1) packed addr");
+    static_assert(C::socket_rx_buffer_size(7) == 0x001E1Du, "W5500 Sn_RXBUF_SIZE(7) packed addr");
+    static_assert(!C::has_hw_ipv6() && !C::has_socketless_arp(), "W5500: no IPv6, no SLCR");
+
+    auto rd_version = C::make_header<true>(C::common_version());
+    check(rd_version.length == 3 && rd_version.bytes[0] == 0x00 && rd_version.bytes[1] == 0x39
+              && rd_version.bytes[2] == 0x00,
+          "W5500 read VERSIONR frame = {0x00,0x39,0x00}");
+
+    auto wr_sn_mr = C::make_header<false>(C::socket_mode(1));  // block 5 -> (5<<3)|4 = 0x2C
+    check(wr_sn_mr.bytes[0] == 0x00 && wr_sn_mr.bytes[1] == 0x00 && wr_sn_mr.bytes[2] == 0x2C,
+          "W5500 write Sn_MR(1) frame = {0x00,0x00,0x2C}");
+
+    auto wr_txbuf = C::make_header<false>(C::tx_buffer_block_addr(2, 0x0100));  // block 10
+    check(wr_txbuf.bytes[0] == 0x01 && wr_txbuf.bytes[1] == 0x00 && wr_txbuf.bytes[2] == 0x54,
+          "W5500 write TX-buffer frame = {0x01,0x00,0x54}");
+
+    auto rd_rxbuf = C::make_header<true>(C::rx_buffer_block_addr(0, 0x0040));  // block 3
+    check(rd_rxbuf.bytes[0] == 0x00 && rd_rxbuf.bytes[1] == 0x40 && rd_rxbuf.bytes[2] == 0x18,
+          "W5500 read RX-buffer frame = {0x00,0x40,0x18}");
+
+    RecordingBus                       bus;
+    wiz::WiznetDevice<C, RecordingBus> dev{bus};
+    dev.hardware_reset();
+    check(bus.log.size() == 1 && prefix_is(bus.log[0], false, {0x00, 0x00, 0x04})
+              && bus.log[0].data == std::vector<uint8_t>{0x80},
+          "W5500 reset() = MR.RST write {0x00,0x00,0x04} <- 0x80");
+
+    RecordingBus sock_bus;
+    sock_bus.next_reads = {0x04};  // VERSIONR; command polls then read 0
+    wiz::WiznetDevice<C, RecordingBus> sock{sock_bus};
+    check(!std::holds_alternative<wiz::WiznetDevice<C, RecordingBus>::InvalidChipVersion>(
+              sock.init_socket_mode({1, 2, 3, 4, 5, 6})),
+          "W5500 socket mode accepts VERSIONR 0x04");
+    check(sock.socket_rx_capacity(0) == 8192u && sock.socket_rx_capacity(1) == 2048u
+              && sock.socket_rx_capacity(7) == 1024u && sock.socket_tx_capacity(3) == 2048u,
+          "W5500 default layout: RX 8/2/1.. KiB, TX 2 KiB per socket");
+}
+
+}  // namespace
+
+int main() {
+    check_w5100s_frames();
     check_common_frames<wiz::W5100S>("W5100S");
     check_common_frames<wiz::W6100>("W6100");
     check_common_frames<wiz::W6300>("W6300");
+    check_w5500_frames();
 
     // ── IPv4 conflict bit + hardware-IPv6 gate (address bring-up) ──────────
     {

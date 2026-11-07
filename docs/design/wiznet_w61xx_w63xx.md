@@ -2,8 +2,8 @@
 
 Status: W6100 and W6300 over 1-bit SPI, IPv4 and hardware IPv6. The W6100 is
 hardware-verified on the W6100-EVB-Pico (RP2040): DHCP, IPv6 link-local and
-SLAAC global addresses, ping and UDP echo over each (`examples/wiznet_udp_echo`,
-`tools/wiznet_udp_echo_probe.py`). The W6300 builds but has not run on
+SLAAC global addresses, ping and UDP echo over each (`examples/udp_echo`,
+`tools/udp_echo_probe.py`). The W6300 builds but has not run on
 hardware. 4-bit QSPI for the W6300 is scoped below and not implemented.
 
 ## Why
@@ -146,7 +146,8 @@ reference).
 
 The bus seam is already in place:
 
-* `boards/common/rp2_wiznet/wiznet_board_types.hpp` selects `BoardBus` from
+* `ports/chip/rp2/wiznet_board_bus.hpp`, which the shared
+  `boards/common/wiznet/wiznet_board_types.hpp` includes, selects `BoardBus` from
   `ROSETTE_WIZNET_BUS_QSPI` in `board_config.h` — `Rp2SpiBus` (hardware SPI) otherwise, `Rp2QspiBus` when
   set.
 * `ports/chip/rp2/rp2_qspi_bus.hpp` is a **single-lane** `Rp2QspiBus` today: GPIO

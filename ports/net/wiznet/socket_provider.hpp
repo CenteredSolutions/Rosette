@@ -478,7 +478,7 @@ public:
      * Verification:
      * - Correct means: a datagram sent to the board ends a kWaitForever
      *   wait_readable(), or a blocking recv_from(), within interrupt latency.
-     * - Covered by: examples/wiznet_udp_echo (wait_readable()) and its SNTP
+     * - Covered by: examples/udp_echo (wait_readable()) and its SNTP
      *   exchange (recv_from()), examples/rtps_chatter and examples/rclc_chatter.
      */
     bool attach_interrupt(uint32_t pin) noexcept {

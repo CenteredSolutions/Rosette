@@ -522,6 +522,34 @@ public:
     rosette::platform::Event* receive_event() const noexcept { return receive_event_; }
 
     /**
+     * @brief Whether one socket bound to a port carries both IPv4 and IPv6 datagrams.
+     *
+     * Decides how many sockets a caller opens to serve a port on both
+     * families. When false (BSD sockets with `IPV6_V6ONLY`, the WIZnet
+     * chips), a socket carries only its own domain's datagrams and the caller
+     * opens one per family. When true (FreeRTOS+TCP, which finds a UDP
+     * socket by port number alone), the one socket bound to the port receives
+     * datagrams from peers of either family, reports each sender's family in
+     * recv_from(), and replies to either through send_to(); a second socket
+     * on the same port fails to bind.
+     *
+     * @return True when the caller opens one socket per port; false when it
+     *   opens one per port and family.
+     *
+     * Verification:
+     * - Correct means: with true, an IPv6 peer's datagram to a port bound by
+     *   an `ipv4` socket arrives there with an IPv6 sender and is answered;
+     *   with false, the other family's datagram never reaches the socket.
+     * - Covered by: examples/udp_echo with tools/udp_echo_probe.py, which
+     *   opens sockets by this answer and checks both families: one socket
+     *   per port on the MIMXRT1020-EVK, two on the W6100-EVB-Pico.
+     *
+     * References: RFC 3493 §5.3 (IPV6_V6ONLY); FreeRTOS+TCP
+     * FreeRTOS_UDP_IPv4.c and FreeRTOS_UDP_IPv6.c (pxUDPSocketLookup()).
+     */
+    virtual bool dual_stack_sockets() const noexcept { return false; }
+
+    /**
      * @brief Sleeps until one of `sockets` is readable, `wake` is signaled,
      * or `timeout_ms` passes.
      *

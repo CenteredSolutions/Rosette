@@ -7,7 +7,6 @@ src/rtps/spdp.cpp::rosette::rtps::SpdpReader::deserialise 134
 tests/host/address_manager_test.cpp::main 118
 tests/host/ipv4ll_provider_test.cpp::main 103
 tests/host/network_address_test.cpp::main 106
-tests/host/wiznet_header_test.cpp::main 137
 tests/loopback/rtps_loopback_smoke.cpp::main 102
 tests/spec/src/test_participant_8_5_1.cpp::spec_test::tc_part_8_3_4_002 106
 tests/spec/src/test_participant_8_5_1.cpp::spec_test::tc_part_8_5_1_002 128

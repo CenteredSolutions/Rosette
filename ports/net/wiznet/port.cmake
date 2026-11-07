@@ -8,7 +8,7 @@
 # the IP stack runs in the chip, and the register-level driver in this
 # directory is portable, header-only, and templated on <Chip, Bus>. The
 # board's composition instantiates it and implements
-# rosette/net/board_network.hpp (boards/common/rp2_wiznet/ for the EVB-Pico
+# rosette/net/board_network.hpp (boards/common/wiznet/ for the EVB-Pico
 # boards). This port adds the DHCP client to rosette_net: it is portable, but
 # only a socket-offload chip needs it, since a MAC-level stack brings its own.
 #
