@@ -451,7 +451,15 @@ ParseResult RTPSParticipant::parse_received(const Octet* buf,
     if (r != ParseResult::OK) {
         RTPS_LOG_W("participant", "parse_message failed: result=%d len=%lu", static_cast<int>(r),
                    static_cast<unsigned long>(len));
+        return r;
     }
+
+    // The header's GuidPrefix (§9.4.2.4) follows the 4-octet protocol id,
+    // the 2-octet version and the 2-octet vendor id; parse_message()
+    // returning OK proves the 20-octet header is present.
+    GuidPrefix sender{};
+    memcpy(sender.value, buf + 8u, sizeof(sender.value));
+    (void)spdp_reader_.renew_lease(sender, rosette::platform::monotonic_ms());
     return r;
 }
 

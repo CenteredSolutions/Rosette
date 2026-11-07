@@ -150,6 +150,15 @@
       "test_ids": ["TC-PART-8.5.3-014"]
     },
     {
+      "id": "REQ-PART-8.5.3.2-LEASE-RENEWED-BY-ANY-MESSAGE",
+      "section": "8.5.3.2",
+      "page": 160,
+      "normativity": "implementation-behavior",
+      "statement": "Every well-formed RTPS message whose header GuidPrefix names a known peer renews that peer's lease to now plus its announced lease duration; a message from an unknown prefix admits no peer, and a message that fails to parse renews nothing.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.3-015"]
+    },
+    {
       "id": "REQ-PART-8.5.4.1-PARK-ONLY-SETTLED-PEERS",
       "section": "8.5.4.1",
       "normativity": "implementation-behavior",

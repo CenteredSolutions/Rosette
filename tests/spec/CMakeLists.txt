@@ -365,6 +365,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     src/test_participant_writer_evictions.cpp
     src/test_participant_8_4_4_reader_reliability.cpp
     src/test_participant_driver_pass_budget.cpp
+    src/test_participant_8_5_3_lease.cpp
     src/test_transport_multicast_interface.cpp
     ../../src/rtps/participant.cpp
     ../../src/rtps/participant_driver.cpp
@@ -562,6 +563,7 @@ list(REMOVE_ITEM PARTICIPANT_TIER_SPEC_TEST_SOURCES
     src/test_participant_8_5_1.cpp
     src/test_participant_waiting_matches.cpp
     src/test_participant_driver_pass_budget.cpp
+    src/test_participant_8_5_3_lease.cpp
     src/test_transport_multicast_interface.cpp)
 list(APPEND PARTICIPANT_TIER_SPEC_TEST_SOURCES
     src/spec_participant_tier_test_registry.cpp
