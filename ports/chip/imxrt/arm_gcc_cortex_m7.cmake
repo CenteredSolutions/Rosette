@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # ports/chip/imxrt/arm_gcc_cortex_m7.cmake — the cross toolchain for i.MX RT10xx.
 #
 # Installed as CMAKE_TOOLCHAIN_FILE by prelude.cmake before project(), unless

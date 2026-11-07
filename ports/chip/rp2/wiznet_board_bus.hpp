@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/rp2/wiznet_board_bus.hpp
  * @brief The rp2 port's WIZnet bus for a board: hardware SPI, or QSPI on the W6300.

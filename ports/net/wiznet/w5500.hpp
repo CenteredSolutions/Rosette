@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file net/wiznet/w5500.hpp
  * @brief Register traits for the WIZnet W5500 (SPI, variable-length data mode).

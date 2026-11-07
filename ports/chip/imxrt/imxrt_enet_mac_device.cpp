@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/imxrt_enet_mac_device.cpp
  * @brief The copying i.MX RT ENET MacDevice: frames copied through fsl_enet's own rings.

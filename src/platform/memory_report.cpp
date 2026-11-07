@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file src/platform/memory_report.cpp
  * @brief format_memory_report(): the platform contract's memory reports as text.

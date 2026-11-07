@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/memory_use.cpp
  * @brief The i.MX RT's main-stack and C-heap reports: main_stack_use() and c_heap_use().

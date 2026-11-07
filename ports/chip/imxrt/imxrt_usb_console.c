@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/imxrt_usb_console.c
  * @brief The i.MX RT port's USB console: TinyUSB CDC ACM on USB_OTG1, serviced from its interrupt.

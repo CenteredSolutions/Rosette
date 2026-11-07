@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/mimxrt1020-evk/FreeRTOSConfig.h
  * @brief FreeRTOS kernel configuration for the MIMXRT1020-EVK (i.MX RT1021, Cortex-M7).

@@ -1,3 +1,6 @@
+/* SPDX-FileCopyrightText: 2026 Centered Solutions, LLC */
+/* SPDX-License-Identifier: Apache-2.0 */
+
 /*
  * ports/chip/imxrt/flexram_reset_handler.S — the reset handler for a board
  * that sets its own FlexRAM layout.

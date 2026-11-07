@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/wiznet_board_bus.hpp
  * @brief The i.MX RT port's WIZnet bus for a board: an LPSPI with a GPIO chip select.

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/micromod-teensy-w5500/board_config.h
  * @brief Hardware mapping for the SparkFun MicroMod Teensy with the MicroMod Ethernet Function

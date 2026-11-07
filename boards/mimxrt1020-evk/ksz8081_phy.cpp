@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/mimxrt1020-evk/ksz8081_phy.cpp
  * @brief The KSZ8081RNB's RMII clock mode; see ksz8081_phy.hpp.

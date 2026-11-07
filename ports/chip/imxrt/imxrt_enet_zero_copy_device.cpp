@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/imxrt_enet_zero_copy_device.cpp
  * @brief The zero-copy i.MX RT ENET device: descriptor rings over buffers the IP stack posts.

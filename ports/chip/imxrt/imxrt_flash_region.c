@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/imxrt_flash_region.c
  * @brief The flash hooks (rosette/platform/flash.hpp) on the i.MX RT: no storage region.

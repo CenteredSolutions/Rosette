@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # SparkFun MicroMod Teensy (NXP i.MX RT1062) on a MicroMod Main Board, with
 # the SparkFun MicroMod Ethernet Function Board (WIZnet W5500) in function
 # slot 0. No RTOS: the W5500 runs the TCP/IP stack in hardware, and the

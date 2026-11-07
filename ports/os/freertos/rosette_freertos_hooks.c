@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/os/freertos/rosette_freertos_hooks.c
  * @brief The kernel's failure hooks: a failed configASSERT, a task stack overflow, and an

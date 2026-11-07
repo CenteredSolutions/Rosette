@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/imxrt_enet_link.cpp
  * @brief The i.MX RT ENET's control half: bring-up, PHY status, multicast filter, interrupt.

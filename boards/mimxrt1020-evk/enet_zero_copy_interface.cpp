@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/mimxrt1020-evk/enet_zero_copy_interface.cpp
  * @brief The EVK's FreeRTOS+TCP interface: the RT1021's ENET moving frames in the stack's own

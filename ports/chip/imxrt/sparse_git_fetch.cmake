@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # ports/chip/imxrt/sparse_git_fetch.cmake — FetchContent download step: one
 # pinned commit of a git repository, with only the listed paths checked out.
 #

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # ports/net/freertos_tcp — FreeRTOS+TCP, adapted to rosette::net::SocketProvider.
 #
 # Included by cmake/rosette_net.cmake with ROSETTE_PORT_DIR set to this

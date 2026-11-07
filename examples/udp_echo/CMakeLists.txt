@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # udp_echo — RFC 862 UDP echo over IPv4 and, where the board's network has
 # it, IPv6 (link-local and SLAAC global). Proves the socket path and address
 # bring-up without any ROS layer on top. It builds for any board with a

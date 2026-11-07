@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/net/freertos_tcp/random.cpp
  * @brief xApplicationGetRandomNumber(): the random numbers FreeRTOS+TCP asks the application for.

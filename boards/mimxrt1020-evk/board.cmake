@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # NXP MIMXRT1020-EVK: an i.MX RT1021 with its own 10/100 ENET MAC, a
 # Microchip KSZ8081RNB PHY over RMII, 8 MiB of ISSI IS25LP064A QSPI NOR, and
 # 32 MiB of SDRAM (unused). The IP stack runs on the RT1021: FreeRTOS+TCP

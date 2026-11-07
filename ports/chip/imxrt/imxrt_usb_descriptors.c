@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/imxrt_usb_descriptors.c
  * @brief USB descriptors for the i.MX RT port's console: one CDC ACM function, high and full speed.

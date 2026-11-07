@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/mimxrt1020-evk/enet_copying_interface.cpp
  * @brief The EVK's FreeRTOS+TCP interface with ROSETTE_IMXRT_ENET_ZERO_COPY=OFF: the ENET copying

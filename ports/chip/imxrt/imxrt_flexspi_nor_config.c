@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/imxrt_flexspi_nor_config.c
  * @brief The FlexSPI configuration block the i.MX RT boot ROM reads to execute from QSPI NOR flash.

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
 """Check an i.MX RT1021's FlexRAM layout on the bench, through pyOCD.
 
 Architecture:

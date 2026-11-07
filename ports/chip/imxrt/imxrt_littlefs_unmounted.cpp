@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/imxrt_littlefs_unmounted.cpp
  * @brief The i.MX RT port's LittleFS hooks: there is no storage volume, so none mounts.

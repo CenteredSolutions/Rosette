@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # ports/chip/imxrt/flexram_layout.cmake — a board's FlexRAM layout: the
 # linker MEMORY regions and the reset handler that applies it.
 #

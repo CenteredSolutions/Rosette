@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/net/freertos_tcp/board_network.cpp
  * @brief The board network on FreeRTOS+TCP; see rosette/net/board_network.hpp.

@@ -143,7 +143,7 @@ alone, so the board's 64 KiB heap has room to shrink.
 2. FreeRTOS on imxrt: the kernel's `ARM_CM4F` port (the RT1021's M7 is not the r0p1 revision the `ARM_CM7/r0p1` port
    works around), SysTick beside the PIT time base, ENET interrupt priority at or below
    `configMAX_SYSCALL_INTERRUPT_PRIORITY`.
-3. `ports/net/freertos_tcp/board_network.cpp`: the open item in `ports_move_plan.md` that lets any
+3. `ports/net/freertos_tcp/board_network.cpp`: the open item in `PORTING.md` ("Port status") that lets any
    FreeRTOS+TCP image link.
 4. The ENET `MacDevice`, copying, with the three contract additions. Bench: DHCP, ping, `udp_echo`'s
    counterpart, then `led_files` against `rmw_fastrtps_cpp` and `rmw_cyclonedds_cpp`. Record RAM and round-trip

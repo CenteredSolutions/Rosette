@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file boards/mimxrt1020-evk/board_init.c
  * @brief Board bring-up for the NXP MIMXRT1020-EVK.

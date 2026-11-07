@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/imxrt_gpio_pin.h
  * @brief The i.MX RT port's GPIO numbering: one integer naming a GPIO port and bit.

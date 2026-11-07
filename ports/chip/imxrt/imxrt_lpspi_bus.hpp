@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/imxrt_lpspi_bus.hpp
  * @brief WIZnet register bus over an i.MX RT LPSPI peripheral, with a GPIO chip select.

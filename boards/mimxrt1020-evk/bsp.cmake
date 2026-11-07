@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+# SPDX-License-Identifier: Apache-2.0
+
 # boards/mimxrt1020-evk/bsp.cmake — this board's own composition, added to rosette_bsp.
 #
 #   enet_zero_copy_interface.cpp   ports/net/freertos_tcp/board_interface.hpp over

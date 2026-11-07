@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/tusb_config.h
  * @brief TinyUSB configuration for the i.MX RT port's USB console: one CDC ACM device, no RTOS.

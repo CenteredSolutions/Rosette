@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @file ports/chip/imxrt/imxrt_newlib_syscalls.c
  * @brief newlib's console output and clock on the i.MX RT: _write() to the board's consoles,
