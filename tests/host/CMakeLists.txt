@@ -166,6 +166,21 @@ target_compile_definitions(buf_pool_class_test PRIVATE
     RTPS_POOL_CLASS3_COUNT=2u RTPS_POOL_CLASS4_COUNT=2u)
 add_test(NAME buf_pool_class_test COMMAND buf_pool_class_test)
 
+add_executable(buf_pool_heap_block_test
+    buf_pool_heap_block_test.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/rtps/buf_pool.cpp)
+target_include_directories(buf_pool_heap_block_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/rtps)
+target_compile_definitions(buf_pool_heap_block_test PRIVATE
+    RTPS_LOG_LEVEL=0
+    RTPS_POOL_CLASS0_COUNT=2u RTPS_POOL_CLASS1_COUNT=2u RTPS_POOL_CLASS2_COUNT=2u
+    RTPS_POOL_CLASS3_COUNT=2u RTPS_POOL_CLASS4_COUNT=2u
+    RTPS_HEAP_BLOCKS=1 RTPS_MAX_HEAP_BLOCK_SIZE=1048576u RTPS_HEAP_BLOCK_BUDGET=2097152u
+    RTPS_FRAGMENT_REPAIR_WORDS=8)
+add_test(NAME buf_pool_heap_block_test COMMAND buf_pool_heap_block_test)
+
 # SNTP: the NTPv4 wire format, and the client against a simulated server, path, and tick.
 add_host_test(sntp_wire_test)
 target_sources(sntp_wire_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../src/net/sntp_wire.cpp)

@@ -85,8 +85,9 @@ $ ros2 node list
   every name listing does in firmware, and QoS events are not offered. Stock
   tools on other nodes see Rosette nodes normally.
 - **Sample size.** A sample is at most `RMW_ROSETTE_MAX_SAMPLE_SIZE` bytes:
-  65,532 on a host and 4,096 in the firmware profile by default. A larger
-  sample is refused on publish and dropped on receipt.
+  1 MiB on a host, where samples above 65,532 bytes are stored on the heap, and
+  4,096 in the firmware profile by default, with no heap use. A larger sample
+  is refused on publish and dropped on receipt.
 - **Reported QoS.** Actual QoS is reported as requested (system defaults are
   not resolved, and depth is capped by the history pool), and
   `ignore_local_publications` is not applied.

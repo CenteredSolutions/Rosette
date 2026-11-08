@@ -57,7 +57,8 @@
 #  define RMW_ROSETTE_MAX_DATAGRAM_SIZE 65507
 #endif
 #ifndef RMW_ROSETTE_MAX_SAMPLE_SIZE
-/// Largest serialized message; the largest buffer-pool class.
+/// Largest serialized message. Up to 65532 it is also the largest static
+/// buffer-pool class; above that, a hosted build stores it on the heap.
 #  define RMW_ROSETTE_MAX_SAMPLE_SIZE 65532
 #endif
 
@@ -133,8 +134,8 @@ constexpr uint32_t kRtpsReaderCapacity =
 // The participant tables are sized by the build (rmw_rosette_capacity.cmake);
 // these checks run wherever an RTPS header has been included first.
 #ifdef RTPS_POOL_CLASS4_SIZE
-static_assert(RTPS_POOL_CLASS4_SIZE >= RMW_ROSETTE_MAX_SAMPLE_SIZE,
-              "the largest buffer-pool class must hold RMW_ROSETTE_MAX_SAMPLE_SIZE");
+static_assert(RTPS_HEAP_BLOCKS || RTPS_POOL_CLASS4_SIZE >= RMW_ROSETTE_MAX_SAMPLE_SIZE,
+              "without heap blocks, the largest pool class must hold RMW_ROSETTE_MAX_SAMPLE_SIZE");
 #endif
 #ifdef RTPS_MAX_USER_WRITERS
 static_assert(RTPS_DEEP_WRITER_DEPTH >= RMW_ROSETTE_MAX_WRITER_DEPTH,

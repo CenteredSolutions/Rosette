@@ -219,11 +219,15 @@ rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* ros_messag
         }
         // Did not fit (or failed to encode): retry one pool class up, until
         // the largest class has been tried.
-        if (buf.capacity() >= rtps::kPoolMaxBlockSize) {
+        if (buf.capacity() >= rtps::kMaxSampleOctets) {
             return {};
         }
 
-        request = buf.capacity() + 1u;
+        // Inside the pool, one class up; on the heap, double, so a large
+        // message is encoded a logarithmic number of times.
+        const uint32_t capacity = buf.capacity();
+        const uint32_t next = capacity < rtps::kPoolMaxBlockSize ? capacity + 1u : capacity * 2u;
+        request = next < rtps::kMaxSampleOctets ? next : rtps::kMaxSampleOctets;
     }
 }
 

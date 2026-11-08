@@ -132,9 +132,12 @@ the same relationships.
    (`RMW_ROSETTE_CXX_TYPESUPPORT`, on by default for POSIX). A firmware build
    leaves that codec out, because C++ message containers allocate from the heap
    on every decoded sample; firmware runs stock `rclc` over C message structs.
-5. **Sample size.** A sample larger than `RMW_ROSETTE_MAX_SAMPLE_SIZE` (at most
-   65,532 bytes) is refused on publish, and evicted on receipt before a reader
-   takes it.
+5. **Sample size.** A sample larger than `RMW_ROSETTE_MAX_SAMPLE_SIZE` is refused
+   on publish, and evicted on receipt before a reader takes it. On a host,
+   samples above the largest pool block (65,532 bytes) live on the heap
+   (`RMW_ROSETTE_HEAP_SAMPLES`), bounded by that limit and
+   `RMW_ROSETTE_HEAP_BUDGET`. A sample that would need more fragments than a
+   receiver can track (256) is refused on publish. Firmware has no heap path.
 6. **Reported QoS.** The actual-QoS queries report the requested policies:
    system defaults are not resolved, depth is capped by the history pool, and
    durability is reported as requested. `ignore_local_publications` is not

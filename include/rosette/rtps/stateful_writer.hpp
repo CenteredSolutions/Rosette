@@ -96,6 +96,57 @@
 
 namespace rosette::rtps {
 
+#ifndef RTPS_FRAGMENT_REPAIR_WORDS
+#  define RTPS_FRAGMENT_REPAIR_WORDS 2
+#endif
+
+static_assert(RTPS_FRAGMENT_REPAIR_WORDS >= 2 && RTPS_FRAGMENT_REPAIR_WORDS <= 8,
+              "a repair set covers 64 to 256 fragments");
+
+/**
+ * @brief The fragments of one change a reader asked to have resent.
+ *
+ * Firmware keeps two words because its samples span a handful of fragments. A
+ * hosted build keeps eight, which covers every fragment a FragmentNumberSet
+ * can name, so a repair of a large sample never degrades to a whole resend.
+ *
+ * Verification:
+ * - Correct means: contains(k) holds exactly for the fragments added, and
+ *   add() refuses a number outside 1..kMaxFragment.
+ * - Covered by: tests/host/buf_pool_heap_block_test.cpp.
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §8.3.7.5 (NACK_FRAG), §8.4.14.1
+ */
+struct FragmentRepairSet {
+    static constexpr uint32_t kMaxFragment = RTPS_FRAGMENT_REPAIR_WORDS * 32u;
+
+    uint32_t words[RTPS_FRAGMENT_REPAIR_WORDS] = {};
+
+    /// @brief Adds fragment `k`; false when the set cannot name it.
+    bool add(uint32_t k) noexcept {
+        if (k < 1u || k > kMaxFragment) {
+            return false;
+        }
+
+        words[(k - 1u) / 32u] |= 1u << ((k - 1u) % 32u);
+        return true;
+    }
+
+    /// @brief True when fragment `k` was added.
+    bool contains(uint32_t k) const noexcept {
+        return k >= 1u && k <= kMaxFragment
+               && (words[(k - 1u) / 32u] >> ((k - 1u) % 32u) & 1u) != 0u;
+    }
+
+    /// @brief Adds every fragment of `other`.
+    void merge(const FragmentRepairSet& other) noexcept {
+        for (uint32_t i = 0u; i < RTPS_FRAGMENT_REPAIR_WORDS; ++i) {
+            words[i] |= other.words[i];
+        }
+    }
+};
+
 // ============================================================
 // Configuration defaults
 // ============================================================
@@ -1008,7 +1059,7 @@ private:
      *   number of submessages)
      */
     bool send_data_to(const CacheChange& ch, ReaderProxy& proxy, bool heartbeat = false,
-                      const uint64_t* only_fragments = nullptr) noexcept;
+                      const FragmentRepairSet* only_fragments = nullptr) noexcept;
 
     /**
      * @brief Sends a change stored without a payload, building the payload for this send.
@@ -1032,7 +1083,7 @@ private:
      * - Covered by: TC-SEDP-8.5.4-015, TC-SEDP-8.5.4-016.
      */
     bool send_built_data_to(const CacheChange& ch, ReaderProxy& proxy, bool heartbeat,
-                            const uint64_t* only_fragments) noexcept;
+                            const FragmentRepairSet* only_fragments) noexcept;
 
     /**
      * @brief Frames a change as DATA inside its own payload block and sends it.
@@ -1084,7 +1135,7 @@ private:
      * @param[in] proxy     Reader to send to.
      * @param[in] dest      The reader's locator.
      * @param[in] heartbeat Also send a HEARTBEAT, as for send_data_to().
-     * @param[in] only_fragments Bit k-1 set for each fragment k to send
+     * @param[in] only_fragments The fragments to send
      *   (fragments above 64 are never selected); null sends every fragment.
      * @return `true` when every fragment was handed to the transport.
      *
@@ -1099,7 +1150,8 @@ private:
      * - OMG DDSI-RTPS 2.5 §8.4.14.1, §9.4.5.4 (DATA_FRAG), §8.4.15.4
      */
     bool send_fragments_to(const CacheChange& ch, ReaderProxy& proxy, const Locator& dest,
-                           bool heartbeat, const uint64_t* only_fragments = nullptr) noexcept;
+                           bool                     heartbeat,
+                           const FragmentRepairSet* only_fragments = nullptr) noexcept;
 
     /**
      * @brief Records which fragments of change `sn` a NACK_FRAG from `proxy` asked for.
@@ -1127,7 +1179,7 @@ private:
     struct FragmentRepair {
         const ReaderProxy* proxy     = nullptr;  ///< Requesting reader; null when free.
         SequenceNumber     sn        = {};
-        uint64_t           fragments = 0u;       ///< Bit k-1 for fragment k.
+        FragmentRepairSet  fragments = {};
     };
 
     /**

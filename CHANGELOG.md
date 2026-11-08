@@ -16,6 +16,10 @@ version may change the public API.
 - Topic and service listings on POSIX hosts, so `ros2 topic list` and
   `ros2 service list` work on `rmw_rosette`. The `RMW_ROSETTE_GRAPH_CACHE` CMake
   option controls this and is off for firmware, which keeps no endpoint names.
+- Samples above the largest pool block on POSIX hosts, stored on the heap up to
+  `RMW_ROSETTE_MAX_SAMPLE_SIZE` (1 MiB by default) and a total of
+  `RMW_ROSETTE_HEAP_BUDGET`. `RMW_ROSETTE_HEAP_SAMPLES` controls this and is off
+  for firmware. A NACK_FRAG on a host can name any fragment of a sample.
 
 ## [0.1.0] - 2026-11-02
 

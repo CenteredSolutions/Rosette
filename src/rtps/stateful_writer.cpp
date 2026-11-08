@@ -132,10 +132,54 @@ bool StatefulWriter::write_async(ChangeKind kind, const Octet* payload_data, uin
     return true;
 }
 
+/**
+ * @brief Whether a reader could reassemble a sample sent over `transport`.
+ *
+ * A receiver tracks at most FragmentNumberSet::kMaxBits fragments, so a larger
+ * sample could never complete and would stall a reliable reader. The sender
+ * refuses it, because only the sender can report the error to the application.
+ *
+ * @param[in] transport   Transport whose datagram limit sets the fragment size.
+ * @param[in] payload     Serialized body length, without encapsulation, in octets.
+ * @param[in] inline_qos  Inline QoS each fragment carries.
+ * @return true when the sample fits the receiver's fragment limit.
+ *
+ * Verification:
+ * - Correct means: every accepted sample is sent in at most kMaxBits fragments.
+ * - Covered by: send_fragments_to() refuses anything this check would miss.
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §8.3.5.13 (FragmentNumberSet), §8.3.7.3 (DataFrag)
+ */
+static bool fits_receiver_fragments(const ITransport& transport, uint32_t payload,
+                                    const InlineQos& inline_qos) noexcept {
+    const uint32_t overhead = sizeof(RTPSMessageHeader) + sizeof(SubmessageHeader)
+                              + sizeof(DataFragSubmessageFixed)
+                              + inline_qos_serialized_size(inline_qos);
+    const uint32_t limit = transport.max_datagram_size();
+    if (limit < overhead + 64u) {
+        return true;  // send_fragments_to() reports this link's misconfiguration.
+    }
+
+    uint32_t frag_size = (limit - overhead) & ~3u;
+    if (frag_size > 0xFFFCu) {
+        frag_size = 0xFFFCu;
+    }
+
+    const uint64_t total = uint64_t{payload} + kEncapsulationSize;
+    return total <= uint64_t{frag_size} * static_cast<uint32_t>(FragmentNumberSet::kMaxBits);
+}
+
 bool StatefulWriter::write_async_owned(ChangeKind kind, BufRef&& payload,
                                        const InlineQos& inline_qos,
                                        SequenceNumber* out_sn) noexcept {
     if (!payload.valid() || payload.size == 0) return false;
+    if (!fits_receiver_fragments(transport_, payload.size, inline_qos)) {
+        RTPS_LOG_E("writer", "sample of %lu octets exceeds the fragments a reader can track",
+                   static_cast<unsigned long>(payload.size));
+        return false;
+    }
+
     if (staging_.payload.valid()) staging_.payload.reset();
     staging_.kind           = kind;
     staging_.writerGuid     = guid_;
@@ -460,15 +504,12 @@ void StatefulWriter::on_nack_frag(const ParseContext& ctx, const ParsedNackFrag&
 
 void StatefulWriter::record_fragment_repair(const ReaderProxy& proxy, const SequenceNumber& sn,
                                             const FragmentNumberSet& fragments) noexcept {
-    uint64_t mask = 0u;
+    FragmentRepairSet mask{};
     bool whole = fragments.empty();
     fragments.for_each([&](uint32_t frag) noexcept {
-        if (frag < 1u || frag > 64u) {
+        if (!mask.add(frag)) {
             whole = true;
-            return;
         }
-
-        mask |= uint64_t{1} << (frag - 1u);
     });
 
     const bool same = fragRepair_.proxy == &proxy && fragRepair_.sn == sn;
@@ -482,7 +523,7 @@ void StatefulWriter::record_fragment_repair(const ReaderProxy& proxy, const Sequ
     }
 
     if (same) {
-        fragRepair_.fragments |= mask;
+        fragRepair_.fragments.merge(mask);
     } else if (fragRepair_.proxy == nullptr) {
         fragRepair_ = FragmentRepair{&proxy, sn, mask};
     }
@@ -675,9 +716,9 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
 // Kept out of line: at -O3 it would be inlined whole into
 // send_unsent_changes(), costing about 2.5 KB of flash on a Cortex-M0+ build
 // for no measurable gain on a path bounded by the transport.
-[[gnu::noinline]] bool StatefulWriter::send_data_to(const CacheChange& ch, ReaderProxy& proxy,
-                                                    bool heartbeat,
-                                                    const uint64_t* only_fragments) noexcept {
+[[gnu::noinline]] bool StatefulWriter::send_data_to(
+    const CacheChange& ch, ReaderProxy& proxy, bool heartbeat,
+    const FragmentRepairSet* only_fragments) noexcept {
     if (!ch.payload.valid() && payloadBuilder_ != nullptr) {
         return send_built_data_to(ch, proxy, heartbeat, only_fragments);
     }
@@ -744,9 +785,9 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
 }
 
 // Cold: on-demand changes are sent on discovery and repair, never per sample.
-[[gnu::cold]] bool StatefulWriter::send_built_data_to(const CacheChange& ch, ReaderProxy& proxy,
-                                                      bool heartbeat,
-                                                      const uint64_t* only_fragments) noexcept {
+[[gnu::cold]] bool StatefulWriter::send_built_data_to(
+    const CacheChange& ch, ReaderProxy& proxy, bool heartbeat,
+    const FragmentRepairSet* only_fragments) noexcept {
     CacheChange built{};
     built.kind = ch.kind;
     built.writerGuid = ch.writerGuid;
@@ -837,7 +878,7 @@ bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& prox
 
 bool StatefulWriter::send_fragments_to(const CacheChange& ch, ReaderProxy& proxy,
                                        const Locator& dest, bool heartbeat,
-                                       const uint64_t* only_fragments) noexcept {
+                                       const FragmentRepairSet* only_fragments) noexcept {
     static constexpr Octet kCdrLe[kEncapsulationSize] = {0x00u, 0x01u, 0x00u, 0x00u};
     const uint16_t prefix_len = ch.preframed ? 0u : kEncapsulationSize;
     const uint32_t data_size = prefix_len + ch.payload.size;
@@ -854,6 +895,12 @@ bool StatefulWriter::send_fragments_to(const CacheChange& ch, ReaderProxy& proxy
     uint32_t frag_size = (limit - overhead) & ~3u;
     if (frag_size > 0xFFFCu) frag_size = 0xFFFCu;
     const uint32_t frag_count = (data_size + frag_size - 1u) / frag_size;
+    if (frag_count > static_cast<uint32_t>(FragmentNumberSet::kMaxBits)) {
+        RTPS_LOG_E("writer", "a sample of %lu fragments cannot be reassembled",
+                   static_cast<unsigned long>(frag_count));
+        return false;
+    }
+
     SequenceNumber first{};
     SequenceNumber last{};
     heartbeat_range(first, last);
@@ -861,7 +908,7 @@ bool StatefulWriter::send_fragments_to(const CacheChange& ch, ReaderProxy& proxy
     bool all_sent = true;
     bool hb_sent = false;
     for (uint32_t k = 1u; k <= frag_count; ++k) {
-        if (only_fragments && (k > 64u || ((*only_fragments >> (k - 1u)) & 1u) == 0u)) {
+        if (only_fragments && !only_fragments->contains(k)) {
             continue;
         }
 
