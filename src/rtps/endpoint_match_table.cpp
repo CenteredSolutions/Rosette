@@ -482,6 +482,12 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
         RTPS_LOG_W("match", "writer name longer than RTPS_MAX_TOPIC_NAME_LEN - 1, ignored");
         return;
     }
+
+    if (graph_observer_) {
+        graph_observer_->on_endpoint(graph_observer_->user, wd.writerGuid, wd.topicName.str,
+                                     wd.typeName.str, true);
+    }
+
     const uint32_t topic_key = name_key(wd.topicName.str);
     const uint32_t type_key  = name_key(wd.typeName.str);
 
@@ -564,6 +570,12 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
         RTPS_LOG_W("match", "reader name longer than RTPS_MAX_TOPIC_NAME_LEN - 1, ignored");
         return;
     }
+
+    if (graph_observer_) {
+        graph_observer_->on_endpoint(graph_observer_->user, rd.readerGuid, rd.topicName.str,
+                                     rd.typeName.str, false);
+    }
+
     const uint32_t topic_key = name_key(rd.topicName.str);
     const uint32_t type_key  = name_key(rd.typeName.str);
 
@@ -955,11 +967,19 @@ void EndpointMatchTable::remove_endpoint(const Guid& guid, bool is_writer) noexc
 
 void EndpointMatchTable::remove_writer(const Guid& writer_guid) noexcept
 {
+    if (graph_observer_) {
+        graph_observer_->on_endpoint_gone(graph_observer_->user, writer_guid);
+    }
+
     remove_endpoint(writer_guid, /*is_writer=*/true);
 }
 
 void EndpointMatchTable::remove_reader(const Guid& reader_guid) noexcept
 {
+    if (graph_observer_) {
+        graph_observer_->on_endpoint_gone(graph_observer_->user, reader_guid);
+    }
+
     remove_endpoint(reader_guid, /*is_writer=*/false);
 }
 
@@ -981,6 +1001,10 @@ bool EndpointMatchTable::has_match_with(const GuidPrefix& prefix,
 
 void EndpointMatchTable::remove_participant(const GuidPrefix& gone_prefix) noexcept
 {
+    if (graph_observer_) {
+        graph_observer_->on_participant_gone(graph_observer_->user, gone_prefix);
+    }
+
     // Copy each GUID: removal clears the record it lives in.
     for (const RemoteEndpoint& w : remote_writers_) {
         if (!w.valid() || origins_[w.origin].prefix != gone_prefix) continue;

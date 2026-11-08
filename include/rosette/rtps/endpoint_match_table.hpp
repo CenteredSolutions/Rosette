@@ -425,6 +425,27 @@ struct MatchedEndpoint {
  * own endpoints); it tells local from remote by the participant's GUID
  * prefix (set_local_prefix()), and matches nothing until that is set.
  */
+/**
+ * @brief Receives each endpoint's names as the match table learns them.
+ *
+ * The table keeps remote endpoints as name keys and forgets the names. An owner
+ * that must list them registers this observer and stores what it needs; the
+ * table itself still allocates nothing. Every callback runs on the thread
+ * driving the participant, which holds the participant lock.
+ *
+ * `on_endpoint` fires for every valid local or remote endpoint, including one
+ * the table has no room for, and again for a repeated announcement.
+ * `on_participant_gone` is the only notice for a departed participant's
+ * endpoints that the table no longer holds.
+ */
+struct GraphEndpointObserver {
+    void* user = nullptr;
+    void (*on_endpoint)(void* user, const Guid& guid, const char* topic, const char* type,
+                        bool is_writer) noexcept = nullptr;
+    void (*on_endpoint_gone)(void* user, const Guid& guid) noexcept = nullptr;
+    void (*on_participant_gone)(void* user, const GuidPrefix& prefix) noexcept = nullptr;
+};
+
 class EndpointMatchTable {
 public:
     /// A writer-reader pair became compatible, or a waiting pair is offered
@@ -530,6 +551,23 @@ public:
 
     /// @brief As add_writer(), for a reader.
     void add_reader(const DiscoveredReaderData& rd) noexcept;
+
+    /**
+     * @brief Registers the observer told about every endpoint's names.
+     *
+     * @param[in] observer Observer that outlives the table, or null for none.
+     *
+     * Verification:
+     * - Correct means: a local or remote endpoint is reported before matching,
+     *   and each withdrawal and departed participant is reported.
+     * - Covered by: rmw_rosette/test/test_graph_cache.cpp.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4 (SEDP)
+     */
+    void set_graph_endpoint_observer(const GraphEndpointObserver* observer) noexcept {
+        graph_observer_ = observer;
+    }
 
     /**
      * @brief Whether a new local endpoint with these names can be recorded.
@@ -1219,6 +1257,8 @@ private:
      */
     void unmatch_if_relocated(RemoteEndpoint* table, uint32_t n, bool is_writer, const Guid& guid,
                               const Locator* locators, uint8_t count) noexcept;
+    const GraphEndpointObserver* graph_observer_ = nullptr;
+
     /// @brief Tells the owner the set of known endpoints changed.
     void changed() noexcept { if (on_change_) on_change_(user_data_); }
 

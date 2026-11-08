@@ -13,13 +13,16 @@
  * ParticipantEntitiesInfo messages each participant publishes on
  * `ros_discovery_info`; queries that need node names return
  * RMW_RET_UNSUPPORTED, because this participant publishes that topic but
- * does not read it.
+ * does not read it. Topic and service listings need names the table does not
+ * keep: a hosted build answers them from the GraphCache (rmw_graph_names.cpp),
+ * and a build without the cache returns RMW_RET_UNSUPPORTED here.
  *
  * Every query takes the context lock: the tables it reads are updated by
  * the thread driving the participant.
  */
 
 #include "rmw_rosette/argument_checks.hpp"
+#include "rmw_rosette/graph_cache.hpp"
 #include "rmw_rosette/identifier.h"
 #include "rmw_rosette/ros_features.h"
 #include "rmw_rosette/topic_naming.hpp"
@@ -106,6 +109,7 @@ rmw_ret_t count_endpoints(const rmw_node_t* node, const char* ros_name, ComposeD
 
 extern "C" {
 
+#if !RMW_ROSETTE_GRAPH_CACHE
 /// @brief Returns RMW_RET_UNSUPPORTED: the match table keeps remote endpoints
 /// by topic key, without their names (endpoint_match_table.hpp).
 rmw_ret_t rmw_get_topic_names_and_types(const rmw_node_t* node, rcutils_allocator_t* allocator,
@@ -115,6 +119,16 @@ rmw_ret_t rmw_get_topic_names_and_types(const rmw_node_t* node, rcutils_allocato
     RMW_SET_ERROR_MSG("rmw_rosette: rmw_get_topic_names_and_types not implemented");
     return RMW_RET_UNSUPPORTED;
 }
+
+/// @brief Returns RMW_RET_UNSUPPORTED, as rmw_get_topic_names_and_types() does.
+rmw_ret_t rmw_get_service_names_and_types(const rmw_node_t* node, rcutils_allocator_t* allocator,
+                                          rmw_names_and_types_t* service_names_and_types) {
+    (void)node;
+    (void)allocator;
+    (void)service_names_and_types;
+    return RMW_RET_UNSUPPORTED;
+}
+#endif  // !RMW_ROSETTE_GRAPH_CACHE
 
 /// @brief Returns RMW_RET_UNSUPPORTED (see the file comment).
 rmw_ret_t rmw_get_node_names(const rmw_node_t* node, rcutils_string_array_t* node_names,
@@ -158,13 +172,6 @@ rmw_ret_t rmw_get_node_names_with_enclaves(const rmw_node_t* node,
                                            rcutils_string_array_t* node_namespaces,
                                            rcutils_string_array_t* enclaves) {
     (void)node; (void)node_names; (void)node_namespaces; (void)enclaves;
-    return RMW_RET_UNSUPPORTED;
-}
-
-/// @brief Returns RMW_RET_UNSUPPORTED (see the file comment).
-rmw_ret_t rmw_get_service_names_and_types(const rmw_node_t* node, rcutils_allocator_t* allocator,
-                                          rmw_names_and_types_t* service_names_and_types) {
-    (void)node; (void)allocator; (void)service_names_and_types;
     return RMW_RET_UNSUPPORTED;
 }
 

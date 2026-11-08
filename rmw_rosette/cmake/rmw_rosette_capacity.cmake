@@ -299,8 +299,8 @@ Applies the capacity model to a target as compile definitions.
 Every translation unit of the target, including the RTPS core sources, sees
 the same values, which the one-definition rule requires: the participant's
 tables are sized by these macros in headers shared across both layers.
-RMW_ROSETTE_PUMP_THREAD travels with them because it, too, changes the
-layout of rmw_rosette::Context, which the tests include.
+RMW_ROSETTE_PUMP_THREAD and RMW_ROSETTE_GRAPH_CACHE travel with them because
+they, too, change the layout of rmw_rosette::Context, which the tests include.
 ]]
 function(rmw_rosette_apply_capacity target)
   target_compile_definitions(${target} PRIVATE
@@ -317,6 +317,7 @@ function(rmw_rosette_apply_capacity target)
     RMW_ROSETTE_MAX_WRITER_DEPTH=${RMW_ROSETTE_MAX_WRITER_DEPTH}
     RMW_ROSETTE_REPLY_DEPTH=${RMW_ROSETTE_REPLY_DEPTH}
     RMW_ROSETTE_PUMP_THREAD=$<BOOL:${RMW_ROSETTE_PUMP_THREAD}>
+    RMW_ROSETTE_GRAPH_CACHE=$<BOOL:${RMW_ROSETTE_GRAPH_CACHE}>
     RTPS_DEEP_WRITER_DEPTH=${RMW_ROSETTE_MAX_WRITER_DEPTH}
     RTPS_SEDP_REBUILD_ANNOUNCEMENTS=${_rr_sedp_rebuild}
     RTPS_MAX_USER_WRITERS=${_rr_rtps_writers}
