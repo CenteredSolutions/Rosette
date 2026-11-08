@@ -4,19 +4,7 @@
 # case may fail only as its comment below allows, and any other failing case fails the
 # job. Remove a line when its case passes. The tests that must report results are listed
 # in conformance_tests_humble.txt.
-# 34 cases must fail, 1 teardown line; 6 skip expressions leave out the tests that cannot pass yet.
-
-# Not run: every test in which an rclcpp process uses rmw_rosette. rclcpp and its
-# parameter services use rosidl_typesupport_cpp, and rmw_rosette encodes from C
-# introspection only (message_codec.cpp), so these fail at startup or wait out their
-# timeouts: about twelve minutes per run that confirm nothing new. Remove this section
-# together with adding a rosidl_typesupport_introspection_cpp codec.
-skip ^test_publisher_subscriber_cpp__rmw_rosette__
-skip ^test_subscription_valid_data_cpp__rmw_rosette$
-skip ^test_publisher_subscriber_serialized__rmw_rosette$
-skip ^test_([a-z]+_)*[a-z]+__rclcpp__(rclpy__)?rmw_rosette
-skip ^test_([a-z]+_)*[a-z]+__(rclpy__)?rclcpp__rmw_[a-z]+_cpp__rmw_rosette$
-skip ^test_([a-z]+_)*[a-z]+__rclpy__rclcpp__rmw_rosette$
+# 42 cases must fail, 1 teardown line.
 
 # A test_communication AfterShutdown case checks the exit code of every process the test
 # launched, which the main case does not. It may fail when launch had to stop a process at
@@ -26,18 +14,22 @@ skip ^test_([a-z]+_)*[a-z]+__rclpy__rclcpp__rmw_rosette$
 # test whose main case passes, fails the job.
 teardown *::test_communication.*AfterShutdown.test_processes_finished_gracefully[*]
 
-# C++ type support in the rmw serialization gtests: rmw_rosette encodes from C introspection
-# only (message_codec.cpp); the C cases pass. Needs a rosidl_typesupport_introspection_cpp codec.
-test_serialize__rmw_rosette::test_communication.TestMessageSerialization.cdr_integrity
-test_serialize__rmw_rosette::test_communication.TestMessageSerialization.de_serialize_cpp
-test_serialize_deserialize__rmw_rosette::test_rmw_implementation.TestSerializeDeserialize.clean_round_trip_for_cpp_message
-test_serialize_deserialize__rmw_rosette::test_rmw_implementation.TestSerializeDeserialize__rmw_rosette.clean_round_trip_for_cpp_bounded_message
-
 # UnboundedSequences: a sample above RMW_ROSETTE_MAX_SAMPLE_SIZE is refused on publish, and on
 # receipt the large samples are evicted before the reader takes them.
 test_messages_c__rmw_rosette::test_communication.TestMessagesFixture.test_unbounded_sequences
 test_publisher_subscriber__rclcpp__rclpy__rmw_cyclonedds_cpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
 test_publisher_subscriber__rclcpp__rclpy__rmw_fastrtps_cpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
+test_publisher_subscriber__rclcpp__rclpy__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
+test_publisher_subscriber__rclcpp__rclpy__rmw_rosette__rmw_cyclonedds_cpp::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
+test_publisher_subscriber__rclcpp__rclpy__rmw_rosette__rmw_fastrtps_cpp::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
+test_publisher_subscriber__rclcpp__rmw_cyclonedds_cpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
+test_publisher_subscriber__rclcpp__rmw_fastrtps_cpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
+test_publisher_subscriber__rclcpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
+test_publisher_subscriber__rclcpp__rmw_rosette__rmw_cyclonedds_cpp::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
+test_publisher_subscriber__rclcpp__rmw_rosette__rmw_fastrtps_cpp::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
+test_publisher_subscriber__rclpy__rclcpp__rmw_cyclonedds_cpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
+test_publisher_subscriber__rclpy__rclcpp__rmw_fastrtps_cpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
+test_publisher_subscriber__rclpy__rclcpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
 test_publisher_subscriber__rclpy__rclcpp__rmw_rosette__rmw_cyclonedds_cpp::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
 test_publisher_subscriber__rclpy__rclcpp__rmw_rosette__rmw_fastrtps_cpp::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
 test_publisher_subscriber__rclpy__rmw_cyclonedds_cpp__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
@@ -45,6 +37,7 @@ test_publisher_subscriber__rclpy__rmw_fastrtps_cpp__rmw_rosette::test_communicat
 test_publisher_subscriber__rclpy__rmw_rosette::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
 test_publisher_subscriber__rclpy__rmw_rosette__rmw_cyclonedds_cpp::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
 test_publisher_subscriber__rclpy__rmw_rosette__rmw_fastrtps_cpp::test_communication.TestPublisherSubscriber.test_subscriber_terminates_in_a_finite_amount_of_time[UnboundedSequences]
+test_publisher_subscriber_cpp__rmw_rosette__UnboundedSequences::test_communication.test_publisher_subscriber_cpp__rmw_rosette__UnboundedSequences.missing_result
 
 # test_rmw_implementation test_client: actual QoS depth is capped by the history pool;
 # service_server_is_available_bad_args expects RMW_RET_ERROR for a null node or client, as

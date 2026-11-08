@@ -7,6 +7,13 @@ version may change the public API.
 
 ## [Unreleased]
 
+### Added
+
+- `rmw_rosette` serializes C++ messages from `rosidl_typesupport_introspection_cpp`,
+  so `rclcpp` programs on POSIX hosts run on it. The `RMW_ROSETTE_CXX_TYPESUPPORT`
+  CMake option controls this and is off for firmware, which stays free of C++
+  message containers and their heap use.
+
 ## [0.1.0] - 2026-11-02
 
 First public release, under the Apache License 2.0.

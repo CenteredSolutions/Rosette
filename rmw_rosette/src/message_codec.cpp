@@ -7,7 +7,10 @@
  *
  * See message_codec.hpp for the families and framing rules. The microxrcedds
  * branch is compiled only when CMake found rosidl_typesupport_microxrcedds_c,
- * which keeps desktop builds free of any micro-ROS dependency.
+ * which keeps desktop builds free of any micro-ROS dependency. The C++
+ * introspection branch is compiled only into hosted builds
+ * (RMW_ROSETTE_HAVE_INTROSPECTION_CPP_TYPESUPPORT), so firmware links neither
+ * C++ message containers nor their heap use.
  */
 
 #include "rmw_rosette/message_codec.hpp"
@@ -19,6 +22,14 @@
 #include "rmw_rosette/topic_naming.hpp"
 
 namespace rtps = rosette::rtps;
+
+#ifdef RMW_ROSETTE_HAVE_INTROSPECTION_CPP_TYPESUPPORT
+#  include <rcutils/error_handling.h>
+#  include <rosidl_typesupport_introspection_cpp/identifier.hpp>
+#  include <rosidl_typesupport_introspection_cpp/service_introspection.hpp>
+
+#  include "rmw_rosette/introspection_cpp_codec.hpp"
+#endif
 
 #ifdef RMW_ROSETTE_HAVE_MICROXRCEDDS_TYPESUPPORT
 #  include <rosidl_typesupport_microxrcedds_c/identifier.h>
@@ -35,6 +46,12 @@ constexpr uint8_t kCdrLeId[2] = {0x00, 0x01};
 const IntrospectionMembers* as_introspection(const MessageCodec& codec) noexcept {
     return static_cast<const IntrospectionMembers*>(codec.impl);
 }
+
+#ifdef RMW_ROSETTE_HAVE_INTROSPECTION_CPP_TYPESUPPORT
+const IntrospectionCppMembers* as_introspection_cpp(const MessageCodec& codec) noexcept {
+    return static_cast<const IntrospectionCppMembers*>(codec.impl);
+}
+#endif
 
 #ifdef RMW_ROSETTE_HAVE_MICROXRCEDDS_TYPESUPPORT
 const message_type_support_callbacks_t* as_microxrcedds(const MessageCodec& codec) noexcept {
@@ -64,6 +81,21 @@ bool resolve_message_codec(const rosidl_message_type_support_t* handle,
         codec.impl = ts->data;
         return true;
     }
+
+#ifdef RMW_ROSETTE_HAVE_INTROSPECTION_CPP_TYPESUPPORT
+    // A rosidl_typesupport_cpp handle can answer the C lookup by setting the rcutils
+    // error state, which is expected here and must not leak to the caller.
+    rcutils_reset_error();
+    if (const auto* ts = get_message_typesupport_handle(
+            handle, rosidl_typesupport_introspection_cpp::typesupport_identifier)) {
+        codec.kind = CodecKind::IntrospectionCpp;
+        codec.impl = ts->data;
+        return true;
+    }
+
+    rcutils_reset_error();
+#endif
+
     return false;
 }
 
@@ -98,6 +130,28 @@ bool resolve_service_codecs(const rosidl_service_type_support_t* handle,
         response.impl = members->response_members_;
         return true;
     }
+
+#ifdef RMW_ROSETTE_HAVE_INTROSPECTION_CPP_TYPESUPPORT
+    // See resolve_message_codec() for why the error state is cleared.
+    rcutils_reset_error();
+    if (const auto* ts = get_service_typesupport_handle(
+            handle, rosidl_typesupport_introspection_cpp::typesupport_identifier)) {
+        const auto* members =
+            static_cast<const rosidl_typesupport_introspection_cpp::ServiceMembers*>(ts->data);
+        if (!members->request_members_ || !members->response_members_) {
+            return false;
+        }
+
+        request.kind = CodecKind::IntrospectionCpp;
+        request.impl = members->request_members_;
+        response.kind = CodecKind::IntrospectionCpp;
+        response.impl = members->response_members_;
+        return true;
+    }
+
+    rcutils_reset_error();
+#endif
+
     return false;
 }
 
@@ -106,6 +160,11 @@ bool compose_codec_type_name(const MessageCodec& codec, char* out, size_t cap) n
         case CodecKind::IntrospectionC:
             return compose_dds_type_name(out, cap, as_introspection(codec)->message_namespace_,
                                          as_introspection(codec)->message_name_);
+#ifdef RMW_ROSETTE_HAVE_INTROSPECTION_CPP_TYPESUPPORT
+        case CodecKind::IntrospectionCpp:
+            return compose_dds_type_name(out, cap, as_introspection_cpp(codec)->message_namespace_,
+                                         as_introspection_cpp(codec)->message_name_);
+#endif
 #ifdef RMW_ROSETTE_HAVE_MICROXRCEDDS_TYPESUPPORT
         case CodecKind::MicroXrceDds:
             return compose_dds_type_name(out, cap, as_microxrcedds(codec)->message_namespace_,
@@ -125,6 +184,16 @@ uint32_t serialize_message(const MessageCodec& codec, const void* ros_message,
             if (!encode_introspection_c(*as_introspection(codec), ros_message, out)) return 0;
             return static_cast<uint32_t>(out.length());
         }
+#ifdef RMW_ROSETTE_HAVE_INTROSPECTION_CPP_TYPESUPPORT
+        case CodecKind::IntrospectionCpp: {
+            CdrWriter out(out_buf, out_cap);
+            if (!encode_introspection_cpp(*as_introspection_cpp(codec), ros_message, out)) {
+                return 0;
+            }
+
+            return static_cast<uint32_t>(out.length());
+        }
+#endif
 #ifdef RMW_ROSETTE_HAVE_MICROXRCEDDS_TYPESUPPORT
         case CodecKind::MicroXrceDds: {
             ucdrBuffer cdr;
@@ -170,6 +239,12 @@ bool deserialize_message(const MessageCodec& codec, const uint8_t* in_buf, uint3
             CdrReader in(body, body_len);
             return decode_introspection_c(*as_introspection(codec), in, ros_message);
         }
+#ifdef RMW_ROSETTE_HAVE_INTROSPECTION_CPP_TYPESUPPORT
+        case CodecKind::IntrospectionCpp: {
+            CdrReader in(body, body_len);
+            return decode_introspection_cpp(*as_introspection_cpp(codec), in, ros_message);
+        }
+#endif
 #ifdef RMW_ROSETTE_HAVE_MICROXRCEDDS_TYPESUPPORT
         case CodecKind::MicroXrceDds: {
             ucdrBuffer cdr;

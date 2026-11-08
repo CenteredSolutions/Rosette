@@ -27,7 +27,7 @@ Verified against stock ROS 2 Humble (`rmw_fastrtps_cpp`) on one host:
 
 `message_codec.hpp` resolves each type's serializer once per endpoint:
 `rosidl_typesupport_microxrcedds_c` callbacks when a micro-ROS workspace
-provides them, otherwise `rosidl_typesupport_introspection_c` metadata walked
+provides them, otherwise `rosidl_typesupport_introspection_c` or `_cpp` metadata walked
 by `introspection_c_codec.cpp`, which every ROS 2 installation generates (the
 approach `rmw_cyclonedds_cpp` takes). Both emit XCDR1 identical to Fast DDS.
 The microxrcedds path compiles only in a micro-ROS workspace and has not been
@@ -124,13 +124,11 @@ the same relationships.
    table keeps only as keys; those report `RMW_RET_UNSUPPORTED`.
 3. **QoS events and listeners.** Event initialization reports
    `RMW_RET_UNSUPPORTED`, which both client libraries accept.
-4. **C++ type support.** Messages are encoded from
-   `rosidl_typesupport_introspection_c` metadata only (`message_codec.cpp`).
-   `rclcpp` and its parameter services use `rosidl_typesupport_cpp`, so an
-   `rclcpp` process cannot load `rmw_rosette`; it reaches Rosette nodes over
-   Fast DDS or Cyclone DDS. A `rosidl_typesupport_introspection_cpp` codec
-   closes this, together with the `skip` section of the conformance known
-   failures.
+4. **C++ type support on boards.** `rclcpp`'s C++ message structs are encoded
+   from `rosidl_typesupport_introspection_cpp` metadata on hosted builds
+   (`RMW_ROSETTE_CXX_TYPESUPPORT`, on by default for POSIX). A firmware build
+   leaves that codec out, because C++ message containers allocate from the heap
+   on every decoded sample; firmware runs stock `rclc` over C message structs.
 5. **Sample size.** A sample larger than `RMW_ROSETTE_MAX_SAMPLE_SIZE` (at most
    65,532 bytes) is refused on publish, and evicted on receipt before a reader
    takes it.

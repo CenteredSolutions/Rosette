@@ -6,7 +6,7 @@
  * @brief Chooses and runs the CDR serializer for a ROS message type.
  *
  * rcl hands rmw a `rosidl_message_type_support_t` handle that may front
- * several typesupport families. rmw_rosette can serialize through two of them:
+ * several typesupport families. rmw_rosette can serialize through three of them:
  *
  * - `rosidl_typesupport_microxrcedds_c`: generated Micro-CDR callbacks that
  *   micro-ROS firmware builds already link. Compiled in only when the package
@@ -16,9 +16,14 @@
  * - `rosidl_typesupport_introspection_c`: field metadata that every stock
  *   ROS 2 installation generates, walked by introspection_c_codec.hpp. This
  *   is what rclpy and rclc applications on a desktop resolve to.
+ * - `rosidl_typesupport_introspection_cpp`: the same metadata for C++ message
+ *   structs, walked by introspection_cpp_codec.hpp. This is what rclcpp
+ *   resolves to. Compiled in only for hosted builds
+ *   (`RMW_ROSETTE_HAVE_INTROSPECTION_CPP_TYPESUPPORT`), because C++ message
+ *   containers allocate on every decoded sample; firmware does not link it.
  *
  * A MessageCodec records which family resolved and is resolved once per
- * publisher or subscription, then used on every publish and take. Both
+ * publisher or subscription, then used on every publish and take. All
  * families produce the same XCDR1 bytes, so peers cannot tell them apart.
  *
  * Payload framing: every `CacheChange::payload` delivered by rosette::rtps
@@ -42,9 +47,10 @@ namespace rmw_rosette {
 
 /// @brief Typesupport family a MessageCodec dispatches to.
 enum class CodecKind : uint8_t {
-    None,            ///< Unresolved; every operation fails.
-    MicroXrceDds,    ///< rosidl_typesupport_microxrcedds_c callbacks.
-    IntrospectionC,  ///< rosidl_typesupport_introspection_c metadata.
+    None,              ///< Unresolved; every operation fails.
+    MicroXrceDds,      ///< rosidl_typesupport_microxrcedds_c callbacks.
+    IntrospectionC,    ///< rosidl_typesupport_introspection_c metadata.
+    IntrospectionCpp,  ///< rosidl_typesupport_introspection_cpp metadata; hosted builds only.
 };
 
 /// @brief A resolved serializer for one message type.
@@ -62,20 +68,22 @@ constexpr uint32_t kRtpsEncapsulationHeaderSize = 4;
  *
  * rmw_create_publisher() and rmw_create_subscription() call this once per
  * entity. It asks the handle for the microxrcedds_c family first (when
- * compiled in), then introspection_c, using
- * `get_message_typesupport_handle()`, which also triggers the lazy library
+ * compiled in), then introspection_c, then introspection_cpp (when compiled
+ * in), using `get_message_typesupport_handle()`, which also triggers the lazy library
  * loading done by `rosidl_typesupport_c` dispatch handles.
  *
  * @param[in]  handle Type support handle as rcl passes it; may be null.
  * @param[out] codec  Receives the resolved family and table.
  * @return `true` when a supported family resolved; `false` when `handle` is
- *   null or offers neither family, leaving `codec` as CodecKind::None.
+ *   null or offers no supported family, leaving `codec` as CodecKind::None.
  *
  * Verification:
- * - Correct means: stock desktop `std_msgs` types resolve to IntrospectionC,
- *   and micro-ROS builds resolve to MicroXrceDds.
+ * - Correct means: stock desktop C `std_msgs` types resolve to IntrospectionC,
+ *   their C++ handles to IntrospectionCpp, and micro-ROS builds to
+ *   MicroXrceDds; a C++ lookup leaves no rcutils error set.
  * - Covered by: rmw_rosette/test/test_introspection_c_codec.cpp
- *   (ResolvesStdMsgsString).
+ *   (ResolvesStdMsgsString), test_introspection_cpp_codec.cpp
+ *   (ResolvesCppHandleAndClearsErrorState).
  *
  * References:
  * - rosidl_runtime_c/message_type_support_struct.h (Humble),
@@ -88,8 +96,8 @@ bool resolve_message_codec(const rosidl_message_type_support_t* handle,
  * @brief Resolves the request and response serializers of a service type.
  *
  * rmw_create_service() and rmw_create_client() call this once per entity.
- * It prefers microxrcedds_c when compiled in, then introspection_c, like
- * resolve_message_codec(). Both families describe a service as a pair of
+ * It tries the families in the same order as resolve_message_codec(). Every
+ * family describes a service as a pair of
  * message types, so the resulting codecs work with serialize_message() and
  * deserialize_message() unchanged, and compose_codec_type_name() yields the
  * `<pkg>::srv::dds_::<Srv>_Request_` / `_Response_` names SEDP announces.
