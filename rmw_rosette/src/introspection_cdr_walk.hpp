@@ -336,12 +336,85 @@ struct IntrospectionCdrWalk {
     }
 
     /**
+     * @brief Returns the fewest CDR bytes one element of a member can occupy.
+     *
+     * decode_array() multiplies this by a received sequence length to refuse
+     * a length the remaining payload cannot hold, before any storage exists.
+     * Alignment padding is left out, so the result never exceeds the real
+     * encoded size and a valid sample is never refused.
+     *
+     * @param[in] m Member descriptor; its array-ness is ignored.
+     * @return The minimum encoded element size in bytes, at least 1.
+     *
+     * Verification:
+     * - Correct means: no valid encoding of the element is shorter than the result.
+     * - Covered by: IntrospectionCppCodec.RejectsASequenceOfNestedMessagesThePayloadCannotHold.
+     *
+     * References:
+     * - OMG CDR, CORBA 3.4 Part 2 §9.3 (primitive, string, and sequence encodings)
+     */
+    static size_t min_element_wire_size(const Member& m) noexcept {
+        const size_t block = introspection_block_copy_size(m.type_id_);
+        if (block) {
+            return block;
+        }
+
+        switch (m.type_id_) {
+            case rosidl_typesupport_introspection_c__ROS_TYPE_WCHAR:
+            case rosidl_typesupport_introspection_c__ROS_TYPE_STRING:
+            case rosidl_typesupport_introspection_c__ROS_TYPE_WSTRING:
+                return sizeof(uint32_t);
+            case rosidl_typesupport_introspection_c__ROS_TYPE_MESSAGE: {
+                const Members* sub = nested_members(m);
+                return sub ? min_message_wire_size(*sub) : 1u;
+            }
+            default:
+                return 1u;
+        }
+    }
+
+    /**
+     * @brief Returns the fewest CDR bytes a message of the given type can occupy.
+     *
+     * Fixed arrays count every element and sequences count only their length
+     * prefix, since a sequence may be empty. The sum cannot overflow: it is a
+     * small multiple of the in-memory size of a type that had to fit in the
+     * address space to be compiled.
+     *
+     * @param[in] members Introspection table for the message type.
+     * @return The minimum encoded size in bytes, at least 1.
+     *
+     * Verification:
+     * - Correct means: no valid encoding of the message is shorter than the result.
+     * - Covered by: IntrospectionCppCodec.RejectsASequenceOfNestedMessagesThePayloadCannotHold.
+     *
+     * References:
+     * - OMG CDR, CORBA 3.4 Part 2 §9.3
+     */
+    static size_t min_message_wire_size(const Members& members) noexcept {
+        size_t total = 0u;
+        for (uint32_t i = 0; i < members.member_count_; ++i) {
+            const Member& m = members.members_[i];
+            if (!m.is_array_) {
+                total += min_element_wire_size(m);
+            } else if (is_sequence(m)) {
+                total += sizeof(uint32_t);
+            } else {
+                total += m.array_size_ * min_element_wire_size(m);
+            }
+        }
+
+        return total ? total : 1u;
+    }
+
+    /**
      * @brief Decodes a fixed array or sequence member, resizing sequences.
      *
      * A sequence length is rejected before resizing when it exceeds the
-     * declared bound or could not fit in the remaining input (every element
-     * occupies at least one byte on the wire), which caps allocation by the
-     * payload size.
+     * declared bound or when that many elements, each at its minimum encoded
+     * size, could not fit in the remaining input. Elements with nested fixed
+     * arrays therefore cannot request storage out of proportion to the
+     * payload that names them.
      *
      * @param[in]     m     Array member descriptor.
      * @param[in,out] in    Source stream.
@@ -352,7 +425,7 @@ struct IntrospectionCdrWalk {
         size_t count = m.array_size_;
         if (is_sequence(m)) {
             count = in.get<uint32_t>();
-            if (!in.ok() || count > in.remaining()) {
+            if (!in.ok() || count > in.remaining() / min_element_wire_size(m)) {
                 return false;
             }
 

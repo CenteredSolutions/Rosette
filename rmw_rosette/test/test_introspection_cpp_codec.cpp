@@ -181,11 +181,27 @@ TEST(IntrospectionCppCodec, RejectsTruncatedInputAtEveryLength) {
     ASSERT_GT(payload.size(), 8u);
 
     const auto codec = cpp_codec<test_msgs::msg::UnboundedSequences>();
-    for (uint32_t len = 4; len < 40 && len < payload.size(); ++len) {
+    for (uint32_t len = 4; len < payload.size(); ++len) {
         test_msgs::msg::UnboundedSequences decoded;
         EXPECT_FALSE(rmw_rosette::deserialize_message(codec, payload.data(), len, &decoded))
             << "length " << len;
     }
+}
+
+TEST(IntrospectionCppCodec, RejectsASequenceOfNestedMessagesThePayloadCannotHold) {
+    // Thirteen empty primitive sequences and an empty string sequence, then
+    // basic_types_values claiming ten elements with only twenty bytes left:
+    // one byte per element would fit, a BasicTypes needs at least 45.
+    std::vector<uint8_t> payload = {0x00, 0x01, 0, 0};
+    payload.insert(payload.end(), 14u * sizeof(uint32_t), 0u);
+    payload.insert(payload.end(), {10, 0, 0, 0});
+    payload.insert(payload.end(), 20u, 0u);
+
+    test_msgs::msg::UnboundedSequences decoded;
+    EXPECT_FALSE(rmw_rosette::deserialize_message(cpp_codec<test_msgs::msg::UnboundedSequences>(),
+                                                  payload.data(),
+                                                  static_cast<uint32_t>(payload.size()), &decoded));
+    EXPECT_TRUE(decoded.basic_types_values.empty());
 }
 
 TEST(IntrospectionCppCodec, RejectsAHugeSequenceLengthWithoutAllocating) {
