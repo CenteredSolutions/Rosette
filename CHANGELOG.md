@@ -16,6 +16,8 @@ version may change the public API.
 - Topic and service listings on POSIX hosts, so `ros2 topic list` and
   `ros2 service list` work on `rmw_rosette`. The `RMW_ROSETTE_GRAPH_CACHE` CMake
   option controls this and is off for firmware, which keeps no endpoint names.
+- `ros2 node list` on POSIX hosts: with the same option, `rmw_rosette` reads other
+  participants' `ros_discovery_info`. Firmware has no such reader.
 - Samples above the largest pool block on POSIX hosts, stored on the heap up to
   `RMW_ROSETTE_MAX_SAMPLE_SIZE` (1 MiB by default) and a total of
   `RMW_ROSETTE_HEAP_BUDGET` (64 MiB, half each for written and received samples).

@@ -1042,7 +1042,7 @@ void StatefulWriter::note_eviction() noexcept {
     ++evictedUnacknowledged_;
     if ((evictedUnacknowledged_ & (evictedUnacknowledged_ - 1u)) == 0u) {
         [[maybe_unused]] const EntityId& id = guid_.entityId;
-        RTPS_LOG_W(
+        RTPS_LOG_D(
             "writer",
             "%02x%02x%02x%02x evicted unacknowledged SN=%lu from %u-deep history (%lu so far)",
             id.entityKey[0], id.entityKey[1], id.entityKey[2], id.entityKind,

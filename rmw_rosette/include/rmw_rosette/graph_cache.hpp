@@ -3,12 +3,17 @@
 
 /**
  * @file rmw_rosette/graph_cache.hpp
- * @brief Host-side record of every endpoint's names, for rmw graph queries.
+ * @brief Host-side record of every endpoint's names and every peer's nodes, for rmw graph
+ * queries.
  *
  * EndpointMatchTable keeps remote endpoints as 32-bit name keys so a board
  * spends no RAM on names it never needs. Graph queries such as `ros2 topic
  * list` need those names back, so a hosted build registers this cache as the
  * table's GraphEndpointObserver and keeps a copy of each name.
+ *
+ * Node names travel in no SEDP message. RosDiscoveryInfoReader stores each
+ * peer's `ros_discovery_info` node list here; the context's own nodes come from
+ * its LocalNodeEntities table instead (rmw_graph_node_names.cpp).
  *
  * The cache lives on the heap and grows with the network, unlike the table,
  * and is therefore compiled only into builds with `RMW_ROSETTE_GRAPH_CACHE=1`,
@@ -38,6 +43,7 @@
 #  include <map>
 #  include <set>
 #  include <string>
+#  include <vector>
 
 #  include "rosette/rtps/endpoint_match_table.hpp"
 
@@ -46,16 +52,30 @@ namespace rmw_rosette {
 /// @brief ROS or DDS names, each with the sorted set of its types.
 using NamesAndTypes = std::map<std::string, std::set<std::string>>;
 
+/// @brief One ROS node, as `ros_discovery_info` names it.
+struct NodeName {
+    std::string namespace_;  ///< Namespace, such as `/` or `/robot`.
+    std::string name;        ///< Name within the namespace.
+
+    /// @brief Whether both name the same node.
+    bool operator==(const NodeName& other) const {
+        return namespace_ == other.namespace_ && name == other.name;
+    }
+};
+
 /**
- * @brief Every endpoint this participant has discovered or created, by GUID.
+ * @brief Every endpoint this participant has discovered or created, by GUID, and
+ * every other participant's nodes.
  *
  * Verification:
  * - Correct means: an endpoint is listed from its first announcement until it
- *   is withdrawn or its participant leaves, a repeated announcement changes
- *   nothing, an endpoint the match table refused for space is still listed,
- *   a parked participant's endpoints stay listed and those it withdrew while
- *   parked leave once its replay completes, and the change callback fires
- *   exactly when a listing could differ.
+ *   is withdrawn or its participant leaves, a participant's nodes are listed
+ *   from its first `ros_discovery_info` sample until a later one replaces them
+ *   or the participant leaves, a repeated announcement changes nothing, an
+ *   endpoint the match table refused for space is still listed, a parked
+ *   participant's endpoints stay listed and those it withdrew while parked
+ *   leave once its replay completes, and the change callback fires exactly
+ *   when a listing could differ.
  * - Covered by: rmw_rosette/test/test_graph_cache.cpp.
  *
  * References:
@@ -74,7 +94,7 @@ using NamesAndTypes = std::map<std::string, std::set<std::string>>;
  */
 class GraphCache {
 public:
-    /// @brief Called, under the context lock, after the recorded endpoints change.
+    /// @brief Called, under the context lock, after the recorded endpoints or nodes change.
     using OnChange = void (*)(void* user) noexcept;
 
     GraphCache() noexcept;
@@ -83,7 +103,7 @@ public:
     const rosette::rtps::GraphEndpointObserver& observer() const noexcept { return observer_; }
 
     /**
-     * @brief Registers the callback told that the recorded endpoints changed.
+     * @brief Registers the callback told that the recorded endpoints or nodes changed.
      *
      * rmw_init() passes the trigger of the context's graph guard condition, so
      * a waiter on rmw_node_get_graph_guard_condition() wakes for every change a
@@ -114,8 +134,8 @@ public:
     /// @brief Forgets one endpoint; `true`, after the change callback ran, when it was recorded.
     bool remove(const rosette::rtps::Guid& guid) noexcept;
 
-    /// @brief Forgets every endpoint of a participant; `true`, after the change callback ran,
-    /// when it had any.
+    /// @brief Forgets every endpoint and node of a participant; `true`, after the change
+    /// callback ran, when it had any.
     bool remove_participant(const rosette::rtps::GuidPrefix& prefix) noexcept;
 
     /**
@@ -188,8 +208,41 @@ public:
      */
     NamesAndTypes service_names_and_types() const;
 
+    /**
+     * @brief Replaces everything known about one participant's nodes.
+     *
+     * Each `ros_discovery_info` sample carries the participant's complete node
+     * list, so an empty list means it hosts no node.
+     *
+     * @param[in] prefix Participant the list came from.
+     * @param[in] nodes  Its complete node list.
+     * @return `true`, after the change callback ran, when the list differs from
+     *   the recorded one; `false` for a repeated identical list.
+     * @throws std::bad_alloc when the heap is exhausted.
+     *
+     * Verification:
+     * - Correct means: a later list replaces an earlier one, the nodes last until
+     *   replaced or until their participant leaves, and the change callback fires
+     *   exactly when node_names() could differ.
+     * - Covered by: rmw_rosette/test/test_graph_cache.cpp (ReplacesAndForgetsNodes).
+     *
+     * References:
+     * - rmw_dds_common/graph_cache.hpp (Humble), `update_participant_entities`
+     */
+    bool set_participant_nodes(const rosette::rtps::GuidPrefix& prefix,
+                               std::vector<NodeName>            nodes);
+
+    /**
+     * @brief Lists the nodes of every other participant.
+     *
+     * @return Each node with its namespace; duplicates are kept.
+     * @throws std::bad_alloc when the heap is exhausted.
+     */
+    std::vector<NodeName> node_names() const;
+
 private:
     using GuidBytes = std::array<uint8_t, 16>;
+    using PrefixBytes = std::array<uint8_t, 12>;
 
     struct Endpoint {
         std::string topic;
@@ -201,7 +254,8 @@ private:
 
     using Endpoints = std::map<GuidBytes, Endpoint>;
 
-    static GuidBytes key_of(const rosette::rtps::Guid& guid) noexcept;
+    static GuidBytes   key_of(const rosette::rtps::Guid& guid) noexcept;
+    static PrefixBytes key_of(const rosette::rtps::GuidPrefix& prefix) noexcept;
 
     /// @brief The first endpoint of participant `prefix`; its endpoints are adjacent from there.
     Endpoints::iterator first_of(const rosette::rtps::GuidPrefix& prefix) noexcept;
@@ -213,10 +267,11 @@ private:
     /// @brief Runs the change callback, when one is registered.
     void changed() const noexcept;
 
-    Endpoints                            endpoints_;
-    rosette::rtps::GraphEndpointObserver observer_{};
-    OnChange                             on_change_ = nullptr;
-    void*                                on_change_user_ = nullptr;
+    Endpoints                                    endpoints_;
+    std::map<PrefixBytes, std::vector<NodeName>> nodes_;
+    rosette::rtps::GraphEndpointObserver         observer_{};
+    OnChange                                     on_change_ = nullptr;
+    void*                                        on_change_user_ = nullptr;
 };
 
 }  // namespace rmw_rosette

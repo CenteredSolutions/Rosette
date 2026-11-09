@@ -10,6 +10,7 @@
 
 #include <cstring>
 #include <new>
+#include <utility>
 
 namespace rtps = rosette::rtps;
 
@@ -143,6 +144,12 @@ GraphCache::GuidBytes GraphCache::key_of(const rtps::Guid& guid) noexcept {
     return key;
 }
 
+GraphCache::PrefixBytes GraphCache::key_of(const rtps::GuidPrefix& prefix) noexcept {
+    PrefixBytes key;
+    std::memcpy(key.data(), prefix.value, key.size());
+    return key;
+}
+
 void GraphCache::changed() const noexcept {
     if (on_change_ != nullptr) {
         on_change_(on_change_user_);
@@ -197,6 +204,10 @@ bool GraphCache::remove_participant(const rtps::GuidPrefix& prefix) noexcept {
         removed = true;
     }
 
+    if (nodes_.erase(key_of(prefix)) != 0u) {
+        removed = true;
+    }
+
     if (removed) {
         changed();
     }
@@ -228,6 +239,33 @@ bool GraphCache::end_refresh(const rtps::GuidPrefix& prefix) noexcept {
     }
 
     return removed;
+}
+
+bool GraphCache::set_participant_nodes(const rtps::GuidPrefix& prefix,
+                                       std::vector<NodeName>   nodes) {
+    const PrefixBytes key = key_of(prefix);
+    const auto        found = nodes_.find(key);
+    if (found == nodes_.end() ? nodes.empty() : found->second == nodes) {
+        return false;
+    }
+
+    if (nodes.empty()) {
+        nodes_.erase(found);
+    } else {
+        nodes_[key] = std::move(nodes);
+    }
+
+    changed();
+    return true;
+}
+
+std::vector<NodeName> GraphCache::node_names() const {
+    std::vector<NodeName> out;
+    for (const auto& participant : nodes_) {
+        out.insert(out.end(), participant.second.begin(), participant.second.end());
+    }
+
+    return out;
 }
 
 NamesAndTypes GraphCache::topic_names_and_types(bool no_demangle) const {

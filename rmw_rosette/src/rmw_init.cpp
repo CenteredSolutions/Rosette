@@ -12,6 +12,7 @@
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/ros_features.h"
 #include "rmw_rosette/types.hpp"
+#include "rosette/rtps/log.hpp"
 
 #include <rcutils/strdup.h>
 #include <rmw/error_handling.h>
@@ -276,31 +277,25 @@ void report_transport_stats(const rtps::SocketUdpTransport& transport) noexcept 
 }
 
 /**
- * @brief Prints the session's count of writer changes lost to a full history, when any were.
+ * @brief Logs, at debug level, the session's count of writer changes lost to a full history.
  *
- * Each counted eviction already logged a warning as it happened (rate
- * limited, StatefulWriter::evicted_unacknowledged()); this line gives the
- * session's total as the context is finalized. On a node with services it
- * is the number of replies lost to a reply history shallower than the
- * replies in flight, the evidence for raising RMW_ROSETTE_REPLY_DEPTH.
- *
- * @param[in] participant Participant being torn down.
- *
- * Verification:
- * - Correct means: one line on stderr exactly when the participant's
- *   total is above zero.
- * - Covered by: TC-PART-8.5.1-014 (the total); the line itself by inspection.
+ * KEEP_LAST writers evict in normal operation, such as the depth-1
+ * `ros_discovery_info` writer during a burst of entity creation, so this total
+ * and the per-eviction log (StatefulWriter::evicted_unacknowledged()) stay
+ * below the default log level. On a node with services the total counts the
+ * replies lost to a reply history shallower than the replies in flight, the
+ * evidence for raising RMW_ROSETTE_REPLY_DEPTH.
  */
 void report_writer_evictions(const rtps::RTPSParticipant& participant) noexcept {
-    const uint32_t evicted = participant.evicted_unacknowledged();
+    [[maybe_unused]] const uint32_t evicted = participant.evicted_unacknowledged();
     if (evicted == 0u) {
         return;
     }
 
-    std::fprintf(stderr,
-                 "rmw_rosette: %u changes evicted before their readers had them "
-                 "(on a service, each is a lost reply; RMW_ROSETTE_REPLY_DEPTH=%u)\n",
-                 static_cast<unsigned>(evicted), static_cast<unsigned>(RMW_ROSETTE_REPLY_DEPTH));
+    RTPS_LOG_D("rmw_rosette",
+               "%u changes evicted before their readers had them "
+               "(on a service, each is a lost reply; RMW_ROSETTE_REPLY_DEPTH=%u)",
+               static_cast<unsigned>(evicted), static_cast<unsigned>(RMW_ROSETTE_REPLY_DEPTH));
 }
 
 /**
@@ -825,6 +820,15 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     ctx.graph_cache = new (ctx.graph_cache_storage) rmw_rosette::GraphCache();
     ctx.graph_cache->set_on_change(trigger_graph_guard, &ctx.graph_guard);
     ctx.participant->match_table().set_graph_endpoint_observer(&ctx.graph_cache->observer());
+    if (!ctx.discovery_info_reader.create(*ctx.participant, *ctx.graph_cache)) {
+        RMW_SET_ERROR_MSG(
+            "rmw_rosette: rmw_init: cannot create the ros_discovery_info reader "
+            "(participant reader table full)");
+        destroy_participant(ctx);
+        context_pool().release(impl);
+        return RMW_RET_ERROR;
+    }
+
 #endif
     if (!ctx.discovery_info.create(*ctx.participant)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: cannot create the ros_discovery_info writer "

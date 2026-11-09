@@ -30,6 +30,20 @@ find_package(rosidl_runtime_c REQUIRED)
 find_package(rosidl_typesupport_introspection_c REQUIRED)
 find_package(rosidl_typesupport_microxrcedds_c QUIET)
 
+set(ROSETTE_OS posix CACHE STRING "Platform OS layer: posix, freertos, baremetal")
+
+if(ROSETTE_OS STREQUAL "posix")
+  set(_rr_hosted_default ON)
+else()
+  set(_rr_hosted_default OFF)
+endif()
+
+# The graph cache (rmw_rosette/graph_cache.hpp) keeps every endpoint's and node's
+# names on the heap to answer graph listings, and adds one reader on
+# ros_discovery_info, so a board's build leaves it out by default and reports
+# those queries as unsupported.
+option(RMW_ROSETTE_GRAPH_CACHE "Keep endpoint and node names for graph queries" ${_rr_hosted_default})
+
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmw_rosette_capacity.cmake)
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmw_rosette_ros_features.cmake)
 
@@ -87,7 +101,6 @@ target_include_directories(rmw_rosette
 
 # Platform port (include/rosette/platform/platform.hpp). A host colcon build
 # runs on POSIX; a micro-ROS firmware workspace sets its board's OS and chip.
-set(ROSETTE_OS posix CACHE STRING "Platform OS layer: posix, freertos, baremetal")
 set(ROSETTE_CHIP host CACHE STRING "Platform chip layer: host, rp2")
 include(${ROSETTE_ROOT}/cmake/rosette_platform.cmake)
 target_link_libraries(rmw_rosette PRIVATE rosette_platform)
@@ -97,20 +110,11 @@ target_link_libraries(rmw_rosette PRIVATE rosette_platform)
 # It needs rosette::platform::Thread, which the POSIX OS port supplies. A build
 # with the pump still runs without it when the environment sets
 # RMW_ROSETTE_PUMP_THREAD=0: rmw_wait() then runs the participant, as on a board.
-if(ROSETTE_OS STREQUAL "posix")
-  set(_rr_pump_default ON)
-else()
-  set(_rr_pump_default OFF)
-endif()
+option(RMW_ROSETTE_PUMP_THREAD "Run the participant on a pump thread" ${_rr_hosted_default})
 
-option(RMW_ROSETTE_PUMP_THREAD "Run the participant on a pump thread" ${_rr_pump_default})
-
-# The graph cache (rmw_rosette/graph_cache.hpp) keeps every endpoint's names on
-# the heap to answer topic and service listings, so a board's build leaves it
-# out by default and reports those queries as unsupported.
-option(RMW_ROSETTE_GRAPH_CACHE "Keep endpoint names for graph queries" ${_rr_pump_default})
 if(RMW_ROSETTE_GRAPH_CACHE)
-  target_sources(rmw_rosette PRIVATE src/graph_cache.cpp src/rmw_graph_names.cpp)
+  target_sources(rmw_rosette PRIVATE src/graph_cache.cpp src/rmw_graph_names.cpp
+                 src/rmw_graph_node_names.cpp src/ros_discovery_info_reader.cpp)
 endif()
 
 # RTPS log levels (rosette/rtps/log.hpp): 0 none, 1 error, 2 warning,
