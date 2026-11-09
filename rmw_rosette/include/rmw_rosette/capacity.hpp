@@ -53,8 +53,9 @@
 /// Largest UDP datagram sent or received. Writers fragment (DATA_FRAG) any
 /// sample that would exceed it, and the receive buffer holds exactly one.
 /// Peers must cap their datagrams to it as well (Fast DDS: maxMessageSize),
-/// or their larger datagrams are truncated (counted in TransportStats).
-#  define RMW_ROSETTE_MAX_DATAGRAM_SIZE 65507
+/// or their larger datagrams are truncated (counted in TransportStats). The
+/// default is the largest message a stock Fast DDS receiver accepts.
+#  define RMW_ROSETTE_MAX_DATAGRAM_SIZE 65500
 #endif
 #ifndef RMW_ROSETTE_MAX_SAMPLE_SIZE
 /// Largest serialized message. Up to 65532 it is also the largest static

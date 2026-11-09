@@ -136,7 +136,8 @@ the same relationships.
    on publish, and evicted on receipt before a reader takes it. On a host,
    samples above the largest pool block (65,532 bytes) live on the heap
    (`RMW_ROSETTE_HEAP_SAMPLES`), bounded by that limit and
-   `RMW_ROSETTE_HEAP_BUDGET`. A sample that would need more fragments than a
+   `RMW_ROSETTE_HEAP_BUDGET`, split evenly between samples a process writes
+   and samples peers send it. A sample that would need more fragments than a
    receiver can track (256) is refused on publish. Firmware has no heap path.
 6. **Reported QoS.** The actual-QoS queries report the requested policies:
    system defaults are not resolved, depth is capped by the history pool, and

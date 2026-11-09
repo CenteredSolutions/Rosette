@@ -332,7 +332,7 @@ FragmentedChange* FragmentAssembler::alloc_slot(const Guid& wg, const SequenceNu
     // enough lends it to the replacement when the pool has no other block.
     // A sample larger than the largest pool class cannot be reassembled and
     // is refused rather than delivered short.
-    BufRef buf = buf_alloc(data_size);
+    BufRef buf = buf_alloc_received(data_size);
     if (!buf.valid() || buf.capacity() < data_size) {
         buf.reset();
         FragmentedChange& victim = slot->change;

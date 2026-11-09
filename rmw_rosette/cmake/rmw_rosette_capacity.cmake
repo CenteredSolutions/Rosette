@@ -75,8 +75,8 @@ set(RMW_ROSETTE_MATCHED_WRITERS "" CACHE STRING
     "Remote writers matched across all local readers at once (the WriterProxy pool); empty: every reader at RMW_ROSETTE_MAX_MATCHED_ENDPOINTS")
 set(RMW_ROSETTE_MAX_REMOTE_ENDPOINTS 128 CACHE STRING
     "Remote writers (and, separately, remote readers) known from SEDP; a stock rclpy/rclcpp node has about 9 of each. When full, an endpoint that matches a local one displaces one that matches none, so on a large network this need only cover the remote endpoints this process matches")
-set(RMW_ROSETTE_MAX_DATAGRAM_SIZE 65507 CACHE STRING
-    "Largest UDP datagram sent or received: 65507 on hosts; 1472 (1500-byte MTU) where IP fragmentation is unavailable (WIZnet hardware UDP). Larger samples go out as DATA_FRAG; peers must cap their datagrams to this too")
+set(RMW_ROSETTE_MAX_DATAGRAM_SIZE 65500 CACHE STRING
+    "Largest UDP datagram sent or received: 65500 on hosts, the largest message Fast DDS accepts; 1472 (1500-byte MTU) where IP fragmentation is unavailable (WIZnet hardware UDP). Larger samples go out as DATA_FRAG; peers must cap their datagrams to this too")
 set(RMW_ROSETTE_MAX_SAMPLE_SIZE 1048576 CACHE STRING
     "Largest serialized message (publish, service request or reply) in octets. At most 65532 without RMW_ROSETTE_HEAP_SAMPLES, when it sizes the largest buffer-pool class")
 set(RMW_ROSETTE_MAX_PENDING_CHANGES 10 CACHE STRING
@@ -232,7 +232,11 @@ else()
 endif()
 option(RMW_ROSETTE_HEAP_SAMPLES "Store samples above the largest pool block on the heap" ${_rr_heap_default})
 set(RMW_ROSETTE_HEAP_BUDGET 67108864 CACHE STRING
-    "Most octets all heap-stored samples of a process may hold at once")
+    "Most octets heap-stored samples of a process may hold at once, half for samples it writes and half for samples peers send")
+math(EXPR _rr_min_heap_budget "2 * ${RMW_ROSETTE_MAX_SAMPLE_SIZE}")
+if(RMW_ROSETTE_HEAP_SAMPLES AND RMW_ROSETTE_HEAP_BUDGET LESS _rr_min_heap_budget)
+  message(FATAL_ERROR "RMW_ROSETTE_HEAP_BUDGET must hold two RMW_ROSETTE_MAX_SAMPLE_SIZE samples, one per half")
+endif()
 if(RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER 16777215)
   message(FATAL_ERROR "RMW_ROSETTE_MAX_SAMPLE_SIZE must be below 16 MiB (a 24-bit block capacity)")
 endif()

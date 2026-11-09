@@ -5,7 +5,7 @@
  * @file buf_pool_heap_block_test.cpp
  * @brief Heap blocks for samples above the largest pool class, and repair sets.
  *
- * Built with RTPS_HEAP_BLOCKS, a 1 MiB sample limit, and a 2 MiB budget (see
+ * Built with RTPS_HEAP_BLOCKS, a 1 MiB sample limit, and a 4 MiB budget (see
  * CMakeLists.txt), so the limit and the budget are each reached in a few
  * allocations. Checks that small requests stay in the pool, that a heap block
  * behaves as a reference-counted BufRef, and that every failure leaves the
@@ -78,6 +78,26 @@ int main() {
     }
 
     check(g_buf_pool.heap_octets() == 0u, "the budget is whole again");
+
+    // Received samples and local samples cannot starve each other.
+    {
+        BufRef local_a = buf_alloc(kOneMiB);
+        BufRef local_b = buf_alloc(kOneMiB);
+        check(!buf_alloc(kOneMiB).valid(), "the local half is full");
+
+        BufRef peer_a = buf_alloc_received(kOneMiB);
+        BufRef peer_b = buf_alloc_received(kOneMiB);
+        check(peer_a.valid() && peer_b.valid(), "a full local half leaves the received half");
+        check(!buf_alloc_received(kOneMiB).valid(), "the received half is full");
+        check(g_buf_pool.heap_octets(HeapBudgetSide::Received) == 2u * kOneMiB,
+              "received blocks are charged to their half");
+
+        local_a.reset();
+        check(!buf_alloc_received(kOneMiB).valid(), "freeing a local block does not help peers");
+        check(buf_alloc(kOneMiB).valid(), "freeing a local block returns to the local half");
+    }
+
+    check(g_buf_pool.heap_octets() == 0u, "both halves are whole again");
 
     // A repair set names every fragment a receiver can track.
     {

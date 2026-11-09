@@ -158,10 +158,21 @@ static constexpr uint32_t kPoolMaxBlockSize = RTPS_POOL_CLASS4_SIZE;
 static constexpr uint32_t kMaxSampleOctets =
     RTPS_HEAP_BLOCKS ? RTPS_MAX_HEAP_BLOCK_SIZE : kPoolMaxBlockSize;
 
-/// BufBlock::size_class of a block from the heap rather than a slab.
+/// BufBlock::size_class of a heap block charged to samples this process wrote.
 static constexpr uint8_t kHeapSizeClass = 0xFEu;
+/// BufBlock::size_class of a heap block charged to samples peers announced.
+static constexpr uint8_t kHeapReceivedSizeClass = 0xFDu;
+
+/// One half of RTPS_HEAP_BLOCK_BUDGET. Peers choose how much a DATA_FRAG
+/// sequence allocates, so received samples have their own half and can never
+/// consume the half that publishing depends on.
+enum class HeapBudgetSide : uint8_t { Local = 0u, Received = 1u };
 
 static_assert(kMaxSampleOctets < (1u << 24), "BufBlock::block_cap holds 24 bits");
+#if RTPS_HEAP_BLOCKS
+static_assert(RTPS_HEAP_BLOCK_BUDGET / 2u >= RTPS_MAX_HEAP_BLOCK_SIZE,
+              "each half of the heap budget holds at least one largest sample");
+#endif
 
 #ifndef RTPS_BUF_BLOCK_SIZE
 #  define RTPS_BUF_BLOCK_SIZE RTPS_POOL_CLASS4_SIZE
@@ -225,7 +236,7 @@ struct BufBlock {
     std::atomic<int> refcount;      ///< 0 == on the free list; ≥1 == live.
     BufBlock*    next_free;     ///< Intrusive free-list link (valid when refcount==0).
     uint32_t         block_cap : 24;  ///< Usable bytes following this header.
-    uint32_t         size_class : 8;  ///< Index into the classes, or kHeapSizeClass.
+    uint32_t         size_class : 8;  ///< Index into the classes, or a heap class.
 #ifdef RTPS_BUFPOOL_DEBUG
     uintptr_t    dbg_alloc_pc = 0;
     uint32_t     dbg_alloc_seq = 0;
@@ -539,7 +550,8 @@ public:
      *   BufRef when every eligible class is exhausted or `min_size` exceeds
      *   the largest class. With RTPS_HEAP_BLOCKS, a request above the largest
      *   class is served from the heap, and refused above
-     *   RTPS_MAX_HEAP_BLOCK_SIZE or past RTPS_HEAP_BLOCK_BUDGET.
+     *   RTPS_MAX_HEAP_BLOCK_SIZE or past the local half of
+     *   RTPS_HEAP_BLOCK_BUDGET.
      *
      * With RTPS_BUFPOOL_STATS, every call is counted (stats()), and a
      * refusal is logged as a warning on the 1st, 2nd, 4th, ... refusal of
@@ -555,7 +567,7 @@ public:
                  [[maybe_unused]] uintptr_t caller_pc = 0u) noexcept {
 #if RTPS_HEAP_BLOCKS
         if (min_size > kPoolMaxBlockSize) {
-            return alloc_heap(min_size);
+            return alloc_heap(min_size, HeapBudgetSide::Local);
         }
 #endif
 
@@ -609,7 +621,7 @@ public:
 #endif
         if (prev == 1) {
 #if RTPS_HEAP_BLOCKS
-            if (b->size_class == kHeapSizeClass) {
+            if (b->size_class == kHeapSizeClass || b->size_class == kHeapReceivedSizeClass) {
                 free_heap(b);
                 return prev;
             }
@@ -638,9 +650,45 @@ public:
         uint8_t  available;
     };
 
+    /**
+     * @brief Allocates storage for a sample whose size a remote peer announced.
+     *
+     * Behaves as alloc(), except that a request above the largest class is
+     * charged to the received half of the heap budget. The charge lasts until
+     * the last reference is released, so a completed sample waiting in a
+     * reader's history still counts against peers.
+     *
+     * @param[in] min_size Payload octets the peer announced.
+     * @return A block of at least `min_size` octets, or an invalid BufRef when
+     *   the pool, the sample limit, or the received half refuses it.
+     *
+     * Verification:
+     * - Correct means: received samples can never reduce the octets available
+     *   to alloc(), and the reverse.
+     * - Covered by: tests/host/buf_pool_heap_block_test.cpp.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.7.3 (DataFrag)
+     */
+    BufRef alloc_received(uint32_t min_size) noexcept {
 #if RTPS_HEAP_BLOCKS
-    /// @brief Octets currently held by heap blocks.
-    size_t heap_octets() const noexcept { return heap_octets_.load(std::memory_order_relaxed); }
+        if (min_size > kPoolMaxBlockSize) {
+            return alloc_heap(min_size, HeapBudgetSide::Received);
+        }
+#endif
+        return alloc(min_size, RTPS_BUFPOOL_CALLER_PC());
+    }
+
+#if RTPS_HEAP_BLOCKS
+    /// @brief Octets currently held by heap blocks on both sides of the budget.
+    size_t heap_octets() const noexcept {
+        return heap_octets(HeapBudgetSide::Local) + heap_octets(HeapBudgetSide::Received);
+    }
+
+    /// @brief Octets currently held by heap blocks charged to one side.
+    size_t heap_octets(HeapBudgetSide side) const noexcept {
+        return heap_octets_[static_cast<uint8_t>(side)].load(std::memory_order_relaxed);
+    }
 #endif
 
     ClassInfo class_info(uint8_t c) const noexcept {
@@ -777,12 +825,14 @@ private:
      * @brief Allocates a sample larger than every static class from the heap.
      *
      * The block has the same header as a slab block, so reference counting,
-     * sharing, and prepend() work unchanged. The size check and budget are the
-     * one limit on what a peer's DATA_FRAG can make this process allocate.
+     * sharing, and prepend() work unchanged. Each side of the budget gets half
+     * of RTPS_HEAP_BLOCK_BUDGET, and the block's size class records its side so
+     * release returns the octets to the half that was charged.
      *
      * @param[in] min_size Payload octets; above kPoolMaxBlockSize.
+     * @param[in] side     The half of the budget to charge.
      * @return A block of exactly `min_size` octets, or an invalid BufRef when
-     *   the size or budget is exceeded or the heap is exhausted.
+     *   the size or that half is exceeded or the heap is exhausted.
      *
      * Verification:
      * - Correct means: a refused request changes no accounting; every block
@@ -792,20 +842,21 @@ private:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.7.3 (DataFrag)
      */
-    BufRef alloc_heap(uint32_t min_size) noexcept {
+    BufRef alloc_heap(uint32_t min_size, HeapBudgetSide side) noexcept {
         if (min_size > RTPS_MAX_HEAP_BLOCK_SIZE) {
             return {};
         }
 
-        const size_t used = heap_octets_.fetch_add(min_size, std::memory_order_relaxed);
-        if (used + min_size > RTPS_HEAP_BLOCK_BUDGET) {
-            heap_octets_.fetch_sub(min_size, std::memory_order_relaxed);
+        std::atomic<size_t>& octets = heap_octets_[static_cast<uint8_t>(side)];
+        const size_t         used = octets.fetch_add(min_size, std::memory_order_relaxed);
+        if (used + min_size > RTPS_HEAP_BLOCK_BUDGET / 2u) {
+            octets.fetch_sub(min_size, std::memory_order_relaxed);
             return {};
         }
 
         void* memory = std::malloc(sizeof(BufBlock) + min_size);
         if (memory == nullptr) {
-            heap_octets_.fetch_sub(min_size, std::memory_order_relaxed);
+            octets.fetch_sub(min_size, std::memory_order_relaxed);
             return {};
         }
 
@@ -813,7 +864,7 @@ private:
         b->refcount = 1;
         b->next_free = nullptr;
         b->block_cap = min_size;
-        b->size_class = kHeapSizeClass;
+        b->size_class = side == HeapBudgetSide::Received ? kHeapReceivedSizeClass : kHeapSizeClass;
 
         BufRef r{};
         r.block = b;
@@ -824,12 +875,15 @@ private:
 
     /// @brief Returns a heap block's octets to the budget and frees it.
     void free_heap(BufBlock* b) noexcept {
-        heap_octets_.fetch_sub(b->block_cap, std::memory_order_relaxed);
+        const HeapBudgetSide side = b->size_class == kHeapReceivedSizeClass
+                                        ? HeapBudgetSide::Received
+                                        : HeapBudgetSide::Local;
+        heap_octets_[static_cast<uint8_t>(side)].fetch_sub(b->block_cap, std::memory_order_relaxed);
         b->~BufBlock();
         std::free(b);
     }
 
-    std::atomic<size_t> heap_octets_{0u};
+    std::atomic<size_t> heap_octets_[2]{{0u}, {0u}};
 #endif
 
     BufBlock* dispatch_alloc(uint8_t c) {
@@ -970,6 +1024,12 @@ inline void BufRef::release() noexcept {
 
 inline BufRef buf_alloc(uint32_t min_size = RTPS_POOL_CLASS0_SIZE) noexcept {
     return g_buf_pool.alloc(min_size, RTPS_BUFPOOL_CALLER_PC());
+}
+
+/// @brief buf_alloc() for a sample whose size a remote peer announced; see
+/// MultiBufPool::alloc_received().
+inline BufRef buf_alloc_received(uint32_t min_size) noexcept {
+    return g_buf_pool.alloc_received(min_size);
 }
 
 // ============================================================
