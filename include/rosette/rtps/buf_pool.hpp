@@ -216,7 +216,7 @@ struct BufPoolDebugEvent {
     uintptr_t block = 0;
     uintptr_t caller_pc = 0;
     uint32_t requested_size = 0;
-    uint16_t block_cap = 0;
+    uint32_t  block_cap = 0;
     uint8_t  size_class = 0xFFu;
     uint8_t  op = 0;
     int16_t  ref_before = 0;
@@ -863,7 +863,8 @@ private:
         BufBlock* b = new (memory) BufBlock;
         b->refcount = 1;
         b->next_free = nullptr;
-        b->block_cap = min_size;
+        // kMaxSampleOctets is below 2^24, so the mask never changes the value.
+        b->block_cap = min_size & 0xFFFFFFu;
         b->size_class = side == HeapBudgetSide::Received ? kHeapReceivedSizeClass : kHeapSizeClass;
 
         BufRef r{};
