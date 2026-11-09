@@ -28,6 +28,16 @@ struct IntrospectionCppTraits {
 
     static constexpr bool kHasPackedBoolSequences = true;
 
+    /// @brief Returns the character count of a string.
+    static size_t string_length(const void* value) {
+        return static_cast<const std::string*>(value)->size();
+    }
+
+    /// @brief Returns the code unit count of a wide string.
+    static size_t wstring_length(const void* value) {
+        return static_cast<const std::u16string*>(value)->size();
+    }
+
     /// @brief Writes a string as length including the NUL, bytes, NUL.
     static void encode_string(const void* value, CdrWriter& out) {
         const auto& s = *static_cast<const std::string*>(value);

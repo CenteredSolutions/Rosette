@@ -23,6 +23,7 @@
  * - `Members`, `Member`: the family's table types.
  * - `WideChar`: the in-memory type of a `wchar` value.
  * - `kHasPackedBoolSequences`: whether a bool sequence lacks element pointers.
+ * - `string_length`, `wstring_length`: the character count of one string value.
  * - `encode_string`, `encode_wstring`: write one string value.
  * - `assign_string`: store `len` decoded bytes in one string value.
  * - `decode_wstring`: read `count` wide characters into one string value.
@@ -117,7 +118,8 @@ struct IntrospectionCdrWalk {
      * @param[in]     m     Member descriptor supplying the type.
      * @param[in]     value Pointer to the single value in message memory.
      * @param[in,out] out   Destination stream.
-     * @return `false` for an unsupported type or a nested failure.
+     * @return `false` for an unsupported type, a string longer than its
+     *   declared bound, or a nested failure.
      */
     static bool encode_value(const Member& m, const void* value, CdrWriter& out) {
         const size_t block = introspection_block_copy_size(m.type_id_);
@@ -135,9 +137,18 @@ struct IntrospectionCdrWalk {
                 out.put<uint32_t>(*static_cast<const typename Traits::WideChar*>(value));
                 return true;
             case rosidl_typesupport_introspection_c__ROS_TYPE_STRING:
+                if (m.string_upper_bound_ && Traits::string_length(value) > m.string_upper_bound_) {
+                    return false;
+                }
+
                 Traits::encode_string(value, out);
                 return true;
             case rosidl_typesupport_introspection_c__ROS_TYPE_WSTRING:
+                if (m.string_upper_bound_
+                    && Traits::wstring_length(value) > m.string_upper_bound_) {
+                    return false;
+                }
+
                 Traits::encode_wstring(value, out);
                 return true;
             case rosidl_typesupport_introspection_c__ROS_TYPE_MESSAGE: {
@@ -301,6 +312,10 @@ struct IntrospectionCdrWalk {
         }
 
         const size_t count = m.size_function(field);
+        if (m.is_upper_bound_ && count > m.array_size_) {
+            return false;
+        }
+
         if (is_sequence(m)) {
             out.put<uint32_t>(static_cast<uint32_t>(count));
         }

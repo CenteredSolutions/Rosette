@@ -29,6 +29,18 @@ struct IntrospectionCTraits {
 
     static constexpr bool kHasPackedBoolSequences = false;
 
+    /// @brief Returns the character count of a string, zero when it has no storage.
+    static size_t string_length(const void* value) noexcept {
+        const auto* s = static_cast<const rosidl_runtime_c__String*>(value);
+        return s->data ? s->size : 0;
+    }
+
+    /// @brief Returns the code unit count of a wide string, zero when it has no storage.
+    static size_t wstring_length(const void* value) noexcept {
+        const auto* s = static_cast<const rosidl_runtime_c__U16String*>(value);
+        return s->data ? s->size : 0;
+    }
+
     /// @brief Writes a string as length including the NUL, bytes, NUL.
     static void encode_string(const void* value, CdrWriter& out) noexcept {
         const auto*  s = static_cast<const rosidl_runtime_c__String*>(value);

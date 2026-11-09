@@ -20,12 +20,15 @@
 #include <rosidl_typesupport_cpp/message_type_support.hpp>
 #include <rosidl_typesupport_cpp/service_type_support.hpp>
 
+#include <rosidl_runtime_c/primitives_sequence_functions.h>
 #include <std_msgs/msg/string.h>
+#include <test_msgs/msg/bounded_sequences.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <test_msgs/msg/arrays.hpp>
 #include <test_msgs/msg/bounded_sequences.hpp>
+#include <test_msgs/msg/strings.hpp>
 #include <test_msgs/msg/unbounded_sequences.hpp>
 #include <test_msgs/msg/w_strings.hpp>
 
@@ -171,6 +174,30 @@ TEST(IntrospectionCppCodec, RoundTripsWideStrings) {
     msg.bounded_sequence_of_wstrings = {u"x"};
     msg.unbounded_sequence_of_wstrings = {u"y", u"z"};
     EXPECT_EQ(round_trip(msg), msg);
+}
+
+TEST(IntrospectionCppCodec, RefusesToEncodeAStringBeyondItsBound) {
+    test_msgs::msg::Strings msg;
+    msg.bounded_string_value = std::string(22u, 'a');
+    EXPECT_EQ(round_trip(msg), msg);
+
+    // std::string does not enforce the bound a reader will apply.
+    msg.bounded_string_value = std::string(23u, 'a');
+    EXPECT_TRUE(encode_payload(msg).empty());
+}
+
+TEST(IntrospectionCCodec, RefusesToEncodeASequenceBeyondItsBound) {
+    test_msgs__msg__BoundedSequences msg;
+    ASSERT_TRUE(test_msgs__msg__BoundedSequences__init(&msg));
+    ASSERT_TRUE(rosidl_runtime_c__boolean__Sequence__init(&msg.bool_values, 4u));
+
+    rmw_rosette::MessageCodec codec;
+    ASSERT_TRUE(rmw_rosette::resolve_message_codec(
+        ROSIDL_GET_MSG_TYPE_SUPPORT(test_msgs, msg, BoundedSequences), codec));
+
+    std::vector<uint8_t> out(4096);
+    EXPECT_EQ(rmw_rosette::serialize_message(codec, &msg, out.data(), out.size()), 0u);
+    test_msgs__msg__BoundedSequences__fini(&msg);
 }
 
 TEST(IntrospectionCppCodec, RejectsTruncatedInputAtEveryLength) {

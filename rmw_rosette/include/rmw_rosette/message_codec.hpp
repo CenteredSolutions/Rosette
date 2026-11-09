@@ -156,7 +156,8 @@ bool compose_codec_type_name(const MessageCodec& codec, char* out, size_t cap) n
  * @param[out] out_buf     Destination buffer.
  * @param[in]  out_cap     Capacity of `out_buf` in bytes.
  * @return Encoded length in bytes, or 0 when the buffer was too small, the
- *   codec is unresolved, or the message contains an unencodable field.
+ *   codec is unresolved, the message contains an unencodable field, or a
+ *   string or sequence exceeds its declared bound (a reader would refuse it).
  *
  * Verification:
  * - Correct means: bytes equal rosidl_typesupport_fastrtps_c's output.
