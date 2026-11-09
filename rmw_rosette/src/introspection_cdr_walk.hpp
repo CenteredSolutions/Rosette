@@ -256,7 +256,7 @@ struct IntrospectionCdrWalk {
             return false;
         }
 
-        for (size_t i = 0; i < count; ++i) {
+        for (size_t i = 0; i < count && out.ok(); ++i) {
             bool element = false;
             m.fetch_function(field, i, &element);
             out.put<uint8_t>(element ? 1 : 0);
