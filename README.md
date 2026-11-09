@@ -8,11 +8,9 @@ participants, with no agent and no bridge. It provides:
 - **`rmw_rosette`**: a ROS 2 middleware implementation over it.
 
 Applications are ordinary ROS 2 programs. A firmware is a stock `rclc`
-program linked with `rmw_rosette`; on a host, `rclpy` and C (`rcl`, `rclc`)
-programs run on it with `RMW_IMPLEMENTATION=rmw_rosette`. `rclcpp` programs
-need C++ type support, which `rmw_rosette` does not have yet (see
-[Known limitations](#known-limitations)). Stock tools on the rest of
-the network (`ros2 topic echo`, `ros2 node list`, Fast DDS nodes) see the board
+program linked with `rmw_rosette`; on a host, `rclcpp`, `rclpy` and C (`rcl`,
+`rclc`) programs run on it with `RMW_IMPLEMENTATION=rmw_rosette`. Stock tools on
+the rest of the network (`ros2 topic echo`, `ros2 node list`, Fast DDS nodes) see the board
 as just another node.
 
 ```c
@@ -81,9 +79,6 @@ $ ros2 node list
 
 ### Known limitations
 
-- **No `rclcpp` on `rmw_rosette`.** It encodes messages from C introspection
-  type support only. `rclcpp` processes on Fast DDS or Cyclone DDS talk to
-  Rosette nodes normally; an `rclcpp` process cannot itself load `rmw_rosette`.
 - **Graph queries and QoS events.** `rmw_get_node_names` and the
   `*_names_and_types` queries return `RMW_RET_UNSUPPORTED` on a Rosette node,
   and QoS events are not offered. Stock tools on other nodes see Rosette nodes

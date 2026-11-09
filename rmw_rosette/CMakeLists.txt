@@ -15,6 +15,8 @@ project(rmw_rosette CXX C)
 # ROS 2 installation provides. When rosidl_typesupport_microxrcedds_c is also
 # available (micro-ROS firmware workspaces), its generated callbacks are
 # compiled in and preferred; see include/rmw_rosette/message_codec.hpp.
+# rclcpp's C++ messages use rosidl_typesupport_introspection_cpp, compiled in on
+# hosted builds by RMW_ROSETTE_CXX_TYPESUPPORT below.
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -112,6 +114,29 @@ target_compile_definitions(rmw_rosette PRIVATE
 
 rmw_rosette_apply_capacity(rmw_rosette)
 
+# C++ type support is what lets an rclcpp process load this library. C++ message
+# containers allocate from the heap on every decoded sample, so a board's build
+# leaves it out by default: firmware runs stock rclc over C message structs.
+if(ROSETTE_OS STREQUAL "posix")
+  set(_rr_cxx_typesupport_default ON)
+else()
+  set(_rr_cxx_typesupport_default OFF)
+endif()
+
+option(RMW_ROSETTE_CXX_TYPESUPPORT "Serialize rclcpp's C++ messages" ${_rr_cxx_typesupport_default})
+
+set(_rr_typesupports "c:rosidl_typesupport_c:rosidl_typesupport_introspection_c")
+set(_rr_exported_typesupports rosidl_typesupport_introspection_c)
+if(RMW_ROSETTE_CXX_TYPESUPPORT)
+  find_package(rosidl_typesupport_introspection_cpp REQUIRED)
+  target_sources(rmw_rosette PRIVATE src/introspection_cpp_codec.cpp)
+  target_compile_definitions(rmw_rosette PRIVATE RMW_ROSETTE_HAVE_INTROSPECTION_CPP_TYPESUPPORT)
+  target_link_libraries(rmw_rosette PUBLIC
+    rosidl_typesupport_introspection_cpp::rosidl_typesupport_introspection_cpp)
+  list(APPEND _rr_typesupports "cpp:rosidl_typesupport_cpp:rosidl_typesupport_introspection_cpp")
+  list(APPEND _rr_exported_typesupports rosidl_typesupport_introspection_cpp)
+endif()
+
 # Features of the ROS 2 distribution being built against (rmw_rosette/ros_features.h).
 rmw_rosette_probe_ros_features(rmw_rosette
   LIBRARIES rcutils::rcutils rmw::rmw rosidl_runtime_c::rosidl_runtime_c)
@@ -133,11 +158,10 @@ endif()
 # supports it reads, exactly as stock rmws do. ROS tooling that enumerates rmws
 # reads this index: get_available_rmw_implementations() (rmw_implementation_cmake),
 # and through it test_rmw_implementation and test_communication. Messages are
-# encoded from C introspection metadata (message_codec.cpp), so only the C
-# type supports are declared; RMW_IMPLEMENTATION=rmw_rosette itself needs no
+# encoded from introspection metadata (message_codec.cpp), so the families this
+# build compiled in are declared; RMW_IMPLEMENTATION=rmw_rosette itself needs no
 # index entry, since rmw_implementation loads librmw_rosette.so by name.
-register_rmw_implementation(
-  "c:rosidl_typesupport_c:rosidl_typesupport_introspection_c")
+register_rmw_implementation(${_rr_typesupports})
 
 install(
   DIRECTORY include/
@@ -153,7 +177,7 @@ install(
 )
 
 ament_export_targets(export_rmw_rosette HAS_LIBRARY_TARGET)
-ament_export_dependencies(rcutils rmw rosidl_runtime_c rosidl_typesupport_introspection_c)
+ament_export_dependencies(rcutils rmw rosidl_runtime_c ${_rr_exported_typesupports})
 ament_export_include_directories(include)
 
 if(BUILD_TESTING)
@@ -163,6 +187,7 @@ if(BUILD_TESTING)
   find_package(sensor_msgs REQUIRED)
   find_package(std_msgs REQUIRED)
   find_package(std_srvs REQUIRED)
+  find_package(test_msgs REQUIRED)
 
   # Each test binary links librmw_rosette directly, so it exercises this
   # implementation without going through rmw_implementation's loader.
@@ -170,6 +195,10 @@ if(BUILD_TESTING)
                          test_change_ring test_local_node_entities test_service_departed_client
                          test_service_reply_depth test_init_options test_argument_checks
                          test_live_context_refusals)
+  if(RMW_ROSETTE_CXX_TYPESUPPORT)
+    list(APPEND _rmw_rosette_tests test_introspection_cpp_codec)
+  endif()
+
   # Entry points the ROS 2 headers declare only from some distribution on.
   if(RMW_ROSETTE_HAS_CLIENT_GID)
     list(APPEND _rmw_rosette_tests test_client_gid)
@@ -198,7 +227,7 @@ if(BUILD_TESTING)
     target_include_directories(${test_name} PRIVATE
       $<TARGET_PROPERTY:rosette_platform,INTERFACE_INCLUDE_DIRECTORIES>)
     ament_target_dependencies(${test_name} geometry_msgs rmw_dds_common sensor_msgs std_msgs
-                              std_srvs)
+                              std_srvs test_msgs)
   endforeach()
 
   if(RMW_ROSETTE_PUMP_THREAD)
