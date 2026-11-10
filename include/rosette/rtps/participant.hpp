@@ -874,7 +874,9 @@ private:
      * @brief Moves a settled peer from the active tier to the parked one.
      *
      * The highest sequence number received from each of its SEDP announcers
-     * is kept in its record, then its builtin SEDP proxies and its remote
+     * is kept in its record, or the target of a refresh still under way
+     * when that is higher, so the next activation resumes the refresh
+     * (finish_peer_refreshes()). Its builtin SEDP proxies and its remote
      * endpoints are released, which also unmatches its readers of the
      * discovery writer. The peer itself notices nothing: this participant
      * keeps announcing itself, and the peer already holds all of it. Nor
@@ -886,8 +888,10 @@ private:
      *
      * Verification:
      * - Correct means: the peer holds no active slot, no proxy and no
-     *   endpoint record; the graph observer receives no callback.
-     * - Covered by: TC-PART-8.5.3-011, TC-PART-8.5.3-012, TC-PART-8.5.3-015.
+     *   endpoint record; the graph observer receives no callback; a kept
+     *   number never falls below an unfinished refresh's target.
+     * - Covered by: TC-PART-8.5.3-011, TC-PART-8.5.3-012, TC-PART-8.5.3-015,
+     *   TC-PART-8.5.3-018.
      *
      * References:
      * - docs/design/two_tier_peer_table.md

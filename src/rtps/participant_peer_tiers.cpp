@@ -37,7 +37,7 @@
  * replay has caught up, so an endpoint withdrawn while the peer was parked
  * leaves the listing too.
  *
- * Verification: TC-PART-8.5.3-011 to -016 (tests/spec), and at network
+ * Verification: TC-PART-8.5.3-011 to -018 (tests/spec), and at network
  * scale tests/ros2/discovery_scale.
  *
  * References:
@@ -146,9 +146,18 @@ void RTPSParticipant::park_peer(PeerEntry& peer) noexcept {
                static_cast<unsigned long>(subscriptions.low));
 
     // A number that does not fit the record's 32 bits is kept as the
-    // largest that does; any announcement above it still reactivates.
-    peer.parkedPublicationsSn = publications.high != 0 ? UINT32_MAX : publications.low;
-    peer.parkedSubscriptionsSn = subscriptions.high != 0 ? UINT32_MAX : subscriptions.low;
+    // largest that does; any announcement above it still reactivates. While
+    // a refresh is under way the record holds its target, which a replay
+    // that has not arrived yet leaves above what the reader has resolved:
+    // the larger number is kept, so the next activation resumes the refresh
+    // instead of dropping it.
+    const auto kept = [](uint32_t target, const SequenceNumber& resolved) noexcept {
+        const uint32_t low = resolved.high != 0 ? UINT32_MAX : resolved.low;
+        return low > target ? low : target;
+    };
+
+    peer.parkedPublicationsSn = kept(peer.parkedPublicationsSn, publications);
+    peer.parkedSubscriptionsSn = kept(peer.parkedSubscriptionsSn, subscriptions);
     peer.parked = true;
     peer.owed = false;
 

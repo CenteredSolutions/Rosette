@@ -532,6 +532,65 @@ static bool tc_part_8_5_3_017(std::string& err) {
     return true;
 }
 
+// A peer reactivated because it is owed this participant's announcements
+// starts a refresh, but its replay is lost: its new reader is trivially
+// caught up, so it settles and is parked again. The record keeps the
+// refresh's target rather than what the empty reader resolved, so the next
+// reactivation resumes the refresh, and an endpoint the peer withdrew
+// meanwhile is forgotten once the replay arrives.
+static bool tc_part_8_5_3_018(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    GraphLog log{};
+    p.match_table().set_graph_endpoint_observer(&log.observer);
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+    const GuidPrefix d = make_prefix(0xD1u, 0xD2u, 0xD3u);
+
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1010u), "two peers are active");
+    CHECK(deliver_announcement(p, a, true, "rt/withdrawn", 1, 1000u), "A announces a writer");
+    CHECK(announce(p, c, 0x13u, 1200u) && is_parked(p, a), "A is parked for a third peer");
+    CHECK(record(p, a)->parkedPublicationsSn == 1u, "the parked number is kept");
+
+    WriterConfig wcfg{};
+    wcfg.topicName.assign("rt/local");
+    wcfg.typeName.assign("pkg::msg::dds_::T_");
+    wcfg.reliability = ReliabilityKind::RELIABLE;
+    CHECK(p.create_writer<1>(wcfg) != nullptr, "a local writer is created");
+    CHECK(record(p, a)->owed, "the parked peer is owed its announcement");
+    CHECK(acknowledge_sedp(p, b, true, 1) && acknowledge_sedp(p, b, false, 0)
+              && acknowledge_sedp(p, c, true, 1) && acknowledge_sedp(p, c, false, 0),
+          "the active peers acknowledge it");
+
+    g_participant_test_now_ms = 1400u;
+    p.tick(1400u);
+    CHECK(is_active(p, a) && log.refreshing == 1, "the owed peer is reactivated and refreshed");
+
+    // The replay is lost. A acknowledges the local announcement, C sends
+    // SEDP DATA so A is the settled peer whose last exchange is oldest.
+    CHECK(acknowledge_sedp(p, a, true, 1) && acknowledge_sedp(p, a, false, 0),
+          "A acknowledges the local announcement");
+    CHECK(deliver_announcement(p, c, true, "rt/elsewhere", 1, 1550u), "C announces a writer");
+    CHECK(announce(p, d, 0x14u, 1600u), "a fourth peer is recorded");
+    CHECK(is_parked(p, a) && is_active(p, d), "A, settled with nothing resolved, is parked again");
+    CHECK(record(p, a)->parkedPublicationsSn == 1u, "the unfinished refresh's target is kept");
+    CHECK(log.lists(announced_writer(a, 1)), "the writer is still listed, unconfirmed");
+
+    // While parked, A withdrew writer 1 (SN 2) and announced writer 3 (SN 3).
+    CHECK(deliver_announcement(p, a, true, "rt/new", 3, 1800u), "A announces a new writer");
+    CHECK(is_active(p, a) && log.refreshing == 2,
+          "the announcement reactivates A and refreshes it");
+    CHECK(deliver_publications_gap(p, a, 1, 3), "A's replay skips SNs 1 and 2");
+    g_participant_test_now_ms = 1850u;
+    p.tick(1850u);
+    CHECK(log.refreshed == 1, "the resumed refresh completes");
+    CHECK(!log.lists(announced_writer(a, 1)), "the writer withdrawn while parked is forgotten");
+    CHECK(log.lists(announced_writer(a, 3)), "the replayed writer stays listed");
+    return true;
+}
+
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.3-011",
                      "§8.5.3.2/§8.5.4.1: a peer finding the active tier full waits until a "
@@ -563,6 +622,10 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "§8.5.4.1/§8.4.10.4: a refresh does not complete while an announcement the "
                      "peer's HEARTBEAT advertises above the parked number is missing.",
                      tc_part_8_5_3_017});
+    tests.push_back({"TC-PART-8.5.3-018",
+                     "§8.5.4.1/§8.4.10.4: parking a peer whose refresh has not completed keeps "
+                     "the refresh's target, so its next reactivation resumes the refresh.",
+                     tc_part_8_5_3_018});
 }
 
 }  // namespace spec_test
