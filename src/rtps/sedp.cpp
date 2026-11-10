@@ -767,6 +767,16 @@ bool SedpReader::caught_up_with(const GuidPrefix& peer_prefix, SequenceNumber& p
     return pubs && subs;
 }
 
+bool SedpReader::heard_from(const GuidPrefix& peer_prefix) noexcept {
+    const auto heard = [&](StatefulReader& reader, const EntityId& announcer) noexcept {
+        const WriterProxy* proxy = reader.matched_writer_lookup(Guid{peer_prefix, announcer});
+        return proxy == nullptr || proxy->heard;
+    };
+
+    return heard(publications_reader_, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER)
+           && heard(subscriptions_reader_, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER);
+}
+
 StatefulReader* SedpReader::reader_for_writer(const EntityId& writer_id) noexcept
 {
     if (writer_id == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) return &publications_reader_;

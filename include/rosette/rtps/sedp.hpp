@@ -495,6 +495,33 @@ public:
                         SequenceNumber& subscriptions) noexcept;
 
     /**
+     * @brief Reports whether each of a peer's matched SEDP announcers has been heard since
+     * matching.
+     *
+     * caught_up_with() holds for an announcer that has told this reader of
+     * nothing, which is also what a reader whose preemptive ACKNACK was lost
+     * sees: the announcer believes this reader up to date and stays silent.
+     * The participant therefore settles a peer only once both announcers have
+     * sent a HEARTBEAT, DATA or GAP to the proxies matched at its activation
+     * (RTPSParticipant::peer_is_settled()), so their replay, which announces
+     * the peer's readers of this participant's writers, has started.
+     *
+     * @param[in] peer_prefix GUID prefix of the peer.
+     * @return `true` when every announcer of the peer that is matched has
+     *   been heard; an announcer the peer does not have counts as heard.
+     *
+     * Verification:
+     * - Correct means: false from activation until a HEARTBEAT, DATA or GAP
+     *   from each matched announcer arrives, then true until the peer is
+     *   matched again.
+     * - Covered by: TC-PART-8.5.3-019.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (WriterProxy), §8.5.4.1 (SEDP replay)
+     */
+    bool heard_from(const GuidPrefix& peer_prefix) noexcept;
+
+    /**
      * @brief The builtin reader matched with the SEDP announcer `writer_id`.
      *
      * The participant routes every DATA, DATA_FRAG, HEARTBEAT,

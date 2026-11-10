@@ -577,6 +577,8 @@ target_compile_definitions(participant_tier_spec_tests PRIVATE
     RTPS_MAX_PEERS=2
     RTPS_MAX_KNOWN_PEERS=6
     RTPS_PEER_SETTLE_MS=100u
+    RTPS_PEER_EXCHANGE_TIMEOUT_MS=500u
+    RTPS_PREEMPTIVE_ACKNACK_RETRY_MS=200u
 )
 add_test(
     NAME participant_tier_spec_conformance

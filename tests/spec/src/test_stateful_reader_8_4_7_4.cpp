@@ -276,6 +276,56 @@ bool tc_srr_8_4_7_4_007(std::string& err) {
     return true;
 }
 
+// TC-SRR-8.4.7.4-008: a writer whose proxy for this reader holds everything
+// acknowledged sends nothing on its own, so a lost preemptive ACKNACK must
+// be sent again. It is resent, in the writer's vendor's form, every
+// RTPS_PREEMPTIVE_ACKNACK_RETRY_MS until the writer is heard, and never
+// after; a final HEARTBEAT that owes no answer still counts as heard.
+bool tc_srr_8_4_7_4_008(std::string& err) {
+    CaptureTransport   tx{};
+    const Guid         reader_guid = make_guid(0x11u, 0x12u, 0x13u, make_entity(1u, 2u, 3u, 0xC7u));
+    const Guid         writer_guid = make_guid(0x21u, 0x22u, 0x23u, make_entity(4u, 5u, 6u, 0xC2u));
+    const Locator      loc = make_udpv4_locator(0xC0A80114u, 7411u);
+    constexpr uint32_t kRetry = RTPS_PREEMPTIVE_ACKNACK_RETRY_MS;
+
+    g_stateful_reader_test_now_ms = 1000u;
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u, VENDORID_EPROSIMA),
+          "matched_writer_add should succeed");
+    CHECK(tx.sent.size() == 1u, "the match sends the preemptive ACKNACK");
+    CHECK(r.ms_until_next_timer(1000u) == kRetry, "its retry is the next timer");
+
+    r.tick(1000u + kRetry - 1u);
+    CHECK(tx.sent.size() == 1u, "nothing is resent before the retry period");
+    r.tick(1000u + kRetry);
+    ParsedAckNack ack{};
+    CHECK(tx.sent.size() == 2u && parse_acknack(tx.sent[1], ack),
+          "an unheard writer is sent the preemptive ACKNACK again");
+    CHECK(tx.dests[1] == loc && !ack.finalFlag && ack.readerSNState.empty()
+              && ack.readerSNState.bitmapBase == SEQUENCENUMBER_ZERO && ack.count == 2,
+          "in the same form, F-flag clear, with the next count");
+    r.tick(1000u + 2u * kRetry);
+    CHECK(tx.sent.size() == 3u, "and again every retry period");
+
+    ParsedHeartbeat hb{};
+    hb.writerId = writer_guid.entityId;
+    hb.readerId = reader_guid.entityId;
+    hb.firstSN = SequenceNumber::from_int64(1);
+    hb.lastSN = SequenceNumber::from_int64(0);
+    hb.finalFlag = true;
+    hb.count = 1;
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+    g_stateful_reader_test_now_ms = 1000u + 2u * kRetry + 5u;
+    r.on_heartbeat(ctx, hb);
+    CHECK(r.matched_writer_lookup(writer_guid)->heard, "a HEARTBEAT marks the writer heard");
+    CHECK(r.ms_until_next_timer(g_stateful_reader_test_now_ms) == UINT32_MAX,
+          "and a final HEARTBEAT to an up-to-date reader leaves nothing owed");
+    r.tick(1000u + 5u * kRetry);
+    CHECK(tx.sent.size() == 3u, "no preemptive ACKNACK follows once the writer is heard");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.7.4-001",
                      "§8.4.7.4: matched_writer_add creates one WriterProxy for a newly matched writer, and matched_writer_remove removes it from the matched set.",
@@ -307,6 +357,10 @@ void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
                      "§8.4.7.1: HEARTBEATs that arrive while an ACKNACK is owed keep its "
                      "heartbeatResponseDelay deadline, so one ACKNACK answers them all.",
                      tc_srr_8_4_7_4_007});
+    tests.push_back({"TC-SRR-8.4.7.4-008",
+                     "§8.4.7.4/§8.3.7.1: the preemptive ACKNACK is resent every "
+                     "RTPS_PREEMPTIVE_ACKNACK_RETRY_MS until the writer is heard, then never.",
+                     tc_srr_8_4_7_4_008});
 }
 
 } // namespace spec_test

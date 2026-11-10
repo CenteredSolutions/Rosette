@@ -956,6 +956,13 @@ enum class TopicKind : uint32_t {
 /// smallest value that waits at least 1 ms.
 #  define RTPS_HEARTBEAT_RESPONSE_DELAY_MS 2u
 #endif
+#ifndef RTPS_PREEMPTIVE_ACKNACK_RETRY_MS
+/// §8.4.7.4. How often a reliable reader resends its preemptive ACKNACK to
+/// a matched writer it has not heard from. A writer whose proxy for this
+/// reader holds everything acknowledged sends nothing on its own, so a lost
+/// preemptive ACKNACK, or a lost answer to it, is repaired only by another.
+#  define RTPS_PREEMPTIVE_ACKNACK_RETRY_MS RTPS_HEARTBEAT_PERIOD_MS
+#endif
 
 /// Most writers one user StatefulReader matches at once (its cap in the
 /// participant's WriterProxy pool); also the default number of fragment
