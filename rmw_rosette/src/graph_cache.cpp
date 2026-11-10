@@ -104,18 +104,18 @@ void on_endpoint_observed(void* self, const rtps::Guid& guid, const char* topic,
                           bool is_writer) noexcept {
     // An endpoint that cannot be stored stays out of the listing; discovery goes on.
     try {
-        static_cast<GraphCache*>(self)->add(guid, topic, type, is_writer);
+        (void)static_cast<GraphCache*>(self)->add(guid, topic, type, is_writer);
     } catch (const std::bad_alloc&) {
         return;
     }
 }
 
 void on_endpoint_gone(void* self, const rtps::Guid& guid) noexcept {
-    static_cast<GraphCache*>(self)->remove(guid);
+    (void)static_cast<GraphCache*>(self)->remove(guid);
 }
 
 void on_participant_gone(void* self, const rtps::GuidPrefix& prefix) noexcept {
-    static_cast<GraphCache*>(self)->remove_participant(prefix);
+    (void)static_cast<GraphCache*>(self)->remove_participant(prefix);
 }
 
 }  // namespace
@@ -130,28 +130,56 @@ GraphCache::GuidBytes GraphCache::key_of(const rtps::Guid& guid) noexcept {
     return key;
 }
 
-void GraphCache::add(const rtps::Guid& guid, const char* topic, const char* type, bool is_writer) {
+void GraphCache::changed() const noexcept {
+    if (on_change_ != nullptr) {
+        on_change_(on_change_user_);
+    }
+}
+
+bool GraphCache::add(const rtps::Guid& guid, const char* topic, const char* type, bool is_writer) {
+    const GuidBytes key = key_of(guid);
+    const auto      found = endpoints_.find(key);
+    if (found != endpoints_.end() && found->second.is_writer == is_writer
+        && found->second.topic == topic && found->second.type == type) {
+        return false;
+    }
+
     Endpoint endpoint;
     endpoint.topic = topic;
     endpoint.type = type;
     endpoint.is_writer = is_writer;
-    endpoints_[key_of(guid)] = std::move(endpoint);
+    endpoints_[key] = std::move(endpoint);
+    changed();
+    return true;
 }
 
-void GraphCache::remove(const rtps::Guid& guid) noexcept {
-    endpoints_.erase(key_of(guid));
+bool GraphCache::remove(const rtps::Guid& guid) noexcept {
+    if (endpoints_.erase(key_of(guid)) == 0u) {
+        return false;
+    }
+
+    changed();
+    return true;
 }
 
-void GraphCache::remove_participant(const rtps::GuidPrefix& prefix) noexcept {
+bool GraphCache::remove_participant(const rtps::GuidPrefix& prefix) noexcept {
     // Keys sort by prefix first, so one participant's endpoints are adjacent.
     GuidBytes low{};
     std::memcpy(low.data(), prefix.value, sizeof(prefix.value));
 
+    bool removed = false;
     auto it = endpoints_.lower_bound(low);
     while (it != endpoints_.end()
            && std::memcmp(it->first.data(), prefix.value, sizeof(prefix.value)) == 0) {
         it = endpoints_.erase(it);
+        removed = true;
     }
+
+    if (removed) {
+        changed();
+    }
+
+    return removed;
 }
 
 NamesAndTypes GraphCache::topic_names_and_types(bool no_demangle) const {

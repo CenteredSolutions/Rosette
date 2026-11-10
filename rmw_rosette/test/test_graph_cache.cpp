@@ -93,16 +93,52 @@ TEST(GraphCache, RemovesOnlyTheDepartedParticipant) {
     EXPECT_EQ(topics.count("/c"), 1u);
 }
 
+// The graph guard wakes exactly when a listing could differ: a new endpoint, a
+// re-announcement with other names, a withdrawal, a departure with endpoints.
+TEST(GraphCache, ReportsEveryChangeAndNothingElse) {
+    rmw_rosette::GraphCache cache;
+    int                     changes = 0;
+    cache.set_on_change([](void* user) noexcept { ++*static_cast<int*>(user); }, &changes);
+    const rtps::Guid guid = make_guid(1, 1);
+
+    EXPECT_TRUE(cache.add(guid, "rt/a", kStringType, true));
+    EXPECT_FALSE(cache.add(guid, "rt/a", kStringType, true));
+    EXPECT_EQ(changes, 1);
+
+    EXPECT_TRUE(cache.add(guid, "rt/a", "std_msgs::msg::dds_::Int32_", true));
+    EXPECT_TRUE(cache.add(guid, "rt/b", "std_msgs::msg::dds_::Int32_", true));
+    EXPECT_TRUE(cache.add(guid, "rt/b", "std_msgs::msg::dds_::Int32_", false));
+    EXPECT_EQ(changes, 4);
+
+    EXPECT_TRUE(cache.remove(guid));
+    EXPECT_FALSE(cache.remove(guid));
+    EXPECT_EQ(changes, 5);
+
+    cache.add(make_guid(2, 1), "rt/c", kStringType, true);
+    cache.add(make_guid(2, 2), "rt/d", kStringType, true);
+    EXPECT_EQ(changes, 7);
+    EXPECT_TRUE(cache.remove_participant(make_guid(2, 0).prefix));
+    EXPECT_FALSE(cache.remove_participant(make_guid(2, 0).prefix));
+    EXPECT_EQ(changes, 8);
+}
+
+// The match table hands the observer every endpoint, including one it has no
+// room for and so never reports as its own change; the cache's callback is
+// what wakes the graph guard for it.
 TEST(GraphCache, ObserverForwardsToTheCache) {
     rmw_rosette::GraphCache            cache;
+    int                                changes = 0;
     const rtps::GraphEndpointObserver& observer = cache.observer();
     const rtps::Guid                   guid = make_guid(3, 1);
+    cache.set_on_change([](void* user) noexcept { ++*static_cast<int*>(user); }, &changes);
 
     observer.on_endpoint(observer.user, guid, "rt/seen", kStringType, true);
     EXPECT_EQ(cache.topic_names_and_types(false).count("/seen"), 1u);
+    EXPECT_EQ(changes, 1);
 
     observer.on_endpoint_gone(observer.user, guid);
     EXPECT_TRUE(cache.topic_names_and_types(false).empty());
+    EXPECT_EQ(changes, 2);
 }
 
 TEST(RmwGraphNames, ListsALocalPublisherAndForgetsItWhenDestroyed) {

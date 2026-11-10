@@ -15,6 +15,11 @@
  * which CMake sets on POSIX. A firmware build has no cache, allocates nothing
  * for graph queries, and reports them as RMW_RET_UNSUPPORTED.
  *
+ * The cache, not the match table, tells the context's graph guard condition
+ * that the listings changed: the table reports only the endpoints it has room
+ * for, while the cache lists every endpoint, so only the cache knows when what
+ * a query returns has changed.
+ *
  * Concurrency: every method requires the context lock. The observer runs on
  * the thread driving the participant, which holds that lock, and queries take
  * it through ContextLock.
@@ -47,7 +52,8 @@ using NamesAndTypes = std::map<std::string, std::set<std::string>>;
  * Verification:
  * - Correct means: an endpoint is listed from its first announcement until it
  *   is withdrawn or its participant leaves, a repeated announcement changes
- *   nothing, and an endpoint the match table refused for space is still listed.
+ *   nothing, an endpoint the match table refused for space is still listed,
+ *   and the change callback fires exactly when a listing could differ.
  * - Covered by: rmw_rosette/test/test_graph_cache.cpp.
  *
  * References:
@@ -57,6 +63,7 @@ using NamesAndTypes = std::map<std::string, std::set<std::string>>;
  * Example:
  * @code{.cpp}
  * rmw_rosette::GraphCache cache;
+ * cache.set_on_change(trigger_graph_guard, &graph_guard);
  * participant.match_table().set_graph_endpoint_observer(&cache.observer());
  * // ... the participant runs discovery under the context lock ...
  * const rmw_rosette::NamesAndTypes topics = cache.topic_names_and_types(false);
@@ -65,10 +72,28 @@ using NamesAndTypes = std::map<std::string, std::set<std::string>>;
  */
 class GraphCache {
 public:
+    /// @brief Called, under the context lock, after the recorded endpoints change.
+    using OnChange = void (*)(void* user) noexcept;
+
     GraphCache() noexcept;
 
     /// @brief Returns the observer to register with the participant's match table.
     const rosette::rtps::GraphEndpointObserver& observer() const noexcept { return observer_; }
+
+    /**
+     * @brief Registers the callback told that the recorded endpoints changed.
+     *
+     * rmw_init() passes the trigger of the context's graph guard condition, so
+     * a waiter on rmw_node_get_graph_guard_condition() wakes for every change a
+     * graph query would report, and for none that it would not.
+     *
+     * @param[in] on_change Callback, or null for none.
+     * @param[in] user      Passed to `on_change`; must outlive the cache.
+     */
+    void set_on_change(OnChange on_change, void* user) noexcept {
+        on_change_ = on_change;
+        on_change_user_ = user;
+    }
 
     /**
      * @brief Records an endpoint, or refreshes one already recorded.
@@ -77,15 +102,19 @@ public:
      * @param[in] topic     DDS topic name, NUL-terminated; copied.
      * @param[in] type      DDS type name, NUL-terminated; copied.
      * @param[in] is_writer `true` for a writer; `false` for a reader.
-     * @throws std::bad_alloc when the heap is exhausted.
+     * @return `true`, after the change callback ran, when the endpoint is new or
+     *   its names or kind differ from the recorded ones; `false` for a repeated
+     *   identical announcement.
+     * @throws std::bad_alloc when the heap is exhausted; nothing is recorded.
      */
-    void add(const rosette::rtps::Guid& guid, const char* topic, const char* type, bool is_writer);
+    bool add(const rosette::rtps::Guid& guid, const char* topic, const char* type, bool is_writer);
 
-    /// @brief Forgets one endpoint; an unknown GUID is ignored.
-    void remove(const rosette::rtps::Guid& guid) noexcept;
+    /// @brief Forgets one endpoint; `true`, after the change callback ran, when it was recorded.
+    bool remove(const rosette::rtps::Guid& guid) noexcept;
 
-    /// @brief Forgets every endpoint of a participant.
-    void remove_participant(const rosette::rtps::GuidPrefix& prefix) noexcept;
+    /// @brief Forgets every endpoint of a participant; `true`, after the change callback ran,
+    /// when it had any.
+    bool remove_participant(const rosette::rtps::GuidPrefix& prefix) noexcept;
 
     /**
      * @brief Lists topics and their types, as rmw_get_topic_names_and_types() reports them.
@@ -138,8 +167,13 @@ private:
 
     static GuidBytes key_of(const rosette::rtps::Guid& guid) noexcept;
 
+    /// @brief Runs the change callback, when one is registered.
+    void changed() const noexcept;
+
     std::map<GuidBytes, Endpoint>        endpoints_;
     rosette::rtps::GraphEndpointObserver observer_{};
+    OnChange                             on_change_ = nullptr;
+    void*                                on_change_user_ = nullptr;
 };
 
 }  // namespace rmw_rosette

@@ -823,6 +823,7 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     ctx.participant->set_on_graph_change(trigger_graph_guard, &ctx.graph_guard);
 #if RMW_ROSETTE_GRAPH_CACHE
     ctx.graph_cache = new (ctx.graph_cache_storage) rmw_rosette::GraphCache();
+    ctx.graph_cache->set_on_change(trigger_graph_guard, &ctx.graph_guard);
     ctx.participant->match_table().set_graph_endpoint_observer(&ctx.graph_cache->observer());
 #endif
     if (!ctx.discovery_info.create(*ctx.participant)) {
