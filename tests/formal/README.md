@@ -9,6 +9,7 @@ DDSI-RTPS 2.5 specification allows a peer, not against one vendor's:
 | `SedpReliable.tla` | What the specification requires and permits: a peer's SEDP announcer, a network that loses, duplicates and reorders, and the WriterProxy bookkeeping of §8.4.10.4. No Rosette choice. |
 | `RosettePeerTiers.tla` | Rosette's choices on top: the two-tier peer table (`docs/design/two_tier_peer_table.md`) and the graph cache's refresh of a reactivated peer. |
 | `MCRosettePeerTiers.tla` | The model-checking harness (endpoint symmetry). |
+| `RosettePeerTable.tla` | The table as a whole: several peers competing for fewer active slots, with each peer's SEDP exchange abstracted to one step. |
 
 Where Rosette has a choice to make, the module carries it as a constant, with
 the code's choice and its alternatives side by side, so a check shows what
@@ -19,6 +20,11 @@ each choice costs.
 ```sh
 tests/formal/run_tlc.sh <delivery> <sweep_rule> <park_rule> <property> [max_sn] [net_cap]
 tests/formal/run_tlc.sh in_order caught_up keep_refresh_target EventuallyConsistent 3 2
+```
+
+```sh
+tests/formal/run_table.sh <property> [peers] [slots] [records] [unreachable] [budget]
+tests/formal/run_table.sh EveryPeerServed 3 2 3 '{1}' 4
 ```
 
 TLC runs in an `eclipse-temurin:21-jre` container; `tla2tools.jar` 1.7.4 is
@@ -85,6 +91,29 @@ Bounds: two endpoints, `MaxSN = 3`, two messages in flight. `SweepRule` is
   arrive after reactivation within one settle period. With both fixes above,
   the listing converges (`EventuallyConsistent`); the drop is a flicker that
   the newer DATA repairs.
+
+## Phase 2 results
+
+`RosettePeerTable` with three peers (four in the larger runs), one to three
+slots, a record for every peer, and four or five environment events (joins,
+leaves, announcements, local endpoint changes) per behavior.
+
+* **The invariants hold:** at most `RTPS_MAX_PEERS` peers are active, the
+  oldest-first order covers exactly the active peers, a parked peer is never
+  matched, and a matched peer is never parked to make room.
+* **Liveness holds when the board has room.** Once the network is quiet and
+  fewer live peers share a match than there are slots, every peer is
+  eventually exchanged with and every shared match is made, including the
+  owed peers that `serve_owed_peer()` serves in table order rather than
+  oldest first. More matching peers than slots is the over-capacity case the
+  design accepts.
+* **A peer that cannot complete its exchange holds its slot for good.** A
+  peer whose SPDP multicast arrives but whose SEDP exchange never completes
+  (unicast filtered, an unreachable announced locator) never acknowledges
+  this side's announcements, so it never settles and is never parked; its
+  SPDP keeps its lease alive. It costs a slot exactly as a matched peer
+  does: with matched and unreachable peers filling every slot, a reachable
+  peer stays pending forever (`run_table.sh EveryPeerServed 3 2 3 '{1}' 4`).
 
 ## Phases
 
