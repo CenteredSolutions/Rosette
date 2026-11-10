@@ -626,6 +626,42 @@ public:
                  uint32_t          payload_len,
                  uint32_t          now_ms) noexcept;
 
+    /**
+     * @brief Renews a known peer's lease because a message from it arrived.
+     *
+     * SPDP announcements are not the only evidence that a participant is
+     * alive: any well-formed RTPS message whose header names it is. The
+     * participant calls this for every message it parses in full, so a peer
+     * that keeps exchanging HEARTBEATs, ACKNACKs or DATA with this
+     * participant survives the loss of one or more of its SPDP
+     * announcements. Active, pending and parked peers are renewed alike;
+     * a prefix with no record creates none, since only SPDP admits a peer.
+     *
+     * @param[in] sender_prefix GUID prefix from the RTPS message header.
+     * @param[in] now_ms        Current rosette::platform::monotonic_ms().
+     * @return `true` when `sender_prefix` is a known peer and its lease now
+     *   expires at `now_ms` plus its announced lease duration; `false` when
+     *   it is unknown, and nothing changed.
+     *
+     * Verification:
+     * - Correct means: a known peer's expiry becomes now + leaseMs and its
+     *   lease duration is unchanged; an unknown prefix records nothing.
+     * - Covered by: TC-PART-8.5.3-015.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (participant leaseDuration), §8.4.13
+     *   (liveliness of automatic entities), §9.4.2.4 (header GuidPrefix)
+     */
+    bool renew_lease(const GuidPrefix& sender_prefix, uint32_t now_ms) noexcept {
+        PeerEntry* known = find_peer(sender_prefix);
+        if (known == nullptr) {
+            return false;
+        }
+
+        known->leaseExpiryMs = now_ms + known->leaseMs;
+        return true;
+    }
+
     // ----------------------------------------------------------
     // tick()
     //

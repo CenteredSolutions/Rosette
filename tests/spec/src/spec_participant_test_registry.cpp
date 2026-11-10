@@ -11,6 +11,7 @@ void register_all_participant_tests(std::vector<TestCase>& tests) {
     append_participant_writer_eviction_tests(tests);
     append_participant_reader_reliability_tests(tests);
     append_participant_driver_pass_budget_tests(tests);
+    append_participant_lease_tests(tests);
     append_transport_multicast_interface_tests(tests);
 }
 

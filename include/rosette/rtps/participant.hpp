@@ -465,9 +465,40 @@ public:
     bool delete_writer(StatefulWriter* writer) noexcept;
     bool delete_reader(StatefulReader* reader) noexcept;
 
-    // ----------------------------------------------------------
-    // parse_received() — §8.3.4, p. 69.
-    // ----------------------------------------------------------
+    /**
+     * @brief Processes one received RTPS message: dispatches its submessages
+     *   and renews the sending participant's lease.
+     *
+     * Every datagram the transport receives, metatraffic or user traffic,
+     * enters the participant here. parse_message() walks the submessages and
+     * hands each to the endpoint, SPDP, or SEDP handler it addresses.
+     *
+     * A message that parses in full is proof that the participant named in
+     * its header is alive, so its lease is renewed (SpdpReader::renew_lease())
+     * whether it carried an SPDP announcement or an ACKNACK. A peer whose
+     * periodic SPDP is lost is then kept as long as it talks to this
+     * participant at all; Cyclone DDS, which announces every 8 s against a
+     * 10 s lease, would otherwise be unmatched by a single lost announcement.
+     * A message that fails to parse renews nothing.
+     *
+     * @param[in] buf The received datagram, starting at the RTPS header;
+     *   borrowed for the call only.
+     * @param[in] len Datagram length in octets.
+     * @return ParseResult::OK when every submessage was processed and the
+     *   sender's lease (if it is a known peer) renewed; any other value names
+     *   why parsing stopped, and the lease is left as it was.
+     *
+     * Verification:
+     * - Correct means: a known peer's lease expiry moves to now + its lease
+     *   duration on every well-formed message from it, of any submessage
+     *   kind; a malformed message, or one from an unknown prefix, changes no
+     *   record.
+     * - Covered by: TC-PART-8.5.3-015.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.4 (message receiver), §8.5.3.2 (lease),
+     *   §9.4.2.4 (header GuidPrefix)
+     */
     ParseResult parse_received(const Octet* buf, uint32_t len) noexcept;
 
     /**
