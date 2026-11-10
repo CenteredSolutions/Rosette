@@ -31,7 +31,13 @@
  * (discovery_info_changed()), every parked peer is owed them and is
  * reactivated in turn.
  *
- * Verification: TC-PART-8.5.3-011 and -012 (tests/spec), and at network
+ * Parking is invisible to the graph observer, which lists the network's
+ * endpoints rather than the active tier's. Reactivation starts a refresh of
+ * the peer's listing, which finish_peer_refreshes() completes once the
+ * replay has caught up, so an endpoint withdrawn while the peer was parked
+ * leaves the listing too.
+ *
+ * Verification: TC-PART-8.5.3-011 to -016 (tests/spec), and at network
  * scale tests/ros2/discovery_scale.
  *
  * References:
@@ -78,6 +84,14 @@ void RTPSParticipant::activate_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
                peer.guidPrefix.value[1], peer.guidPrefix.value[2], peer.guidPrefix.value[3],
                peer.guidPrefix.value[4], peer.guidPrefix.value[5],
                peer.parked ? " (was parked)" : "");
+    const bool refresh = peer.parked
+                         && (peer.parkedPublicationsSn != 0u || peer.parkedSubscriptionsSn != 0u)
+                         && match_table_.participant_refreshing(peer.guidPrefix);
+    if (!refresh) {
+        peer.parkedPublicationsSn = 0u;
+        peer.parkedSubscriptionsSn = 0u;
+    }
+
     peer.parked = false;
     peer.owed = false;
     peer.lastSedpMs = now_ms;
@@ -140,7 +154,7 @@ void RTPSParticipant::park_peer(PeerEntry& peer) noexcept {
 
     // The proxies go first: they refer to the active slot's locators, which
     // stay in place until the slot is freed.
-    match_table_.remove_participant(prefix);
+    match_table_.release_participant(prefix);
     sedp_writer_.on_peer_removed(prefix);
     sedp_reader_.on_peer_removed(prefix);
     spdp_reader_.deactivate(peer);
@@ -201,6 +215,32 @@ void RTPSParticipant::owe_parked_peers() noexcept {
         if (peer.parked) {
             peer.owed = true;
         }
+    });
+}
+
+void RTPSParticipant::finish_peer_refreshes() noexcept {
+    // A number kept as UINT32_MAX stood for one above 32 bits: any such is reached.
+    const auto reaches = [](const SequenceNumber& resolved, uint32_t kept) noexcept {
+        return resolved.high != 0 || resolved.low >= kept;
+    };
+
+    spdp_reader_.for_each_peer([&](PeerEntry& peer) noexcept {
+        if (!peer.active()
+            || (peer.parkedPublicationsSn == 0u && peer.parkedSubscriptionsSn == 0u)) {
+            return;
+        }
+
+        SequenceNumber publications;
+        SequenceNumber subscriptions;
+        if (!sedp_reader_.caught_up_with(peer.guidPrefix, publications, subscriptions)
+            || !reaches(publications, peer.parkedPublicationsSn)
+            || !reaches(subscriptions, peer.parkedSubscriptionsSn)) {
+            return;
+        }
+
+        peer.parkedPublicationsSn = 0u;
+        peer.parkedSubscriptionsSn = 0u;
+        match_table_.participant_refreshed(peer.guidPrefix);
     });
 }
 

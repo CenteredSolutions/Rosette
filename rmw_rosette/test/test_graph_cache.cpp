@@ -122,6 +122,36 @@ TEST(GraphCache, ReportsEveryChangeAndNothingElse) {
     EXPECT_EQ(changes, 8);
 }
 
+// A reactivated participant replays its live endpoints; the refresh forgets
+// only those of that participant the replay did not confirm, and reports the
+// change once.
+TEST(GraphCache, RefreshForgetsOnlyUnconfirmed) {
+    rmw_rosette::GraphCache cache;
+    int                     changes = 0;
+    cache.add(make_guid(1, 1), "rt/replayed", kStringType, true);
+    cache.add(make_guid(1, 2), "rt/withdrawn", kStringType, true);
+    cache.add(make_guid(2, 1), "rt/other_participant", kStringType, true);
+    cache.set_on_change([](void* user) noexcept { ++*static_cast<int*>(user); }, &changes);
+
+    const rtps::GuidPrefix refreshed = make_guid(1, 0).prefix;
+    cache.begin_refresh(refreshed);
+    EXPECT_EQ(cache.topic_names_and_types(false).size(), 3u);
+    EXPECT_FALSE(cache.add(make_guid(1, 1), "rt/replayed", kStringType, true));
+    EXPECT_TRUE(cache.add(make_guid(1, 3), "rt/new", kStringType, true));
+    EXPECT_EQ(changes, 1);
+
+    EXPECT_TRUE(cache.end_refresh(refreshed));
+    EXPECT_EQ(changes, 2);
+    const auto topics = cache.topic_names_and_types(false);
+    EXPECT_EQ(topics.size(), 3u);
+    EXPECT_EQ(topics.count("/replayed"), 1u);
+    EXPECT_EQ(topics.count("/new"), 1u);
+    EXPECT_EQ(topics.count("/other_participant"), 1u);
+
+    EXPECT_FALSE(cache.end_refresh(refreshed));
+    EXPECT_EQ(changes, 2);
+}
+
 // The match table hands the observer every endpoint, including one it has no
 // room for and so never reports as its own change; the cache's callback is
 // what wakes the graph guard for it.

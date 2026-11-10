@@ -409,6 +409,26 @@ it really matches, plus a few for peers in their first exchange.
 * `RTPS_PEER_SETTLE_MS`: how long a peer must stay settled before it can be
   parked; one SPDP period by default.
 
+### Graph listing
+
+A hosted build lists every endpoint on the network for rmw graph queries
+(`rmw_rosette::GraphCache`, a `GraphEndpointObserver` of the match table).
+Parking is not a departure, so the observer is not told: a parked peer's
+topics and services stay listed. Only lease expiry or disposal removes them,
+with one `on_participant_gone` notice.
+
+Promotion replays the peer's live announcements, but an endpoint it withdrew
+while parked is not replayed: its announcer now holds a GAP there, not a
+disposal. Promotion therefore starts a refresh. The observer marks the peer's
+endpoints unconfirmed, each replayed announcement confirms one, and once both
+of the peer's SEDP readers have resolved every number up to the parked ones
+with none missing, the observer forgets what is still unconfirmed. Waiting
+for none missing, not only for the parked numbers, keeps an endpoint
+re-announced at a higher number listed while that announcement is on its way.
+The parked numbers serve as the refresh's targets, so the refresh adds
+nothing to the record, and a firmware build, which registers no observer,
+never starts one.
+
 ## Verification
 
 Acceptance: `tests/ros2/run_rmw_peer_lockout_loopback.sh` passes with the
@@ -432,6 +452,10 @@ Spec tests:
   less than its parked number is treated as started over.
 * Settling: a peer between two endpoint announcements is not parked; a peer
   with unacknowledged SEDP is not parked.
+* Graph listing (`TC-PART-8.5.3-015` to `-017`): parking leaves the
+  observer's listing unchanged and a departure is announced once; a promoted
+  peer's endpoint withdrawn while parked is forgotten once the replay has
+  caught up, and not before an advertised re-announcement arrives.
 
 Interop: a stock participant parked on the board lists the board's node with
 `ros2 node list`, and lists a node the board creates after the peer was

@@ -53,7 +53,9 @@ using NamesAndTypes = std::map<std::string, std::set<std::string>>;
  * - Correct means: an endpoint is listed from its first announcement until it
  *   is withdrawn or its participant leaves, a repeated announcement changes
  *   nothing, an endpoint the match table refused for space is still listed,
- *   and the change callback fires exactly when a listing could differ.
+ *   a parked participant's endpoints stay listed and those it withdrew while
+ *   parked leave once its replay completes, and the change callback fires
+ *   exactly when a listing could differ.
  * - Covered by: rmw_rosette/test/test_graph_cache.cpp.
  *
  * References:
@@ -117,6 +119,36 @@ public:
     bool remove_participant(const rosette::rtps::GuidPrefix& prefix) noexcept;
 
     /**
+     * @brief Marks every endpoint of a reactivated participant unconfirmed.
+     *
+     * The participant replays its live endpoints after reactivation; add()
+     * confirms each one it replays. Nothing leaves the listing yet.
+     *
+     * @param[in] prefix GUID prefix of the participant being refreshed.
+     *
+     * Verification:
+     * - Correct means: the listings and the change callback are unaffected.
+     * - Covered by: rmw_rosette/test/test_graph_cache.cpp (RefreshForgetsOnlyUnconfirmed).
+     */
+    void begin_refresh(const rosette::rtps::GuidPrefix& prefix) noexcept;
+
+    /**
+     * @brief Forgets every endpoint of a refreshed participant that its replay did not confirm.
+     *
+     * @param[in] prefix GUID prefix of the participant whose replay is complete.
+     * @return `true`, after the change callback ran, when an endpoint was forgotten.
+     *
+     * Verification:
+     * - Correct means: exactly the endpoints of `prefix` not passed to add()
+     *   since begin_refresh() are forgotten; other participants are untouched.
+     * - Covered by: rmw_rosette/test/test_graph_cache.cpp (RefreshForgetsOnlyUnconfirmed).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4.1 (a late joiner receives only live announcements)
+     */
+    bool end_refresh(const rosette::rtps::GuidPrefix& prefix) noexcept;
+
+    /**
      * @brief Lists topics and their types, as rmw_get_topic_names_and_types() reports them.
      *
      * With demangling, only ROS topics (`rt/`) are listed, as `/chatter` with
@@ -163,14 +195,25 @@ private:
         std::string topic;
         std::string type;
         bool        is_writer = false;
+        /// Cleared by begin_refresh(), set again when the endpoint is announced.
+        bool        confirmed = true;
     };
 
+    using Endpoints = std::map<GuidBytes, Endpoint>;
+
     static GuidBytes key_of(const rosette::rtps::Guid& guid) noexcept;
+
+    /// @brief The first endpoint of participant `prefix`; its endpoints are adjacent from there.
+    Endpoints::iterator first_of(const rosette::rtps::GuidPrefix& prefix) noexcept;
+
+    /// @brief Whether `it` is an endpoint of participant `prefix`.
+    bool belongs_to(Endpoints::const_iterator        it,
+                    const rosette::rtps::GuidPrefix& prefix) const noexcept;
 
     /// @brief Runs the change callback, when one is registered.
     void changed() const noexcept;
 
-    std::map<GuidBytes, Endpoint>        endpoints_;
+    Endpoints                            endpoints_;
     rosette::rtps::GraphEndpointObserver observer_{};
     OnChange                             on_change_ = nullptr;
     void*                                on_change_user_ = nullptr;

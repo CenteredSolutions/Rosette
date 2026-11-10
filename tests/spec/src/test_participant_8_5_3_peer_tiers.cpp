@@ -13,6 +13,8 @@
 
 #include "participant_test_support.hpp"
 
+#include <map>
+
 namespace spec_test {
 
 extern uint32_t g_participant_test_now_ms;
@@ -46,13 +48,15 @@ bool announce(RTPSParticipant& p, const GuidPrefix& prefix, Octet host, uint32_t
                                    now_ms);
 }
 
-/// Delivers, at `now_ms`, one SEDP announcement from a peer's announcer.
+/// Delivers, at `now_ms`, one SEDP announcement from a peer's announcer. The
+/// endpoint's entity key is `key`, or `sn` when `key` is 0.
 bool deliver_announcement(RTPSParticipant& p, const GuidPrefix& prefix, bool publication,
-                          const char* topic, int64_t sn, uint32_t now_ms) {
+                          const char* topic, int64_t sn, uint32_t now_ms, Octet key = 0u) {
+    const Octet        entity_key = key != 0u ? key : static_cast<Octet>(sn);
     std::vector<Octet> payload{};
     if (publication) {
         DiscoveredWriterData wd{};
-        wd.writerGuid = Guid{prefix, make_entity(0x71u, 0x72u, static_cast<Octet>(sn), 0x03u)};
+        wd.writerGuid = Guid{prefix, make_entity(0x71u, 0x72u, entity_key, 0x03u)};
         wd.topicName.assign(topic);
         wd.typeName.assign("pkg::msg::dds_::T_");
         wd.reliabilityKind = ReliabilityKind::RELIABLE;
@@ -61,7 +65,7 @@ bool deliver_announcement(RTPSParticipant& p, const GuidPrefix& prefix, bool pub
         }
     } else {
         DiscoveredReaderData rd{};
-        rd.readerGuid = Guid{prefix, make_entity(0x61u, 0x62u, static_cast<Octet>(sn), 0x04u)};
+        rd.readerGuid = Guid{prefix, make_entity(0x61u, 0x62u, entity_key, 0x04u)};
         rd.topicName.assign(topic);
         rd.typeName.assign("pkg::msg::dds_::T_");
         rd.reliabilityKind = ReliabilityKind::RELIABLE;
@@ -114,6 +118,108 @@ bool is_active(RTPSParticipant& p, const GuidPrefix& prefix) {
 bool is_parked(RTPSParticipant& p, const GuidPrefix& prefix) {
     const PeerEntry* e = record(p, prefix);
     return e != nullptr && e->parked;
+}
+
+/// Delivers a GAP from a peer's publications announcer declaring [start, base) irrelevant.
+bool deliver_publications_gap(RTPSParticipant& p, const GuidPrefix& prefix, int64_t start,
+                              int64_t base) {
+    SequenceNumberSet irrelevant{};
+    irrelevant.bitmapBase = SequenceNumber::from_int64(base);
+    irrelevant.numBits = 0u;
+    MessageBuilder builder{};
+    if (!builder.begin(prefix)
+        || !builder.append_gap(entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR,
+                               entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER,
+                               SequenceNumber::from_int64(start), irrelevant)) {
+        builder.abort();
+        return false;
+    }
+
+    BufRef                   msg = builder.finish();
+    const std::vector<Octet> bytes(msg.data, msg.data + msg.size);
+    msg.reset();
+    return p.parse_received(bytes.data(), static_cast<uint32_t>(bytes.size())) == ParseResult::OK;
+}
+
+/// Orders GUIDs by their octets, prefix first, as the host graph cache keys them.
+struct GuidOrder {
+    bool operator()(const Guid& x, const Guid& y) const { return memcmp(&x, &y, sizeof(Guid)) < 0; }
+};
+
+/// Delivers, at `now_ms`, a HEARTBEAT from a peer's publications announcer holding [first, last].
+bool deliver_publications_heartbeat(RTPSParticipant& p, const GuidPrefix& prefix, int64_t first,
+                                    int64_t last, uint32_t now_ms) {
+    MessageBuilder builder{};
+    if (!builder.begin(prefix)
+        || !builder.append_heartbeat(entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR,
+                                     entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER,
+                                     SequenceNumber::from_int64(first),
+                                     SequenceNumber::from_int64(last), 1, true)) {
+        builder.abort();
+        return false;
+    }
+
+    BufRef                   msg = builder.finish();
+    const std::vector<Octet> bytes(msg.data, msg.data + msg.size);
+    msg.reset();
+    g_participant_test_now_ms = now_ms;
+    return p.parse_received(bytes.data(), static_cast<uint32_t>(bytes.size())) == ParseResult::OK;
+}
+
+/// A graph observer that lists endpoints as the host graph cache does and counts the notices.
+struct GraphLog {
+    std::map<Guid, bool, GuidOrder> listed{};  ///< Endpoint GUID to whether it is confirmed.
+    int                             endpoint_gone = 0;
+    int                             participant_gone = 0;
+    int                             refreshing = 0;
+    int                             refreshed = 0;
+    GraphEndpointObserver           observer{};
+
+    GraphLog() {
+        observer.user = this;
+        observer.on_endpoint = [](void* u, const Guid& g, const char*, const char*, bool) noexcept {
+            static_cast<GraphLog*>(u)->listed[g] = true;
+        };
+        observer.on_endpoint_gone = [](void* u, const Guid& g) noexcept {
+            auto* log = static_cast<GraphLog*>(u);
+            log->listed.erase(g);
+            ++log->endpoint_gone;
+        };
+        observer.on_participant_gone = [](void* u, const GuidPrefix& prefix) noexcept {
+            auto* log = static_cast<GraphLog*>(u);
+            log->forget(prefix, /*unconfirmed_only=*/false);
+            ++log->participant_gone;
+        };
+        observer.on_participant_refreshing = [](void* u, const GuidPrefix& prefix) noexcept {
+            auto* log = static_cast<GraphLog*>(u);
+            for (auto& entry : log->listed) {
+                if (entry.first.prefix == prefix) {
+                    entry.second = false;
+                }
+            }
+
+            ++log->refreshing;
+        };
+        observer.on_participant_refreshed = [](void* u, const GuidPrefix& prefix) noexcept {
+            auto* log = static_cast<GraphLog*>(u);
+            log->forget(prefix, /*unconfirmed_only=*/true);
+            ++log->refreshed;
+        };
+    }
+
+    void forget(const GuidPrefix& prefix, bool unconfirmed_only) {
+        for (auto it = listed.begin(); it != listed.end();) {
+            const bool drop = it->first.prefix == prefix && !(unconfirmed_only && it->second);
+            it = drop ? listed.erase(it) : std::next(it);
+        }
+    }
+
+    bool lists(const Guid& guid) const { return listed.count(guid) != 0u; }
+};
+
+/// The GUID deliver_announcement() gives a peer's writer announced at `sn`.
+Guid announced_writer(const GuidPrefix& prefix, int64_t sn) {
+    return Guid{prefix, make_entity(0x71u, 0x72u, static_cast<Octet>(sn), 0x03u)};
 }
 
 }  // namespace
@@ -304,6 +410,128 @@ static bool tc_part_8_5_3_014(std::string& err) {
     return true;
 }
 
+// Parking releases a peer's endpoints from the match table but not from the
+// graph observer, which lists the network's endpoints: it hears nothing. Only
+// the departure of the peer, by lease expiry, is announced, and once.
+static bool tc_part_8_5_3_015(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    GraphLog log{};
+    p.match_table().set_graph_endpoint_observer(&log.observer);
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1010u), "two peers are active");
+    CHECK(deliver_announcement(p, a, true, "rt/kept", 1, 1000u), "peer A announces a writer");
+    CHECK(log.lists(announced_writer(a, 1)), "the observer lists the writer");
+
+    CHECK(announce(p, c, 0x13u, 1200u), "a third peer is recorded");
+    CHECK(is_parked(p, a) && is_active(p, c), "A is parked for the third peer");
+    CHECK(p.match_table().count("rt/kept", true) == 0u, "parking releases A's writer record");
+    CHECK(log.lists(announced_writer(a, 1)) && log.endpoint_gone == 0 && log.participant_gone == 0
+              && log.refreshing == 0,
+          "the observer hears nothing of the parking and keeps listing A's writer");
+
+    g_participant_test_now_ms = 40000u;
+    p.tick(40000u);
+    CHECK(record(p, a) == nullptr, "A's lease expires");
+    CHECK(!log.lists(announced_writer(a, 1)), "the departed peer's writer is no longer listed");
+    CHECK(log.endpoint_gone == 0, "a departure is not announced endpoint by endpoint");
+    CHECK(log.participant_gone == 3, "each departed peer is announced once");
+    return true;
+}
+
+// A parked peer that withdrew one endpoint and announced another is
+// reactivated by the new announcement. The replay skips the withdrawn one
+// with a GAP, so the refresh started at reactivation completes only once
+// both announcers have caught up past the numbers kept at parking; it then
+// forgets the withdrawn endpoint and keeps the new one.
+static bool tc_part_8_5_3_016(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    GraphLog log{};
+    p.match_table().set_graph_endpoint_observer(&log.observer);
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1010u), "two peers are active");
+    CHECK(deliver_announcement(p, a, true, "rt/withdrawn", 1, 1000u), "A announces a writer");
+    CHECK(announce(p, c, 0x13u, 1200u) && is_parked(p, a), "A is parked for a third peer");
+    CHECK(record(p, a)->parkedPublicationsSn == 1u, "the parked number is kept");
+
+    // While parked, A withdrew writer 1 (SN 2) and announced writer 3 (SN 3).
+    CHECK(deliver_announcement(p, a, true, "rt/new", 3, 1400u), "A announces a new writer");
+    CHECK(is_active(p, a) && log.refreshing == 1,
+          "the announcement reactivates A and refreshes it");
+    CHECK(log.lists(announced_writer(a, 3)) && log.lists(announced_writer(a, 1)),
+          "the new writer is listed; the withdrawn one is not yet known to be gone");
+
+    g_participant_test_now_ms = 1450u;
+    p.tick(1450u);
+    CHECK(log.refreshed == 0, "the refresh waits while SNs 1 and 2 are missing");
+    CHECK(log.lists(announced_writer(a, 1)), "so the unconfirmed writer stays listed");
+
+    CHECK(deliver_publications_gap(p, a, 1, 3), "A's replay skips SNs 1 and 2");
+    g_participant_test_now_ms = 1500u;
+    p.tick(1500u);
+    CHECK(log.refreshed == 1, "the refresh completes once the replay has caught up");
+    CHECK(!log.lists(announced_writer(a, 1)), "the writer withdrawn while parked is forgotten");
+    CHECK(log.lists(announced_writer(a, 3)), "the replayed writer stays listed");
+    CHECK(record(p, a)->parkedPublicationsSn == 0u && record(p, a)->parkedSubscriptionsSn == 0u,
+          "no refresh remains under way");
+
+    g_participant_test_now_ms = 1600u;
+    p.tick(1600u);
+    CHECK(log.refreshed == 1, "a refresh completes once");
+    return true;
+}
+
+// An endpoint re-announced while its peer was parked moves to a sequence
+// number above the one kept at parking. A refresh started by a HEARTBEAT
+// that advertises it does not complete while that announcement is missing,
+// even though everything up to the kept number has arrived, so the endpoint
+// never leaves the listing.
+static bool tc_part_8_5_3_017(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    GraphLog log{};
+    p.match_table().set_graph_endpoint_observer(&log.observer);
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1010u), "two peers are active");
+    CHECK(deliver_announcement(p, a, true, "rt/moved", 1, 1000u)
+              && deliver_announcement(p, a, true, "rt/still", 2, 1000u),
+          "A announces two writers");
+    CHECK(announce(p, c, 0x13u, 1200u) && is_parked(p, a), "A is parked for a third peer");
+    CHECK(record(p, a)->parkedPublicationsSn == 2u, "the parked number is kept");
+
+    // While parked, A re-announced writer 1 at SN 3; SN 1 is now irrelevant.
+    CHECK(deliver_publications_heartbeat(p, a, 1, 3, 1400u), "A's announcer advertises SN 3");
+    CHECK(is_active(p, a) && log.refreshing == 1, "the heartbeat reactivates A and refreshes it");
+    CHECK(deliver_publications_gap(p, a, 1, 2)
+              && deliver_announcement(p, a, true, "rt/still", 2, 1410u),
+          "the replay resolves SNs 1 and 2");
+    g_participant_test_now_ms = 1450u;
+    p.tick(1450u);
+    CHECK(log.refreshed == 0, "the refresh waits for the advertised SN 3");
+    CHECK(log.lists(announced_writer(a, 1)), "the re-announced writer stays listed meanwhile");
+
+    CHECK(deliver_announcement(p, a, true, "rt/moved", 3, 1460u, 1u), "SN 3 re-announces writer 1");
+    g_participant_test_now_ms = 1500u;
+    p.tick(1500u);
+    CHECK(log.refreshed == 1, "the refresh completes");
+    CHECK(log.lists(announced_writer(a, 1)) && log.lists(announced_writer(a, 2)),
+          "both live writers remain listed");
+    return true;
+}
+
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.3-011",
                      "§8.5.3.2/§8.5.4.1: a peer finding the active tier full waits until a "
@@ -323,6 +551,18 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "§8.5.3.2/§9.6.2: a parked peer's lease is renewed only by a well-formed "
                      "SPDP payload carrying its own PID_PARTICIPANT_GUID.",
                      tc_part_8_5_3_014});
+    tests.push_back({"TC-PART-8.5.3-015",
+                     "§8.5.3.2: parking a peer leaves the graph observer's listing unchanged; "
+                     "the peer's departure is announced to it once.",
+                     tc_part_8_5_3_015});
+    tests.push_back({"TC-PART-8.5.3-016",
+                     "§8.5.4.1/§8.4.10.4: reactivating a parked peer refreshes its listing; once "
+                     "its replay has caught up, an endpoint withdrawn while parked is forgotten.",
+                     tc_part_8_5_3_016});
+    tests.push_back({"TC-PART-8.5.3-017",
+                     "§8.5.4.1/§8.4.10.4: a refresh does not complete while an announcement the "
+                     "peer's HEARTBEAT advertises above the parked number is missing.",
+                     tc_part_8_5_3_017});
 }
 
 }  // namespace spec_test

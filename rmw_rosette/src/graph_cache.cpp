@@ -118,10 +118,23 @@ void on_participant_gone(void* self, const rtps::GuidPrefix& prefix) noexcept {
     (void)static_cast<GraphCache*>(self)->remove_participant(prefix);
 }
 
+void on_participant_refreshing(void* self, const rtps::GuidPrefix& prefix) noexcept {
+    static_cast<GraphCache*>(self)->begin_refresh(prefix);
+}
+
+void on_participant_refreshed(void* self, const rtps::GuidPrefix& prefix) noexcept {
+    (void)static_cast<GraphCache*>(self)->end_refresh(prefix);
+}
+
 }  // namespace
 
 GraphCache::GraphCache() noexcept
-    : observer_{this, on_endpoint_observed, on_endpoint_gone, on_participant_gone} {}
+    : observer_{this,
+                on_endpoint_observed,
+                on_endpoint_gone,
+                on_participant_gone,
+                on_participant_refreshing,
+                on_participant_refreshed} {}
 
 GraphCache::GuidBytes GraphCache::key_of(const rtps::Guid& guid) noexcept {
     static_assert(sizeof(rtps::Guid) == sizeof(GuidBytes), "a GUID is 16 octets, prefix first");
@@ -141,6 +154,7 @@ bool GraphCache::add(const rtps::Guid& guid, const char* topic, const char* type
     const auto      found = endpoints_.find(key);
     if (found != endpoints_.end() && found->second.is_writer == is_writer
         && found->second.topic == topic && found->second.type == type) {
+        found->second.confirmed = true;
         return false;
     }
 
@@ -162,15 +176,49 @@ bool GraphCache::remove(const rtps::Guid& guid) noexcept {
     return true;
 }
 
-bool GraphCache::remove_participant(const rtps::GuidPrefix& prefix) noexcept {
+GraphCache::Endpoints::iterator GraphCache::first_of(const rtps::GuidPrefix& prefix) noexcept {
     // Keys sort by prefix first, so one participant's endpoints are adjacent.
     GuidBytes low{};
     std::memcpy(low.data(), prefix.value, sizeof(prefix.value));
+    return endpoints_.lower_bound(low);
+}
 
+bool GraphCache::belongs_to(Endpoints::const_iterator it,
+                            const rtps::GuidPrefix&   prefix) const noexcept {
+    return it != endpoints_.end()
+           && std::memcmp(it->first.data(), prefix.value, sizeof(prefix.value)) == 0;
+}
+
+bool GraphCache::remove_participant(const rtps::GuidPrefix& prefix) noexcept {
     bool removed = false;
-    auto it = endpoints_.lower_bound(low);
-    while (it != endpoints_.end()
-           && std::memcmp(it->first.data(), prefix.value, sizeof(prefix.value)) == 0) {
+    auto it = first_of(prefix);
+    while (belongs_to(it, prefix)) {
+        it = endpoints_.erase(it);
+        removed = true;
+    }
+
+    if (removed) {
+        changed();
+    }
+
+    return removed;
+}
+
+void GraphCache::begin_refresh(const rtps::GuidPrefix& prefix) noexcept {
+    for (auto it = first_of(prefix); belongs_to(it, prefix); ++it) {
+        it->second.confirmed = false;
+    }
+}
+
+bool GraphCache::end_refresh(const rtps::GuidPrefix& prefix) noexcept {
+    bool removed = false;
+    auto it = first_of(prefix);
+    while (belongs_to(it, prefix)) {
+        if (it->second.confirmed) {
+            ++it;
+            continue;
+        }
+
         it = endpoints_.erase(it);
         removed = true;
     }

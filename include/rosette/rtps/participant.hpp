@@ -875,11 +875,22 @@ private:
      *
      * The highest sequence number received from each of its SEDP announcers
      * is kept in its record, then its builtin SEDP proxies and its remote
-     * endpoints are removed, which also unmatches its readers of the
+     * endpoints are released, which also unmatches its readers of the
      * discovery writer. The peer itself notices nothing: this participant
-     * keeps announcing itself, and the peer already holds all of it.
+     * keeps announcing itself, and the peer already holds all of it. Nor
+     * does the graph observer: the peer and its endpoints are still on the
+     * network, so a hosted build keeps listing them
+     * (EndpointMatchTable::release_participant()).
      *
      * @param[in,out] peer A settled peer (peer_is_settled()).
+     *
+     * Verification:
+     * - Correct means: the peer holds no active slot, no proxy and no
+     *   endpoint record; the graph observer receives no callback.
+     * - Covered by: TC-PART-8.5.3-011, TC-PART-8.5.3-012, TC-PART-8.5.3-015.
+     *
+     * References:
+     * - docs/design/two_tier_peer_table.md
      */
     void park_peer(PeerEntry& peer) noexcept;
 
@@ -909,6 +920,33 @@ private:
 
     /// @brief Reactivates one owed parked peer when a slot is free or can be made.
     void serve_owed_peer(uint32_t now_ms) noexcept;
+
+    /**
+     * @brief Completes the graph observer's refresh of each reactivated peer whose replay is done.
+     *
+     * Reactivating a parked peer replays its live endpoint announcements, but
+     * an endpoint it withdrew while parked is skipped by a GAP rather than
+     * withdrawn again (§8.5.4.1: a late joiner receives only live
+     * announcements). activate_peer() therefore starts a refresh, in which the
+     * graph observer holds the peer's endpoints as unconfirmed. The replay is
+     * done once each of the peer's SEDP announcers has resolved every change
+     * up to the number kept when the peer was parked, with none missing; the
+     * observer then forgets the endpoints the replay did not confirm.
+     *
+     * A refresh is under way while an active peer's parked numbers are not
+     * both 0 (PeerEntry::parkedPublicationsSn); completing it clears them.
+     *
+     * Verification:
+     * - Correct means: participant_refreshed() is called once per refresh,
+     *   only after both announcers resolved the kept numbers with nothing
+     *   missing, never earlier.
+     * - Covered by: TC-PART-8.5.3-015, TC-PART-8.5.3-016.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4.1 (SEDP builtin endpoints), §8.4.10.4 (WriterProxy)
+     * - docs/design/two_tier_peer_table.md
+     */
+    void finish_peer_refreshes() noexcept;
 
     /// @brief Tells the graph observer, if any, that the graph changed.
     void notify_graph_change() noexcept {
