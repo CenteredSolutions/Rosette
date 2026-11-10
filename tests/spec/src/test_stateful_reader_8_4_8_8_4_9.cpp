@@ -340,8 +340,10 @@ static bool tc_srr_8_4_7_001(std::string& err) {
     const Locator loc = make_udpv4_locator(0xC0A80144u, 7411u);
     DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 200u);
     CHECK(r.ms_until_next_timer(0u) == UINT32_MAX, "an unmatched reader has no timer");
+    g_stateful_reader_test_now_ms = 0u;
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
-    CHECK(r.ms_until_next_timer(0u) == UINT32_MAX, "no ACKNACK is pending before a HEARTBEAT");
+    CHECK(r.ms_until_next_timer(0u) == RTPS_PREEMPTIVE_ACKNACK_RETRY_MS,
+          "before a HEARTBEAT, only the preemptive ACKNACK's retry is pending");
 
     ParsedHeartbeat hb{};
     hb.readerId = reader_guid.entityId;

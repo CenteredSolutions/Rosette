@@ -561,7 +561,9 @@ public:
      * (repaired by tick() after nackResponseDelay), GAPs the other NACKed
      * numbers the writer has assigned, and answers a preemptive ACKNACK (no
      * NACK bits, base below the next number, from a reader that has
-     * acknowledged nothing yet) with a directed HEARTBEAT. A plain ACK from
+     * acknowledged nothing yet) with a directed HEARTBEAT; a writer that has
+     * written nothing answers a non-final one with a directed final
+     * HEARTBEAT, so a reader waiting to hear from it does. A plain ACK from
      * a reader that has acknowledged before gets no answer, even while the
      * writer has written past it: the piggybacked HEARTBEATs keep such a
      * reader current, and answering would pair every HEARTBEAT with another
@@ -585,8 +587,10 @@ public:
      * - Correct means: no ACKNACK from a reader that has acknowledged before
      *   elicits a HEARTBEAT unless it NACKs, so a streaming writer sends about
      *   one datagram per sample to such a reader; and a reader that matched
-     *   this writer again receives what a newly matched reader would.
-     * - Covered by: TC-SWR-8.4.3-001, TC-SWR-8.4.3-002, TC-SWR-8.4.3-003,
+     *   this writer again receives what a newly matched reader would; a
+     *   non-final announcement is always answered, by a final HEARTBEAT
+     *   when the writer has written nothing.
+     * - Covered by: TC-SWR-8.4.3-004, TC-SWR-8.4.3-001, TC-SWR-8.4.3-002, TC-SWR-8.4.3-003,
      *   TC-SWR-8.4.9-001, TC-SWR-8.2.2-003, TC-SWR-8.4.1.4-004,
      *   TC-SWR-8.4.1.4-005, TC-SWR-8.4.1.4-006, TC-SWR-8.4.9.1-001.
      *

@@ -495,14 +495,44 @@ public:
                         SequenceNumber& subscriptions) noexcept;
 
     /**
+     * @brief Reports whether each of a peer's matched SEDP announcers has been heard since
+     * matching.
+     *
+     * caught_up_with() holds for an announcer that has told this reader of
+     * nothing, which is also what a reader whose preemptive ACKNACK was lost
+     * sees: the announcer believes this reader up to date and stays silent.
+     * The participant therefore settles a peer only once both announcers have
+     * sent a HEARTBEAT, DATA or GAP to the proxies matched at its activation
+     * (RTPSParticipant::peer_is_settled()), so their replay, which announces
+     * the peer's readers of this participant's writers, has started. To
+     * learn whether a replay is whole, use heard_heartbeat_from() instead.
+     *
+     * @param[in] peer_prefix GUID prefix of the peer.
+     * @return `true` when every announcer of the peer that is matched has
+     *   been heard; an announcer the peer does not have counts as heard.
+     *
+     * Verification:
+     * - Correct means: false from activation until a HEARTBEAT, DATA or GAP
+     *   from each matched announcer arrives, then true until the peer is
+     *   matched again.
+     * - Covered by: TC-PART-8.5.3-019.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (WriterProxy), §8.5.4.1 (SEDP replay)
+     */
+    bool heard_from(const GuidPrefix& peer_prefix) noexcept;
+
+    /**
      * @brief Reports which of a peer's announcers have sent a HEARTBEAT since they were matched.
      *
-     * A reader that has heard no HEARTBEAT knows of no change it lacks, so
-     * caught_up_with() is trivially true for it. Once a HEARTBEAT has arrived,
-     * caught_up_with() holding means the reader has everything the announcer
-     * holds, which is how the participant tells a finished replay from one
-     * not yet begun (RTPSParticipant::finish_peer_refreshes()), even when the
-     * announcer's sequence numbers restarted below the ones kept at parking.
+     * Unlike heard_from(), a DATA or GAP does not count: only a HEARTBEAT
+     * states what the announcer holds. A reader that has heard no HEARTBEAT
+     * knows of no change it lacks, so caught_up_with() is trivially true for
+     * it. Once a HEARTBEAT has arrived, caught_up_with() holding means the
+     * reader has everything the announcer holds, which is how the participant
+     * tells a finished replay from one not yet begun
+     * (RTPSParticipant::finish_peer_refreshes()), even when the announcer's
+     * sequence numbers restarted below the ones kept at parking.
      *
      * @param[in]  peer_prefix   GUID prefix of the peer.
      * @param[out] publications  `true` when the publications announcer is
@@ -513,13 +543,13 @@ public:
      * Verification:
      * - Correct means: false for an announcer just matched, and true from the
      *   first non-duplicate HEARTBEAT until it is unmatched.
-     * - Covered by: TC-PART-8.5.3-019.
+     * - Covered by: TC-PART-8.5.3-024.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.10.4 (WriterProxy), §8.3.7.5 (HEARTBEAT count)
      */
-    void heard_from(const GuidPrefix& peer_prefix, bool& publications,
-                    bool& subscriptions) noexcept;
+    void heard_heartbeat_from(const GuidPrefix& peer_prefix, bool& publications,
+                              bool& subscriptions) noexcept;
 
     /**
      * @brief The builtin reader matched with the SEDP announcer `writer_id`.

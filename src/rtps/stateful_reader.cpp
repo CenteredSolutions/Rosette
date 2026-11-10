@@ -99,6 +99,8 @@ bool StatefulReader::matched_writer_add(const Guid& writer_guid, const Locator* 
 
     slot->init(writer_guid, unicast_locators, locator_count);
     slot->acknackCount = acknack_count_floor_;
+    slot->zeroBaseAcknack =
+        writer_vendor == VENDORID_EPROSIMA || writer_vendor == VENDORID_RTI_CONNEXT;
     RTPS_LOG_I("reader", "writer matched %02x%02x%02x%02x entity=%02x%02x%02x%02x",
                writer_guid.prefix.value[0], writer_guid.prefix.value[1],
                writer_guid.prefix.value[2], writer_guid.prefix.value[3],
@@ -106,7 +108,7 @@ bool StatefulReader::matched_writer_add(const Guid& writer_guid, const Locator* 
                writer_guid.entityId.entityKey[2], writer_guid.entityId.entityKind);
 
     if (reliability_ == ReliabilityKind::RELIABLE) {
-        send_preemptive_acknack(*slot, writer_vendor);
+        send_preemptive_acknack(*slot, rosette::platform::monotonic_ms());
     }
 
     return true;
@@ -617,30 +619,33 @@ bool StatefulReader::narrow_repairs() const noexcept
     return repairs_must_fit_datagram(transport_);
 }
 
-void StatefulReader::send_preemptive_acknack(WriterProxy& proxy,
-                                             const VendorId& writer_vendor) noexcept {
+void StatefulReader::send_preemptive_acknack(WriterProxy& proxy, uint32_t now_ms) noexcept {
+    // The next attempt is owed whether or not this one leaves: a locator
+    // the peer's record does not have yet, or an exhausted buffer pool, is
+    // retried with the rest.
     const Locator& dest = proxy.best_locator();
     if (dest == LOCATOR_INVALID || !builder_.begin(guid_.prefix)) {
+        proxy.on_preemptive_acknack_sent(now_ms, RTPS_PREEMPTIVE_ACKNACK_RETRY_MS);
         return;
     }
 
-    const bool zero_base =
-        writer_vendor == VENDORID_EPROSIMA || writer_vendor == VENDORID_RTI_CONNEXT;
     SequenceNumberSet sn_state{};
-    sn_state.bitmapBase = zero_base ? SEQUENCENUMBER_ZERO : SequenceNumber::from_int64(1);
+    sn_state.bitmapBase =
+        proxy.zeroBaseAcknack ? SEQUENCENUMBER_ZERO : SequenceNumber::from_int64(1);
 
     builder_.append_info_dst(proxy.remoteWriterGuid.prefix);
     if (!builder_.append_acknack(guid_.entityId, proxy.remoteWriterGuid.entityId, sn_state,
                                  proxy.acknackCount + 1, /*final_flag=*/false)) {
         RTPS_LOG_W("reader", "preemptive ACKNACK builder failed (pool exhausted?)");
         builder_.abort();
+        proxy.on_preemptive_acknack_sent(now_ms, RTPS_PREEMPTIVE_ACKNACK_RETRY_MS);
         return;
     }
 
     BufRef buf = builder_.finish();
     transport_.send_unicast(buf, dest);
     buf.reset();
-    proxy.on_acknack_sent();
+    proxy.on_preemptive_acknack_sent(now_ms, RTPS_PREEMPTIVE_ACKNACK_RETRY_MS);
 }
 
 void StatefulReader::request_next_repair(WriterProxy& proxy) noexcept
@@ -658,9 +663,17 @@ uint32_t StatefulReader::tick(uint32_t now_ms) noexcept {
     uint32_t next = UINT32_MAX;
     for (WriterProxy& proxy : matched()) {
         if (proxy.acknack_response_due(now_ms)) {
-            send_acknack(proxy, !proxy.has_missing_changes());
-            proxy.on_acknack_sent();
-        } else if (proxy.acknackPending) {
+            if (proxy.heard) {
+                send_acknack(proxy, !proxy.has_missing_changes());
+                proxy.on_acknack_sent();
+            } else {
+                send_preemptive_acknack(proxy, now_ms);
+            }
+        }
+
+        // A preemptive ACKNACK re-arms its own retry, so the deadline is read
+        // after the send rather than only for writers that were not yet due.
+        if (proxy.acknackPending) {
             next = std::min(next, proxy.heartbeatResponseDeadlineMs - now_ms);
         }
     }

@@ -221,6 +221,43 @@ static bool tc_swr_8_4_3_002(std::string& err) {
     return true;
 }
 
+// §8.3.7.1: a reader that announces itself to a writer that has written
+// nothing, with a non-final ACKNACK, expects an answer; the writer sends a
+// directed final HEARTBEAT showing an empty history, which the reader need
+// not answer. A final announcement is not answered.
+static bool tc_swr_8_4_3_004(std::string& err) {
+    CaptureTransport tx{};
+    const Guid       writer_guid = make_guid(0xE7u, 0xE8u, 0xE9u, make_entity(1u, 1u, 1u, 0x03u));
+    const Guid       reader_guid = make_guid(0xF7u, 0xF8u, 0xF9u, make_entity(2u, 2u, 2u, 0x04u));
+    const Locator    loc = make_udpv4_locator(0xC0A80148u, 7411u);
+    StatefulWriterStorage<2, 1> w(writer_guid, ReliabilityKind::RELIABLE,
+                                  DurabilityKind::TRANSIENT_LOCAL, tx);
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+    tx.unicast_msgs.clear();
+
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = reader_guid.prefix;
+    ParsedAckNack ack{};
+    ack.readerId = reader_guid.entityId;
+    ack.writerId = writer_guid.entityId;
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(1));
+    ack.count = 1;
+    ack.finalFlag = true;
+    w.on_acknack(ctx, ack);
+    CHECK(count_heartbeats(tx, nullptr) == 0, "a final announcement is not answered");
+
+    ack.count = 2;
+    ack.finalFlag = false;
+    w.on_acknack(ctx, ack);
+    ParsedHeartbeat hb{};
+    CHECK(count_heartbeats(tx, &hb) == 1, "a non-final announcement is answered once");
+    CHECK(hb.readerId == reader_guid.entityId, "the HEARTBEAT is directed at the reader");
+    CHECK(hb.finalFlag, "it is final, so the up-to-date reader need not answer");
+    CHECK(hb.firstSN == SequenceNumber::from_int64(1) && hb.lastSN == SEQUENCENUMBER_ZERO,
+          "it shows an empty history");
+    return true;
+}
+
 // §8.4.2.2, §8.4.3: an ACKNACK that requests nothing from a reader that has
 // acknowledged changes before is not an announcement, even while the writer
 // has written past it; answering it would pair every HEARTBEAT with another
@@ -484,6 +521,10 @@ void append_stateful_writer_tests_8_4_3_8_4_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.3-001",
                      "§8.4.3: ACKNACK cumulative ACK updates ReaderProxy acknowledgment state; duplicate ACKNACK counts are ignored.",
                      tc_swr_8_4_3_001});
+    tests.push_back({"TC-SWR-8.4.3-004",
+                     "§8.3.7.1: a writer that has written nothing answers a reader's non-final "
+                     "announcement with a directed final HEARTBEAT showing an empty history.",
+                     tc_swr_8_4_3_004});
     tests.push_back({"TC-SWR-8.4.3-002",
                      "§8.4.15.4: a preemptive ACKNACK (no NACK bits, base below the next SN) is answered with a directed HEARTBEAT; an up-to-date ACK is not.",
                      tc_swr_8_4_3_002});

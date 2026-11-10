@@ -277,6 +277,18 @@ struct DiscoveredParticipant {
 #define RTPS_PEER_SETTLE_MS 2000u
 #endif
 
+/// How long an active peer that shares no match may go without sending SEDP
+/// DATA, and without settling, before its slot may be given to another peer:
+/// its exchange with this participant is taken to be stalled (an unreachable
+/// unicast locator, a firewall). The peer stays owed this participant's
+/// announcements and is tried again when a slot is free.
+#ifndef RTPS_PEER_EXCHANGE_TIMEOUT_MS
+#  define RTPS_PEER_EXCHANGE_TIMEOUT_MS 10000u
+#endif
+
+static_assert(RTPS_PEER_EXCHANGE_TIMEOUT_MS > RTPS_PEER_SETTLE_MS,
+              "a peer must have the chance to settle before it counts as stalled");
+
 static_assert(RTPS_MAX_KNOWN_PEERS >= RTPS_MAX_PEERS && RTPS_MAX_KNOWN_PEERS < 256,
               "RTPS_MAX_KNOWN_PEERS must hold every active peer and fit a one-octet index");
 static_assert(RTPS_MAX_PEERS < 255, "RTPS_MAX_PEERS must leave a one-octet slot index free");
@@ -294,7 +306,8 @@ struct PeerEntry {
     uint32_t leaseExpiryMs = 0;              ///< rosette::platform::monotonic_ms() at expiry.
     uint32_t leaseMs = 0;                    ///< Lease duration the peer announced.
     /// monotonic_ms() of the peer's activation or of the latest SEDP DATA
-    /// from it; a peer is parked only once this is RTPS_PEER_SETTLE_MS old.
+    /// from it; a peer is parked only once this is RTPS_PEER_SETTLE_MS old
+    /// (settled), or RTPS_PEER_EXCHANGE_TIMEOUT_MS old (stalled).
     uint32_t lastSedpMs = 0;
     /// Low 32 bits of the highest sequence number received from the peer's
     /// publications and subscriptions announcers when it was parked; an
