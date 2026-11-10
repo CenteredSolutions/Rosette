@@ -479,6 +479,51 @@ static bool tc_sedp_8_5_4_009(std::string& err) {
     return true;
 }
 
+// §8.2.4.3: a participant's entities share its GUID prefix. An ALIVE
+// announcement of an endpoint under another participant's prefix is
+// ignored, for publications and subscriptions alike, so no endpoint is
+// recorded that its announcer's departure would not remove.
+static bool tc_sedp_8_5_4_020(std::string& err) {
+    MatchObs           obs{};
+    FakeTransport      tx{};
+    EndpointMatchTable table(on_match, nullptr, &obs);
+    const GuidPrefix   local_prefix = make_guid(0x12u, 0x23u, 0x34u, entity_id::PARTICIPANT).prefix;
+    SedpReader         reader(local_prefix, tx, table);
+    table.set_local_prefix(local_prefix);
+
+    const Guid local_reader = make_guid(0x12u, 0x23u, 0x34u, make_entity(1u, 1u, 1u, 0x04u));
+    const Guid local_writer = make_guid(0x12u, 0x23u, 0x34u, make_entity(1u, 1u, 2u, 0x03u));
+    table.add_reader(make_reader_data(local_reader, "scan", "sensor_msgs::msg::LaserScan"));
+    table.add_writer(make_writer_data(local_writer, "odom", "nav_msgs::msg::Odometry"));
+
+    const Guid foreign_writer = make_guid(0x45u, 0x56u, 0x67u, make_entity(2u, 2u, 2u, 0x03u));
+    const Guid foreign_reader = make_guid(0x45u, 0x56u, 0x67u, make_entity(2u, 2u, 3u, 0x04u));
+    std::vector<Octet> publication{};
+    std::vector<Octet> subscription{};
+    CHECK(build_publication_payload(
+              make_writer_data(foreign_writer, "scan", "sensor_msgs::msg::LaserScan"), publication),
+          "publication payload build failed");
+    CHECK(build_subscription_payload(
+              make_reader_data(foreign_reader, "odom", "nav_msgs::msg::Odometry"), subscription),
+          "subscription payload build failed");
+
+    const SedpPeer impostor{make_guid(0x78u, 0x89u, 0x9Au, entity_id::PARTICIPANT).prefix,
+                            make_udpv4_locator(0xC0A80178u, 7410u)};
+    impostor.discover(reader);
+    impostor.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, publication);
+    impostor.announce(reader, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER, 1, subscription);
+    CHECK(obs.calls == 0, "an endpoint under another participant's prefix is ignored");
+    CHECK(table.count("scan", true) == 0u && table.count("odom", false) == 0u,
+          "the ignored endpoints are not recorded");
+
+    const SedpPeer owner{foreign_writer.prefix, make_udpv4_locator(0xC0A80145u, 7410u)};
+    owner.discover(reader);
+    owner.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, publication);
+    owner.announce(reader, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER, 1, subscription);
+    CHECK(obs.calls == 2, "the same announcements from their owner match both endpoints");
+    return true;
+}
+
 // ============================================================
 // tc_sedp_8_5_4_006
 //
@@ -659,6 +704,10 @@ void append_sedp_tests_8_5_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-8.5.4-009",
                      "§8.5.4.1/§9.6.3.3: an inline-QoS-only disposal from the owning participant unmatches the withdrawn remote endpoint; disposals from other participants are ignored.",
                      tc_sedp_8_5_4_009});
+    tests.push_back({"TC-SEDP-8.5.4-020",
+                     "§8.2.4.3/§8.5.4.1: an endpoint announced under another participant's GUID "
+                     "prefix is ignored; the owner's identical announcement matches.",
+                     tc_sedp_8_5_4_020});
     tests.push_back({"TC-SEDP-8.5.4-013",
                      "§8.4.14/§8.5.4.1: a fragmented endpoint announcement is reassembled by the builtin reader and matches the endpoint.",
                      tc_sedp_8_5_4_013});

@@ -529,25 +529,28 @@ public:
     }
 
 private:
-
     /**
      * @brief Applies one publication announcement delivered by the reader.
      *
      * ALIVE: decodes the DiscoveredWriterData and adds it to the match table.
-     * NOT_ALIVE: removes the writer named by the change's key, provided it
-     * belongs to the announcing participant (a participant may only
-     * withdraw its own endpoints).
+     * NOT_ALIVE: removes the writer named by the change's key. Either way the
+     * endpoint must belong to the announcing participant: its GUID prefix
+     * equals that of the announcer, so a participant can neither announce
+     * nor withdraw another's endpoints, and every endpoint recorded from a
+     * participant leaves with it (EndpointMatchTable::remove_participant()).
      *
      * @param[in] change Change delivered by publications_reader_.
      *
      * Verification:
-     * - Correct means: a valid announcement matches the endpoint; a
-     *   disposal from its owner unmatches it; anything else is ignored.
+     * - Correct means: a valid announcement of the announcer's own endpoint
+     *   matches it; a disposal from its owner unmatches it; anything else,
+     *   including an endpoint under another participant's prefix, is ignored.
      * - Covered by: TC-SEDP-8.5.4-002, TC-SEDP-8.5.4-009,
-     *   TC-SEDP-9.6.3.2-*.
+     *   TC-SEDP-8.5.4-020, TC-SEDP-9.6.3.2-*.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.5.4.2 (DiscoveredWriterData), §9.6.3.2,
+     * - OMG DDSI-RTPS 2.5 §8.2.4.3 (GUID prefix shared by a participant's
+     *   entities), §8.5.4.2 (DiscoveredWriterData), §9.6.3.2,
      *   §9.6.3.3 (StatusInfo_t)
      */
     void on_publication_change(const CacheChange& change) noexcept;
