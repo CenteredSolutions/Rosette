@@ -26,10 +26,11 @@
 (*    still unconfirmed once SweepRule holds. SweepRule = "caught_up" is  *)
 (*    the code; "post_activation_hb" adds the condition proposed in      *)
 (*    review on PR #8: a HEARTBEAT received since reactivation.           *)
-(*  - Parking during a refresh: ParkRule = "code" keeps the reader's       *)
-(*    available_changes_max, which abandons the refresh when the new proxy *)
-(*    has resolved less than the target; "keep_refresh_target" keeps the  *)
-(*    larger of the two, so the next activation resumes the refresh.      *)
+(*  - Parking during a refresh: ParkRule = "keep_refresh_target" is the   *)
+(*    code, which keeps the larger of the refresh's target and the        *)
+(*    reader's available_changes_max, so the next activation resumes the  *)
+(*    refresh; "resolved_only" keeps available_changes_max alone, which    *)
+(*    abandons the refresh when the new proxy has resolved less.          *)
 (*                                                                         *)
 (* Time enters in one place: a datagram's delay is shorter than            *)
 (* RTPS_PEER_SETTLE_MS, so nothing sent before the peer settled is still   *)
@@ -44,11 +45,11 @@ EXTENDS SedpReliable
 CONSTANTS
     Delivery,    \* "on_arrival" (the code) or "in_order" (§8.4.10.4).
     SweepRule,   \* "caught_up" (the code) or "post_activation_hb".
-    ParkRule     \* "code" or "keep_refresh_target".
+    ParkRule     \* "keep_refresh_target" (the code) or "resolved_only".
 
 ASSUME Delivery \in {"on_arrival", "in_order"}
 ASSUME SweepRule \in {"caught_up", "post_activation_hb"}
-ASSUME ParkRule \in {"code", "keep_refresh_target"}
+ASSUME ParkRule \in {"keep_refresh_target", "resolved_only"}
 
 VARIABLES
     tier,        \* "active" or "parked".
@@ -186,7 +187,7 @@ SettleTimerExpires ==
     /\ settled' = TRUE
     /\ UNCHANGED <<peerVars, net, tier, proxy, kept, delivered, cache, disposedSeen>>
 
-\* park_peer(): the kept number is the reader's available_changes_max, or
+\* park_peer(): the kept number is the reader's available_changes_max, and
 \* under "keep_refresh_target" no less than an unfinished refresh's target.
 Park ==
     /\ tier = "active"
@@ -194,7 +195,7 @@ Park ==
     /\ ~HasMissing(proxy)
     /\ net = {}
     /\ tier' = "parked"
-    /\ kept' = IF ParkRule = "code" THEN AvailMax(proxy) ELSE Max(kept, AvailMax(proxy))
+    /\ kept' = IF ParkRule = "resolved_only" THEN AvailMax(proxy) ELSE Max(kept, AvailMax(proxy))
     /\ proxy' = FreshProxy
     /\ delivered' = 0
     /\ settled' = FALSE

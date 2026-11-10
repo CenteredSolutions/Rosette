@@ -9,6 +9,7 @@ DDSI-RTPS 2.5 specification allows a peer, not against one vendor's:
 | `SedpReliable.tla` | What the specification requires and permits: a peer's SEDP announcer, a network that loses, duplicates and reorders, and the WriterProxy bookkeeping of §8.4.10.4. No Rosette choice. |
 | `RosettePeerTiers.tla` | Rosette's choices on top: the two-tier peer table (`docs/design/two_tier_peer_table.md`) and the graph cache's refresh of a reactivated peer. |
 | `MCRosettePeerTiers.tla` | The model-checking harness (endpoint symmetry). |
+| `RosettePeerOutbound.tla` | The outbound half for one peer: whether a parked peer owed a new `ros_discovery_info` sample receives it, across lossy reactivation. |
 | `RosettePeerTable.tla` | The table as a whole: several peers competing for fewer active slots, with each peer's SEDP exchange abstracted to one step. |
 
 Where Rosette has a choice to make, the module carries it as a constant, with
@@ -25,6 +26,11 @@ tests/formal/run_tlc.sh in_order caught_up keep_refresh_target EventuallyConsist
 ```sh
 tests/formal/run_table.sh <property> [peers] [slots] [records] [unreachable] [budget]
 tests/formal/run_table.sh EveryPeerServed 3 2 3 '{1}' 4
+```
+
+```sh
+tests/formal/run_outbound.sh <settle_rule> <acknack_retry> <property> [versions] [announcements]
+tests/formal/run_outbound.sh code FALSE NoParkUninformed
 ```
 
 TLC runs in an `eclipse-temurin:21-jre` container; `tla2tools.jar` 1.7.4 is
@@ -63,10 +69,10 @@ Bounds: two endpoints, `MaxSN = 3`, two messages in flight. `SweepRule` is
 
 | Delivery | ParkRule | NoListAfterDisposal | UnconfirmedOnlyInRefresh | EventuallyConsistent |
 |---|---|---|---|---|
-| on_arrival (code) | code | violated | violated | violated |
-| on_arrival (code) | keep_refresh_target | violated | holds | violated |
-| in_order (§8.4.10.4) | code | holds | violated | violated |
-| in_order (§8.4.10.4) | keep_refresh_target | holds | holds | **holds** |
+| on_arrival (code) | resolved_only | violated | violated | violated |
+| on_arrival (code) | keep_refresh_target (code) | violated | holds | violated |
+| in_order (§8.4.10.4) | resolved_only | holds | violated | violated |
+| in_order (§8.4.10.4) | keep_refresh_target (code) | holds | holds | **holds** |
 
 `NoLiveDrop` is violated under both sweep rules, `caught_up` and
 `post_activation_hb`. What each violation shows:
@@ -77,12 +83,13 @@ Bounds: two endpoints, `MaxSN = 3`, two messages in flight. `SweepRule` is
   disposal (`stateful_reader.cpp`, `is_new_change()` then `deliver()`). The
   endpoint stays listed for as long as the peer lives. Delivering only up to
   `available_changes_max`, as §8.4.10.4 describes, removes it.
-* **Parking during a refresh abandons it.** An owed reactivation whose
+* **Parking during a refresh must not abandon it.** An owed reactivation whose
   replay is lost leaves a fresh proxy that is trivially caught up; the peer
-  settles, and `park_peer()` keeps `available_changes_max`, 0, as the parked
-  number. The next activation then starts no refresh, and an endpoint the
-  peer withdrew while parked stays listed. Keeping the larger of the refresh
-  target and `available_changes_max` resumes the refresh.
+  settles, and keeping `available_changes_max`, 0, as the parked number
+  (`resolved_only`) means the next activation starts no refresh, and an
+  endpoint the peer withdrew while parked stays listed. `park_peer()` keeps the larger
+  of the refresh target and `available_changes_max`, which resumes the
+  refresh (TC-PART-8.5.3-018).
 * **No sweep rule prevents a transient drop.** After reactivation, a GAP
   for an old announcement can arrive, and the reader be caught up to every
   number it knows of, before the DATA of that endpoint's newer announcement.
@@ -114,6 +121,40 @@ leaves, announcements, local endpoint changes) per behavior.
   SPDP keeps its lease alive. It costs a slot exactly as a matched peer
   does: with matched and unreachable peers filling every slot, a reachable
   peer stays pending forever (`run_table.sh EveryPeerServed 3 2 3 '{1}' 4`).
+
+## Phase 3 results
+
+`RosettePeerOutbound` with one peer, three discovery samples and two peer
+announcements per behavior.
+
+| SettleRule | AcknackRetry | NoParkUninformed | EventuallyInformed | EventuallyParkable |
+|---|---|---|---|---|
+| code | FALSE (code) | violated | violated | holds |
+| code | TRUE | violated | violated | holds |
+| heard_writer | FALSE (code) | holds | violated | violated |
+| heard_writer | TRUE | holds | **holds** | **holds** |
+
+* **A peer reactivated to receive a new `ros_discovery_info` sample can be
+  parked again without it.** Reactivation rebuilds the SEDP reader proxies,
+  which send one preemptive ACKNACK. If it, or the HEARTBEAT answering it,
+  is lost, the peer sends nothing more: its writers' proxies for this side
+  still hold everything acknowledged before parking, and the reader sends
+  ACKNACKs only in answer to a HEARTBEAT. The replay never starts, so the
+  discovery writer never matches the peer's reader again, and
+  `StatefulWriter::acknowledged_by_participant()` holds for a peer it has no
+  proxy for. The peer settles once it acknowledges this side's SEDP, is
+  parked, and its owed flag is cleared: it keeps the old sample until the
+  next change. Reproduced against the real `RTPSParticipant` by a probe test
+  built on TC-PART-8.5.3-013.
+* **Requiring the writer to be heard alone trades the lost update for a
+  stuck slot.** A peer whose reader proxies have heard nothing since
+  activation is then never settled, and with one lost ACKNACK nothing is
+  ever heard: it holds its slot for good, as an unreachable peer does in
+  phase 2.
+* **Both together hold:** settle only once each SEDP reader proxy has heard
+  its writer since activation, and resend the preemptive ACKNACK until it
+  has. The peer then always receives the current sample and can always be
+  parked again.
 
 ## Phases
 

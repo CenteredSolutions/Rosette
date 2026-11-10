@@ -7,7 +7,7 @@
 # Usage: tests/formal/run_tlc.sh <delivery> <sweep_rule> <park_rule> <property> [max_sn] [net_cap]
 #   delivery    on_arrival (the code) | in_order (DDSI-RTPS 2.5 §8.4.10.4)
 #   sweep_rule  caught_up (the code)  | post_activation_hb
-#   park_rule   code                  | keep_refresh_target
+#   park_rule   keep_refresh_target (the code) | resolved_only
 #   property    NoLiveDrop | NoListAfterDisposal | UnconfirmedOnlyInRefresh | TypeOK
 #               | EventuallyConsistent (liveness: checked under FairSpec, without symmetry)
 #
