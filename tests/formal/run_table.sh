@@ -4,13 +4,15 @@
 #
 # Checks one property of RosettePeerTable with TLC.
 #
-# Usage: tests/formal/run_table.sh <property> [peers] [slots] [records] [unreachable] [budget]
+# Usage: tests/formal/run_table.sh <property> [peers] [slots] [records] [unreachable] [budget] [stall_rule] [serve_order]
 #   property     SlotsBounded | LruIsActive | ParkedUnmatched | TypeOK (invariants)
 #                | NeverParkMatched (action) | EveryPeerServed | EveryMatchMade (liveness)
 #   unreachable  a TLA+ set of peer numbers, e.g. "{}" or "{1}"
+#   stall_rule   deadline (the code) | none
+#   serve_order  oldest (the code) | table
 set -euo pipefail
 
-property=$1 peers=${2:-3} slots=${3:-2} records=${4:-$peers} unreachable=${5:-"{}"} budget=${6:-4}
+property=$1 peers=${2:-3} slots=${3:-2} records=${4:-$peers} unreachable=${5:-"{}"} budget=${6:-4} stall_rule=${7:-deadline} serve_order=${8:-oldest}
 here=$(cd "$(dirname "$0")" && pwd)
 jar_dir=${TLA_TOOLS_DIR:-$HOME/.local/share/tlaplus/v1.7.4}
 jar_sha=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
@@ -32,6 +34,8 @@ CONSTANTS
     Records = $records
     Unreachable = $unreachable
     Budget = $budget
+    StallRule = "$stall_rule"
+    ServeOrder = "$serve_order"
 SPECIFICATION $spec
 $check
 CHECK_DEADLOCK FALSE

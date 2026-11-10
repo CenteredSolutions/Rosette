@@ -17,9 +17,9 @@
 (*    (StatefulReader::send_preemptive_acknack()). Delivered, the peer     *)
 (*    must answer it (§8.3.7.1), and the HEARTBEAT, NACK and repair that   *)
 (*    follow are retried by both sides until done: the replay eventually   *)
-(*    arrives. Lost, nothing follows: the peer's ReaderProxy for this side *)
-(*    still holds everything acknowledged from before parking, so it sends *)
-(*    no HEARTBEAT, and the reader sends ACKNACKs only in answer to one.   *)
+(*    arrives. Lost, nothing follows until it is resent: the peer's        *)
+(*    ReaderProxy for this side still holds everything acknowledged from   *)
+(*    before parking, so it sends no HEARTBEAT of its own.                 *)
 (*    A new announcement by the peer does send a HEARTBEAT, which starts   *)
 (*    the replay.                                                           *)
 (*  - The discovery writer has a ReaderProxy for the peer only once the    *)
@@ -35,21 +35,21 @@
 (*    parked peer, which is reactivated in turn (serve_owed_peer()).       *)
 (*                                                                         *)
 (* Rosette's choices, as constants:                                         *)
-(*  - SettleRule = "code" settles as above; "heard_writer" also requires   *)
-(*    that each SEDP reader proxy has heard a HEARTBEAT or DATA since      *)
-(*    activation, so the replay has started.                               *)
-(*  - AcknackRetry = FALSE is the code; TRUE resends the preemptive        *)
-(*    ACKNACK until the writer is heard.                                   *)
+(*  - SettleRule = "caught_up" settles as above; "heard_writer", the code, *)
+(*    also requires that each SEDP reader proxy has heard a HEARTBEAT,     *)
+(*    DATA or GAP since activation, so the replay has started.             *)
+(*  - AcknackRetry = TRUE, the code, resends the preemptive ACKNACK until  *)
+(*    the writer is heard; FALSE sends it once.                            *)
 (***************************************************************************)
 EXTENDS Naturals
 
 CONSTANTS
     MaxVersion,    \* Discovery samples written in a behavior.
     MaxAnnounce,   \* SEDP announcements by the peer in a behavior.
-    SettleRule,    \* "code" or "heard_writer".
+    SettleRule,    \* "caught_up" or "heard_writer".
     AcknackRetry   \* BOOLEAN.
 
-ASSUME SettleRule \in {"code", "heard_writer"} /\ AcknackRetry \in BOOLEAN
+ASSUME SettleRule \in {"caught_up", "heard_writer"} /\ AcknackRetry \in BOOLEAN
 
 VARIABLES
     tier,          \* "active" or "parked".

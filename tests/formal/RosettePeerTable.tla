@@ -24,13 +24,26 @@
 (*    reader's catch-up is not required here: a peer's new announcement   *)
 (*    may still be in flight, which is why parked traffic promotes.       *)
 (*  - Owed (owe_parked_peers()): every local endpoint created or deleted   *)
-(*    marks each parked peer owed; serve_owed_peer() admits the first owed *)
-(*    peer in table order, once per tick.                                  *)
+(*    marks each parked peer owed; serve_owed_peer() admits one owed peer  *)
+(*    per tick. ServeOrder is Rosette's choice of which: "table" takes the *)
+(*    first in table order; "oldest" the one whose last SEDP DATA or       *)
+(*    activation is oldest, which every reactivation of another peer moves *)
+(*    toward the front, so each owed peer is eventually first. "oldest" is *)
+(*    modelled as any owed peer, with fairness for each.                   *)
 (*  - Lease expiry or disposal removes a peer from either tier; it may come *)
 (*    back later as a new participant.                                     *)
 (*                                                                         *)
 (* Peers in Unreachable announce by SPDP multicast, but their SEDP         *)
 (* exchange never completes (unicast filtered, a NAT, a firewall).         *)
+(*                                                                         *)
+(* StallRule is Rosette's choice for such a peer. "none": it is never      *)
+(* settled, so never parked, and holds its slot for as long as SPDP keeps  *)
+(* it alive. "deadline": an active peer with no match whose exchange has   *)
+(* not completed RTPS_PEER_EXCHANGE_TIMEOUT_MS after its last SEDP DATA is *)
+(* stalled, and may be parked like a settled peer; it stays owed, so it is *)
+(* tried again when a slot is free. The deadline is assumed to outlast any *)
+(* exchange that can complete, as phase 1 assumes a datagram's delay is   *)
+(* shorter than the settle time.                                           *)
 (*                                                                         *)
 (* The environment (joins, leaves, announcements, local endpoint changes)  *)
 (* draws on a finite Budget, so every behavior goes quiet and liveness is  *)
@@ -43,10 +56,13 @@ CONSTANTS
     Slots,        \* RTPS_MAX_PEERS: active slots.
     Records,      \* RTPS_MAX_KNOWN_PEERS: known-peer records.
     Unreachable,  \* Peers whose SEDP exchange never completes.
-    Budget        \* Environment events in a behavior.
+    Budget,       \* Environment events in a behavior.
+    StallRule,    \* "none" or "deadline".
+    ServeOrder    \* "table" or "oldest".
 
 Peers == 1..N
 ASSUME Slots \in 1..N /\ Records \in Slots..N /\ Unreachable \subseteq Peers
+ASSUME StallRule \in {"none", "deadline"} /\ ServeOrder \in {"table", "oldest"}
 
 VARIABLES
     alive,     \* The participant exists and its lease is current.
@@ -57,10 +73,11 @@ VARIABLES
     shares,    \* Truth: it has an endpoint matching a local endpoint.
     matched,   \* What the match table knows of `shares`, from the last exchange.
     settled,   \* peer_is_settled() holds.
+    stalled,   \* peer_is_stalled() holds.
     lru,       \* Active peers, oldest SEDP DATA first.
     budget
 
-vars == <<alive, status, peerNews, ourNews, owed, shares, matched, settled, lru, budget>>
+vars == <<alive, status, peerNews, ourNews, owed, shares, matched, settled, stalled, lru, budget>>
 
 Active == {p \in Peers : status[p] = "active"}
 Known == {p \in Peers : status[p] # "unknown"}
@@ -73,6 +90,7 @@ TypeOK ==
     /\ peerNews \in [Peers -> BOOLEAN] /\ ourNews \in [Peers -> BOOLEAN]
     /\ owed \in [Peers -> BOOLEAN] /\ shares \in [Peers -> BOOLEAN]
     /\ matched \in [Peers -> BOOLEAN] /\ settled \in [Peers -> BOOLEAN]
+    /\ stalled \in [Peers -> BOOLEAN]
     /\ budget \in 0..Budget
 
 Init ==
@@ -84,18 +102,20 @@ Init ==
     /\ shares = [p \in Peers |-> FALSE]
     /\ matched = [p \in Peers |-> FALSE]
     /\ settled = [p \in Peers |-> FALSE]
+    /\ stalled = [p \in Peers |-> FALSE]
     /\ lru = <<>>
     /\ budget = Budget
 
 (***************************************************************************)
 (* admit_peer(q), as one step: activate q in a free slot, or in the slot  *)
-(* of the settled peer whose last SEDP DATA is oldest, parked for it; or  *)
-(* leave everything as it is.                                              *)
+(* of the settled or stalled peer whose last SEDP DATA is oldest, parked  *)
+(* for it; or leave everything as it is. A stalled peer is parked owed.   *)
 (***************************************************************************)
-SettledActive == {p \in Active : settled[p]}
-OldestSettled == lru[CHOOSE i \in 1..Len(lru) :
-                        /\ settled[lru[i]]
-                        /\ \A j \in 1..(i - 1) : ~settled[lru[j]]]
+Parkable(p) == settled[p] \/ stalled[p]
+ParkableActive == {p \in Active : Parkable(p)}
+OldestParkable == lru[CHOOSE i \in 1..Len(lru) :
+                         /\ Parkable(lru[i])
+                         /\ \A j \in 1..(i - 1) : ~Parkable(lru[j])]
 
 \* activate_peer(): a fresh proxy replays the peer's announcements, and this
 \* side's are sent to it again; the match table learns its endpoints anew.
@@ -104,19 +124,21 @@ Activated(q, st) == [st EXCEPT ![q] = "active"]
 \* `st` is the status map admission starts from; it is kept when admission
 \* fails.
 Admit(q, st) ==
-    IF st[q] = "active" THEN UNCHANGED <<status, peerNews, ourNews, owed, matched, settled, lru>>
-    ELSE IF Cardinality(Active) < Slots \/ SettledActive # {}
+    IF st[q] = "active"
+    THEN UNCHANGED <<status, peerNews, ourNews, owed, matched, settled, stalled, lru>>
+    ELSE IF Cardinality(Active) < Slots \/ ParkableActive # {}
     THEN LET full == Cardinality(Active) >= Slots
-             v == IF full THEN OldestSettled ELSE q
+             v == IF full THEN OldestParkable ELSE q
          IN /\ status' = Activated(q, IF full THEN [st EXCEPT ![v] = "parked"] ELSE st)
             /\ peerNews' = [peerNews EXCEPT ![q] = TRUE]
             /\ ourNews' = [ourNews EXCEPT ![q] = TRUE]
-            /\ owed' = [owed EXCEPT ![q] = FALSE, ![v] = FALSE]
+            /\ owed' = [owed EXCEPT ![v] = full /\ stalled[v], ![q] = FALSE]
             /\ matched' = [matched EXCEPT ![q] = FALSE, ![v] = FALSE]
             /\ settled' = [settled EXCEPT ![q] = FALSE, ![v] = FALSE]
+            /\ stalled' = [stalled EXCEPT ![q] = FALSE, ![v] = FALSE]
             /\ lru' = Append(Without(lru, v), q)
     ELSE /\ status' = st
-         /\ UNCHANGED <<peerNews, ourNews, owed, matched, settled, lru>>
+         /\ UNCHANGED <<peerNews, ourNews, owed, matched, settled, stalled, lru>>
 
 (***************************************************************************)
 (* The environment.                                                         *)
@@ -129,7 +151,7 @@ Join(p) ==
     /\ Spend
     /\ alive' = [alive EXCEPT ![p] = TRUE]
     /\ \E s \in BOOLEAN : shares' = [shares EXCEPT ![p] = s]
-    /\ UNCHANGED <<status, peerNews, ourNews, owed, matched, settled, lru>>
+    /\ UNCHANGED <<status, peerNews, ourNews, owed, matched, settled, stalled, lru>>
 
 \* Lease expiry or disposal (on_spdp_peer_removed()), in either tier.
 Leave(p) ==
@@ -143,6 +165,7 @@ Leave(p) ==
     /\ shares' = [shares EXCEPT ![p] = FALSE]
     /\ matched' = [matched EXCEPT ![p] = FALSE]
     /\ settled' = [settled EXCEPT ![p] = FALSE]
+    /\ stalled' = [stalled EXCEPT ![p] = FALSE]
     /\ lru' = Without(lru, p)
 
 \* The peer creates or deletes an endpoint.
@@ -151,7 +174,7 @@ PeerAnnounces(p) ==
     /\ Spend
     /\ peerNews' = [peerNews EXCEPT ![p] = TRUE]
     /\ \E s \in BOOLEAN : shares' = [shares EXCEPT ![p] = s]
-    /\ UNCHANGED <<alive, status, ourNews, owed, matched, settled, lru>>
+    /\ UNCHANGED <<alive, status, ourNews, owed, matched, settled, stalled, lru>>
 
 \* A local endpoint is created or deleted: active peers receive it through
 \* their proxies, parked peers are owed it, and any peer may start or stop
@@ -162,7 +185,7 @@ LocalChange ==
     /\ owed' = [p \in Peers |-> owed[p] \/ status[p] = "parked"]
     /\ \E s \in [Peers -> BOOLEAN] : shares' = [p \in Peers |-> alive[p] /\ s[p]]
     /\ settled' = [p \in Peers |-> settled[p] /\ status[p] # "active"]
-    /\ UNCHANGED <<alive, status, peerNews, matched, lru>>
+    /\ UNCHANGED <<alive, status, peerNews, matched, stalled, lru>>
 
 (***************************************************************************)
 (* This side.                                                               *)
@@ -187,23 +210,31 @@ ParkedTraffic(p) ==
     /\ Admit(p, status)
     /\ UNCHANGED <<alive, shares, budget>>
 
-\* serve_owed_peer(): the first owed peer in table order.
-ServeOwed ==
-    /\ \E p \in Peers : owed[p]
-    /\ LET q == CHOOSE p \in Peers : owed[p] /\ \A r \in 1..(p - 1) : ~owed[r]
-       IN Admit(q, status)
+\* serve_owed_peer(): one owed peer, chosen by ServeOrder.
+ServedNext(p) ==
+    /\ owed[p]
+    /\ ServeOrder = "table" => \A r \in 1..(p - 1) : ~owed[r]
+
+ServeOwed(p) ==
+    /\ ServedNext(p)
+    /\ Admit(p, status)
     /\ UNCHANGED <<alive, shares, budget>>
+
+\* Something announced on either side is not yet processed, or the match
+\* table is out of date.
+ExchangePending(p) == peerNews[p] \/ ourNews[p] \/ matched[p] # shares[p]
 
 \* The SEDP exchange with an active peer completes. DATA from the peer moves
 \* it to the young end of the oldest-first order (lastSedpMs).
 Exchange(p) ==
     /\ status[p] = "active"
     /\ p \notin Unreachable
-    /\ peerNews[p] \/ ourNews[p] \/ matched[p] # shares[p]
+    /\ ExchangePending(p)
     /\ peerNews' = [peerNews EXCEPT ![p] = FALSE]
     /\ ourNews' = [ourNews EXCEPT ![p] = FALSE]
     /\ matched' = [matched EXCEPT ![p] = shares[p]]
     /\ settled' = [settled EXCEPT ![p] = FALSE]
+    /\ stalled' = [stalled EXCEPT ![p] = FALSE]
     /\ lru' = IF peerNews[p] THEN Append(Without(lru, p), p) ELSE lru
     /\ UNCHANGED <<alive, status, owed, shares, budget>>
 
@@ -215,7 +246,21 @@ Settle(p) ==
     /\ ~ourNews[p]
     /\ ~matched[p]
     /\ settled' = [settled EXCEPT ![p] = TRUE]
-    /\ UNCHANGED <<alive, status, peerNews, ourNews, owed, shares, matched, lru, budget>>
+    /\ UNCHANGED <<alive, status, peerNews, ourNews, owed, shares, matched, stalled, lru, budget>>
+
+\* peer_is_stalled(): the exchange deadline runs out on an active peer with
+\* no local match that cannot settle, because this side's announcements
+\* are still unacknowledged. The deadline outlasts any exchange that can
+\* complete, so a reachable peer stalls only once its exchange is done,
+\* and then it can settle instead: only an unreachable peer stalls.
+Stall(p) ==
+    /\ StallRule = "deadline"
+    /\ status[p] = "active"
+    /\ ~settled[p] /\ ~stalled[p] /\ ~matched[p]
+    /\ ourNews[p]
+    /\ p \notin Unreachable => ~ExchangePending(p)
+    /\ stalled' = [stalled EXCEPT ![p] = TRUE]
+    /\ UNCHANGED <<alive, status, peerNews, ourNews, owed, shares, matched, settled, lru, budget>>
 
 Environment ==
     \/ \E p \in Peers : Join(p) \/ Leave(p) \/ PeerAnnounces(p)
@@ -223,8 +268,9 @@ Environment ==
 
 Next ==
     \/ Environment
-    \/ \E p \in Peers : SpdpAnnouncement(p) \/ ParkedTraffic(p) \/ Exchange(p) \/ Settle(p)
-    \/ ServeOwed
+    \/ \E p \in Peers :
+        SpdpAnnouncement(p) \/ ParkedTraffic(p) \/ Exchange(p) \/ Settle(p) \/ Stall(p)
+        \/ ServeOwed(p)
 
 Spec == Init /\ [][Next]_vars
 
@@ -237,7 +283,8 @@ FairSpec ==
         /\ SF_vars(ParkedTraffic(p))
         /\ WF_vars(Exchange(p))
         /\ WF_vars(Settle(p))
-    /\ WF_vars(ServeOwed)
+        /\ WF_vars(Stall(p))
+        /\ SF_vars(ServeOwed(p))
 
 (***************************************************************************)
 (* Properties.                                                             *)

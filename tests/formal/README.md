@@ -24,13 +24,13 @@ tests/formal/run_tlc.sh in_order caught_up keep_refresh_target EventuallyConsist
 ```
 
 ```sh
-tests/formal/run_table.sh <property> [peers] [slots] [records] [unreachable] [budget]
-tests/formal/run_table.sh EveryPeerServed 3 2 3 '{1}' 4
+tests/formal/run_table.sh <property> [peers] [slots] [records] [unreachable] [budget] [stall_rule] [serve_order]
+tests/formal/run_table.sh EveryPeerServed 4 2 4 '{1,2}' 5 deadline oldest
 ```
 
 ```sh
 tests/formal/run_outbound.sh <settle_rule> <acknack_retry> <property> [versions] [announcements]
-tests/formal/run_outbound.sh code FALSE NoParkUninformed
+tests/formal/run_outbound.sh heard_writer TRUE EventuallyInformed
 ```
 
 TLC runs in an `eclipse-temurin:21-jre` container; `tla2tools.jar` 1.7.4 is
@@ -114,13 +114,32 @@ leaves, announcements, local endpoint changes) per behavior.
   owed peers that `serve_owed_peer()` serves in table order rather than
   oldest first. More matching peers than slots is the over-capacity case the
   design accepts.
-* **A peer that cannot complete its exchange holds its slot for good.** A
-  peer whose SPDP multicast arrives but whose SEDP exchange never completes
-  (unicast filtered, an unreachable announced locator) never acknowledges
-  this side's announcements, so it never settles and is never parked; its
-  SPDP keeps its lease alive. It costs a slot exactly as a matched peer
-  does: with matched and unreachable peers filling every slot, a reachable
-  peer stays pending forever (`run_table.sh EveryPeerServed 3 2 3 '{1}' 4`).
+* **A peer that cannot complete its exchange must not hold its slot for
+  good.** A peer whose SPDP multicast arrives but whose SEDP exchange never
+  completes (unicast filtered, an unreachable announced locator) never
+  acknowledges this side's announcements, so it never settles; its SPDP
+  keeps its lease alive. Without a limit (`StallRule = "none"`) it costs a
+  slot exactly as a matched peer does, and with matched and unreachable
+  peers filling every slot a reachable peer stays pending forever.
+  `peer_is_stalled()` (`"deadline"`) lets a peer with no match whose exchange
+  has not completed within `RTPS_PEER_EXCHANGE_TIMEOUT_MS` be parked like a
+  settled one, but owed, so it is tried again.
+* **Owed peers must be served oldest first.** With the deadline alone, two
+  unreachable peers can take turns in one slot forever: each is parked owed,
+  and `serve_owed_peer()` in table order (`ServeOrder = "table"`) always
+  serves the lower-numbered one, starving a reachable owed peer behind them.
+  Serving the owed peer whose last SEDP DATA or activation is oldest
+  (`"oldest"`, which the design document specifies) lets every owed peer
+  reach the front.
+
+| StallRule | ServeOrder | Unreachable | EveryPeerServed | EveryMatchMade |
+|---|---|---|---|---|
+| none | table | {1} of 3 | violated | holds |
+| none | oldest | {1} of 3 | violated | holds |
+| deadline | table | {1, 2} of 4 | violated | holds |
+| deadline | oldest (code) | {1} of 3, {1, 2} of 4 | **holds** | **holds** |
+
+  The invariants and `NeverParkMatched` hold under every combination.
 
 ## Phase 3 results
 
@@ -129,10 +148,10 @@ announcements per behavior.
 
 | SettleRule | AcknackRetry | NoParkUninformed | EventuallyInformed | EventuallyParkable |
 |---|---|---|---|---|
-| code | FALSE (code) | violated | violated | holds |
-| code | TRUE | violated | violated | holds |
-| heard_writer | FALSE (code) | holds | violated | violated |
-| heard_writer | TRUE | holds | **holds** | **holds** |
+| caught_up | FALSE | violated | violated | holds |
+| caught_up | TRUE | violated | violated | holds |
+| heard_writer | FALSE | holds | violated | violated |
+| heard_writer (code) | TRUE (code) | holds | **holds** | **holds** |
 
 * **A peer reactivated to receive a new `ros_discovery_info` sample can be
   parked again without it.** Reactivation rebuilds the SEDP reader proxies,
@@ -152,9 +171,11 @@ announcements per behavior.
   ever heard: it holds its slot for good, as an unreachable peer does in
   phase 2.
 * **Both together hold:** settle only once each SEDP reader proxy has heard
-  its writer since activation, and resend the preemptive ACKNACK until it
-  has. The peer then always receives the current sample and can always be
-  parked again.
+  its writer since activation (`SedpReader::heard_from()`), and resend the
+  preemptive ACKNACK until it has (`RTPS_PREEMPTIVE_ACKNACK_RETRY_MS`). The
+  peer then always receives the current sample and can always be parked
+  again (TC-PART-8.5.3-019). A peer that cannot be reached at all is never
+  heard; the phase 2 deadline is what frees its slot.
 
 ## Phases
 

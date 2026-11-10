@@ -5,8 +5,8 @@
 # Checks one property of RosettePeerOutbound with TLC.
 #
 # Usage: tests/formal/run_outbound.sh <settle_rule> <acknack_retry> <property> [versions] [announcements]
-#   settle_rule    code | heard_writer
-#   acknack_retry  FALSE (the code) | TRUE
+#   settle_rule    heard_writer (the code) | caught_up
+#   acknack_retry  TRUE (the code) | FALSE
 #   property       NoParkUninformed (action) | EventuallyInformed | EventuallyParkable (liveness)
 set -euo pipefail
 
