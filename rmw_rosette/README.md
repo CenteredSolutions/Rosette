@@ -106,7 +106,11 @@ every pool, RTPS table, SEDP history, and buffer-pool size from a few limits
 plus the entities client libraries create per node
 (`RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE`, default 6; set 0 for `rclc`
 without a parameter server). `include/rmw_rosette/capacity.hpp` static_asserts
-the same relationships.
+the same relationships. The buffer pool's layout comes from
+`../cmake/rosette_buffer_pool.cmake`, shared with the RTPS core's own build:
+`RMW_ROSETTE_POOL_PROFILE` picks `host` or `firmware`, and
+`ROSETTE_POOL_<ROLE>_BLOCKS` overrides one class's count. The configure prints
+the layout it chose ([docs/mcu_memory_model.md](../docs/mcu_memory_model.md#buffer-pool-layout)).
 
 ## Known gaps
 

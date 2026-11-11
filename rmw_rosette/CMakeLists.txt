@@ -30,13 +30,14 @@ find_package(rosidl_runtime_c REQUIRED)
 find_package(rosidl_typesupport_introspection_c REQUIRED)
 find_package(rosidl_typesupport_microxrcedds_c QUIET)
 
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmw_rosette_capacity.cmake)
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmw_rosette_ros_features.cmake)
-
-# Root of the Rosette repository, which provides the RTPS core and platform glue.
+# Root of the Rosette repository, which provides the RTPS core and platform glue,
+# and the buffer-pool layout the capacity model applies.
 set(ROSETTE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." CACHE PATH
     "Rosette repository root (provides include/rosette/rtps and src/rtps)")
 get_filename_component(ROSETTE_ROOT "${ROSETTE_ROOT}" REALPATH)
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmw_rosette_capacity.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/rmw_rosette_ros_features.cmake)
 
 include(${ROSETTE_ROOT}/cmake/rosette_rtps_sources.cmake)
 set(ROSETTE_RTPS_SOURCES

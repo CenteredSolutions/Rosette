@@ -39,7 +39,7 @@ firmware capacity:
 | | `rtps_chatter` (RTPS core, direct) | `rclc_chatter` (rclc over `rmw_rosette`) |
 | --- | ---: | ---: |
 | Flash (`.text`) | 204,488 B | 285,236 B |
-| Static RAM (`.bss`) | **62,836 B** | **99,816 B** |
+| Static RAM (`.bss`) | **63,828 B** | **93,716 B** |
 | RTPS participant (all tables below) | 28,824 | 55,392 |
 |   writer slots | 4 × 1,048 | 7 × 1,048 + 4 × 648 |
 |   reader slots | 4 × 76 | 10 × 76 |
@@ -48,7 +48,7 @@ firmware capacity:
 |   `EndpointMatchTable` | 9,760 | 15,616 |
 |   SEDP writer + reader | 4,048 + 2,632 | 4,784 + 2,632 |
 |   SPDP reader (peer table) | 1,532 | 7,516 |
-| Buffer pool (`rosette::rtps::g_buf_pool`) | 26,988 | 34,080 |
+| Buffer pool (`rosette::rtps::g_buf_pool`) | 27,980 | 27,980 |
 | Receive buffer (one datagram) | 1,472 | (inside the rmw context) |
 | rmw entity pools (context, publishers, subscriptions, ...) | – | ~8 KB beyond the participant |
 | USB stdio, Pico SDK, board network | ~5 KB | ~5 KB |
@@ -60,11 +60,13 @@ Two observations drive most tuning:
    endpoints, and in `rclc_chatter` they are sized for the firmware defaults
    of 4 publishers, 4 subscriptions, 4 services, and 2 clients. The example
    uses one publisher and one subscription.
-2. **The buffer pool is the largest single item**, and its small-block
-   counts scale with the number of local endpoints.
+2. **The buffer pool is the largest single item.** Both firmwares share one
+   layout, whose counts follow what a board holds at once rather than how
+   many endpoints it declares ([Buffer pool layout](#buffer-pool-layout)).
 
-Declaring what the firmware actually creates fixes both at once (see
-[Worked example](#worked-example-rclc_chatter-sized-to-what-it-creates)).
+Declaring what the firmware actually creates sizes the participant (see
+[Worked example](#worked-example-rclc_chatter-sized-to-what-it-creates));
+the pool is tuned from measurement.
 
 ## Object model
 
@@ -270,6 +272,59 @@ would leave no block for its ACKNACK (`MultiBufPool::can_alloc()`), so held
 changes cannot stop it from requesting the change that releases them; they
 can still crowd out other senders, such as a writer building a datagram.
 
+### Buffer pool layout
+
+`cmake/rosette_buffer_pool.cmake` chooses the pool's layout for every build
+that compiles the RTPS core: `rmw_rosette` on a host or a board, and
+`rosette_rtps` used directly. Each of the five classes serves a role:
+
+| Role | Firmware block | Host block | Holds |
+| --- | ---: | ---: | --- |
+| control | 256 B | 256 B | HEARTBEAT, ACKNACK, and GAP messages being built; short samples |
+| discovery | 512 B | 512 B | SPDP's announcement, SEDP announcements, received discovery data; samples of 257–512 octets |
+| medium | 1 KiB | 2 KiB | larger discovery data; mid-size samples |
+| datagram | one datagram + 44, rounded to 8 (1,520 B at 1472) | 16 KiB | firmware: a built message, or a sample that goes out in one datagram with its RTPS headers. Host: mid-size samples; a host datagram reaches 64 KiB and takes a large block |
+| large | `MAX_SAMPLE_SIZE` | `MAX_SAMPLE_SIZE` | samples larger than any other class; never taken by a smaller request |
+
+A request takes the smallest class that holds it; a full class promotes to
+the next, up to the datagram class. Block sizes follow the profile and the
+link. The counts are sums of the holders above, so each term has a reason:
+
+| Role | Firmware count | Host count |
+| --- | --- | --- |
+| control | 8 (the peak measured on a board with 35 local endpoints among 91 peers: 7) + `HELD_CHANGES` (held changes are usually small, and appear only under loss) = **16** | 32 + local endpoints |
+| discovery | **8** in flight while SEDP rebuilds each announcement as it is sent; 2 × (local endpoints + 1) when it keeps them serialized | 32 + 2 × (local endpoints + 1) |
+| medium | **2**, the measured peak; full, it promotes to datagram blocks | 64 + local endpoints |
+| datagram | **6**: the measured peak (2), with room for resends and promoted medium requests | the large count |
+| large | `RMW_ROSETTE_LARGE_BUFFERS` or `ROSETTE_RTPS_MAX_SAMPLE_BLOCKS` (**2**) | `RMW_ROSETTE_LARGE_BUFFERS` (48) |
+
+The control count does not grow with the endpoint count: writers keep small
+samples only until they are acknowledged, so the measured peak stayed at 7
+with 35 endpoints, and it is loss, through held changes, that raises it.
+
+To change a count, set `ROSETTE_POOL_CONTROL_BLOCKS`,
+`ROSETTE_POOL_DISCOVERY_BLOCKS`, `ROSETTE_POOL_MEDIUM_BLOCKS`, or
+`ROSETTE_POOL_DATAGRAM_BLOCKS` (1 to 255) as a cache variable: `-D` on the
+command line, or `set(... CACHE ...)` in a board's `board.cmake` or before
+Rosette is added. Empty keeps the formula. The large count has its own knob,
+next to the largest sample size it holds. Every configure prints the layout
+it chose and where each count came from:
+
+```
+-- rmw_rosette buffer pool, firmware profile: 27552 octets of blocks
+--   control   256 B x 16 = 4096 B  (8 measured + 8 held changes)
+--   discovery 512 B x 8 = 4096 B  (8 in flight, SEDP rebuilds announcements)
+--   medium    1024 B x 2 = 2048 B  (2 measured)
+--   datagram  1520 B x 6 = 9120 B  (2 measured + 4 for resends)
+--   large     4096 B x 2 = 8192 B  (RMW_ROSETTE_LARGE_BUFFERS)
+```
+
+Each block also carries a 12-octet header on ARM32. Measure before lowering
+a count: `ROSETTE_RTPS_POOL_STATS=ON` reports each class's peak and every
+refusal on the real network ("Pool pressure", below), and the
+`stateful_reader_spec_tests_firmware_pool` spec tests run the in-order
+delivery simulations on the firmware layout.
+
 ### Concurrency
 
 One mutex guards the participant and everything its callbacks touch
@@ -334,10 +389,11 @@ counts, which is why a publisher costs more than a subscription there.
 | `RMW_ROSETTE_HELD_CHANGES` | 8 | changes the reliable subscriptions, services, and clients together hold behind a lost one, so each writer's changes are delivered in order | 104 B per slot, plus the block each held change pins |
 | `RMW_ROSETTE_READER_HELD_CHANGES` | 4 | most of those one reader holds, and how far past its next expected change it holds one | none |
 | `RMW_ROSETTE_MAX_PENDING_CHANGES` | 10 | `ChangeRing` depth ceiling per subscription, service, and client | 72 B per entry per entity, plus the blocks unread entries pin |
-| `RMW_ROSETTE_MAX_DATAGRAM_SIZE` | 1472 | receive buffer, datagram pool class, DATA_FRAG threshold | the datagram class × 4 blocks |
+| `RMW_ROSETTE_MAX_DATAGRAM_SIZE` | 1472 | receive buffer, datagram pool class, DATA_FRAG threshold | the datagram class × 6 blocks |
 | `RMW_ROSETTE_MAX_SAMPLE_SIZE` | 4096 | largest pool class: the biggest message sent or received | × `RMW_ROSETTE_LARGE_BUFFERS` |
 | `RMW_ROSETTE_LARGE_BUFFERS` | 2 | blocks of `MAX_SAMPLE_SIZE`: large samples in flight at once | `MAX_SAMPLE_SIZE` each |
-| `RMW_ROSETTE_POOL_PROFILE` | `firmware` | pool layout: `firmware` sizes classes by role; `host` for many peers and deep histories | |
+| `RMW_ROSETTE_POOL_PROFILE` | `firmware` | pool layout ("Buffer pool layout" above): `firmware` counts what a board holds at once; `host` leaves room for many peers and deep histories | |
+| `ROSETTE_POOL_<ROLE>_BLOCKS` | empty: the profile's count | blocks of the `CONTROL`, `DISCOVERY`, `MEDIUM`, or `DATAGRAM` pool class | that class's block size + 12 B each |
 
 Each service and client is one RTPS writer plus one RTPS reader, and the
 participant adds one writer of its own for `ros_discovery_info`, which is how
@@ -352,6 +408,7 @@ stock `ros2 node list` sees the firmware's node.
 | `ROSETTE_RTPS_MAX_DATAGRAM_SIZE` | 1472 | receive buffer, datagram pool class |
 | `ROSETTE_RTPS_MAX_SAMPLE_SIZE` | 4096 | largest pool class |
 | `ROSETTE_RTPS_MAX_SAMPLE_BLOCKS` | 2 | count of the largest class |
+| `ROSETTE_POOL_<ROLE>_BLOCKS` | empty: the firmware profile's count | blocks of the `CONTROL`, `DISCOVERY`, `MEDIUM`, or `DATAGRAM` pool class |
 | `ROSETTE_RTPS_MAX_PEERS` | 8 | peer table |
 | `ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS` | 64 | remote writer and reader records |
 | `ROSETTE_RTPS_LOG_LEVEL` | 2 | log verbosity (flash, not RAM) |
@@ -414,7 +471,7 @@ translation unit must see the same values (the one-definition rule).
 | `RTPS_MAX_PEERS`, `RTPS_MAX_PEER_LOCATORS` | `types.hpp`, `spdp.hpp` | peer table |
 | `RTPS_MAX_DISCOVERED_WRITERS/_READERS`, `RTPS_MAX_REMOTE_ORIGINS`, `RTPS_MAX_REMOTE_LOCATOR_LISTS`, `RTPS_MAX_MATCH_RECORDS` | `endpoint_match_table.hpp` | remote records, endpoint locator lists, and match pairs |
 | `RTPS_MAX_TOPIC_NAME_LEN` | `endpoint_match_table.hpp` | 128; ROS 2 service topics embed the node name, so shorter limits refuse real names |
-| `RTPS_POOL_CLASS<n>_SIZE/_COUNT` | `buf_pool.hpp` | buffer pool layout |
+| `RTPS_POOL_CLASS<n>_SIZE/_COUNT` | `buf_pool.hpp` | buffer pool layout; `cmake/rosette_buffer_pool.cmake` sets all ten, classes 0–4 being control, discovery, medium, datagram, and large |
 
 ## Worked example: `rclc_chatter` sized to what it creates
 
@@ -431,9 +488,9 @@ cmake --build build-hw/pico2-lean --target rclc_chatter
 
 | | Default capacity | Declared capacity | Saved |
 | --- | ---: | ---: | ---: |
-| `.bss` total | 99,816 B | **63,980 B** | 35,836 B |
+| `.bss` total | 93,716 B | **60,292 B** | 33,424 B |
 | rmw context (participant, transport, rx buffer) | 57,560 | 24,880 | 32,680 |
-| buffer pool | 34,080 | 31,668 | 2,412 |
+| buffer pool | 27,980 | 27,980 | 0 |
 | subscription + publisher pools | 4,976 | 1,256 | 3,720 |
 | `.text` | 285,236 | 279,108 | 6,128 |
 
@@ -481,9 +538,13 @@ firmware. Nothing about the protocol changed.
    acknowledgment, reassembly, and unread subscription entries.
 6. **Link.** Keep `RMW_ROSETTE_MAX_DATAGRAM_SIZE` at 1472 on WIZnet hardware
    UDP, which cannot reassemble IP fragments.
-7. **Depth.** Ask for the QoS depth you mean. A depth-10 subscription (the
+7. **Buffer pool.** Read the layout the configure prints. The firmware
+   counts fit a board on a lossy network; raise `ROSETTE_POOL_<ROLE>_BLOCKS`
+   for a class that `ROSETTE_RTPS_POOL_STATS` shows refusing requests, and
+   lower one only after measuring its peak ("Buffer pool layout" above).
+8. **Depth.** Ask for the QoS depth you mean. A depth-10 subscription (the
    `rclc` default) pins up to ten samples; depth 1 pins one.
-8. **Build and read the numbers** (below). Then run the firmware against the
+9. **Build and read the numbers** (below). Then run the firmware against the
    real network and watch for creation failures and pool errors.
 
 ## Measuring

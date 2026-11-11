@@ -167,63 +167,35 @@ endif()
 math(EXPR _rr_match_records
      "${_rr_reader_proxies} + ${_rr_writer_proxies} + ${RMW_ROSETTE_MATCH_WAITERS}")
 
-if(RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER 65532)
-  message(FATAL_ERROR "RMW_ROSETTE_MAX_SAMPLE_SIZE must be at most 65532 (16-bit pool block sizes)")
-endif()
 if(RMW_ROSETTE_MAX_DATAGRAM_SIZE LESS 512 OR RMW_ROSETTE_MAX_DATAGRAM_SIZE GREATER 65507)
   message(FATAL_ERROR "RMW_ROSETTE_MAX_DATAGRAM_SIZE must be between 512 and 65507")
 endif()
 
-# Buffer pools (rosette/rtps/buf_pool.hpp): five size classes, chosen so
-# each use lands in a block near its size. A sample is stored whole in one
-# block (fragmented only on the wire) and alloc() takes the smallest class
-# that fits. Counts are uint8_t. Large-sample blocks are the scarce resource:
-# a writer keeps up to its history depth of samples until acknowledged, and a
-# reader holds one per in-flight reassembly plus each unread take-ring entry.
-#
-# RMW_ROSETTE_POOL_PROFILE picks the layout:
-#   host      class 0  256 B       control messages (HEARTBEAT, ACKNACK, GAP)
-#             class 1  512 B       SPDP/SEDP announcements
-#             class 2  2 KiB       DATA/DATA_FRAG framing; small samples
-#             class 3  16 KiB      medium samples
-#             class 4  MAX_SAMPLE  large samples
-#   firmware  class 0  256 B       control messages and short samples
-#             class 1  512 B       SPDP's announcement, each SEDP
-#                                  announcement while it is rebuilt and sent,
-#                                  received discovery data while it is
-#                                  applied, samples of 257-512 octets
-#             class 2  1 KiB       received discovery data, mid-size samples
-#             class 3  datagram    one datagram plus its RTPS headers (44
-#                                  octets), rounded to 8: received DATA,
-#                                  built messages, unfragmented samples
-#             class 4  MAX_SAMPLE  samples larger than one datagram
-#   The firmware counts follow what a board holds at once; the host counts
-#   leave room for many peers and deep histories.
+# Buffer pool (rosette/rtps/buf_pool.hpp): cmake/rosette_buffer_pool.cmake
+# chooses its layout and documents each class's role, size, and count.
+# RMW_ROSETTE_POOL_PROFILE picks firmware (classes sized by role for a
+# microcontroller, counts from what a board holds at once) or host (room for
+# many peers and deep histories). RMW_ROSETTE_LARGE_BUFFERS counts the large
+# blocks, and ROSETTE_POOL_<ROLE>_BLOCKS overrides any other class's count.
 #
 # SEDP announcements (RTPS_SEDP_REBUILD_ANNOUNCEMENTS, rosette/rtps/sedp.hpp)
 # follow the profile too. The firmware profile rebuilds each announcement
-# from the endpoint table whenever it is sent, so class 1 holds only blocks
-# in flight rather than two per local endpoint for the endpoint's lifetime:
-# at 33 local endpoints that is 8 blocks instead of 68 (about 30 KiB). The
-# host profile keeps each announcement serialized, so replaying it to many
-# peers costs no serialization. -DRTPS_SEDP_REBUILD_ANNOUNCEMENTS=0 or =1
-# overrides the profile's choice, and class 1 is sized for the mode chosen.
+# from the endpoint table whenever it is sent, so the discovery class holds
+# only blocks in flight rather than two per local endpoint for the
+# endpoint's lifetime: at 33 local endpoints that is 8 blocks instead of 68
+# (about 30 KiB). The host profile keeps each announcement serialized, so
+# replaying it to many peers costs no serialization.
+# -DRTPS_SEDP_REBUILD_ANNOUNCEMENTS=0 or =1 overrides the profile's choice,
+# and the discovery class is sized for the mode chosen.
 set(RMW_ROSETTE_POOL_PROFILE host CACHE STRING
     "Buffer-pool layout: host (large, many peers) or firmware (sized by role for a microcontroller)")
 set_property(CACHE RMW_ROSETTE_POOL_PROFILE PROPERTY STRINGS host firmware)
 
 # ROSETTE_RTPS_POOL_STATS=ON counts buffer pool use per class and warns when a
 # request gets no block (rosette/rtps/buf_pool_stats.hpp,
-# docs/mcu_memory_model.md "Pool pressure"): the measurements the class sizes
-# and counts above are chosen from.
+# docs/mcu_memory_model.md "Pool pressure"): the measurements the pool's
+# counts are chosen from.
 option(ROSETTE_RTPS_POOL_STATS "Count buffer pool use per class and warn on refusals" OFF)
-
-function(_rr_clamp_count out value)
-  if(value GREATER 255)
-    set(value 255)
-  endif()
-  set(${out} ${value} PARENT_SCOPE)
-endfunction()
 
 if(DEFINED RTPS_SEDP_REBUILD_ANNOUNCEMENTS)
   set(_rr_sedp_rebuild ${RTPS_SEDP_REBUILD_ANNOUNCEMENTS})
@@ -236,46 +208,24 @@ if(NOT _rr_sedp_rebuild MATCHES "^[01]$")
   message(FATAL_ERROR "RTPS_SEDP_REBUILD_ANNOUNCEMENTS must be 0 or 1")
 endif()
 
-if(RMW_ROSETTE_POOL_PROFILE STREQUAL "host")
-  set(_rr_size0 256)
-  set(_rr_size1 512)
-  set(_rr_size2 2048)
-  set(_rr_size3 16384)
-  math(EXPR _rr_pool0 "32 + ${_rr_local_endpoints}")
-  math(EXPR _rr_pool1 "32 + 2 * ${_rr_local_endpoints}")
-  math(EXPR _rr_pool2 "64 + ${_rr_local_endpoints}")
-  set(_rr_pool3 ${RMW_ROSETTE_LARGE_BUFFERS})
-elseif(RMW_ROSETTE_POOL_PROFILE STREQUAL "firmware")
-  set(_rr_size0 256)
-  set(_rr_size1 512)
-  set(_rr_size2 1024)
-  math(EXPR _rr_size3 "((${RMW_ROSETTE_MAX_DATAGRAM_SIZE} + 44 + 7) / 8) * 8")
-  if(NOT RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER _rr_size3)
-    message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_MAX_SAMPLE_SIZE (${RMW_ROSETTE_MAX_SAMPLE_SIZE}) must "
-                        "exceed the datagram class (${_rr_size3} octets) in the firmware profile")
-  endif()
-  math(EXPR _rr_pool0 "16 + ${_rr_local_endpoints}")
-  if(_rr_sedp_rebuild)
-    set(_rr_pool1 8)
-  else()
-    math(EXPR _rr_pool1 "2 * (${_rr_local_endpoints} + 1)")
-  endif()
-  set(_rr_pool2 8)
-  set(_rr_pool3 4)
-else()
-  message(FATAL_ERROR "RMW_ROSETTE_POOL_PROFILE='${RMW_ROSETTE_POOL_PROFILE}' is not host or firmware")
-endif()
-_rr_clamp_count(_rr_pool0 ${_rr_pool0})
-_rr_clamp_count(_rr_pool1 ${_rr_pool1})
-_rr_clamp_count(_rr_pool2 ${_rr_pool2})
-_rr_clamp_count(_rr_pool3 ${_rr_pool3})
-_rr_clamp_count(_rr_pool4 ${RMW_ROSETTE_LARGE_BUFFERS})
+include(${ROSETTE_ROOT}/cmake/rosette_buffer_pool.cmake)
+rosette_buffer_pool_layout(_rr_pool
+  LABEL rmw_rosette
+  PROFILE ${RMW_ROSETTE_POOL_PROFILE}
+  MAX_DATAGRAM_SIZE ${RMW_ROSETTE_MAX_DATAGRAM_SIZE}
+  MAX_SAMPLE_SIZE ${RMW_ROSETTE_MAX_SAMPLE_SIZE}
+  LARGE_BLOCKS ${RMW_ROSETTE_LARGE_BUFFERS}
+  LARGE_KNOB RMW_ROSETTE_LARGE_BUFFERS
+  LOCAL_ENDPOINTS ${_rr_local_endpoints}
+  HELD_CHANGES ${RMW_ROSETTE_HELD_CHANGES}
+  SEDP_REBUILD ${_rr_sedp_rebuild}
+)
 
 # Assembly slots (rosette/rtps/fragment_assembler.hpp): a slot holds the
 # block its fragmented sample assembles in, so slots beyond the blocks of the
 # two largest classes would never hold a sample.
 if(RMW_ROSETTE_ASSEMBLY_SLOTS STREQUAL "")
-  math(EXPR _rr_assembly_slots "${_rr_pool3} + ${_rr_pool4}")
+  math(EXPR _rr_assembly_slots "${_rr_pool_DATAGRAM_BLOCKS} + ${RMW_ROSETTE_LARGE_BUFFERS}")
 else()
   set(_rr_assembly_slots ${RMW_ROSETTE_ASSEMBLY_SLOTS})
 endif()
@@ -352,16 +302,7 @@ function(rmw_rosette_apply_capacity target)
     RTPS_MAX_DISCOVERED_READERS=${_rr_known_readers}
     RTPS_MAX_MATCH_RECORDS=${_rr_match_records}
     RTPS_MAX_WAITING_MATCHES=${RMW_ROSETTE_MATCH_WAITERS}
-    RTPS_POOL_CLASS0_SIZE=${_rr_size0}u
-    RTPS_POOL_CLASS0_COUNT=${_rr_pool0}u
-    RTPS_POOL_CLASS1_SIZE=${_rr_size1}u
-    RTPS_POOL_CLASS1_COUNT=${_rr_pool1}u
-    RTPS_POOL_CLASS2_SIZE=${_rr_size2}u
-    RTPS_POOL_CLASS2_COUNT=${_rr_pool2}u
-    RTPS_POOL_CLASS3_SIZE=${_rr_size3}u
-    RTPS_POOL_CLASS3_COUNT=${_rr_pool3}u
-    RTPS_POOL_CLASS4_SIZE=${RMW_ROSETTE_MAX_SAMPLE_SIZE}u
-    RTPS_POOL_CLASS4_COUNT=${_rr_pool4}u
+    ${_rr_pool_DEFINITIONS}
     RTPS_ASSEMBLY_SLOTS=${_rr_assembly_slots}u
   )
   if(ROSETTE_RTPS_POOL_STATS)

@@ -314,7 +314,7 @@ add_test(
 )
 
 # Built twice: stateful_reader_spec_tests_firmware_pool runs the reader with
-# the rmw_rosette firmware profile's buffer pool (rmw_rosette_capacity.cmake):
+# the firmware buffer pool a board ships (cmake/rosette_buffer_pool.cmake):
 # 256 B, 512 B, 1 KiB, datagram and large blocks, in the counts a small board
 # carries, where held changes and ACKNACKs share the smallest class.
 set(STATEFUL_READER_SPEC_TEST_SOURCES
@@ -358,12 +358,20 @@ foreach(_reader_target stateful_reader_spec_tests stateful_reader_spec_tests_fir
         RTPS_LOG_LEVEL=0
     )
 endforeach()
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/rosette_buffer_pool.cmake)
+rosette_buffer_pool_layout(_spec_firmware_pool
+    QUIET
+    PROFILE firmware
+    MAX_DATAGRAM_SIZE 1472
+    MAX_SAMPLE_SIZE 4096
+    LARGE_BLOCKS 2
+    LARGE_KNOB RMW_ROSETTE_LARGE_BUFFERS
+    LOCAL_ENDPOINTS 12
+    HELD_CHANGES 8
+    SEDP_REBUILD 1
+)
 target_compile_definitions(stateful_reader_spec_tests_firmware_pool PRIVATE
-    RTPS_POOL_CLASS0_SIZE=256u RTPS_POOL_CLASS0_COUNT=16u
-    RTPS_POOL_CLASS1_SIZE=512u RTPS_POOL_CLASS1_COUNT=8u
-    RTPS_POOL_CLASS2_SIZE=1024u RTPS_POOL_CLASS2_COUNT=2u
-    RTPS_POOL_CLASS3_SIZE=1520u RTPS_POOL_CLASS3_COUNT=6u
-    RTPS_POOL_CLASS4_SIZE=4096u RTPS_POOL_CLASS4_COUNT=2u
+    ${_spec_firmware_pool_DEFINITIONS}
 )
 
 set(STATEFUL_READER_PASSED_JSON
