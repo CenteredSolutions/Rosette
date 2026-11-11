@@ -1025,8 +1025,7 @@ void EndpointMatchTable::release_participant(const GuidPrefix& prefix) noexcept 
 }
 
 bool EndpointMatchTable::participant_refreshing(const GuidPrefix& prefix) noexcept {
-    if (graph_observer_ == nullptr || graph_observer_->on_participant_refreshing == nullptr
-        || graph_observer_->on_participant_refreshed == nullptr) {
+    if (!tracks_refreshes()) {
         return false;
     }
 

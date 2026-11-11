@@ -767,6 +767,21 @@ bool SedpReader::caught_up_with(const GuidPrefix& peer_prefix, SequenceNumber& p
     return pubs && subs;
 }
 
+void SedpReader::heard_from(const GuidPrefix& peer_prefix, bool& publications,
+                            bool& subscriptions) noexcept {
+    // HEARTBEAT counts start at 1 (§8.3.7.5), so a proxy's lastHBCount of 0
+    // means none has arrived since the announcer was matched.
+    const auto heard = [](StatefulReader& reader, const Guid& announcer) noexcept {
+        const WriterProxy* proxy = reader.matched_writer_lookup(announcer);
+        return proxy != nullptr && proxy->lastHBCount != 0;
+    };
+
+    publications = heard(publications_reader_,
+                         Guid{peer_prefix, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER});
+    subscriptions = heard(subscriptions_reader_,
+                          Guid{peer_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER});
+}
+
 StatefulReader* SedpReader::reader_for_writer(const EntityId& writer_id) noexcept
 {
     if (writer_id == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) return &publications_reader_;

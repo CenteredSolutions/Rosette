@@ -595,6 +595,64 @@ static bool tc_part_8_5_3_018(std::string& err) {
     return true;
 }
 
+// A parked peer restarts under the same GUID prefix within its lease, so its
+// publications announcer numbers from 1 again, below the number kept at
+// parking. Reactivated because it is owed this participant's announcement,
+// its refresh completes once the announcer's HEARTBEAT shows the replay is
+// whole; the writers it announced before restarting leave the listing.
+static bool tc_part_8_5_3_019(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    GraphLog log{};
+    p.match_table().set_graph_endpoint_observer(&log.observer);
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1010u), "two peers are active");
+    CHECK(deliver_announcement(p, a, true, "rt/one", 1, 1000u)
+              && deliver_announcement(p, a, true, "rt/two", 2, 1000u)
+              && deliver_announcement(p, a, true, "rt/three", 3, 1000u),
+          "A announces three writers");
+    CHECK(announce(p, c, 0x13u, 1200u) && is_parked(p, a), "A is parked for a third peer");
+    const PeerEntry* parked = record(p, a);
+    CHECK(parked != nullptr && parked->parkedPublicationsSn == 3u, "the parked number is kept");
+
+    WriterConfig wcfg{};
+    wcfg.topicName.assign("rt/local");
+    wcfg.typeName.assign("pkg::msg::dds_::T_");
+    wcfg.reliability = ReliabilityKind::RELIABLE;
+    CHECK(p.create_writer<1>(wcfg) != nullptr, "a local writer is created");
+    CHECK(acknowledge_sedp(p, b, true, 1) && acknowledge_sedp(p, b, false, 0)
+              && acknowledge_sedp(p, c, true, 1) && acknowledge_sedp(p, c, false, 0),
+          "the active peers acknowledge it");
+
+    g_participant_test_now_ms = 1400u;
+    p.tick(1400u);
+    CHECK(is_active(p, a) && log.refreshing == 1, "the owed peer is reactivated and refreshed");
+
+    // A restarted: its announcer holds one writer, at SN 1.
+    CHECK(deliver_announcement(p, a, true, "rt/after-restart", 1, 1450u, 9u),
+          "A's restarted announcer replays its one writer");
+    g_participant_test_now_ms = 1450u;
+    p.tick(1450u);
+    CHECK(log.refreshed == 0, "without a HEARTBEAT, the replay may not have begun in full");
+
+    CHECK(deliver_publications_heartbeat(p, a, 1, 1, 1500u), "A's HEARTBEAT holds SN 1 only");
+    g_participant_test_now_ms = 1500u;
+    p.tick(1500u);
+    CHECK(log.refreshed == 1, "the refresh completes though SN 1 is below the kept number");
+    CHECK(!log.lists(announced_writer(a, 1)) && !log.lists(announced_writer(a, 2))
+              && !log.lists(announced_writer(a, 3)),
+          "the writers announced before the restart are forgotten");
+    CHECK(log.lists(announced_writer(a, 9)), "the replayed writer stays listed");
+    const PeerEntry* refreshed = record(p, a);
+    CHECK(refreshed != nullptr && refreshed->parkedPublicationsSn == 0u,
+          "no refresh remains under way");
+    return true;
+}
+
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.3-011",
                      "§8.5.3.2/§8.5.4.1: a peer finding the active tier full waits until a "
@@ -630,6 +688,11 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "§8.5.4.1/§8.4.10.4: parking a peer whose refresh has not completed keeps "
                      "the refresh's target, so its next reactivation resumes the refresh.",
                      tc_part_8_5_3_018});
+    tests.push_back({"TC-PART-8.5.3-019",
+                     "§8.5.4.1/§8.3.7.5: a reactivated peer whose announcer restarted below the "
+                     "number kept at parking completes its refresh once a HEARTBEAT shows its "
+                     "replay is whole.",
+                     tc_part_8_5_3_019});
 }
 
 }  // namespace spec_test

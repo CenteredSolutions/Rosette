@@ -161,9 +161,9 @@
       "id": "REQ-PART-8.5.4.1-PARKED-PEERS-STAY-LISTED",
       "section": "8.5.4.1",
       "normativity": "implementation-behavior",
-      "statement": "Parking a peer is invisible to the graph endpoint observer, which lists the network's endpoints; only a departure is announced to it, once per participant. Reactivating a parked peer refreshes its listing: once both of its SEDP announcers have resolved every change up to the numbers kept at parking, with none missing, the endpoints its replay did not confirm are forgotten. Parking a peer whose refresh has not completed keeps the refresh's target, so the next reactivation resumes it.",
+      "statement": "Parking a peer is invisible to the graph endpoint observer, which lists the network's endpoints; only a departure is announced to it, once per participant. Reactivating a parked peer refreshes its listing: once each of its SEDP announcers has none missing and has either resolved every change up to the number kept at parking or sent a HEARTBEAT since it was matched again, the endpoints its replay did not confirm are forgotten. Parking a peer whose refresh has not completed keeps the refresh's target, so the next reactivation resumes it.",
       "status": "implemented",
-      "test_ids": ["TC-PART-8.5.3-015", "TC-PART-8.5.3-016", "TC-PART-8.5.3-017", "TC-PART-8.5.3-018"]
+      "test_ids": ["TC-PART-8.5.3-015", "TC-PART-8.5.3-016", "TC-PART-8.5.3-017", "TC-PART-8.5.3-018", "TC-PART-8.5.3-019"]
     },
     {
       "id": "REQ-PART-8.5.1-SHARED-PROXY-POOLS",

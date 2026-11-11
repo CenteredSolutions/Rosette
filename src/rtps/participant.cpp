@@ -666,10 +666,10 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
     //    the Participant removes all information about the remote Participant
     //    and its endpoints."
     //
-    // EndpointMatchTable::remove_participant() iterates all known endpoints
-    // whose GUID prefix matches the gone participant, calls remove_writer /
-    // remove_reader on each, and fires on_unmatch (→ on_endpoint_unmatch)
-    // for every dissolved match — which in turn calls matched_reader_remove /
+    // EndpointMatchTable::remove_participant() tells the graph observer once
+    // (on_participant_gone), then forgets every endpoint with the gone
+    // participant's GUID prefix and fires on_unmatch (→ on_endpoint_unmatch)
+    // for every dissolved match, which calls matched_reader_remove /
     // matched_writer_remove on the affected local endpoints.
     p->match_table_.remove_participant(peer.guidPrefix);
     p->sedp_writer_.on_peer_removed(peer.guidPrefix);
