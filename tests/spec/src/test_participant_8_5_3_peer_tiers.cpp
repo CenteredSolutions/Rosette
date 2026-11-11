@@ -552,14 +552,16 @@ static bool tc_part_8_5_3_018(std::string& err) {
     CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1010u), "two peers are active");
     CHECK(deliver_announcement(p, a, true, "rt/withdrawn", 1, 1000u), "A announces a writer");
     CHECK(announce(p, c, 0x13u, 1200u) && is_parked(p, a), "A is parked for a third peer");
-    CHECK(record(p, a)->parkedPublicationsSn == 1u, "the parked number is kept");
+    const PeerEntry* parked = record(p, a);
+    CHECK(parked != nullptr && parked->parkedPublicationsSn == 1u, "the parked number is kept");
 
     WriterConfig wcfg{};
     wcfg.topicName.assign("rt/local");
     wcfg.typeName.assign("pkg::msg::dds_::T_");
     wcfg.reliability = ReliabilityKind::RELIABLE;
     CHECK(p.create_writer<1>(wcfg) != nullptr, "a local writer is created");
-    CHECK(record(p, a)->owed, "the parked peer is owed its announcement");
+    const PeerEntry* owed = record(p, a);
+    CHECK(owed != nullptr && owed->owed, "the parked peer is owed its announcement");
     CHECK(acknowledge_sedp(p, b, true, 1) && acknowledge_sedp(p, b, false, 0)
               && acknowledge_sedp(p, c, true, 1) && acknowledge_sedp(p, c, false, 0),
           "the active peers acknowledge it");
@@ -575,7 +577,9 @@ static bool tc_part_8_5_3_018(std::string& err) {
     CHECK(deliver_announcement(p, c, true, "rt/elsewhere", 1, 1550u), "C announces a writer");
     CHECK(announce(p, d, 0x14u, 1600u), "a fourth peer is recorded");
     CHECK(is_parked(p, a) && is_active(p, d), "A, settled with nothing resolved, is parked again");
-    CHECK(record(p, a)->parkedPublicationsSn == 1u, "the unfinished refresh's target is kept");
+    const PeerEntry* reparked = record(p, a);
+    CHECK(reparked != nullptr && reparked->parkedPublicationsSn == 1u,
+          "the unfinished refresh's target is kept");
     CHECK(log.lists(announced_writer(a, 1)), "the writer is still listed, unconfirmed");
 
     // While parked, A withdrew writer 1 (SN 2) and announced writer 3 (SN 3).
