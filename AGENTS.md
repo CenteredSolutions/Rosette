@@ -89,6 +89,16 @@ interim, provisional, temporary, changed, or migrated.
 ### Module documentation
 Add clear module-level architecture notes where helpful. Add comments to non-obvious code to explain rationale, especially where the design may not be immediately intuitive.
 
+### Diagrams and tables
+When a layout, state machine, or exchange is the point, draw it instead of describing it, the way RFCs draw
+headers and state machines and datasheets tabulate registers. In source comments, use ASCII diagrams for wire
+formats, bit fields, buffer layouts, and small state machines, and Markdown tables for state transitions, limits,
+and register maps. Keep each one within the 100-column limit and wrap ASCII art in `@verbatim` so neither
+clang-format nor Doxygen reflows it. Put Mermaid sequence and component diagrams in `docs/design` and PR
+descriptions, where GitHub renders them. A diagram lives in the file or class comment next to the code it
+describes, names the spec figure or table it follows, and is updated in the same change as that code; function
+comments refer to it ("transitions T4–T6 above") instead of repeating it.
+
 ## Coding Style
 Strive for smaller files so it's clear to simple humans where code is and how to find it. Aim to keep code files
 shorter rather than longer with great intros and docstrings. Filenames should not be generic but should be specific
