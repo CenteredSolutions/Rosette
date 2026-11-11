@@ -820,6 +820,9 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     ctx.graph_guard_handle.implementation_identifier = rmw_rosette_identifier;
     ctx.graph_guard_handle.data = &ctx.graph_guard;
     ctx.graph_guard_handle.context = context;
+    // Both sources wake the graph guard: the cache when a listing changes, and
+    // the participant when the match table does, which is how a client in
+    // wait_for_service() learns that a reactivated server matched again.
     ctx.participant->set_on_graph_change(trigger_graph_guard, &ctx.graph_guard);
 #if RMW_ROSETTE_GRAPH_CACHE
     ctx.graph_cache = new (ctx.graph_cache_storage) rmw_rosette::GraphCache();
