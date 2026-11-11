@@ -33,18 +33,19 @@ seconds; a number that grows is a leak in application code.
 
 ## Where the RAM goes
 
-Static RAM (`.bss`) of the two example firmwares, built with the default
-firmware capacity:
+Static RAM (`.bss`) of the two example firmwares, built for the
+`w5100s-evb-pico2` (Release) with the default firmware capacity, as
+`arm-none-eabi-size` reports them:
 
 | | `rtps_chatter` (RTPS core, direct) | `rclc_chatter` (rclc over `rmw_rosette`) |
 | --- | ---: | ---: |
-| Flash (`.text`) | 204,488 B | 285,236 B |
-| Static RAM (`.bss`) | **63,828 B** | **93,716 B** |
-| RTPS participant (all tables below) | 28,824 | 55,392 |
+| Flash (`.text`) | 125,480 B | 193,168 B |
+| Static RAM (`.bss`) | **65,640 B** | **95,160 B** |
+| RTPS participant (all tables below) | 29,720 | 56,304 |
 |   writer slots | 4 × 1,048 | 7 × 1,048 + 4 × 648 |
 |   reader slots | 4 × 76 | 10 × 76 |
 |   `ReaderProxy` / `WriterProxy` pools | 2,640 + 2,128 | 7,232 + 5,296 |
-|   assembly pool (6 slots) | 824 | 824 |
+|   assembly pool (8 slots: datagram + large blocks) | 1,736 | 1,736 |
 |   `EndpointMatchTable` | 9,760 | 15,616 |
 |   SEDP writer + reader | 4,048 + 2,632 | 4,784 + 2,632 |
 |   SPDP reader (peer table) | 1,532 | 7,516 |
@@ -362,18 +363,19 @@ relationships, so an inconsistent set fails to compile.
 The cost per unit of the entity counts is the growth in `.bss` when one is
 added to the worked example's declared `rclc_chatter` (1 publisher,
 1 subscription) on the RP2350. It includes the entity's share of the proxy
-pools and match records at the default cap of 8, and the small pool blocks
-and local endpoint record that follow the larger of the writer and reader
-counts, which is why a publisher costs more than a subscription there.
+pools and match records at the default cap of 8. The buffer pool does not
+grow: its counts follow what the board holds at once, not how many
+endpoints it has. A publisher costs more than a subscription because its
+writer slot keeps a history and its reader proxies are the larger kind.
 
 | Knob | Firmware default | What it sizes | Cost per unit |
 | --- | ---: | --- | --- |
-| `RMW_ROSETTE_MAX_PUBLISHERS` | 4 | writer slot, 8 reader proxies, local endpoint and match records, SEDP history, publisher handle | 3,388 B |
-| `RMW_ROSETTE_MAX_SUBSCRIPTIONS` | 4 | reader slot, 8 writer proxies, match records, subscription handle with its `ChangeRing` | 936 B |
-| `RMW_ROSETTE_MAX_SERVICES` | 4 | one reply writer in a shallow slot **and** one reader, with their proxies, records, and handle | 3,668 B |
-| `RMW_ROSETTE_MAX_CLIENTS` | 2 | one writer and one reader, with their proxies, records, and handle | 4,068 B |
+| `RMW_ROSETTE_MAX_PUBLISHERS` | 4 | writer slot, 8 reader proxies, local endpoint and match records, SEDP history, publisher handle | 2,704 B |
+| `RMW_ROSETTE_MAX_SUBSCRIPTIONS` | 4 | reader slot, 8 writer proxies, match records, subscription handle with its `ChangeRing` | 1,168 B |
+| `RMW_ROSETTE_MAX_SERVICES` | 4 | one reply writer in a shallow slot **and** one reader, with their proxies, records, and handle | 3,224 B |
+| `RMW_ROSETTE_MAX_CLIENTS` | 2 | one writer and one reader, with their proxies, records, and handle | 3,624 B |
 | `RMW_ROSETTE_MAX_NODES` | 1 | node pool; multiplies the per-node entities below | |
-| `RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE` | 0 | 6 for `rclc_parameter_server`, 0 without | 6 services per node (≈ 24 KB) |
+| `RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE` | 0 | 6 for `rclc_parameter_server`, 0 without | 6 services per node (≈ 19 KB) |
 | `RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE` | 0 | `/rosout`, `/parameter_events` | 0 when rcl logging is off, as in the firmware C stack |
 | `RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS` | 8 | active peers: active slot, SEDP reader and writer proxies, remote origins | ≈ 420 B |
 | `RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS` | 96 | known-peer records, active or parked (`PeerEntry`) | 68 B |
@@ -488,11 +490,11 @@ cmake --build build-hw/pico2-lean --target rclc_chatter
 
 | | Default capacity | Declared capacity | Saved |
 | --- | ---: | ---: | ---: |
-| `.bss` total | 93,716 B | **60,292 B** | 33,424 B |
-| rmw context (participant, transport, rx buffer) | 57,560 | 24,880 | 32,680 |
+| `.bss` total | 95,160 B | **63,288 B** | 31,872 B |
+| rmw context (participant, transport, rx buffer) | 58,112 | 26,984 | 31,128 |
 | buffer pool | 27,980 | 27,980 | 0 |
 | subscription + publisher pools | 4,976 | 1,256 | 3,720 |
-| `.text` | 285,236 | 279,108 | 6,128 |
+| `.text` | 193,168 | 189,496 | 3,672 |
 
 The participant now has two writer slots (the publisher and
 `ros_discovery_info`), one reader slot, and proxy pools sized for them (16
