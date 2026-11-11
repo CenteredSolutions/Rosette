@@ -21,57 +21,55 @@ Interoperability is proven against stock ROS 2 middleware (`rmw_fastrtps_cpp`, `
 `micro_ros_agent`, not against Rosette itself.
 
 ## Function Documentation Style
+Documentation states the contract: what a function is for, what it promises, and which authority defines correct
+behavior. A reader can choose and call the function, and a tester can write a test for it, without reading its body.
+The headers are also the source for generated API pages, so the public contract lives there. Explain the subsystem,
+protocol, or state machine a class belongs to once, in the file or class comment, not on every function.
 
-Documentation exists for traceability. A reader (human or agent) must be able to answer, from the comment alone:
-what the function does, what each parameter means, how to interpret the return value, how correctness is
-established (not "does it work", but "what would prove it is implemented correctly"), and which authoritative
-source to consult before amending it.
+Use Doxygen tags, which clangd, VS Code C/C++, and CLion render in hover documentation and signature help. Document
+public API in the header, above the declaration.
 
-For every non-trivial C/C++ function or method you write or substantially modify, add a Doxygen block comment
-immediately above its declaration (the header, for public API). Doxygen tags are required because clangd,
-VS Code C/C++, and CLion render them in hover documentation and signature help.
+- `@brief`: one sentence, on every function, so hover documentation is never empty.
+- Purpose, for public API: one or two sentences on when to use this function and, when a near neighbor exists, when
+  to use that one instead.
+- `@param[in]`, `@param[out]`, `@param[in,out]`: every parameter on public API, so the generated pages are
+  complete. Elsewhere, only parameters whose meaning, units, valid range, ownership, or lifetime the name and type do
+  not already say.
+- `@return`: how the caller interprets each outcome, not just the type.
+- `Verification:`: the observable behavior a correct implementation must show, derived from the governing source and
+  stated so a test can be built from it without reading the code. A test written from it checks that the function
+  does what it is supposed to do, not merely that it runs. List the test-case IDs that check it, where they exist;
+  the statement stands without them.
+- `References:`: the RFC, OMG specification, datasheet register or timing table, or ROS 2 API documentation the
+  behavior derives from, with section numbers.
+- `Example:`, for public API entry points only (the class or function a caller reaches for first: a class comment, a
+  factory or constructor, the main operation of a class, a port hook a board implements): a `@code{.cpp}` ...
+  `@endcode` block of about ten lines showing the call in a larger program, with what is constructed first, how the
+  result is checked, and what is torn down. Use real names and signatures, and name the compiled program or test that
+  does the same thing (`Full program: examples/led_files/main.cpp`), which is the source of truth when the two
+  disagree. Accessors, and methods a class-level example already shows, need no example of their own.
 
-Required structure:
-- `@brief` with a one-line summary of the function's purpose.
-- One short paragraph explaining how the function fits into the larger subsystem, protocol, algorithm, state machine, or control flow.
-- One short paragraph summarizing the function's internal algorithm or intended procedure when the implementation is not obvious from the signature alone.
-- `@param[in]`, `@param[out]`, or `@param[in,out]` for every meaningful parameter: meaning, units, valid range, ownership and lifetime.
-- `@return` describing how the caller interprets each outcome, not just the type.
-- `Verification:` what "correct" means (the invariant, spec rule, or observable behavior the implementation must satisfy) and the test cases that check it, by test-case ID where one exists (for example `TC-BLD-10.2-001` in `tests/spec`).
-- `References:` the RFC, OMG specification, ROS 2 API documentation, datasheet, or other authoritative source the behavior derives from, with section numbers.
-
-Add for public API entry points (the class or function a caller reaches for first: a class comment, a factory or
-constructor, the main operation of a class, a port hook a board implements):
-- `Example:` a short `@code{.cpp}` ... `@endcode` block, about ten lines at most, showing the call in the context of
-  a larger program: what is constructed first, how the result is checked, and what is torn down. A test proves the
-  function works but is hard to read as a usage guide; the example is the quick reference, and could seed a
-  tutorial. Use real names and signatures so it would compile in that context, and name a compiled program or test
-  that does the same thing (`Full program: examples/led_files/main.cpp`), which is the source of truth when the
-  example and the code disagree. Accessors, and methods a class-level example already shows, need no example of
-  their own.
-
-Template:
+Private helpers with no external authority need only a `@brief` and any non-obvious side effect; they are tested
+through the function that calls them.
 
 ```cpp
 /**
- * @brief <one-line summary>
+ * @brief <one sentence>
  *
- * <how this function fits into the larger design>
+ * <public API: when to use this, and when to use its neighbor instead>
  *
- * <high-level algorithm, when not obvious from the signature>
- *
- * @param[in]     name  <meaning, units, valid range, ownership>
- * @param[out]    name  <what is written, and when>
+ * @param[in]  name  <meaning, units, valid range, ownership>
+ * @param[out] name  <what is written, and when>
  * @return <how the caller interprets each outcome>
  *
  * Verification:
- * - Correct means: <invariant or spec rule the implementation must satisfy>
- * - Covered by: <test file or test-case ID>
+ * - Correct means: <observable behavior the governing source requires>
+ * - Covered by: <test-case IDs, where they exist>
  *
  * References:
  * - OMG DDSI-RTPS 2.5 §8.4.7.2
  *
- * Example (public API entry points only):
+ * Example:
  * @code{.cpp}
  * <a few lines: set up, call, check the result, tear down>
  * @endcode
@@ -79,20 +77,14 @@ Template:
  */
 ```
 
-Test cases in `tests/spec` carry IDs of the form `TC-<AREA>-<spec section>-<seq>`, so a function's
-`Verification:` and `References:` sections, the spec section, and the test that checks it all point at each other.
-When a function has no test yet, `Verification:` still states what a test would need to check.
+Test cases in `tests/spec` carry IDs of the form `TC-<AREA>-<spec section>-<seq>` (for example
+`TC-BLD-10.2-001`), so a function's `Verification:` and `References:` sections, the spec section, and the test that
+checks it all point at each other.
 
-Additional rules:
-- Write in complete sentences.
-- Describe intent, behavior, and interpretation, not line-by-line mechanics.
-- Make the documentation useful for code review: a reviewer should be able to compare the implementation against the documented algorithm and expected behavior.
-- Document important side effects, failure modes, invariants, timing assumptions, and concurrency assumptions when relevant.
-- Do not describe code as interim, provisional, temporary, changed, or migrated.
-- If a function is trivial and self-evident, a full block comment is not required; a `@brief` line is still preferred so hover documentation is never empty.
-
-Refrain from documenting things as interim, provisional, changed. Code and documentation should be framed as what it will be when it's finished and perfect. 
-
+Be brief. Do not repeat the signature or describe how the code does its job; state each section in the fewest
+complete sentences that carry it. Document side effects, failure modes, timing assumptions, and concurrency
+assumptions where a caller depends on them. Frame code and documentation as finished: never describe them as
+interim, provisional, temporary, changed, or migrated.
 
 ### Module documentation
 Add clear module-level architecture notes where helpful. Add comments to non-obvious code to explain rationale, especially where the design may not be immediately intuitive.
@@ -104,8 +96,10 @@ and indicate what the code in the files accomplishes. Again, to make it clear to
 is implemented.
 
 Follow Google style conventions for Python and C++, with the project rules below taking precedence where they
-differ. Python docstrings use Google style (`Args:`, `Returns:`, `Raises:`) and carry the same `Verification:` and
-`References:` intent as the C++ template.
+differ. Python docstrings use Google style (`Args:`, `Returns:`, `Raises:`) and follow the same tiers as C++: a summary
+line on every function; purpose and full `Args:`/`Returns:`/`Raises:` on public API; `Verification:` and
+`References:` where an external source defines correct behavior; only the summary and non-obvious side effects on
+private helpers.
 
 ### Wrapped expressions
 When a boolean or arithmetic expression wraps, break before the operator so each continuation line starts with it.
