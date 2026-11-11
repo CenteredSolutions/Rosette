@@ -55,6 +55,32 @@
 #include "sn_window.hpp"
 #include "types.hpp"
 
+/// Quiet time, in milliseconds, after the last change from a writer before
+/// a reader requests the changes it is missing from that writer without
+/// waiting for a HEARTBEAT; the same wait as a lost fragment's
+/// (RTPS_FRAGMENT_REPAIR_DELAY_MS).
+#ifndef RTPS_GAP_REPAIR_DELAY_MS
+#  define RTPS_GAP_REPAIR_DELAY_MS 50u
+#endif
+
+/// Times the gap-repair wait doubles after a request goes unanswered.
+#ifndef RTPS_GAP_REPAIR_MAX_DOUBLINGS
+#  define RTPS_GAP_REPAIR_MAX_DOUBLINGS 3u
+#endif
+
+/// Unprompted requests for a writer's missing changes while no new change
+/// arrives from it; 0 leaves every request to the writer's HEARTBEATs.
+#ifndef RTPS_GAP_REPAIR_ROUNDS
+#  define RTPS_GAP_REPAIR_ROUNDS 4u
+#endif
+
+static_assert(RTPS_GAP_REPAIR_MAX_DOUBLINGS <= 8u, "RTPS_GAP_REPAIR_MAX_DOUBLINGS must be 0 to 8");
+static_assert(RTPS_GAP_REPAIR_DELAY_MS >= 1u
+                  && RTPS_GAP_REPAIR_DELAY_MS <= (0x7fffffffu >> RTPS_GAP_REPAIR_MAX_DOUBLINGS),
+              "RTPS_GAP_REPAIR_DELAY_MS, doubled RTPS_GAP_REPAIR_MAX_DOUBLINGS times, "
+              "must fit a wrap-safe millisecond deadline");
+static_assert(RTPS_GAP_REPAIR_ROUNDS <= 255u, "RTPS_GAP_REPAIR_ROUNDS must be 0 to 255");
+
 namespace rosette::rtps {
 
 class WriterProxy {
@@ -328,11 +354,93 @@ public:
         heartbeatResponseDeadlineMs = 0;
     }
 
+    /**
+     * @brief Starts or renews the gap-repair timer after a new change from the writer.
+     *
+     * A writer resends a lost change only when a reader names it, and a
+     * reader learns of a loss when a later change arrives. Without a request
+     * of its own the reader names it only in answer to the writer's next
+     * HEARTBEAT, up to 3 s later with Fast DDS defaults. So the first new
+     * change that leaves a change MISSING sets a deadline
+     * RTPS_GAP_REPAIR_DELAY_MS (doubled once per unanswered request,
+     * gapRepairDoublings) ahead, and when it passes the reader's timer pass
+     * sends an ACKNACK naming the missing changes. The wait covers ordinary
+     * reordering in the network. Later changes restore the
+     * RTPS_GAP_REPAIR_ROUNDS rounds, since the writer is evidently still
+     * sending, but do not push a running deadline back, so a writer that
+     * streams faster than the wait is still asked in time. With nothing
+     * MISSING the timer is idle and the next gap starts at the first wait.
+     * This is the repair a partial sample gets from
+     * RTPS_FRAGMENT_REPAIR_DELAY_MS, for whole changes.
+     *
+     * @param[in] now_ms Monotonic time, in milliseconds, of the arriving change.
+     *
+     * Verification:
+     * - Correct means: with a change MISSING the rounds are
+     *   RTPS_GAP_REPAIR_ROUNDS and the deadline is `now_ms` plus the doubled
+     *   wait unless a deadline was already running, which is kept; with
+     *   none the rounds and doublings are 0.
+     * - Covered by: TC-SRR-8.4.12-020, TC-SRR-8.4.12-021.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.12.2 (a reader may send an ACKNACK without a
+     *   HEARTBEAT), §8.4.15.4 (writers answer an ACKNACK that NACKs changes)
+     */
+    void schedule_gap_repair(uint32_t now_ms) noexcept;
+
+    /**
+     * @brief True when the writer has gone quiet with a change still MISSING and rounds left.
+     *
+     * @param[in] now_ms Monotonic time, in milliseconds; compared wrap-safely.
+     */
+    bool gap_repair_due(uint32_t now_ms) const noexcept {
+        return ms_until_gap_repair(now_ms) == 0u;
+    }
+
+    /**
+     * @brief Milliseconds until gap_repair_due() holds; UINT32_MAX when it never will without a new
+     * change.
+     *
+     * @param[in] now_ms Monotonic time, in milliseconds.
+     */
+    uint32_t ms_until_gap_repair(uint32_t now_ms) const noexcept;
+
+    /**
+     * @brief Records that an ACKNACK requesting changes went to the writer.
+     *
+     * Any such request, from the timer or in answer to a HEARTBEAT, spends a
+     * round and doubles the wait (up to RTPS_GAP_REPAIR_MAX_DOUBLINGS), so
+     * the timer does not ask again while the writer's resend is in flight.
+     *
+     * @param[in] now_ms Monotonic time, in milliseconds, at which it was sent.
+     *
+     * Verification:
+     * - Correct means: with rounds left, one fewer round, doublings up by one
+     *   to the cap, and the next deadline `now_ms` plus the doubled wait.
+     * - Covered by: TC-SRR-8.4.12-021, TC-SRR-8.4.12-022.
+     */
+    void gap_repair_sent(uint32_t now_ms) noexcept;
+
+    /// @brief Moves a due request that could not be sent one current wait later, spending no
+    /// round.
+    void gap_repair_postpone(uint32_t now_ms) noexcept {
+        gapRepairDueMs = now_ms + gap_repair_wait();
+    }
+
     /// @brief Locator for ACKNACKs: the referenced locator's current value, or
     /// LOCATOR_INVALID when there is none (referenced_locator()).
     const Locator& best_locator() const noexcept { return referenced_locator(unicastLocator); }
 
 private:
+    /// The current gap-repair wait: RTPS_GAP_REPAIR_DELAY_MS doubled gapRepairDoublings times.
+    uint32_t gap_repair_wait() const noexcept {
+        return static_cast<uint32_t>(RTPS_GAP_REPAIR_DELAY_MS) << gapRepairDoublings;
+    }
+
+    uint32_t gapRepairDueMs = 0;      ///< When the next unprompted request is due.
+    uint8_t  gapRepairsLeft = 0;      ///< Unprompted requests left until a new change arrives.
+    uint8_t  gapRepairDoublings = 0;  ///< Unanswered requests since the gap opened, capped.
+
     SequenceNumberWindow changes_;          ///< Resolved changes (changes_from_writer).
     SequenceNumber       last_available_ = SEQUENCENUMBER_ZERO;  ///< Highest SN the writer holds.
 };

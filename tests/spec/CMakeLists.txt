@@ -323,6 +323,7 @@ add_executable(stateful_reader_spec_tests
     src/test_stateful_reader_8_4_9_gap_ranges.cpp
     src/test_stateful_reader_8_4_10_4_changes_from_writer.cpp
     src/test_stateful_reader_8_4_10_4_in_order.cpp
+    src/test_stateful_reader_8_4_12_gap_nack_on_quiet.cpp
     src/test_stateful_reader_8_4_10_4_locator_reference.cpp
     src/test_stateful_reader_8_4_12_nack_frag_on_heartbeat.cpp
     src/test_stateful_reader_8_4_12_nack_frag_on_quiet.cpp

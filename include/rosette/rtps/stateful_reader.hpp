@@ -17,7 +17,10 @@
  * order written (§8.4.10.4): a change that arrives while an earlier one is
  * MISSING waits in a small held store (held_changes.hpp) until the gap
  * closes, and the ACKNACK never acknowledges a held change before it is
- * delivered. A BEST_EFFORT reader delivers only
+ * delivered. A gap is requested RTPS_GAP_REPAIR_DELAY_MS after it shows,
+ * without waiting for the writer's HEARTBEAT, backing off by doubling while
+ * the writer does not answer (WriterProxy::schedule_gap_repair()). A
+ * lost last change shows no gap and still waits for a HEARTBEAT. A BEST_EFFORT reader delivers only
  * changes newer than every change it has seen from that writer (§8.4.12.1).
  * A change that withdraws an instance (inline QoS StatusInfo DISPOSED or
  * UNREGISTERED) is delivered with its NOT_ALIVE ChangeKind even when it
@@ -295,8 +298,18 @@ public:
      *
      * @param[in,out] proxy      Writer to acknowledge; its count is not
      *   advanced here (the caller calls on_acknack_sent()).
+     * A non-final ACKNACK that goes out is a repair request, and spends a
+     * round of the writer's quiet-period gap repair
+     * (WriterProxy::gap_repair_sent()), so the timer does not ask again
+     * while the writer's resend is in flight.
+     *
+     * @param[in,out] proxy      Writer to acknowledge; its count is not
+     *   advanced here (the caller calls on_acknack_sent()).
      * @param[in]     final_flag F-flag: the writer need not answer with a
      *   HEARTBEAT.
+     * @return `true` when the transport accepted the message; `false` when
+     *   the writer has no locator, the message could not be built, or the
+     *   transport refused it.
      *
      * Verification:
      * - Correct means: bitmapBase is at most the lowest MISSING change, every
@@ -311,15 +324,16 @@ public:
      *   (ACKNACK), §8.3.7.5 (NACK_FRAG)
      * - Fast DDS 2.6 StatefulReader::send_acknack (NACK_FRAG for incomplete changes)
      */
-    void send_acknack(WriterProxy& proxy,
-                      bool         final_flag = false) noexcept;
+    bool send_acknack(WriterProxy& proxy, bool final_flag = false) noexcept;
 
     // ----------------------------------------------------------
     // tick()
     //
     // Periodic maintenance: sends the ACKNACKs whose heartbeatResponseDelay
-    // has elapsed, and the NACK_FRAGs of partial samples whose fragments have
-    // stopped arriving. Call at least as often as ms_until_next_timer() asks.
+    // has elapsed, the ACKNACKs naming the MISSING changes of writers that
+    // have gone quiet (WriterProxy::schedule_gap_repair()), and the
+    // NACK_FRAGs of partial samples whose fragments have stopped arriving.
+    // Call at least as often as ms_until_next_timer() asks.
     // ----------------------------------------------------------
     void tick(uint32_t now_ms) noexcept;
 
@@ -348,11 +362,11 @@ public:
     // ms_until_next_timer()
     //
     // How long tick() can be deferred: the time left on the earliest
-    // pending heartbeatResponseDelay (§8.4.7.1) or fragment repair deadline,
-    // or UINT32_MAX when neither is pending. The participant driver sleeps no
+    // pending heartbeatResponseDelay (§8.4.7.1), gap repair, or fragment
+    // repair deadline, or UINT32_MAX when none is pending. The participant driver sleeps no
     // longer than this.
     //
-    // Verification: TC-SRR-8.4.7-001, TC-SRR-8.4.12-005.
+    // Verification: TC-SRR-8.4.7-001, TC-SRR-8.4.12-005, TC-SRR-8.4.12-020.
     // ----------------------------------------------------------
     uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept;
 

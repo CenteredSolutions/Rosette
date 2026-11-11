@@ -536,12 +536,10 @@ void StatefulReader::on_gap(const ParseContext& ctx,
 // "Sends an ACKNACK to the matched writer."  — §8.4.7.3, p. 140
 // ============================================================
 
-void StatefulReader::send_acknack(WriterProxy& proxy,
-                                  bool         final_flag) noexcept
-{
+bool StatefulReader::send_acknack(WriterProxy& proxy, bool final_flag) noexcept {
     const Locator& dest = proxy.best_locator();
     if (dest == LOCATOR_INVALID) {
-        return;
+        return false;
     }
 
     SequenceNumberSet missing{};
@@ -572,7 +570,7 @@ void StatefulReader::send_acknack(WriterProxy& proxy,
     }
 
     if (!builder_.begin(guid_.prefix)) {
-        return;
+        return false;
     }
 
     builder_.append_info_dst(proxy.remoteWriterGuid.prefix);
@@ -604,9 +602,16 @@ void StatefulReader::send_acknack(WriterProxy& proxy,
         for (uint8_t i = 0; sent && i < partial_count; ++i) {
             assembler_.repair_requested(proxy.remoteWriterGuid, partial[i], now_ms);
         }
+
+        if (sent && !final_flag) {
+            proxy.gap_repair_sent(now_ms);
+        }
+
+        return sent;
     } else {
         RTPS_LOG_W("reader", "ACKNACK builder failed (pool exhausted?)");
         builder_.abort();
+        return false;
     }
 }
 
@@ -657,6 +662,15 @@ void StatefulReader::tick(uint32_t now_ms) noexcept {
         if (proxy.acknack_response_due(now_ms)) {
             send_acknack(proxy, !proxy.has_missing_changes());
             proxy.on_acknack_sent();
+        } else if (proxy.gap_repair_due(now_ms)) {
+            // The writer went quiet with changes MISSING: ask now rather
+            // than at its next HEARTBEAT. One that could not go out is
+            // tried again after the same wait.
+            if (send_acknack(proxy, /*final=*/false)) {
+                proxy.on_acknack_sent();
+            } else {
+                proxy.gap_repair_postpone(now_ms);
+            }
         }
     }
 
@@ -670,6 +684,11 @@ void StatefulReader::tick(uint32_t now_ms) noexcept {
 uint32_t StatefulReader::ms_until_next_timer(uint32_t now_ms) const noexcept {
     uint32_t next = UINT32_MAX;
     for (const WriterProxy& proxy : matched()) {
+        const uint32_t gap = proxy.ms_until_gap_repair(now_ms);
+        if (gap < next) {
+            next = gap;
+        }
+
         if (!proxy.acknackPending) {
             continue;
         }
@@ -720,6 +739,10 @@ void StatefulReader::account_undelivered(WriterProxy& proxy, const SequenceNumbe
     const bool repair = proxy.is_missing(sn);
     record_change(proxy, sn);
     release_held(proxy);
+    if (reliability_ == ReliabilityKind::RELIABLE) {
+        proxy.schedule_gap_repair(rosette::platform::monotonic_ms());
+    }
+
     if (repair) {
         request_next_repair(proxy);
     }
@@ -743,6 +766,10 @@ void StatefulReader::accept_change(WriterProxy* proxy, CacheChange& change) noex
     } else {
         deliver(change);
         release_held(*proxy);
+    }
+
+    if (reliability_ == ReliabilityKind::RELIABLE) {
+        proxy->schedule_gap_repair(rosette::platform::monotonic_ms());
     }
 
     if (repair) {
