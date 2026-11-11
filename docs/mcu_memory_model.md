@@ -258,10 +258,17 @@ Who holds blocks at any moment:
 | Fragment reassembly | one per sample being reassembled, at most `RTPS_ASSEMBLY_SLOTS` | the last fragment arrives, the reader replaces the sample with a newer one, or the writer is unmatched |
 | `ChangeRing` (rmw) | up to the entity's KEEP_LAST depth | `rmw_take()`, or replaced by a newer sample |
 | Message builder | one while a datagram is built | the datagram is sent |
+| Changes held for in-order delivery | up to `RTPS_HELD_CHANGES` (8) shared by the user readers, a reader at most `RTPS_HELD_CHANGES_PER_READER` (4); 2 more for each SEDP reader; none while nothing is lost | the lost change before them is repaired, or a GAP or HEARTBEAT gives it up; a change that closes a gap in an exhausted pool takes a held change's block |
 
 A subscription that is not taken keeps up to its depth of samples pinned. A
 firmware that subscribes to large messages with depth 10 needs room for ten
 of them.
+
+Held changes appear only under loss, so a pool sized from a lossless run
+can run short on a lossy network. A reader never holds a change if that
+would leave no block for its ACKNACK (`MultiBufPool::can_alloc()`), so held
+changes cannot stop it from requesting the change that releases them; they
+can still crowd out other senders, such as a writer building a datagram.
 
 ### Concurrency
 
@@ -324,6 +331,8 @@ counts, which is why a publisher costs more than a subscription there.
 | `RMW_ROSETTE_ASSEMBLY_SLOTS` | empty: the datagram and large block counts (6) | fragmented samples in reassembly at once, across all readers | 136 B |
 | `RMW_ROSETTE_MAX_WRITER_DEPTH` | 8 | deepest KEEP_LAST history a publisher keeps (1 to 255); deeper requests and KEEP_ALL run at this depth; sizes the deep writer slots | 100 B per history slot per deep writer |
 | `RMW_ROSETTE_REPLY_DEPTH` | 4 | replies each service holds until acknowledged (1 to `RMW_ROSETTE_MAX_WRITER_DEPTH`); a reply written while this many are unacknowledged displaces the oldest; sizes the shallow writer slots | 100 B per reply per service |
+| `RMW_ROSETTE_HELD_CHANGES` | 8 | changes the reliable subscriptions, services, and clients together hold behind a lost one, so each writer's changes are delivered in order | 104 B per slot, plus the block each held change pins |
+| `RMW_ROSETTE_READER_HELD_CHANGES` | 4 | most of those one reader holds, and how far past its next expected change it holds one | none |
 | `RMW_ROSETTE_MAX_PENDING_CHANGES` | 10 | `ChangeRing` depth ceiling per subscription, service, and client | 72 B per entry per entity, plus the blocks unread entries pin |
 | `RMW_ROSETTE_MAX_DATAGRAM_SIZE` | 1472 | receive buffer, datagram pool class, DATA_FRAG threshold | the datagram class × 4 blocks |
 | `RMW_ROSETTE_MAX_SAMPLE_SIZE` | 4096 | largest pool class: the biggest message sent or received | × `RMW_ROSETTE_LARGE_BUFFERS` |

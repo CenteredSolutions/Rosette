@@ -88,7 +88,7 @@ set(RMW_ROSETTE_REPLY_DEPTH 4 CACHE STRING
 set(RMW_ROSETTE_HELD_CHANGES 8 CACHE STRING
     "Changes all reliable subscriptions, services, and clients together hold behind a lost one, 1 to 255, so each is delivered in the order written once the lost one is repaired; each pins a buffer-pool block until then, and a quiet reader holds none")
 set(RMW_ROSETTE_READER_HELD_CHANGES 4 CACHE STRING
-    "Most of those changes one reader holds, 1 to RMW_ROSETTE_HELD_CHANGES. A reader accepts and requests changes only this far past the next one it expects from a writer; later ones are requested once it catches up")
+    "Most of those changes one reader holds, 1 to RMW_ROSETTE_HELD_CHANGES, and how far past the next change it expects from a writer it holds one. A later change is refused on arrival and requested again with the lost one")
 set(RMW_ROSETTE_LARGE_BUFFERS 48 CACHE STRING
     "Blocks of RMW_ROSETTE_MAX_SAMPLE_SIZE (and, in the host pool profile, of 16 KiB): samples held in writer histories, reassembly, and take rings")
 set(RMW_ROSETTE_ASSEMBLY_SLOTS "" CACHE STRING

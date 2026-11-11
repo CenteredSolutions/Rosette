@@ -26,6 +26,10 @@
  *    kept going has delivered every change.
  *  - No leak: once the readers are gone, every buffer block is free again.
  *
+ * stateful_reader_spec_tests runs these with the test build's pool layout,
+ * and stateful_reader_spec_tests_firmware_pool with the rmw_rosette
+ * firmware profile's (256, 512, 1 KiB and datagram blocks).
+ *
  * ROSETTE_SIM_SEEDS sets the number of seeds per test (default 200), for a
  * longer campaign; ROSETTE_SIM_SEED runs one seed, to replay a failure.
  */
@@ -47,12 +51,42 @@ extern uint32_t g_stateful_reader_test_now_ms;
 
 namespace {
 
-/// Sample size: it lands in the block class MessageBuilder takes for an
-/// ACKNACK (kControlMessageCapacity), so samples and ACKNACKs compete.
-constexpr uint32_t kSampleSize = 200u;
-static_assert(kSampleSize <= MessageBuilder::kControlMessageCapacity
-                  && kSampleSize > RTPS_POOL_CLASS0_SIZE,
-              "samples share the ACKNACK's block class");
+/// Index of the smallest buffer-pool class whose blocks hold `size` octets.
+constexpr uint32_t class_for(uint32_t size) {
+    return size <= RTPS_POOL_CLASS0_SIZE   ? 0u
+           : size <= RTPS_POOL_CLASS1_SIZE ? 1u
+           : size <= RTPS_POOL_CLASS2_SIZE ? 2u
+           : size <= RTPS_POOL_CLASS3_SIZE ? 3u
+                                           : 4u;
+}
+
+/// Block size of buffer-pool class `c`, and 0 below class 0.
+constexpr uint32_t class_size(int c) {
+    return c < 0    ? 0u
+           : c == 0 ? RTPS_POOL_CLASS0_SIZE
+           : c == 1 ? RTPS_POOL_CLASS1_SIZE
+           : c == 2 ? RTPS_POOL_CLASS2_SIZE
+           : c == 3 ? RTPS_POOL_CLASS3_SIZE
+                    : RTPS_POOL_CLASS4_SIZE;
+}
+
+/// The class MessageBuilder takes an ACKNACK from (kControlMessageCapacity).
+constexpr int kAckClass = static_cast<int>(class_for(MessageBuilder::kControlMessageCapacity));
+
+/// Smallest serialized payload: a CDR encapsulation header and one octet.
+constexpr uint32_t kMinPayload = 5u;
+
+/// Default sample size, the smallest that lands in the ACKNACK's class, so
+/// held samples and ACKNACKs compete for the same blocks.
+constexpr uint32_t kAckClassSample = class_size(kAckClass - 1) + 1u > kMinPayload
+                                         ? class_size(kAckClass - 1) + 1u
+                                         : kMinPayload;
+
+/// The smallest sample two classes above the ACKNACK's: a mid-size class
+/// whose overflow promotes into the larger ones. In the firmware layout
+/// this is the 1 KiB class, which spills into the datagram class.
+constexpr uint32_t kSpillSample = class_size(kAckClass + 1) + 1u;
+static_assert(class_for(kSpillSample) < 4u, "spill samples sit below the largest class");
 
 /// SplitMix64: small, fast, and the same sequence on every platform.
 struct Rng {
@@ -79,6 +113,7 @@ struct SimConfig {
     uint32_t lossy_steps;  ///< Steps before the network turns fair.
     uint8_t spare_blocks;  ///< Blocks a small sample may use left free; 0 leaves the pool as built.
     bool    silent;        ///< Writer 0 stops for good at a random step.
+    uint32_t sample_size = kAckClassSample;  ///< Payload octets of every change.
 };
 
 struct CaptureTransport : ITransport {
@@ -151,11 +186,11 @@ public:
 
         // Take every block a sample may use (a full class promotes to the
         // next; the largest is kept for large samples), then give back
-        // `spare_blocks` of the class samples land in, which is also the
-        // class an ACKNACK is built in. Held changes then compete for blocks
-        // with the change that closes a gap and with the reader's ACKNACKs.
+        // `spare_blocks` of the smallest class it fits. Held changes then
+        // compete for blocks with the change that closes a gap, and, when
+        // that class is the ACKNACK's, with the reader's ACKNACKs.
         if (cfg.spare_blocks > 0u) {
-            for (BufRef b = buf_alloc(kSampleSize); b.valid(); b = buf_alloc(kSampleSize)) {
+            for (BufRef b = buf_alloc(cfg.sample_size); b.valid(); b = buf_alloc(cfg.sample_size)) {
                 hog_.push_back(static_cast<BufRef&&>(b));
             }
 
@@ -255,14 +290,14 @@ private:
             return;
         }
 
-        static const Octet payload[kSampleSize] = {0x00u, 0x01u, 0x00u, 0x00u, 0x42u};
+        static const Octet payload[kSpillSample] = {0x00u, 0x01u, 0x00u, 0x00u, 0x42u};
         ParsedData         d{};
         d.readerId = w.reader.entityId;
         d.writerId = w.writer.entityId;
         d.writerSN = SequenceNumber::from_int64(m.sn);
         d.dataFlag = true;
         d.serializedPayload = payload;
-        d.serializedPayloadSize = sizeof(payload);
+        d.serializedPayloadSize = cfg_.sample_size;
         w.r->on_data(w.ctx(), d);
     }
 
@@ -445,6 +480,16 @@ static bool tc_srr_8_4_10_4_022(std::string& err) {
            && run_seeds<2>({2u, 2u, 40, 25u, 3000u, 2u, true}, 0x2202u, err);
 }
 
+// §8.4.10.4: samples in a mid-size class that overflow into larger ones,
+// with blocks scarce and a writer falling silent, are still delivered in
+// order to every live reader.
+static bool tc_srr_8_4_10_4_023(std::string& err) {
+    return run_seeds<8>({2u, 4u, 40, 25u, 3000u, 0u, false, kSpillSample}, 0x2300u, err)
+           && run_seeds<8>({3u, 4u, 40, 25u, 3000u, 0u, true, kSpillSample}, 0x2301u, err)
+           && run_seeds<8>({2u, 4u, 40, 25u, 3000u, 2u, false, kSpillSample}, 0x2302u, err)
+           && run_seeds<8>({3u, 4u, 40, 25u, 3000u, 2u, true, kSpillSample}, 0x2303u, err);
+}
+
 void append_stateful_reader_tests_8_4_10_4_simulated_writers(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.10.4-020",
                      "§8.4.10.4: readers sharing a hold pool deliver every change once, in "
@@ -457,6 +502,10 @@ void append_stateful_reader_tests_8_4_10_4_simulated_writers(std::vector<TestCas
     tests.push_back({"TC-SRR-8.4.10.4-022",
                      "§8.4.10.4: with buffer blocks scarce, every live reader still finishes.",
                      tc_srr_8_4_10_4_022});
+    tests.push_back({"TC-SRR-8.4.10.4-023",
+                     "§8.4.10.4: samples that overflow into larger block classes are still "
+                     "delivered in order to every live reader.",
+                     tc_srr_8_4_10_4_023});
 }
 
 }  // namespace spec_test

@@ -313,7 +313,11 @@ add_test(
     COMMAND stateful_writer_spec_tests --emit-pass-json ${STATEFUL_WRITER_PASSED_JSON}
 )
 
-add_executable(stateful_reader_spec_tests
+# Built twice: stateful_reader_spec_tests_firmware_pool runs the reader with
+# the rmw_rosette firmware profile's buffer pool (rmw_rosette_capacity.cmake):
+# 256 B, 512 B, 1 KiB, datagram and large blocks, in the counts a small board
+# carries, where held changes and ACKNACKs share the smallest class.
+set(STATEFUL_READER_SPEC_TEST_SOURCES
     src/stateful_reader_spec_tests.cpp
     src/spec_test_common.cpp
     src/spec_stateful_reader_test_registry.cpp
@@ -343,13 +347,23 @@ add_executable(stateful_reader_spec_tests
     ../../src/rtps/buf_pool.cpp
 )
 
-target_include_directories(stateful_reader_spec_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/../..
-)
-
-target_compile_definitions(stateful_reader_spec_tests PRIVATE
-    RTPS_LOG_LEVEL=0
+add_executable(stateful_reader_spec_tests ${STATEFUL_READER_SPEC_TEST_SOURCES})
+add_executable(stateful_reader_spec_tests_firmware_pool ${STATEFUL_READER_SPEC_TEST_SOURCES})
+foreach(_reader_target stateful_reader_spec_tests stateful_reader_spec_tests_firmware_pool)
+    target_include_directories(${_reader_target} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    )
+    target_compile_definitions(${_reader_target} PRIVATE
+        RTPS_LOG_LEVEL=0
+    )
+endforeach()
+target_compile_definitions(stateful_reader_spec_tests_firmware_pool PRIVATE
+    RTPS_POOL_CLASS0_SIZE=256u RTPS_POOL_CLASS0_COUNT=16u
+    RTPS_POOL_CLASS1_SIZE=512u RTPS_POOL_CLASS1_COUNT=8u
+    RTPS_POOL_CLASS2_SIZE=1024u RTPS_POOL_CLASS2_COUNT=2u
+    RTPS_POOL_CLASS3_SIZE=1520u RTPS_POOL_CLASS3_COUNT=6u
+    RTPS_POOL_CLASS4_SIZE=4096u RTPS_POOL_CLASS4_COUNT=2u
 )
 
 set(STATEFUL_READER_PASSED_JSON
@@ -358,6 +372,11 @@ set(STATEFUL_READER_PASSED_JSON
 add_test(
     NAME stateful_reader_spec_conformance
     COMMAND stateful_reader_spec_tests --emit-pass-json ${STATEFUL_READER_PASSED_JSON}
+)
+
+add_test(
+    NAME stateful_reader_spec_conformance_firmware_pool
+    COMMAND stateful_reader_spec_tests_firmware_pool
 )
 
 # Built twice: participant_spec_tests_rebuild runs the participant with SEDP
