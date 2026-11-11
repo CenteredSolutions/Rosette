@@ -588,23 +588,23 @@ private:
     /**
      * @brief Resolves a change that will never be delivered, so it is never requested again.
      *
-     * Two kinds of change end here. A DATA with neither payload nor key
-     * that withdraws nothing has nothing to deliver. A sample larger than
-     * the largest pool block (kPoolMaxBlockSize) can never be stored: its
-     * writer would resend it on every request, and a reliable reader that
-     * kept waiting for it could record no change more than
-     * SequenceNumberWindow::kCapacity past it, so every later change on the
-     * topic would stall. Such a sample is resolved as LOST, which the next
-     * ACKNACK acknowledges. A transient pool shortage is not handled here:
-     * that change stays MISSING and is repaired later.
+     * Three kinds of change end here: a DATA with neither payload nor key
+     * that withdraws nothing, a sample above the build's limit
+     * (kMaxSampleOctets), and a sample split into more fragments than a
+     * FragmentNumberSet names. The last two can never be stored, and a
+     * reliable reader that kept requesting them would stall every later
+     * change on the topic. They are resolved as LOST, which the next ACKNACK
+     * acknowledges. A transient pool shortage is not handled here: that
+     * change stays MISSING and is repaired later.
      *
      * @param[in,out] proxy Matched writer the change came from.
      * @param[in]     sn    Sequence number of the change.
      *
      * Verification:
-     * - Correct means: the change is resolved and never delivered; on a
-     *   narrow link, resolving a MISSING change requests the next one.
-     * - Covered by: TC-SRR-8.4.8-004, TC-SRR-8.4.10-003.
+     * - Correct means: the change is resolved and never delivered, and the
+     *   next ACKNACK's bitmapBase is above it; on a narrow link, resolving a
+     *   MISSING change requests the next one.
+     * - Covered by: TC-SRR-8.4.8-004, TC-SRR-8.4.10-003, TC-SRR-8.4.10-005.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.10.4 (received_change_set), §8.4.12.2

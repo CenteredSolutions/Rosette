@@ -279,13 +279,23 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
         return;
     }
 
-    // Every fragment carries the sample's total size, so a sample above the
-    // build's limit is recognized on the first fragment that arrives.
-    if (msg.dataSize > kMaxSampleOctets) {
-        RTPS_LOG_W("reader", "DATA_FRAG SN=%d:%lu of %lu octets exceeds the largest sample, lost",
-                   static_cast<int>(msg.writerSN.high),
-                   static_cast<unsigned long>(msg.writerSN.low),
-                   static_cast<unsigned long>(msg.dataSize));
+    // Every fragment carries the sample's size and fragment size, so a sample
+    // this reader could never reassemble is recognized on the first fragment
+    // that arrives: one above the build's limit, or one split into more
+    // fragments than a FragmentNumberSet names, as a peer capped at a small
+    // datagram sends a large sample. Left MISSING, it would be requested
+    // forever and hold back every later change.
+    const bool too_many_fragments =
+        msg.fragmentSize != 0u
+        && (uint64_t{msg.dataSize} + msg.fragmentSize - 1u) / msg.fragmentSize
+               > static_cast<uint64_t>(FragmentNumberSet::kMaxBits);
+    if (msg.dataSize > kMaxSampleOctets || too_many_fragments) {
+        RTPS_LOG_W(
+            "reader",
+            "DATA_FRAG SN=%d:%lu of %lu octets in %u-octet fragments cannot be "
+            "reassembled, lost",
+            static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
+            static_cast<unsigned long>(msg.dataSize), static_cast<unsigned>(msg.fragmentSize));
         if (proxy) account_undelivered(*proxy, msg.writerSN);
         return;
     }

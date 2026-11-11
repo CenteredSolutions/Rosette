@@ -198,6 +198,41 @@ static bool tc_srr_8_4_10_003(std::string& err) {
     return true;
 }
 
+// §8.3.5.13, §8.4.12.2: a sample split into more fragments than a
+// FragmentNumberSet names, as a peer capped at a small datagram sends a large
+// sample, can never be reassembled. The reader resolves it on its first
+// fragment, so its ACKNACK acknowledges past it and later changes flow.
+static bool tc_srr_8_4_10_005(std::string& err) {
+    Fixture f{};
+    f.deliver(1);
+
+    static constexpr uint16_t kFragmentSize = 4u;
+    static constexpr uint32_t kFragments = FragmentNumberSet::kMaxBits + 1u;
+    static constexpr Octet    kPayload[kFragmentSize] = {};
+    ParsedDataFrag            frag{};
+    frag.readerId = f.reader_guid.entityId;
+    frag.writerId = f.writer_guid.entityId;
+    frag.writerSN = SequenceNumber::from_int64(2);
+    frag.fragmentStartingNum = 1u;
+    frag.fragmentsInSubmessage = 1u;
+    frag.fragmentSize = kFragmentSize;
+    frag.dataSize = kFragmentSize * kFragments;
+    frag.fragmentPayload = kPayload;
+    frag.fragmentPayloadSize = kFragmentSize;
+    CHECK(frag.dataSize <= kMaxSampleOctets, "the sample is within the size limit");
+    f.r.on_data_frag(f.ctx(), frag);
+
+    f.deliver(3);
+    f.heartbeat(1, 3);
+    ParsedAckNack ack{};
+    CHECK(f.last_acknack(ack), "HEARTBEAT is answered");
+    CHECK(ack.readerSNState.empty() && ack.finalFlag
+              && ack.readerSNState.bitmapBase == SequenceNumber::from_int64(4),
+          "SN 2 is resolved, not requested: a pure ACK of 1-3");
+    CHECK(f.delivered.count(2) == 0u && f.delivered[3] == 1, "SN 3 is delivered; SN 2 never is");
+    return true;
+}
+
 // §8.4.12.1: a best-effort reader delivers only changes newer than every
 // change it has seen; a late, out-of-order change is dropped, and a jump
 // ahead is delivered at once.
@@ -225,6 +260,10 @@ void append_stateful_reader_tests_8_4_10_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.10-003",
                      "§8.3.7.2/§8.4.12.2: a DATA with neither payload nor key accounts for its sequence number.",
                      tc_srr_8_4_10_003});
+    tests.push_back({"TC-SRR-8.4.10-005",
+                     "§8.3.5.13/§8.4.12.2: a sample split into more fragments than a "
+                     "FragmentNumberSet names is resolved, not requested forever.",
+                     tc_srr_8_4_10_005});
     tests.push_back({"TC-SRR-8.4.12-001",
                      "§8.4.12.1: a best-effort reader delivers only changes newer than every change it has seen.",
                      tc_srr_8_4_12_001});
