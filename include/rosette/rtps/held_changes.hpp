@@ -7,48 +7,49 @@
  *
  * A reliable StatefulReader makes each writer's changes available in the
  * order written. A change that arrives while an earlier one from the same
- * writer is still MISSING cannot be delivered yet, and dropping it would
- * cost a repair round trip per change after the gap. The reader keeps it,
- * payload and all, until the gap below it closes (the missing change
- * arrives, or a GAP or HEARTBEAT resolves it), then delivers the held run in
- * order.
+ * writer is MISSING waits in a hold slot, payload and all, until the gap
+ * below it closes; dropping it would cost a repair round trip per change
+ * after the gap.
  *
- * Design
- * ------
- *  - The slots live in a HeldChangePool, which a participant's user readers
- *    share (RTPS_HELD_CHANGES slots); each reader holds at most its limit
- *    (RTPS_HELD_CHANGES_PER_READER) through its HeldChanges view. A
- *    BoundedStatefulReader, such as an SEDP builtin reader, has a private
- *    pool of RTPS_BOUNDED_READER_HELD_CHANGES slots. This is the layout of
- *    the fragment assembly pool (fragment_assembler.hpp): readers that are
- *    quiet cost nothing, and a reader that is losing changes may use more
- *    than an even share.
- *  - A reader holds only the `limit` changes after the next one it expects
- *    from a writer (StatefulReader::accept_change()): those are exactly the
- *    changes its slots can always cover, so no held change is ever given up
- *    to admit a lower one. A change above that window, or one that finds no
- *    free slot, is dropped and requested again. The ACKNACK still requests
- *    every MISSING change: a writer resends them in order, and each closes
- *    the gap in turn without a slot, so a long gap is repaired in one round
- *    trip.
- *  - Held changes never take the last block an ACKNACK can be built in
- *    (StatefulReader::copy_payload()): a reader that could not send its
- *    ACKNACK could not request the change that releases what it holds, and
- *    would stall with its writer still sending HEARTBEATs.
- *  - The change that closes a gap needs no slot: it is delivered at once,
- *    with the held run behind it. It does need a buffer block, and every held
- *    change pins one; when the buffer pool is exhausted, the closing change
- *    takes the block of a held change in the same pool, its own reader's
- *    first, otherwise another reader's (evict_for_block()). The evicted
- *    change is MISSING again and is requested again. Without this, a writer
- *    that falls silent with changes held would pin blocks another reader's
- *    gap needs, until its lease expires.
+ * What a reader does with a change from a writer whose next expected change
+ * is Y + 1, when the reader may hold N changes (RTPS_HELD_CHANGES_PER_READER);
+ * the first row that matches applies:
  *
+ * | Row | The change                                   | Outcome                                  |
+ * | --- | -------------------------------------------- | ---------------------------------------- |
+ * | R1  | is Y + 1                                     | delivered, then the held run it unblocks |
+ * | R2  | is Y + 1, and the buffer pool is empty       | takes a held change's block              |
+ * | R3  | is Y + 2 to Y + 1 + N, with a slot free      | held until the gap closes                |
+ * | R4  | is Y + 2 to Y + 1 + N, with no slot free     | MISSING again                            |
+ * | R5  | would take the last block an ACKNACK fits in | refused; MISSING                         |
+ * | R6  | is above Y + 1 + N                           | refused; MISSING                         |
+ *
+ * Why each rule:
+ *  - R1: the ACKNACK requests every MISSING change, and the writer resends
+ *    them in order, so each closes the gap in turn without a slot and a long
+ *    gap is repaired in one round trip.
+ *  - R2: every held change pins a block. The victim is the closing reader's
+ *    own highest held change of that writer, otherwise the highest of
+ *    another reader, and it is MISSING again. Without eviction, a writer
+ *    that falls silent with changes held would pin the blocks another
+ *    reader's gap needs until its lease expires.
+ *  - R3, R6: the window is exactly the changes the reader's own slots can
+ *    always cover, so no held change is ever given up to admit a lower one.
+ *    R5 and R6 refuse a change before its payload is copied or reassembled,
+ *    so a refusal costs no block and no assembly slot.
+ *  - R5: a reader that could not build its ACKNACK could not request the
+ *    change that releases what it holds, and would stall.
+ *
+ * The user readers of a participant share one pool of RTPS_HELD_CHANGES
+ * slots, each holding at most N; a BoundedStatefulReader, such as an SEDP
+ * builtin reader, has a private pool of RTPS_BOUNDED_READER_HELD_CHANGES.
+ * As with the fragment assembly pool, quiet readers cost nothing and a
+ * reader recovering from loss may use more than an even share.
  * tests/formal/RosetteReaderDelivery.tla checks these rules (AdmitRule
- * "window", BlockRule "evict_any"): changes are delivered in order, nothing
- * is acknowledged before it is delivered, the pool and each reader's limit
- * are never exceeded, and every reader whose writer keeps going finishes,
- * even when another reader's writer stops with changes held.
+ * "window", BlockRule "evict_any", AckReserve): changes are delivered in
+ * order, nothing is acknowledged before it is delivered, the pool and each
+ * reader's limit are never exceeded, and every reader whose writer keeps
+ * going finishes, even when another reader's writer stops with changes held.
  *
  * Every reader of one pool runs under its participant's receive pump, as for
  * the fragment assembly pool, so the pool takes no lock.

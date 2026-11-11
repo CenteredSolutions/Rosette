@@ -75,15 +75,9 @@
  *
  * Changes held for in-order delivery
  * ----------------------------------
- * The user readers hold changes that arrive behind a gap in one
- * participant-wide pool of RTPS_HELD_CHANGES slots (held_changes.hpp), each
- * reader holding at most RTPS_HELD_CHANGES_PER_READER, and accepting a
- * change only that far past the next one it expects from a writer. A quiet
- * reader costs no slot, and a reader recovering from loss may use more than
- * an even share. When the buffer pool is exhausted, the change that closes
- * a reader's gap takes the block of any held change in the pool, so a
- * writer that stops with changes held cannot stall another reader. The SEDP
- * builtin readers keep private pools.
+ * The user readers share one pool of RTPS_HELD_CHANGES hold slots, each
+ * reader holding at most RTPS_HELD_CHANGES_PER_READER; the SEDP builtin
+ * readers keep private pools. held_changes.hpp gives the rules.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------

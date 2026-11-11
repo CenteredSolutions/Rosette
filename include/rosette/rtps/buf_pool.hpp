@@ -496,16 +496,13 @@ public:
     MultiBufPool& operator=(const MultiBufPool&) = delete;
 
     /**
-     * @brief Whether alloc(min_size) would find a block now.
+     * @brief Whether alloc(min_size) would find a block now, without taking one.
      *
-     * Walks the classes as alloc() does (smallest fit first, promotion
-     * stopping below the largest class for requests a smaller class can
-     * hold) without taking anything, so no statistics or debug events are
-     * recorded. A caller holding a block for an optional purpose asks this
-     * to leave the pool able to serve a mandatory one, such as a reader
-     * keeping a change behind a gap while still able to send its ACKNACK.
-     * The answer is a snapshot: another context may allocate before the
-     * caller acts on it.
+     * A caller about to take a block for an optional purpose asks this to
+     * leave the pool able to serve a mandatory one, such as a reader holding
+     * a change while still able to send its ACKNACK. It records no
+     * statistics or debug events. The answer is a snapshot: another context
+     * may allocate before the caller acts on it.
      *
      * @param[in] min_size Minimum usable bytes, as for alloc().
      * @return `true` when some eligible class has a free block.

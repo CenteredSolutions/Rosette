@@ -14,18 +14,11 @@
  * its changes are resolved. A RELIABLE reader delivers every change exactly
  * once, repairs included, and requests MISSING changes in ACKNACKs until DATA
  * or GAP resolves them (§8.4.12.2). It delivers each writer's changes in the
- * order written (§8.4.10.4): a change that arrives while an earlier one is
- * MISSING waits in a hold slot (held_changes.hpp) until the gap closes, and
- * the ACKNACK never acknowledges a held change before it is delivered. A
- * reader holds at most its limit of changes, so it accepts a change only
- * that far past the next one it expects from a writer; a later one is
- * MISSING and requested with the rest, and the writer's in-order resends
- * each close the gap in turn. A gap is requested RTPS_GAP_REPAIR_DELAY_MS
- * after it shows, without waiting for the writer's HEARTBEAT, backing off by
- * doubling while the writer does not answer (WriterProxy::schedule_gap_repair()).
- * A lost last change shows no gap until a HEARTBEAT announces it; the
- * HEARTBEAT's answer requests it, and the same timer asks again if the
- * resend is lost. A BEST_EFFORT reader delivers only changes newer than
+ * order written (§8.4.10.4), holding those that arrive behind a gap; the
+ * table in held_changes.hpp gives what happens to each arriving change. The
+ * ACKNACK never acknowledges a held change before it is delivered. A gap is
+ * requested without waiting for the writer's HEARTBEAT, on the gap-repair
+ * timer (writer_proxy.hpp). A BEST_EFFORT reader delivers only changes newer than
  * every change it has seen from that writer (§8.4.12.1).
  * A change that withdraws an instance (inline QoS StatusInfo DISPOSED or
  * UNREGISTERED) is delivered with its NOT_ALIVE ChangeKind even when it
@@ -642,25 +635,18 @@ private:
     void account_undelivered(WriterProxy& proxy, const SequenceNumber& sn) noexcept;
 
     /**
-     * @brief Records a complete change and delivers it in its writer's order, or holds it.
+     * @brief Delivers a complete change in its writer's order, or holds it (rows R1, R3, R4).
      *
-     * Every DATA and every reassembled DATA_FRAG ends here. A reliable
-     * reader makes one writer's changes available in the order written: a
-     * change whose predecessors are all delivered or resolved without data
-     * (GAP, HEARTBEAT firstSN, undeliverable) is delivered at once, followed
-     * by the run of held changes it unblocks; a change that arrives while an
-     * earlier one is MISSING is held (hold_change()). A held change counts
-     * as received, so it is not requested again, but the ACKNACK's
-     * bitmapBase stays at the first MISSING change and never acknowledges
-     * it before it is delivered. A best-effort change, or one from an
-     * unmatched best-effort writer, is always next in order and is
-     * delivered at once.
+     * Every DATA and every reassembled DATA_FRAG ends here. A held change
+     * counts as received, so it is not requested again, but the ACKNACK's
+     * bitmapBase stays at the first MISSING change. A best-effort change is
+     * always next in order and is delivered at once.
      *
      * @param[in]     proxy  The writer's proxy; null only for a best-effort
      *   reader's unmatched writer.
      * @param[in,out] change The complete change; its payload is delivered,
-     *   moved into the held store, or released when the caller's change
-     *   goes out of scope.
+     *   moved into a hold slot, or released when the caller's change goes
+     *   out of scope.
      *
      * Verification:
      * - Correct means: the consumer sees each writer's changes in ascending
@@ -676,23 +662,15 @@ private:
     void accept_change(WriterProxy* proxy, CacheChange& change) noexcept;
 
     /**
-     * @brief Holds a change that arrived behind a gap, or withdraws it when no slot is free.
-     *
-     * The change lies inside the reader's window (refuse_beyond_window()
-     * turned away the rest before their payload was copied), so the
-     * reader's own limit always leaves it a slot unless it holds changes
-     * of other writers too or the shared pool is full. A change that finds
-     * no slot is withdrawn to MISSING and requested again; nothing already
-     * held is given up for it. The change that closes the gap needs no slot,
-     * so a full pool slows a reader but never stops it
-     * (tests/formal/RosetteReaderDelivery.tla, AdmitRule "window").
+     * @brief Holds a change that arrived behind a gap (R3), or makes it MISSING again (R4).
      *
      * @param[in]     proxy  The writer's proxy; `change` is recorded in it.
-     * @param[in,out] change A change above the writer's first MISSING one.
+     * @param[in,out] change A change inside the window, above the writer's first MISSING one.
      *
      * Verification:
      * - Correct means: the reader never holds more than its limit nor the
-     *   pool more than its capacity, and every change not held is MISSING again.
+     *   pool more than its capacity, no held change is given up for it, and
+     *   a change not held is MISSING and named by the next ACKNACK.
      * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-017.
      *
      * References:
@@ -701,23 +679,18 @@ private:
     void hold_change(WriterProxy& proxy, CacheChange& change) noexcept;
 
     /**
-     * @brief True when a reliable reader could not hold `sn` from `proxy`'s writer.
-     *
-     * A reader holds at most `held_.limit()` changes, so of a writer's
-     * changes after its next expected one (available_changes_max() + 1) it
-     * can always hold the next `limit`; its window ends there. A change
-     * beyond the window is refused on arrival and stays MISSING.
+     * @brief True when `sn` lies beyond a reliable reader's hold window for `proxy`'s writer (R6).
      *
      * @param[in] proxy The writer's proxy.
      * @param[in] sn    The change's sequence number.
-     * @return `true` for a RELIABLE reader when `sn` lies beyond the window;
-     *   always `false` for BEST_EFFORT.
+     * @return `true` for a RELIABLE reader when `sn` is above
+     *   available_changes_max() + 1 + `held_.limit()`; always `false` for BEST_EFFORT.
      *
      * Verification:
      * - Correct means: with next expected change Y + 1 and limit N, exactly
      *   the changes above Y + 1 + N are beyond the window
      *   (RosetteReaderDelivery.tla HoldsInWindow).
-     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-018.
+     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-014.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.10.4
@@ -725,21 +698,17 @@ private:
     bool beyond_hold_window(const WriterProxy& proxy, const SequenceNumber& sn) const noexcept;
 
     /**
-     * @brief Turns away a change beyond the hold window before its payload is copied.
-     *
-     * The change is recorded as MISSING, as a HEARTBEAT announcing it would
-     * record it, and requested with the reader's other MISSING changes.
-     * Refusing it before the copy costs no buffer block, and before
-     * reassembly no assembly slot.
+     * @brief Refuses a change beyond the hold window before its payload is copied (R6).
      *
      * @param[in,out] proxy The writer's proxy; null for an unmatched best-effort writer.
      * @param[in]     sn    The arriving change's sequence number.
      * @return `true` when the change was refused and the caller drops it.
      *
      * Verification:
-     * - Correct means: a refused change is MISSING, is not acknowledged, and
-     *   is requested by the next ACKNACK.
-     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-018.
+     * - Correct means: a refused change is MISSING, as a HEARTBEAT announcing
+     *   it would leave it, is not acknowledged, takes no buffer block or
+     *   assembly slot, and is requested by the next ACKNACK.
+     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-014, TC-SRR-8.4.10.4-018.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.10.4 (missing_changes_update), §8.4.12.2
@@ -747,16 +716,15 @@ private:
     bool refuse_beyond_window(WriterProxy* proxy, const SequenceNumber& sn) noexcept;
 
     /**
-     * @brief Makes a held change given up for its buffer block MISSING again in its own reader.
+     * @brief Makes a change evicted for its block (R2) MISSING again in the reader that held it.
      *
-     * The change may belong to another reader of the same hold pool
-     * (HeldChanges::evict_for_block()); its writer's proxy withdraws it and
-     * starts the gap timer, so it is requested again promptly.
-     *
-     * @param[in] evicted The change given up and the reader that held it.
+     * @param[in] evicted The change given up and the reader that held it,
+     *   which may be another reader of the same hold pool.
      *
      * Verification:
-     * - Correct means: the evicted change is MISSING in its reader afterwards.
+     * - Correct means: the evicted change is MISSING in its reader afterwards
+     *   and that reader's gap-repair timer is running, so it is requested
+     *   again without waiting for a HEARTBEAT.
      * - Covered by: TC-SRR-8.4.10.4-016, TC-SRR-8.4.10.4-019.
      *
      * References:
@@ -765,8 +733,7 @@ private:
     void withdraw_evicted(const HeldEviction& evicted) noexcept;
 
     /**
-     * @brief Delivers, in order, every held change of `proxy`'s writer that is no longer behind a
-     * gap.
+     * @brief Delivers, lowest first, the held changes of `proxy`'s writer no longer behind a gap.
      *
      * Called whenever the writer's first unresolved sequence number may
      * have moved: after a delivery, a GAP, a HEARTBEAT, or a change resolved
@@ -786,33 +753,21 @@ private:
     void release_held(WriterProxy& proxy) noexcept;
 
     /**
-     * @brief Copies a DATA's serialized payload into a pool block.
-     *
-     * Takes the smallest block class that fits. Two rules keep held changes
-     * from wedging a reader through the shared buffer pool:
-     *  - A change that will only be held (it does not close its writer's
-     *    gap) is refused when taking its block would leave none for an
-     *    ACKNACK (MessageBuilder::kControlMessageCapacity): the reader must
-     *    always be able to request the change that releases what it holds.
-     *  - When the pool is exhausted and this change is the one that closes
-     *    its writer's gap, it takes the blocks of held changes in the
-     *    reader's hold pool, this reader's first and otherwise another
-     *    reader's, until one frees (HeldChanges::evict_for_block()). Only
-     *    this change can unblock delivery, and a held change is MISSING
-     *    again at the cost of one repair. This covers the reserve being
-     *    taken by another user of the pool.
+     * @brief Copies a DATA's serialized payload into a pool block, applying rows R2 and R5.
      *
      * @param[in]  proxy The writer's proxy; null for an unmatched best-effort writer.
      * @param[in]  msg   The DATA, with a payload or key.
      * @param[out] out   The block, with size set to the copied length.
-     * @return `true` when copied; `false` when no block could be had (the
-     *   change stays MISSING and is repaired later).
+     * @return `true` when copied; `false` when no block could be had or the
+     *   change was refused under R5 (the change stays MISSING and is
+     *   requested again).
      *
      * Verification:
      * - Correct means: a pool shortage never leaves a writer's next change
      *   undeliverable while any reader of the same hold pool holds a change,
-     *   and held changes never take the block a reader's ACKNACK needs
-     *   (RosetteReaderDelivery.tla, BlockRule "evict_any", AckReserve).
+     *   and a change that is only held never takes the last block an
+     *   ACKNACK fits in (RosetteReaderDelivery.tla, BlockRule "evict_any",
+     *   AckReserve).
      * - Covered by: TC-SRR-8.4.10.4-016, TC-SRR-8.4.10.4-019,
      *   TC-SRR-8.4.10.4-022.
      *

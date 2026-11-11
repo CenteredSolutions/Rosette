@@ -28,6 +28,37 @@
  * on arrival and requests it once the hole closes, so every change is
  * delivered exactly once.
  *
+ * Gap repair
+ * ----------
+ * A writer resends a lost change only when a reader names it, and without a
+ * request of its own a reader names it only in answer to the writer's next
+ * HEARTBEAT, up to 3 s later with Fast DDS defaults. So the proxy keeps a
+ * timer that requests MISSING changes once the writer has been quiet for a
+ * wait of RTPS_GAP_REPAIR_DELAY_MS, doubled per unanswered request (up to
+ * RTPS_GAP_REPAIR_MAX_DOUBLINGS times); the first wait covers ordinary
+ * reordering. It is the repair a partial sample gets from
+ * RTPS_FRAGMENT_REPAIR_DELAY_MS, for whole changes.
+ *
+ * | Event                              | Rounds    | Wait    | Deadline                      |
+ * | ---------------------------------- | --------- | ------- | ----------------------------- |
+ * | arrival, nothing MISSING           | 0         | first   | none                          |
+ * | arrival, a change MISSING          | all       | kept    | now + wait, unless one runs   |
+ * | an ACKNACK naming changes goes out | one fewer | doubled | now + wait                    |
+ * | the deadline passes, rounds left   |           |         | the reader sends that ACKNACK |
+ * | that ACKNACK cannot go out         | kept      | kept    | now + wait                    |
+ * | no rounds left                     | 0         | kept    | none until an arrival         |
+ *
+ * An arrival is a new change, a HEARTBEAT, or a held change evicted back to
+ * MISSING; "all" is RTPS_GAP_REPAIR_ROUNDS. Any ACKNACK naming changes
+ * counts as a request, whether the timer or a HEARTBEAT prompted it.
+ *
+ * A running deadline is never pushed back, so a writer that streams faster
+ * than the wait is still asked in time. A HEARTBEAT that shows changes
+ * MISSING covers the tail of a burst, where no later change reveals the
+ * loss; its timer counts from the HEARTBEAT's response deadline, so it never
+ * undercuts heartbeatResponseDelay, and the answer itself spends the first
+ * round.
+ *
  * Spec mapping (OMG DDSI-RTPS 2.5, formal/2022-04-01)
  * ---------------------------------------------------
  *   WriterProxy attributes             §8.4.10.4
@@ -196,19 +227,20 @@ public:
     void received_change_set(const SequenceNumber& sn) noexcept;
 
     /**
-     * @brief Returns a received change the reader evicted to MISSING.
+     * @brief Makes a received change MISSING again: one its reader could not hold.
      *
-     * A reader that holds changes behind a gap (HeldChanges) evicts its
-     * highest held change when it runs out of room; that change was
-     * received but never delivered, so it is requested again. Never applied
-     * to a change at or below available_changes_max(): those are delivered.
+     * The reader recorded the change on arrival, then found no hold slot
+     * for it (row R4 in held_changes.hpp) or gave its block to the change
+     * that closes a gap (row R2). It was never delivered, so it is requested
+     * again. Never applied at or below available_changes_max(): those are
+     * delivered.
      *
-     * @param[in] sn Sequence number of the evicted change.
+     * @param[in] sn Sequence number of the change.
      *
      * Verification:
      * - Correct means: `sn` is MISSING again and the next ACKNACK names it,
      *   and available_changes_max() is unchanged.
-     * - Covered by: TC-SRR-8.4.10.4-014.
+     * - Covered by: TC-SRR-8.4.10.4-016, TC-SRR-8.4.10.4-017, TC-SRR-8.4.10.4-019.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.10.4 (changes_from_writer: RECEIVED to MISSING)
@@ -355,34 +387,13 @@ public:
     }
 
     /**
-     * @brief Starts or renews the gap-repair timer on a new change or a HEARTBEAT.
+     * @brief Starts or renews the gap-repair timer on an arrival ("Gap repair" above).
      *
-     * A writer resends a lost change only when a reader names it, and a
-     * reader learns of a loss when a later change arrives. Without a request
-     * of its own the reader names it only in answer to the writer's next
-     * HEARTBEAT, up to 3 s later with Fast DDS defaults. So the first new
-     * change that leaves a change MISSING sets a deadline
-     * RTPS_GAP_REPAIR_DELAY_MS (doubled once per unanswered request,
-     * gapRepairDoublings) ahead, and when it passes the reader's timer pass
-     * sends an ACKNACK naming the missing changes. The wait covers ordinary
-     * reordering in the network. Later changes restore the
-     * RTPS_GAP_REPAIR_ROUNDS rounds, since the writer is evidently still
-     * sending, but do not push a running deadline back, so a writer that
-     * streams faster than the wait is still asked in time. With nothing
-     * MISSING the timer is idle and the next gap starts at the first wait.
-     * A HEARTBEAT that shows changes MISSING starts or renews the timer the
-     * same way, which covers the tail of a burst, where no later change
-     * reveals the loss: the HEARTBEAT's own answer spends the first round,
-     * and a lost resend is requested again after the doubled wait rather
-     * than at the writer's next HEARTBEAT.
-     * This is the repair a partial sample gets from
-     * RTPS_FRAGMENT_REPAIR_DELAY_MS, for whole changes.
-     *
-     * @param[in] now_ms Monotonic time, in milliseconds, of the arriving change.
+     * @param[in] now_ms Monotonic time, in milliseconds, of the arrival.
      *
      * Verification:
      * - Correct means: with a change MISSING the rounds are
-     *   RTPS_GAP_REPAIR_ROUNDS and the deadline is `now_ms` plus the doubled
+     *   RTPS_GAP_REPAIR_ROUNDS and the deadline is `now_ms` plus the current
      *   wait unless a deadline was already running, which is kept; with
      *   none the rounds and doublings are 0.
      * - Covered by: TC-SRR-8.4.12-020, TC-SRR-8.4.12-021, TC-SRR-8.4.12-024.
@@ -394,7 +405,7 @@ public:
     void schedule_gap_repair(uint32_t now_ms) noexcept;
 
     /**
-     * @brief True when the writer has gone quiet with a change still MISSING and rounds left.
+     * @brief True when the gap-repair deadline has passed with a change MISSING and rounds left.
      *
      * @param[in] now_ms Monotonic time, in milliseconds; compared wrap-safely.
      */
@@ -403,31 +414,26 @@ public:
     }
 
     /**
-     * @brief Milliseconds until gap_repair_due() holds; UINT32_MAX when it never will without a new
-     * change.
+     * @brief Milliseconds until gap_repair_due(); UINT32_MAX when only an arrival can start it.
      *
      * @param[in] now_ms Monotonic time, in milliseconds.
      */
     uint32_t ms_until_gap_repair(uint32_t now_ms) const noexcept;
 
     /**
-     * @brief Records that an ACKNACK requesting changes went to the writer.
-     *
-     * Any such request, from the timer or in answer to a HEARTBEAT, spends a
-     * round and doubles the wait (up to RTPS_GAP_REPAIR_MAX_DOUBLINGS), so
-     * the timer does not ask again while the writer's resend is in flight.
+     * @brief Spends a gap-repair round: an ACKNACK naming changes went to the writer.
      *
      * @param[in] now_ms Monotonic time, in milliseconds, at which it was sent.
      *
      * Verification:
      * - Correct means: with rounds left, one fewer round, doublings up by one
-     *   to the cap, and the next deadline `now_ms` plus the doubled wait.
+     *   to RTPS_GAP_REPAIR_MAX_DOUBLINGS, and the next deadline `now_ms` plus
+     *   the doubled wait; with none, nothing changes.
      * - Covered by: TC-SRR-8.4.12-021, TC-SRR-8.4.12-022.
      */
     void gap_repair_sent(uint32_t now_ms) noexcept;
 
-    /// @brief Moves a due request that could not be sent one current wait later, spending no
-    /// round.
+    /// @brief Retries a request that could not go out one wait later, spending no round.
     void gap_repair_postpone(uint32_t now_ms) noexcept {
         gapRepairDueMs = now_ms + gap_repair_wait();
     }
