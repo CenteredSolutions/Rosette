@@ -51,6 +51,7 @@ ChangeKind change_kind_of(const ParsedData& msg) noexcept
 StatefulReader::StatefulReader(const Guid& guid, ReliabilityKind reliability, ITransport& transport,
                                WriterProxyPool& pool, uint8_t min_writers, uint8_t max_writers,
                                FragmentAssemblyPool& assembly_pool, uint16_t assembly_limit,
+                               HeldChangePool& held_pool, uint8_t held_limit,
                                OnChangeAvailable on_change_avail, void* user_data,
                                uint32_t hb_response_ms) noexcept
     : guid_(guid),
@@ -60,6 +61,7 @@ StatefulReader::StatefulReader(const Guid& guid, ReliabilityKind reliability, IT
       user_data_(user_data),
       pool_(pool),
       assembler_(assembly_pool, assembly_limit),
+      held_(held_pool, this, held_limit),
       hb_response_ms_(hb_response_ms) {
     writers_.floor = min_writers;
     writers_.cap = max_writers;
@@ -194,6 +196,10 @@ void StatefulReader::on_data(const ParseContext& ctx,
         return;
     }
 
+    if (refuse_beyond_window(proxy, msg.writerSN)) {
+        return;
+    }
+
     // A disposal sent as inline QoS alone has no payload to copy.
     BufRef payload{};
     if ((msg.dataFlag || msg.keyFlag) && !copy_payload(proxy, msg, payload)) {
@@ -227,14 +233,27 @@ void StatefulReader::on_data(const ParseContext& ctx,
 bool StatefulReader::copy_payload(WriterProxy* proxy, const ParsedData& msg, BufRef& out) noexcept {
     out = buf_alloc(msg.serializedPayloadSize);
 
-    // An exhausted pool must not wedge this writer: its held changes pin
-    // blocks, and the change that closes its gap would otherwise be dropped
-    // on every resend.
-    SequenceNumber evicted{};
-    while (!out.valid() && proxy != nullptr
-           && held_.evict_highest_above(proxy->remoteWriterGuid, msg.writerSN, evicted)) {
-        proxy->received_change_withdraw(evicted);
+    // An exhausted pool must not wedge a writer: held changes pin blocks,
+    // and the change that closes its gap would otherwise be dropped on every
+    // resend. Only that change takes a held change's block; any other waits
+    // for its repair.
+    const bool closes_gap = proxy != nullptr && msg.writerSN == proxy->available_changes_max() + 1;
+    HeldEviction evicted{};
+    while (!out.valid() && closes_gap && held_.evict_for_block(proxy->remoteWriterGuid, evicted)) {
+        withdraw_evicted(evicted);
         out = buf_alloc(msg.serializedPayloadSize);
+    }
+
+    // A change that will only be held must leave a block for the ACKNACK
+    // that requests its gap: holding the last one would leave the reader
+    // unable to ask for the change that releases it.
+    if (out.valid() && proxy != nullptr && !closes_gap && reliability_ == ReliabilityKind::RELIABLE
+        && !g_buf_pool.can_alloc(MessageBuilder::kControlMessageCapacity)) {
+        RTPS_LOG_D("reader", "SN=%d:%lu not held: the pool keeps a block for the ACKNACK",
+                   static_cast<int>(msg.writerSN.high),
+                   static_cast<unsigned long>(msg.writerSN.low));
+        out = BufRef{};
+        return false;
     }
 
     if (!out.valid()) {
@@ -298,6 +317,12 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
             static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
             static_cast<unsigned long>(msg.dataSize));
         if (proxy) account_undelivered(*proxy, msg.writerSN);
+        return;
+    }
+
+    // A sample the reader could not hold is not reassembled either: it would
+    // take an assembly slot and a block only to be refused when complete.
+    if (refuse_beyond_window(proxy, msg.writerSN)) {
         return;
     }
 
@@ -788,19 +813,43 @@ void StatefulReader::accept_change(WriterProxy* proxy, CacheChange& change) noex
 
 void StatefulReader::hold_change(WriterProxy& proxy, CacheChange& change) noexcept {
     const SequenceNumber sn = change.sequenceNumber;
-    SequenceNumber       evicted{};
-    if (held_.full() && held_.evict_highest_above(proxy.remoteWriterGuid, sn, evicted)) {
-        proxy.received_change_withdraw(evicted);
-        RTPS_LOG_D("reader", "held SN=%d:%lu evicted for SN=%d:%lu", static_cast<int>(evicted.high),
-                   static_cast<unsigned long>(evicted.low), static_cast<int>(sn.high),
-                   static_cast<unsigned long>(sn.low));
-    }
-
     if (!held_.hold(change)) {
         proxy.received_change_withdraw(sn);
         RTPS_LOG_D("reader", "SN=%d:%lu arrived behind a gap with no hold slot, requested again",
                    static_cast<int>(sn.high), static_cast<unsigned long>(sn.low));
     }
+}
+
+bool StatefulReader::beyond_hold_window(const WriterProxy&    proxy,
+                                        const SequenceNumber& sn) const noexcept {
+    return reliability_ == ReliabilityKind::RELIABLE
+           && proxy.available_changes_max() + (1 + static_cast<int64_t>(held_.limit())) < sn;
+}
+
+bool StatefulReader::refuse_beyond_window(WriterProxy* proxy, const SequenceNumber& sn) noexcept {
+    if (proxy == nullptr || !beyond_hold_window(*proxy, sn)) {
+        return false;
+    }
+
+    // The writer has written `sn`, so every change up to it not yet here is
+    // MISSING, `sn` included; the gap timer asks for the ones in the window.
+    proxy->missing_changes_update(sn);
+    proxy->schedule_gap_repair(rosette::platform::monotonic_ms());
+    RTPS_LOG_D("reader", "SN=%d:%lu is beyond the hold window, requested again later",
+               static_cast<int>(sn.high), static_cast<unsigned long>(sn.low));
+    return true;
+}
+
+void StatefulReader::withdraw_evicted(const HeldEviction& evicted) noexcept {
+    WriterProxy* proxy = evicted.owner->find_proxy(evicted.writer);
+    if (proxy == nullptr) {
+        return;
+    }
+
+    proxy->received_change_withdraw(evicted.sn);
+    proxy->schedule_gap_repair(rosette::platform::monotonic_ms());
+    RTPS_LOG_D("reader", "held SN=%d:%lu gave its block to a closing change, requested again",
+               static_cast<int>(evicted.sn.high), static_cast<unsigned long>(evicted.sn.low));
 }
 
 void StatefulReader::release_held(WriterProxy& proxy) noexcept {

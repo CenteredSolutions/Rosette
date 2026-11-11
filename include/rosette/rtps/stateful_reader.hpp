@@ -15,13 +15,18 @@
  * once, repairs included, and requests MISSING changes in ACKNACKs until DATA
  * or GAP resolves them (§8.4.12.2). It delivers each writer's changes in the
  * order written (§8.4.10.4): a change that arrives while an earlier one is
- * MISSING waits in a small held store (held_changes.hpp) until the gap
- * closes, and the ACKNACK never acknowledges a held change before it is
- * delivered. A gap is requested RTPS_GAP_REPAIR_DELAY_MS after it shows,
- * without waiting for the writer's HEARTBEAT, backing off by doubling while
- * the writer does not answer (WriterProxy::schedule_gap_repair()). A
- * lost last change shows no gap and still waits for a HEARTBEAT. A BEST_EFFORT reader delivers only
- * changes newer than every change it has seen from that writer (§8.4.12.1).
+ * MISSING waits in a hold slot (held_changes.hpp) until the gap closes, and
+ * the ACKNACK never acknowledges a held change before it is delivered. A
+ * reader holds at most its limit of changes, so it accepts a change only
+ * that far past the next one it expects from a writer; a later one is
+ * MISSING and requested with the rest, and the writer's in-order resends
+ * each close the gap in turn. A gap is requested RTPS_GAP_REPAIR_DELAY_MS
+ * after it shows, without waiting for the writer's HEARTBEAT, backing off by
+ * doubling while the writer does not answer (WriterProxy::schedule_gap_repair()).
+ * A lost last change shows no gap until a HEARTBEAT announces it; the
+ * HEARTBEAT's answer requests it, and the same timer asks again if the
+ * resend is lost. A BEST_EFFORT reader delivers only changes newer than
+ * every change it has seen from that writer (§8.4.12.1).
  * A change that withdraws an instance (inline QoS StatusInfo DISPOSED or
  * UNREGISTERED) is delivered with its NOT_ALIVE ChangeKind even when it
  * carries no payload, so consumers such as SEDP learn of the withdrawal.
@@ -398,6 +403,11 @@ protected:
      *   samples in, possibly shared with other readers; outlives the reader.
      * @param[in] assembly_limit  Most slots of `assembly_pool` the reader
      *   holds at once, 1 to its capacity.
+     * @param[in] held_pool       Slots the reader holds changes in behind a
+     *   gap, possibly shared with other readers; outlives the reader.
+     * @param[in] held_limit      Most slots of `held_pool` the reader holds
+     *   at once, 1 to its capacity; also how far past the next expected
+     *   change of a writer it accepts one.
      * @param[in] on_change_avail Callback fired on each new complete change;
      *   null discards delivered changes.
      * @param[in] user_data       Forwarded to on_change_avail.
@@ -410,8 +420,8 @@ protected:
     StatefulReader(const Guid& guid, ReliabilityKind reliability, ITransport& transport,
                    WriterProxyPool& pool, uint8_t min_writers, uint8_t max_writers,
                    FragmentAssemblyPool& assembly_pool, uint16_t assembly_limit,
-                   OnChangeAvailable on_change_avail, void* user_data,
-                   uint32_t hb_response_ms) noexcept;
+                   HeldChangePool& held_pool, uint8_t held_limit, OnChangeAvailable on_change_avail,
+                   void* user_data, uint32_t hb_response_ms) noexcept;
 
     /// @brief Returns every bound proxy to the pool.
     ~StatefulReader() noexcept;
@@ -666,29 +676,93 @@ private:
     void accept_change(WriterProxy* proxy, CacheChange& change) noexcept;
 
     /**
-     * @brief Holds a change that arrived behind a gap, evicting the writer's highest held one
-     *   when the store is full.
+     * @brief Holds a change that arrived behind a gap, or withdraws it when no slot is free.
      *
-     * When every hold slot is in use the reader frees the slot of this
-     * writer's highest held change above the arriving one; that change is
-     * withdrawn to MISSING and requested again. When the writer holds
-     * nothing higher, the arriving change itself is withdrawn. Either way
-     * the lowest changes stay, so the change that closes the gap, which
-     * needs no slot, unblocks the most (tests/formal/RosetteReaderDelivery.tla
-     * shows that dropping the arriving change instead can wedge the reader).
+     * The change lies inside the reader's window (refuse_beyond_window()
+     * turned away the rest before their payload was copied), so the
+     * reader's own limit always leaves it a slot unless it holds changes
+     * of other writers too or the shared pool is full. A change that finds
+     * no slot is withdrawn to MISSING and requested again; nothing already
+     * held is given up for it. The change that closes the gap needs no slot,
+     * so a full pool slows a reader but never stops it
+     * (tests/formal/RosetteReaderDelivery.tla, AdmitRule "window").
      *
      * @param[in]     proxy  The writer's proxy; `change` is recorded in it.
      * @param[in,out] change A change above the writer's first MISSING one.
      *
      * Verification:
-     * - Correct means: the store never exceeds RTPS_READER_HELD_CHANGES, and
-     *   every change not held is MISSING again.
-     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-014.
+     * - Correct means: the reader never holds more than its limit nor the
+     *   pool more than its capacity, and every change not held is MISSING again.
+     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-017.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.10.4 (changes_from_writer)
      */
     void hold_change(WriterProxy& proxy, CacheChange& change) noexcept;
+
+    /**
+     * @brief True when a reliable reader could not hold `sn` from `proxy`'s writer.
+     *
+     * A reader holds at most `held_.limit()` changes, so of a writer's
+     * changes after its next expected one (available_changes_max() + 1) it
+     * can always hold the next `limit`; its window ends there. A change
+     * beyond the window is refused on arrival and stays MISSING.
+     *
+     * @param[in] proxy The writer's proxy.
+     * @param[in] sn    The change's sequence number.
+     * @return `true` for a RELIABLE reader when `sn` lies beyond the window;
+     *   always `false` for BEST_EFFORT.
+     *
+     * Verification:
+     * - Correct means: with next expected change Y + 1 and limit N, exactly
+     *   the changes above Y + 1 + N are beyond the window
+     *   (RosetteReaderDelivery.tla HoldsInWindow).
+     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-018.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4
+     */
+    bool beyond_hold_window(const WriterProxy& proxy, const SequenceNumber& sn) const noexcept;
+
+    /**
+     * @brief Turns away a change beyond the hold window before its payload is copied.
+     *
+     * The change is recorded as MISSING, as a HEARTBEAT announcing it would
+     * record it, and requested with the reader's other MISSING changes.
+     * Refusing it before the copy costs no buffer block, and before
+     * reassembly no assembly slot.
+     *
+     * @param[in,out] proxy The writer's proxy; null for an unmatched best-effort writer.
+     * @param[in]     sn    The arriving change's sequence number.
+     * @return `true` when the change was refused and the caller drops it.
+     *
+     * Verification:
+     * - Correct means: a refused change is MISSING, is not acknowledged, and
+     *   is requested by the next ACKNACK.
+     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-018.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (missing_changes_update), §8.4.12.2
+     */
+    bool refuse_beyond_window(WriterProxy* proxy, const SequenceNumber& sn) noexcept;
+
+    /**
+     * @brief Makes a held change given up for its buffer block MISSING again in its own reader.
+     *
+     * The change may belong to another reader of the same hold pool
+     * (HeldChanges::evict_for_block()); its writer's proxy withdraws it and
+     * starts the gap timer, so it is requested again promptly.
+     *
+     * @param[in] evicted The change given up and the reader that held it.
+     *
+     * Verification:
+     * - Correct means: the evicted change is MISSING in its reader afterwards.
+     * - Covered by: TC-SRR-8.4.10.4-016, TC-SRR-8.4.10.4-019.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4
+     */
+    void withdraw_evicted(const HeldEviction& evicted) noexcept;
 
     /**
      * @brief Delivers, in order, every held change of `proxy`'s writer that is no longer behind a
@@ -714,11 +788,19 @@ private:
     /**
      * @brief Copies a DATA's serialized payload into a pool block.
      *
-     * Takes the smallest block class that fits. When the pool is exhausted
-     * the reader evicts its own held changes of the same writer above this
-     * one, highest first, until a block frees: held changes are the blocks
-     * this reader can give back, and a lower change is worth more than a
-     * higher one, since only it can unblock delivery.
+     * Takes the smallest block class that fits. Two rules keep held changes
+     * from wedging a reader through the shared buffer pool:
+     *  - A change that will only be held (it does not close its writer's
+     *    gap) is refused when taking its block would leave none for an
+     *    ACKNACK (MessageBuilder::kControlMessageCapacity): the reader must
+     *    always be able to request the change that releases what it holds.
+     *  - When the pool is exhausted and this change is the one that closes
+     *    its writer's gap, it takes the blocks of held changes in the
+     *    reader's hold pool, this reader's first and otherwise another
+     *    reader's, until one frees (HeldChanges::evict_for_block()). Only
+     *    this change can unblock delivery, and a held change is MISSING
+     *    again at the cost of one repair. This covers the reserve being
+     *    taken by another user of the pool.
      *
      * @param[in]  proxy The writer's proxy; null for an unmatched best-effort writer.
      * @param[in]  msg   The DATA, with a payload or key.
@@ -728,8 +810,11 @@ private:
      *
      * Verification:
      * - Correct means: a pool shortage never leaves a writer's next change
-     *   undeliverable while this reader holds a later change of that writer.
-     * - Covered by: TC-SRR-8.4.10.4-016.
+     *   undeliverable while any reader of the same hold pool holds a change,
+     *   and held changes never take the block a reader's ACKNACK needs
+     *   (RosetteReaderDelivery.tla, BlockRule "evict_any", AckReserve).
+     * - Covered by: TC-SRR-8.4.10.4-016, TC-SRR-8.4.10.4-019,
+     *   TC-SRR-8.4.10.4-022.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.10.4
@@ -763,7 +848,8 @@ private:
     /// assembly pool the reader was constructed with.
     FragmentAssembler assembler_;
 
-    /// Changes held behind a gap until delivered in order (§8.4.10.4).
+    /// Changes held behind a gap until delivered in order (§8.4.10.4). Its
+    /// slots come from the hold pool the reader was constructed with.
     HeldChanges held_;
 
     uint32_t       hb_response_ms_;
@@ -778,9 +864,9 @@ private:
 };
 
 namespace detail {
-/// @brief The private pools of a BoundedStatefulReader, writer proxies and
-/// assembly slots, as a base class so they are constructed before the
-/// StatefulReader base that points into them.
+/// @brief The private pools of a BoundedStatefulReader, writer proxies,
+/// assembly slots and hold slots, as a base class so they are constructed
+/// before the StatefulReader base that points into them.
 template <uint8_t kMaxWriters>
 struct BoundedReaderSlots {
     /// One partial sample per writer the reader matches (KEEP_LAST(1) per
@@ -790,6 +876,7 @@ struct BoundedReaderSlots {
 
     ProxyPoolStorage<WriterProxy, kMaxWriters> proxies;
     FragmentAssemblyPoolStorage<kAssemblySlots> assembly;
+    HeldChangePoolStorage<RTPS_BOUNDED_READER_HELD_CHANGES> held;
 
     /// Promises the whole private pool to its one reader, whose floor is kMaxWriters.
     BoundedReaderSlots() noexcept { (void)proxies.reserve(kMaxWriters); }
@@ -802,8 +889,9 @@ struct BoundedReaderSlots {
  * Its capacity is its own and always available: floor and cap are both
  * kMaxWriters, and it reassembles fragmented samples in a private pool of
  * one slot per writer, up to RTPS_ASSEMBLY_SLOTS_PER_READER, as many as a
- * participant's user reader may hold. The SEDP builtin readers are of this
- * kind. The protocol
+ * participant's user reader may hold. It holds changes behind a gap in a
+ * private pool of RTPS_BOUNDED_READER_HELD_CHANGES slots. The SEDP builtin
+ * readers are of this kind. The protocol
  * logic lives once in StatefulReader (stateful_reader.cpp); this template
  * only adds the pool, so readers of different capacities share all code.
  *
@@ -826,30 +914,34 @@ public:
                           uint32_t hb_response_ms = RTPS_HEARTBEAT_RESPONSE_DELAY_MS) noexcept
         : StatefulReader(guid, reliability, transport, this->proxies, kMaxWriters, kMaxWriters,
                          this->assembly, detail::BoundedReaderSlots<kMaxWriters>::kAssemblySlots,
-                         on_change_avail, user_data, hb_response_ms) {}
+                         this->held, RTPS_BOUNDED_READER_HELD_CHANGES, on_change_avail, user_data,
+                         hb_response_ms) {}
 };
 
 /// A standalone reader for user topics: up to RTPS_MAX_MATCHED_WRITERS matched writers.
 using DefaultStatefulReader = BoundedStatefulReader<RTPS_MAX_MATCHED_WRITERS>;
 
 /**
- * @brief A StatefulReader whose WriterProxies and assembly slots come from
- *   pools its owner shares among readers.
+ * @brief A StatefulReader whose WriterProxies, assembly slots and hold slots
+ *   come from pools its owner shares among readers.
  *
  * RTPSParticipant creates its user readers as these, all binding from the
- * participant's WriterProxy pool and reassembling in its assembly pool, so
- * per-match storage scales with the matches the participant has at once
- * rather than with readers × cap.
+ * participant's WriterProxy pool, reassembling in its assembly pool, and
+ * holding changes behind a gap in its hold pool, so per-match storage
+ * scales with the matches and losses the participant has at once rather
+ * than with readers × cap.
  *
  * Example:
  * @code{.cpp}
  * rosette::rtps::ProxyPoolStorage<rosette::rtps::WriterProxy, 16> pool;
  * rosette::rtps::FragmentAssemblyPoolStorage<6> assembly;
- * (void)pool.reserve(1);                 // this reader's floor
+ * rosette::rtps::HeldChangePoolStorage<8> held;
+ * (void)pool.reserve(1);  // this reader's floor
  * rosette::rtps::SharedPoolStatefulReader reader(guid, rosette::rtps::ReliabilityKind::RELIABLE,
- * transport, pool, 1, 8, assembly, 5, on_change, &app); if (reader.matched_writer_add(writer_guid,
- * &locator, 1u, rosette::rtps::VENDORID_UNKNOWN)) {
- *     // DATA from that writer now reaches on_change.
+ *                                                transport, pool, 1, 8, assembly, 5, held, 4,
+ *                                                on_change, &app);
+ * if (reader.matched_writer_add(writer_guid, &locator, 1u, rosette::rtps::VENDORID_UNKNOWN)) {
+ *     // DATA from that writer now reaches on_change, in the order written.
  * }
  * @endcode
  * Full program: tests/spec/src/test_stateful_reader_8_4_7_4.cpp (TC-SRR-8.4.7.4-006)
@@ -869,6 +961,8 @@ public:
      * @param[in] max_writers     Cap: most matches at once, at least `min_writers` and 1.
      * @param[in] assembly_pool   Assembly slots shared with other readers; outlives the reader.
      * @param[in] assembly_limit  Most of those slots this reader holds at once.
+     * @param[in] held_pool       Hold slots shared with other readers; outlives the reader.
+     * @param[in] held_limit      Most of those slots this reader holds at once.
      * @param[in] on_change_avail Callback fired on each new complete change; null discards.
      * @param[in] user_data       Forwarded to on_change_avail.
      * @param[in] hb_response_ms  heartbeatResponseDelay in milliseconds (§8.4.7.1).
@@ -876,11 +970,12 @@ public:
     SharedPoolStatefulReader(const Guid& guid, ReliabilityKind reliability, ITransport& transport,
                              WriterProxyPool& pool, uint8_t min_writers, uint8_t max_writers,
                              FragmentAssemblyPool& assembly_pool, uint16_t assembly_limit,
+                             HeldChangePool& held_pool, uint8_t held_limit,
                              OnChangeAvailable on_change_avail = nullptr, void* user_data = nullptr,
                              uint32_t hb_response_ms = RTPS_HEARTBEAT_RESPONSE_DELAY_MS) noexcept
         : StatefulReader(guid, reliability, transport, pool, min_writers, max_writers,
-                         assembly_pool, assembly_limit, on_change_avail, user_data,
-                         hb_response_ms) {}
+                         assembly_pool, assembly_limit, held_pool, held_limit, on_change_avail,
+                         user_data, hb_response_ms) {}
 };
 
 }  // namespace rosette::rtps

@@ -3,71 +3,114 @@
 
 /**
  * @file rtps/held_changes.cpp
- * @brief HeldChanges: a reliable reader's changes waiting behind a gap.
+ * @brief HeldChangePool slot bookkeeping and each reader's HeldChanges view.
+ *
+ * Used slots are kept dense at the front of the pool, so every scan stops
+ * at the pool's count. Removing a slot moves the last used one into it.
  */
 
 #include "held_changes.hpp"
 
 namespace rosette::rtps {
 
+void HeldChangePool::remove_at(uint8_t index) noexcept {
+    slots_[index].change.clear();
+    --count_;
+    if (index != count_) {
+        slots_[index].change = static_cast<CacheChange&&>(slots_[count_].change);
+        slots_[index].owner = slots_[count_].owner;
+    }
+
+    slots_[count_].change = CacheChange{};
+    slots_[count_].owner = nullptr;
+}
+
+uint8_t HeldChanges::count() const noexcept {
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < pool_.count_; ++i) {
+        if (pool_.slots_[i].owner == owner_) {
+            ++n;
+        }
+    }
+
+    return n;
+}
+
 bool HeldChanges::hold(CacheChange& change) noexcept {
-    if (full()) {
+    if (pool_.count_ == pool_.capacity_ || count() >= limit_) {
         return false;
     }
 
-    slots_[count_] = static_cast<CacheChange&&>(change);
+    HeldSlot& slot = pool_.slots_[pool_.count_];
+    slot.change = static_cast<CacheChange&&>(change);
+    slot.owner = owner_;
     change = CacheChange{};
-    ++count_;
+    ++pool_.count_;
     return true;
 }
 
 bool HeldChanges::take_below(const Guid& writer, const SequenceNumber& limit,
                              CacheChange& out) noexcept {
-    uint8_t lowest = count_;
-    for (uint8_t i = 0; i < count_; ++i) {
-        const CacheChange& held = slots_[i];
-        if (held.writerGuid == writer && held.sequenceNumber < limit
-            && (lowest == count_ || held.sequenceNumber < slots_[lowest].sequenceNumber)) {
+    uint8_t lowest = pool_.count_;
+    for (uint8_t i = 0; i < pool_.count_; ++i) {
+        const HeldSlot& held = pool_.slots_[i];
+        if (held.owner == owner_ && held.change.writerGuid == writer
+            && held.change.sequenceNumber < limit
+            && (lowest == pool_.count_
+                || held.change.sequenceNumber < pool_.slots_[lowest].change.sequenceNumber)) {
             lowest = i;
         }
     }
 
-    if (lowest == count_) {
+    if (lowest == pool_.count_) {
         return false;
     }
 
-    out = static_cast<CacheChange&&>(slots_[lowest]);
-    remove_at(lowest);
+    out = static_cast<CacheChange&&>(pool_.slots_[lowest].change);
+    pool_.remove_at(lowest);
     return true;
 }
 
-bool HeldChanges::evict_highest_above(const Guid& writer, const SequenceNumber& sn,
-                                      SequenceNumber& evicted) noexcept {
-    uint8_t highest = count_;
-    for (uint8_t i = 0; i < count_; ++i) {
-        const CacheChange& held = slots_[i];
-        if (held.writerGuid == writer && sn < held.sequenceNumber
-            && (highest == count_ || slots_[highest].sequenceNumber < held.sequenceNumber)) {
+bool HeldChanges::evict_for_block(const Guid& writer, HeldEviction& evicted) noexcept {
+    if (pool_.count_ == 0u) {
+        return false;
+    }
+
+    // The victim's reader and writer: this reader's own `writer` when it
+    // holds one of its changes, otherwise those of the last used slot.
+    const HeldSlot* last = &pool_.slots_[pool_.count_ - 1u];
+    StatefulReader* owner = last->owner;
+    Guid            victim_writer = last->change.writerGuid;
+    for (uint8_t i = 0; i < pool_.count_; ++i) {
+        if (pool_.slots_[i].owner == owner_ && pool_.slots_[i].change.writerGuid == writer) {
+            owner = owner_;
+            victim_writer = writer;
+            break;
+        }
+    }
+
+    uint8_t highest = pool_.count_;
+    for (uint8_t i = 0; i < pool_.count_; ++i) {
+        const HeldSlot& held = pool_.slots_[i];
+        if (held.owner == owner && held.change.writerGuid == victim_writer
+            && (highest == pool_.count_
+                || pool_.slots_[highest].change.sequenceNumber < held.change.sequenceNumber)) {
             highest = i;
         }
     }
 
-    if (highest == count_) {
-        return false;
-    }
-
-    evicted = slots_[highest].sequenceNumber;
-    slots_[highest].clear();
-    remove_at(highest);
+    evicted.owner = owner;
+    evicted.writer = victim_writer;
+    evicted.sn = pool_.slots_[highest].change.sequenceNumber;
+    pool_.remove_at(highest);
     return true;
 }
 
 void HeldChanges::discard_writer(const Guid& writer) noexcept {
     uint8_t i = 0;
-    while (i < count_) {
-        if (slots_[i].writerGuid == writer) {
-            slots_[i].clear();
-            remove_at(i);
+    while (i < pool_.count_) {
+        if (pool_.slots_[i].owner == owner_ && pool_.slots_[i].change.writerGuid == writer) {
+            pool_.remove_at(i);
         } else {
             ++i;
         }
@@ -75,20 +118,14 @@ void HeldChanges::discard_writer(const Guid& writer) noexcept {
 }
 
 void HeldChanges::clear() noexcept {
-    for (uint8_t i = 0; i < count_; ++i) {
-        slots_[i].clear();
+    uint8_t i = 0;
+    while (i < pool_.count_) {
+        if (pool_.slots_[i].owner == owner_) {
+            pool_.remove_at(i);
+        } else {
+            ++i;
+        }
     }
-
-    count_ = 0;
-}
-
-void HeldChanges::remove_at(uint8_t index) noexcept {
-    --count_;
-    if (index != count_) {
-        slots_[index] = static_cast<CacheChange&&>(slots_[count_]);
-    }
-
-    slots_[count_] = CacheChange{};
 }
 
 }  // namespace rosette::rtps

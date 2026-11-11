@@ -274,7 +274,7 @@ static bool tc_srr_8_4_9_002(std::string& err) {
     ParsedDataFrag df{};
     df.readerId = reader_guid.entityId;
     df.writerId = writer_guid.entityId;
-    df.writerSN = SequenceNumber::from_int64(10);
+    df.writerSN = SequenceNumber::from_int64(2);
     df.fragmentStartingNum = 1u;
     df.fragmentsInSubmessage = 1u;
     df.fragmentSize = 4u;
@@ -290,7 +290,7 @@ static bool tc_srr_8_4_9_002(std::string& err) {
     ParsedHeartbeatFrag hb{};
     hb.readerId = reader_guid.entityId;
     hb.writerId = writer_guid.entityId;
-    hb.writerSN = SequenceNumber::from_int64(10);
+    hb.writerSN = SequenceNumber::from_int64(2);
     hb.lastFragmentNum = 2u;
     hb.count = 1;
 
@@ -322,7 +322,7 @@ static bool tc_srr_8_4_9_002(std::string& err) {
     CHECK(cap.calls == 1, "expected one NACK_FRAG submessage");
     CHECK(cap.msg.readerId == reader_guid.entityId, "NACK_FRAG readerId should be local reader");
     CHECK(cap.msg.writerId == writer_guid.entityId, "NACK_FRAG writerId should target remote writer");
-    CHECK(cap.msg.writerSN.to_int64() == 10, "NACK_FRAG should target fragmented sample SN");
+    CHECK(cap.msg.writerSN.to_int64() == 2, "NACK_FRAG should target fragmented sample SN");
     CHECK(cap.msg.fragmentNumberState.bitmapBase == 2u,
           "missing fragment base should start at fragment #2");
     CHECK(cap.msg.fragmentNumberState.numBits >= 1u && cap.msg.fragmentNumberState.test(0u),
@@ -509,8 +509,16 @@ static bool tc_srr_8_4_7_003(std::string& err) {
     CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(3) &&
           ack.readerSNState.numBits == 1u, "next request names SN 3 alone");
 
+    // SN 4 arrived first, beyond the reader's hold window, so it was refused
+    // and is the last change the chain requests.
     deliver(r, reader_guid, writer_guid, 3);
-    CHECK(tx.unicast_msgs.size() == 3u, "with nothing missing no further request is sent");
+    CHECK(tx.unicast_msgs.size() == 4u && last_acknack(tx, ack), "repair of 3 requests the next");
+    CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(4)
+              && ack.readerSNState.numBits == 1u,
+          "next request names SN 4 alone");
+
+    deliver(r, reader_guid, writer_guid, 4);
+    CHECK(tx.unicast_msgs.size() == 4u, "with nothing missing no further request is sent");
     return true;
 }
 

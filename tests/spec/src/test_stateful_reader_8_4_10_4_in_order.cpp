@@ -8,10 +8,11 @@
  * Under loss, repairs arrive after later changes. A reliable StatefulReader
  * holds a change that arrives behind a MISSING one (HeldChanges) and
  * delivers the held run once the gap closes, whether by the repair, by a
- * GAP, or by a HEARTBEAT whose firstSN passes it. The hold store and the
- * buffer pool are bounded; when either is full the reader gives up its
- * highest held change, which is requested again, so the change that closes
- * the gap always gets in (tests/formal/RosetteReaderDelivery.tla). Its
+ * GAP, or by a HEARTBEAT whose firstSN passes it. It holds only the changes
+ * its limit can cover past the next one it expects (its window); a later
+ * one is refused and requested again. The change that closes the gap needs
+ * no slot, and when the buffer pool is exhausted it takes a held change's
+ * block, so it always gets in (tests/formal/RosetteReaderDelivery.tla). Its
  * ACKNACKs never acknowledge a held change before it is delivered.
  */
 
@@ -173,10 +174,10 @@ static bool tc_srr_8_4_10_4_012(std::string& err) {
     return true;
 }
 
-// §8.4.10.4: with every hold slot in use, a change above every held one is
-// requested again rather than held, and the held ones are not acknowledged.
+// §8.4.10.4: a change beyond the hold window is requested again rather than
+// held, and the held ones are not acknowledged.
 static bool tc_srr_8_4_10_4_013(std::string& err) {
-    constexpr int64_t kHeld = HeldChanges::kCapacity;
+    constexpr int64_t kHeld = RTPS_BOUNDED_READER_HELD_CHANGES;
     const int64_t     extra = 3 + kHeld;
     Fixture           f{};
     f.data(1);
@@ -190,7 +191,7 @@ static bool tc_srr_8_4_10_4_013(std::string& err) {
           "nothing past SN 1 is acknowledged while SN 2 is missing");
     CHECK(Fixture::requests(ack, 2) && Fixture::requests(ack, extra) && !Fixture::requests(ack, 3)
               && !Fixture::requests(ack, 2 + kHeld),
-          "SN 2 and the change that found no slot are requested; held ones are not");
+          "SN 2 and the change beyond the window are requested; held ones are not");
     f.data(2);
     f.data(extra);
     CHECK(f.order.size() == static_cast<size_t>(extra) && f.order.back() == extra,
@@ -198,28 +199,28 @@ static bool tc_srr_8_4_10_4_013(std::string& err) {
     return true;
 }
 
-// §8.4.10.4: with every hold slot in use, a change below the highest held
-// one evicts it; the evicted change is requested again and delivered in its turn.
+// §8.4.10.4: a change beyond the window is refused even while slots are
+// free, so the changes below it, which are delivered first, find room.
 static bool tc_srr_8_4_10_4_014(std::string& err) {
-    constexpr int64_t kHeld = HeldChanges::kCapacity;
-    const int64_t     top = 3 + kHeld;  // SN 2 and SN 3 missing; 4..top held
+    constexpr int64_t kHeld = RTPS_BOUNDED_READER_HELD_CHANGES;
+    const int64_t     beyond = 3 + kHeld;  // SN 2 missing; window is 3..2 + kHeld
     Fixture           f{};
     f.data(1);
-    for (int64_t sn = 4; sn <= top; ++sn) {
+    f.data(beyond);
+    ParsedAckNack ack{};
+    CHECK(f.acknack_for(beyond, ack), "HEARTBEAT is answered");
+    CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(2) && Fixture::requests(ack, 2)
+              && Fixture::requests(ack, beyond),
+          "the change one past the window was refused with every slot free");
+    for (int64_t sn = 3; sn < beyond; ++sn) {
         f.data(sn);
     }
 
-    f.data(3);
-    ParsedAckNack ack{};
-    CHECK(f.acknack_for(top, ack), "HEARTBEAT is answered");
-    CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(2) && Fixture::requests(ack, 2)
-              && Fixture::requests(ack, top) && !Fixture::requests(ack, 3),
-          "SN 3 took the slot of the highest held change, which is requested again");
+    CHECK(f.delivered_exactly({1}), "every change in the window is held");
     f.data(2);
-    CHECK(f.order.back() == top - 1, "SN 2 releases the held run up to the evicted change");
-    f.data(top);
-    CHECK(f.order.size() == static_cast<size_t>(top) && f.order.back() == top,
-          "the evicted change is delivered last, every change in order");
+    f.data(beyond);
+    CHECK(f.order.size() == static_cast<size_t>(beyond) && f.order.back() == beyond,
+          "SN 2 releases the window, and the refused change follows in order");
     return true;
 }
 
@@ -238,7 +239,7 @@ static bool tc_srr_8_4_10_4_015(std::string& err) {
 }
 
 // §8.4.10.4: when the buffer pool is exhausted, the change that closes a gap
-// takes the block of the writer's highest held change, which is requested again.
+// takes the block of the reader's highest held change, which is requested again.
 static bool tc_srr_8_4_10_4_016(std::string& err) {
     Fixture f{};
     f.data(1);
@@ -275,12 +276,12 @@ void append_stateful_reader_tests_8_4_10_4_in_order(std::vector<TestCase>& tests
                      "changes held behind it.",
                      tc_srr_8_4_10_4_012});
     tests.push_back({"TC-SRR-8.4.10.4-013",
-                     "§8.4.10.4: with the hold store full, a change above every held one is "
-                     "requested again; held changes are never acknowledged early.",
+                     "§8.4.10.4: a change beyond the hold window is requested again; held changes "
+                     "are never acknowledged early.",
                      tc_srr_8_4_10_4_013});
     tests.push_back({"TC-SRR-8.4.10.4-014",
-                     "§8.4.10.4: with the hold store full, a lower change evicts the highest held "
-                     "one, which is requested again.",
+                     "§8.4.10.4: a change beyond the window is refused even with slots free, so "
+                     "the lower changes find room.",
                      tc_srr_8_4_10_4_014});
     tests.push_back({"TC-SRR-8.4.10.4-015",
                      "§8.4.7.4: unmatching a writer drops the changes held for it.",

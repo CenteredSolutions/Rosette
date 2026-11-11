@@ -173,10 +173,10 @@ struct Fixture {
 
 // §8.4.10.4, §8.4.12.2: a change lost in transit stays MISSING however many
 // later changes arrive before the writer's next HEARTBEAT; the ACKNACK
-// requests it, together with the later changes the reader had no room to
-// hold, and every change is delivered once, in order.
+// requests it, together with the later changes beyond the reader's hold
+// window, and every change is delivered once, in order.
 static bool tc_srr_8_4_10_001(std::string& err) {
-    constexpr int64_t kHeld = HeldChanges::kCapacity;
+    constexpr int64_t kHeld = RTPS_BOUNDED_READER_HELD_CHANGES;
     constexpr int64_t kLast = 2 + kHeld + 5;
     Fixture f{};
     f.deliver(1);

@@ -496,6 +496,47 @@ public:
     MultiBufPool& operator=(const MultiBufPool&) = delete;
 
     /**
+     * @brief Whether alloc(min_size) would find a block now.
+     *
+     * Walks the classes as alloc() does (smallest fit first, promotion
+     * stopping below the largest class for requests a smaller class can
+     * hold) without taking anything, so no statistics or debug events are
+     * recorded. A caller holding a block for an optional purpose asks this
+     * to leave the pool able to serve a mandatory one, such as a reader
+     * keeping a change behind a gap while still able to send its ACKNACK.
+     * The answer is a snapshot: another context may allocate before the
+     * caller acts on it.
+     *
+     * @param[in] min_size Minimum usable bytes, as for alloc().
+     * @return `true` when some eligible class has a free block.
+     *
+     * Verification:
+     * - Correct means: agrees with alloc(min_size).valid() for the same pool
+     *   state.
+     * - Covered by: TC-SRR-8.4.10.4-022 (a reader never holds the block its
+     *   ACKNACK needs).
+     */
+    bool can_alloc(uint32_t min_size) const noexcept {
+        constexpr uint8_t kLargest = kPoolClassCount - 1u;
+        const bool        fits_smaller_class = min_size <= class_sizes_[kLargest - 1u];
+        for (uint8_t c = 0; c < kPoolClassCount; ++c) {
+            if (class_sizes_[c] < min_size) {
+                continue;
+            }
+
+            if (c == kLargest && fits_smaller_class) {
+                break;
+            }
+
+            if (dispatch_available(c) > 0u) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @brief Allocates a block of at least `min_size` usable bytes.
      *
      * Takes the smallest class that fits and, when it is exhausted, the
