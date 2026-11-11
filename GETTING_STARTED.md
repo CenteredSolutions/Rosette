@@ -385,7 +385,10 @@ tools/pico_uf2_flash.py build-hw/pico2/examples/rtps_chatter/rtps_chatter.uf2 --
 ```
 
 The core's sizes are board inputs in `cmake/rosette_rtps.cmake`
-(`ROSETTE_RTPS_MAX_SAMPLE_SIZE`, `ROSETTE_RTPS_MAX_PEERS`, ...). Every call
+(`ROSETTE_RTPS_MAX_SAMPLE_SIZE`, `ROSETTE_RTPS_MAX_PEERS`, ...), and the
+configure prints the buffer pool's layout, whose class counts
+`ROSETTE_POOL_<ROLE>_BLOCKS` overrides
+([docs/mcu_memory_model.md](docs/mcu_memory_model.md#buffer-pool-layout)). Every call
 into the participant or its endpoints holds `driver.mutex()`.
 
 ## 9. Debugging

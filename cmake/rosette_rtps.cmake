@@ -36,6 +36,10 @@
 #   ROSETTE_RTPS_POOL_STATS         ON to count buffer pool use per class
 #                                   (rtps/buf_pool_stats.hpp) and warn when a
 #                                   request gets no block (default OFF)
+#   ROSETTE_POOL_<ROLE>_BLOCKS      CONTROL, DISCOVERY, MEDIUM, or DATAGRAM:
+#                                   that buffer-pool class's block count
+#                                   (cmake/rosette_buffer_pool.cmake); empty
+#                                   keeps the measured default
 #
 # Output: STATIC library `rosette_rtps`, linked PUBLIC to rosette_platform and
 # rosette_net, with ROSETTE_RTPS_MAX_DATAGRAM_SIZE as a compile definition
@@ -73,38 +77,34 @@ set(_rtps_local_endpoints 8)
 set(_rtps_match_waiters 8)
 math(EXPR _rtps_match_records "4 * 8 + 4 * 8 + ${_rtps_match_waiters}")
 
-# Buffer pool. A sample is stored whole in one block (fragmented only on the
-# wire), and alloc() takes the smallest class that fits, so each class is
-# sized for what it holds:
-#   256   control messages (HEARTBEAT, ACKNACK, GAP) and short samples
-#   512   discovery: SPDP's announcement, each SEDP announcement while it
-#         is rebuilt and sent (RTPS_SEDP_REBUILD_ANNOUNCEMENTS, sedp.hpp), and
-#         received discovery data while it is applied
-#   1024  received discovery data and mid-size samples
-#   datagram  one datagram plus its RTPS headers (kRtpsDataHeadroom, 44
-#         octets), rounded to 8: received DATA, built messages, and samples
-#         that go out unfragmented
-#   MAX_SAMPLE  whole samples larger than a datagram; never used by smaller
-#         requests (buf_pool.hpp)
-math(EXPR _rtps_pool_datagram "((${ROSETTE_RTPS_MAX_DATAGRAM_SIZE} + 44 + 7) / 8) * 8")
-# SEDP rebuilds each announcement for every send (sedp.hpp), so the 512 class
-# holds only blocks in flight; -DRTPS_SEDP_REBUILD_ANNOUNCEMENTS=0 stores them
-# instead, one block per local endpoint per builtin writer plus a disposal each.
+# Changes the participant's reliable readers hold behind a lost one, so each
+# writer's changes are delivered in order (rosette/rtps/held_changes.hpp).
+set(_rtps_held_changes 8)
+
+# Buffer pool: cmake/rosette_buffer_pool.cmake picks the firmware layout,
+# documents each class's role, size, and count, and prints it. The large
+# class holds ROSETTE_RTPS_MAX_SAMPLE_BLOCKS blocks of
+# ROSETTE_RTPS_MAX_SAMPLE_SIZE; ROSETTE_POOL_<ROLE>_BLOCKS overrides any
+# other class's count. SEDP rebuilds each announcement for every send
+# (sedp.hpp), so the discovery class holds only blocks in flight;
+# -DRTPS_SEDP_REBUILD_ANNOUNCEMENTS=0 stores them instead, one block per
+# local endpoint per builtin writer plus a disposal each.
 if(NOT DEFINED RTPS_SEDP_REBUILD_ANNOUNCEMENTS)
   set(RTPS_SEDP_REBUILD_ANNOUNCEMENTS 1)
 endif()
-if(RTPS_SEDP_REBUILD_ANNOUNCEMENTS)
-  set(_rtps_pool_discovery 8)
-else()
-  math(EXPR _rtps_pool_discovery "2 * (${_rtps_local_endpoints} + 1)")
-endif()
-if(NOT ROSETTE_RTPS_MAX_SAMPLE_SIZE GREATER _rtps_pool_datagram)
-  message(FATAL_ERROR "ROSETTE_RTPS_MAX_SAMPLE_SIZE (${ROSETTE_RTPS_MAX_SAMPLE_SIZE}) must exceed "
-                      "the datagram class (${_rtps_pool_datagram} octets)")
-endif()
-if(ROSETTE_RTPS_MAX_SAMPLE_SIZE GREATER 65532)
-  message(FATAL_ERROR "ROSETTE_RTPS_MAX_SAMPLE_SIZE must be at most 65532 (16-bit block sizes)")
-endif()
+
+include(${ROSETTE_ROOT}/cmake/rosette_buffer_pool.cmake)
+rosette_buffer_pool_layout(_rtps_pool
+  LABEL rosette_rtps
+  PROFILE firmware
+  MAX_DATAGRAM_SIZE ${ROSETTE_RTPS_MAX_DATAGRAM_SIZE}
+  MAX_SAMPLE_SIZE ${ROSETTE_RTPS_MAX_SAMPLE_SIZE}
+  LARGE_BLOCKS ${ROSETTE_RTPS_MAX_SAMPLE_BLOCKS}
+  LARGE_KNOB ROSETTE_RTPS_MAX_SAMPLE_BLOCKS
+  LOCAL_ENDPOINTS ${_rtps_local_endpoints}
+  HELD_CHANGES ${_rtps_held_changes}
+  SEDP_REBUILD ${RTPS_SEDP_REBUILD_ANNOUNCEMENTS}
+)
 
 target_compile_definitions(rosette_rtps PUBLIC
   ROSETTE_RTPS_MAX_DATAGRAM_SIZE=${ROSETTE_RTPS_MAX_DATAGRAM_SIZE}
@@ -121,16 +121,8 @@ target_compile_definitions(rosette_rtps PUBLIC
   RTPS_MAX_DISCOVERED_READERS=${ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS}
   RTPS_MAX_MATCH_RECORDS=${_rtps_match_records}
   RTPS_MAX_WAITING_MATCHES=${_rtps_match_waiters}
-  RTPS_POOL_CLASS0_SIZE=256u
-  RTPS_POOL_CLASS0_COUNT=16u
-  RTPS_POOL_CLASS1_SIZE=512u
-  RTPS_POOL_CLASS1_COUNT=${_rtps_pool_discovery}u
-  RTPS_POOL_CLASS2_SIZE=1024u
-  RTPS_POOL_CLASS2_COUNT=4u
-  RTPS_POOL_CLASS3_SIZE=${_rtps_pool_datagram}u
-  RTPS_POOL_CLASS3_COUNT=4u
-  RTPS_POOL_CLASS4_SIZE=${ROSETTE_RTPS_MAX_SAMPLE_SIZE}u
-  RTPS_POOL_CLASS4_COUNT=${ROSETTE_RTPS_MAX_SAMPLE_BLOCKS}u
+  RTPS_HELD_CHANGES=${_rtps_held_changes}u
+  ${_rtps_pool_DEFINITIONS}
 )
 if(ROSETTE_RTPS_POOL_STATS)
   target_compile_definitions(rosette_rtps PUBLIC RTPS_BUFPOOL_STATS=1)

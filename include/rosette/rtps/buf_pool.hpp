@@ -48,11 +48,11 @@
  * Size-class configuration
  * ------------------------
  * Every class size and count is a RTPS_POOL_CLASS<n>_SIZE / _COUNT macro.
- * Firmware builds set them from board inputs in cmake/rosette_rtps.cmake
- * (control messages, discovery announcements, small samples, one datagram,
- * and ROSETTE_RTPS_MAX_SAMPLE_SIZE); rmw_rosette sets its own in
- * rmw_rosette/cmake/rmw_rosette_capacity.cmake. The defaults below serve
- * host unit tests:
+ * cmake/rosette_buffer_pool.cmake sets all ten for every build that ships:
+ * classes 0-4 are the control, discovery, medium, datagram, and large
+ * roles, sized by the profile (firmware or host) and the link, and counted
+ * from what holds their blocks, with ROSETTE_POOL_<ROLE>_BLOCKS overriding
+ * a count. The defaults below serve the spec tests that set none:
  *
  *  Class 0:  128 bytes, 8 slots
  *  Class 1:  256 bytes, 8 slots
