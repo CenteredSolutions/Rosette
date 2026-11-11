@@ -105,6 +105,14 @@ endif()
 
 option(RMW_ROSETTE_PUMP_THREAD "Run the participant on a pump thread" ${_rr_pump_default})
 
+# The graph cache (rmw_rosette/graph_cache.hpp) keeps every endpoint's names on
+# the heap to answer topic and service listings, so a board's build leaves it
+# out by default and reports those queries as unsupported.
+option(RMW_ROSETTE_GRAPH_CACHE "Keep endpoint names for graph queries" ${_rr_pump_default})
+if(RMW_ROSETTE_GRAPH_CACHE)
+  target_sources(rmw_rosette PRIVATE src/graph_cache.cpp src/rmw_graph_names.cpp)
+endif()
+
 # RTPS log levels (rosette/rtps/log.hpp): 0 none, 1 error, 2 warning,
 # 3 info, 4 debug, 5 trace; output goes to stderr.
 set(RMW_ROSETTE_RTPS_LOG_LEVEL 2 CACHE STRING "rosette::rtps log level (0-5)")
@@ -197,6 +205,10 @@ if(BUILD_TESTING)
                          test_live_context_refusals)
   if(RMW_ROSETTE_CXX_TYPESUPPORT)
     list(APPEND _rmw_rosette_tests test_introspection_cpp_codec)
+  endif()
+
+  if(RMW_ROSETTE_GRAPH_CACHE)
+    list(APPEND _rmw_rosette_tests test_graph_cache)
   endif()
 
   # Entry points the ROS 2 headers declare only from some distribution on.

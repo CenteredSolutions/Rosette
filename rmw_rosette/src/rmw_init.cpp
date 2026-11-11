@@ -320,6 +320,9 @@ void destroy_participant(rmw_rosette::Context& ctx) noexcept {
     ctx.driver->~ParticipantDriver();
     ctx.participant->~RTPSParticipant();
     ctx.transport->~SocketUdpTransport();
+#if RMW_ROSETTE_GRAPH_CACHE
+    ctx.graph_cache->~GraphCache();
+#endif
     ctx.constructed = false;
 }
 
@@ -818,6 +821,11 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
     ctx.graph_guard_handle.data = &ctx.graph_guard;
     ctx.graph_guard_handle.context = context;
     ctx.participant->set_on_graph_change(trigger_graph_guard, &ctx.graph_guard);
+#if RMW_ROSETTE_GRAPH_CACHE
+    ctx.graph_cache = new (ctx.graph_cache_storage) rmw_rosette::GraphCache();
+    ctx.graph_cache->set_on_change(trigger_graph_guard, &ctx.graph_guard);
+    ctx.participant->match_table().set_graph_endpoint_observer(&ctx.graph_cache->observer());
+#endif
     if (!ctx.discovery_info.create(*ctx.participant)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_init: cannot create the ros_discovery_info writer "
                           "(participant writer table full)");

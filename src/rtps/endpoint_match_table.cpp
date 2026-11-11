@@ -482,6 +482,12 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
         RTPS_LOG_W("match", "writer name longer than RTPS_MAX_TOPIC_NAME_LEN - 1, ignored");
         return;
     }
+
+    if (graph_observer_) {
+        graph_observer_->on_endpoint(graph_observer_->user, wd.writerGuid, wd.topicName.str,
+                                     wd.typeName.str, true);
+    }
+
     const uint32_t topic_key = name_key(wd.topicName.str);
     const uint32_t type_key  = name_key(wd.typeName.str);
 
@@ -564,6 +570,12 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
         RTPS_LOG_W("match", "reader name longer than RTPS_MAX_TOPIC_NAME_LEN - 1, ignored");
         return;
     }
+
+    if (graph_observer_) {
+        graph_observer_->on_endpoint(graph_observer_->user, rd.readerGuid, rd.topicName.str,
+                                     rd.typeName.str, false);
+    }
+
     const uint32_t topic_key = name_key(rd.topicName.str);
     const uint32_t type_key  = name_key(rd.typeName.str);
 
@@ -955,11 +967,19 @@ void EndpointMatchTable::remove_endpoint(const Guid& guid, bool is_writer) noexc
 
 void EndpointMatchTable::remove_writer(const Guid& writer_guid) noexcept
 {
+    if (graph_observer_) {
+        graph_observer_->on_endpoint_gone(graph_observer_->user, writer_guid);
+    }
+
     remove_endpoint(writer_guid, /*is_writer=*/true);
 }
 
 void EndpointMatchTable::remove_reader(const Guid& reader_guid) noexcept
 {
+    if (graph_observer_) {
+        graph_observer_->on_endpoint_gone(graph_observer_->user, reader_guid);
+    }
+
     remove_endpoint(reader_guid, /*is_writer=*/false);
 }
 
@@ -981,14 +1001,42 @@ bool EndpointMatchTable::has_match_with(const GuidPrefix& prefix,
 
 void EndpointMatchTable::remove_participant(const GuidPrefix& gone_prefix) noexcept
 {
-    // Copy each GUID: removal clears the record it lives in.
-    for (const RemoteEndpoint& w : remote_writers_) {
-        if (!w.valid() || origins_[w.origin].prefix != gone_prefix) continue;
-        remove_writer(guid_of(w));
+    if (graph_observer_) {
+        graph_observer_->on_participant_gone(graph_observer_->user, gone_prefix);
     }
+
+    release_participant(gone_prefix);
+}
+
+void EndpointMatchTable::release_participant(const GuidPrefix& prefix) noexcept {
+    // Copy each GUID: removal clears the record it lives in. remove_endpoint()
+    // leaves the graph observer alone; the caller decides what it hears.
+    for (const RemoteEndpoint& w : remote_writers_) {
+        if (w.valid() && origins_[w.origin].prefix == prefix) {
+            remove_endpoint(guid_of(w), /*is_writer=*/true);
+        }
+    }
+
     for (const RemoteEndpoint& r : remote_readers_) {
-        if (!r.valid() || origins_[r.origin].prefix != gone_prefix) continue;
-        remove_reader(guid_of(r));
+        if (r.valid() && origins_[r.origin].prefix == prefix) {
+            remove_endpoint(guid_of(r), /*is_writer=*/false);
+        }
+    }
+}
+
+bool EndpointMatchTable::participant_refreshing(const GuidPrefix& prefix) noexcept {
+    if (graph_observer_ == nullptr || graph_observer_->on_participant_refreshing == nullptr
+        || graph_observer_->on_participant_refreshed == nullptr) {
+        return false;
+    }
+
+    graph_observer_->on_participant_refreshing(graph_observer_->user, prefix);
+    return true;
+}
+
+void EndpointMatchTable::participant_refreshed(const GuidPrefix& prefix) noexcept {
+    if (graph_observer_ != nullptr && graph_observer_->on_participant_refreshed != nullptr) {
+        graph_observer_->on_participant_refreshed(graph_observer_->user, prefix);
     }
 }
 

@@ -13,6 +13,9 @@ version may change the public API.
   so `rclcpp` programs on POSIX hosts run on it. The `RMW_ROSETTE_CXX_TYPESUPPORT`
   CMake option controls this and is off for firmware, which stays free of C++
   message containers and their heap use.
+- Topic and service listings on POSIX hosts, so `ros2 topic list` and
+  `ros2 service list` work on `rmw_rosette`. The `RMW_ROSETTE_GRAPH_CACHE` CMake
+  option controls this and is off for firmware, which keeps no endpoint names.
 
 ## [0.1.0] - 2026-11-02
 

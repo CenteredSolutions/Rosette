@@ -48,6 +48,12 @@ static DiscoveredReaderData make_local_reader(const Guid& g) {
     return rd;
 }
 
+/// The writer every announcement in this file describes; its participant is
+/// the one that announces it (§8.2.4.3).
+static Guid announced_writer() {
+    return make_guid(0x91u, 0x92u, 0x93u, make_entity(9u, 9u, 9u, 0xC2u));
+}
+
 static bool build_writer_payload(bool include_guid,
                                  bool include_unknown_pid,
                                  std::vector<Octet>& out) {
@@ -65,7 +71,7 @@ static bool build_writer_payload(bool include_guid,
     }
 
     if (include_guid) {
-        const Guid wg = make_guid(0x91u, 0x92u, 0x93u, make_entity(9u, 9u, 9u, 0xC2u));
+        const Guid wg = announced_writer();
         Octet g[16] = {};
         memcpy(g, wg.prefix.value, 12u);
         memcpy(g + 12u, &wg.entityId, 4u);
@@ -129,7 +135,7 @@ static bool tc_sedp_9_6_3_2_001(std::string& err) {
     std::vector<Octet> payload{};
     CHECK(build_writer_payload(true, true, payload), "payload build failed");
 
-    const SedpPeer peer{GuidPrefix{}, make_udpv4_locator(0xC0A80101u, 7410u)};
+    const SedpPeer peer{announced_writer().prefix, make_udpv4_locator(0xC0A80101u, 7410u)};
     peer.discover(reader);
     peer.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, payload);
     CHECK(obs.match_calls == 1, "unknown PIDs should be skipped without breaking required field parse");
@@ -163,7 +169,7 @@ static bool tc_sedp_9_6_3_2_004(std::string& err) {
     memcpy(payload.data() + 4u, oversized, sizeof(oversized));
     memcpy(payload.data() + 4u + sizeof(oversized), valid.data() + 4u, valid.size() - 4u);
 
-    const SedpPeer peer{GuidPrefix{}, make_udpv4_locator(0xC0A80101u, 7410u)};
+    const SedpPeer peer{announced_writer().prefix, make_udpv4_locator(0xC0A80101u, 7410u)};
     peer.discover(reader);
     peer.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, payload);
     CHECK(obs.match_calls == 0, "a parameter longer than the payload must end parsing");
@@ -183,7 +189,7 @@ static bool tc_sedp_9_6_3_2_002(std::string& err) {
     std::vector<Octet> payload{};
     CHECK(build_writer_payload(false, false, payload), "payload build failed");
 
-    const SedpPeer peer{GuidPrefix{}, make_udpv4_locator(0xC0A80101u, 7410u)};
+    const SedpPeer peer{announced_writer().prefix, make_udpv4_locator(0xC0A80101u, 7410u)};
     peer.discover(reader);
     peer.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, payload);
     CHECK(obs.match_calls == 0, "missing PID_ENDPOINT_GUID should reject discovered endpoint");
@@ -231,7 +237,7 @@ static bool tc_sedp_9_6_3_2_003(std::string& err) {
               payload),
           "payload build failed");
 
-    const SedpPeer peer{GuidPrefix{}, make_udpv4_locator(0xC0A80101u, 7410u)};
+    const SedpPeer peer{announced_writer().prefix, make_udpv4_locator(0xC0A80101u, 7410u)};
     peer.discover(reader);
     peer.announce(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, payload);
     CHECK(obs.calls == 1, "the remote writer matches");

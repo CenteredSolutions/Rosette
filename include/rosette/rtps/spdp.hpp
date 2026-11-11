@@ -298,7 +298,11 @@ struct PeerEntry {
     uint32_t lastSedpMs = 0;
     /// Low 32 bits of the highest sequence number received from the peer's
     /// publications and subscriptions announcers when it was parked; an
-    /// announcement above either reactivates it.
+    /// announcement above either reactivates it. Once the peer is active
+    /// again they are the numbers its replay must reach before the graph
+    /// observer's refresh completes, and both are 0 when no refresh is under
+    /// way (RTPSParticipant::finish_peer_refreshes()), so the refresh costs
+    /// the record no octet.
     uint32_t parkedPublicationsSn = 0;
     uint32_t parkedSubscriptionsSn = 0;
     /// Port of the most reachable default unicast locator at the address of

@@ -24,6 +24,7 @@
 
 #include "capacity.hpp"
 #include "change_ring.hpp"
+#include "graph_cache.hpp"
 #include "message_codec.hpp"
 #include "participant_pump.hpp"
 #include "ros_discovery_info_writer.hpp"
@@ -115,6 +116,15 @@ struct Context {
     /// Publishes this participant's nodes on `ros_discovery_info`; every
     /// node and endpoint creation and destruction reports to it.
     RosDiscoveryInfoWriter discovery_info;
+#if RMW_ROSETTE_GRAPH_CACHE
+    /// Every endpoint's names, for the topic and service listings. Guarded by
+    /// the context lock. Placement-new'd like the participant, because the
+    /// context pool is a function-local static: rclcpp may finalize a context
+    /// from an exit handler after that static's destructor has run, and a
+    /// GraphCache held by value would already be gone.
+    alignas(GraphCache) unsigned char graph_cache_storage[sizeof(GraphCache)];
+    GraphCache* graph_cache = nullptr;  ///< placement-new'd into graph_cache_storage
+#endif
     /// Triggered whenever the participant's view of the ROS graph changes
     /// (a peer, endpoint, or local node comes or goes). One per context,
     /// returned by rmw_node_get_graph_guard_condition() for every node, as

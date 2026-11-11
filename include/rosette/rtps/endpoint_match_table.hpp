@@ -425,6 +425,43 @@ struct MatchedEndpoint {
  * own endpoints); it tells local from remote by the participant's GUID
  * prefix (set_local_prefix()), and matches nothing until that is set.
  */
+/**
+ * @brief Receives each endpoint's names as the match table learns them.
+ *
+ * The table keeps remote endpoints as name keys and forgets the names. An owner
+ * that must list them registers this observer and stores what it needs; the
+ * table itself still allocates nothing. Every callback runs on the thread
+ * driving the participant, which holds the participant lock.
+ *
+ * The observer sees the network's endpoints, not the table's: a peer the
+ * participant parks (RTPSParticipant::park_peer()) leaves the table but stays
+ * alive, so the observer is not told; its endpoints remain listed.
+ *
+ * - `on_endpoint` fires for every valid local or remote endpoint, including
+ *   one the table has no room for, and again for a repeated announcement.
+ * - `on_endpoint_gone` fires for each endpoint its participant withdraws.
+ * - `on_participant_gone` is the one notice that a participant left, for all
+ *   of its endpoints.
+ * - `on_participant_refreshing` fires when a parked participant is
+ *   reactivated: its SEDP announcers replay every endpoint still alive, but an
+ *   endpoint withdrawn while it was parked is skipped, not withdrawn again.
+ *   The observer marks the participant's endpoints as unconfirmed, and each
+ *   replayed `on_endpoint` confirms one.
+ * - `on_participant_refreshed` fires once the replay is complete; the
+ *   observer forgets every endpoint of the participant still unconfirmed.
+ *
+ * Either refresh callback may be null; the participant then tracks no refresh.
+ */
+struct GraphEndpointObserver {
+    void* user = nullptr;
+    void (*on_endpoint)(void* user, const Guid& guid, const char* topic, const char* type,
+                        bool is_writer) noexcept = nullptr;
+    void (*on_endpoint_gone)(void* user, const Guid& guid) noexcept = nullptr;
+    void (*on_participant_gone)(void* user, const GuidPrefix& prefix) noexcept = nullptr;
+    void (*on_participant_refreshing)(void* user, const GuidPrefix& prefix) noexcept = nullptr;
+    void (*on_participant_refreshed)(void* user, const GuidPrefix& prefix) noexcept = nullptr;
+};
+
 class EndpointMatchTable {
 public:
     /// A writer-reader pair became compatible, or a waiting pair is offered
@@ -532,6 +569,23 @@ public:
     void add_reader(const DiscoveredReaderData& rd) noexcept;
 
     /**
+     * @brief Registers the observer told about every endpoint's names.
+     *
+     * @param[in] observer Observer that outlives the table, or null for none.
+     *
+     * Verification:
+     * - Correct means: a local or remote endpoint is reported before matching,
+     *   and each withdrawal and departed participant is reported.
+     * - Covered by: rmw_rosette/test/test_graph_cache.cpp.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4 (SEDP)
+     */
+    void set_graph_endpoint_observer(const GraphEndpointObserver* observer) noexcept {
+        graph_observer_ = observer;
+    }
+
+    /**
      * @brief Whether a new local endpoint with these names can be recorded.
      *
      * The participant asks before it creates a local writer or reader, so an
@@ -591,10 +645,54 @@ public:
     /**
      * @brief Forgets every endpoint of a departed participant (§8.5.3.2).
      *
+     * The graph observer is told once, through `on_participant_gone`, and every
+     * pair the participant's endpoints were part of is reported as dissolved.
+     *
      * @param[in] gone_prefix GUID prefix of the participant whose lease
      *   expired or that disposed itself.
+     *
+     * Verification:
+     * - Correct means: no endpoint of the participant remains, each of its
+     *   pairs is unmatched, and the observer hears of the departure once.
+     * - Covered by: TC-SEDP-8.5.4-014, TC-PART-8.5.3-015.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (participant lease)
      */
     void remove_participant(const GuidPrefix& gone_prefix) noexcept;
+
+    /**
+     * @brief Forgets every endpoint of a participant that stays alive.
+     *
+     * RTPSParticipant::park_peer() releases a settled peer's records and pairs
+     * to make room for another peer. Unlike remove_participant(), the graph
+     * observer is not told: the peer's endpoints still exist on the network,
+     * and reactivating the peer replays them (participant_refreshing()).
+     *
+     * @param[in] prefix GUID prefix of the participant being parked.
+     *
+     * Verification:
+     * - Correct means: as remove_participant() for the table and its pairs; the
+     *   graph observer receives no callback.
+     * - Covered by: TC-PART-8.5.3-015.
+     *
+     * References:
+     * - docs/design/two_tier_peer_table.md
+     */
+    void release_participant(const GuidPrefix& prefix) noexcept;
+
+    /**
+     * @brief Tells the graph observer that a parked participant's endpoints are being replayed.
+     *
+     * @param[in] prefix GUID prefix of the participant just reactivated.
+     * @return `true` when the observer tracks refreshes, and so expects
+     *   participant_refreshed() once the replay is complete; `false` when it
+     *   does not, and the caller need not watch the replay.
+     */
+    bool participant_refreshing(const GuidPrefix& prefix) noexcept;
+
+    /// @brief Tells the graph observer that a reactivated participant's replay is complete.
+    void participant_refreshed(const GuidPrefix& prefix) noexcept;
 
     /**
      * @brief True when a remote participant has an endpoint in a match that counts.
@@ -1219,6 +1317,8 @@ private:
      */
     void unmatch_if_relocated(RemoteEndpoint* table, uint32_t n, bool is_writer, const Guid& guid,
                               const Locator* locators, uint8_t count) noexcept;
+    const GraphEndpointObserver* graph_observer_ = nullptr;
+
     /// @brief Tells the owner the set of known endpoints changed.
     void changed() noexcept { if (on_change_) on_change_(user_data_); }
 

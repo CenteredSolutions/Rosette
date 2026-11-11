@@ -776,17 +776,23 @@ StatefulReader* SedpReader::reader_for_writer(const EntityId& writer_id) noexcep
 
 void SedpReader::on_publication_change(const CacheChange& change) noexcept
 {
+    // §8.2.4.3: every entity of a participant carries the participant's GUID
+    // prefix, so a participant announces and withdraws only its own endpoints.
     if (change.kind != ChangeKind::ALIVE) {
         Guid endpoint{};
-        if (withdrawn_endpoint(change, endpoint) &&
-            endpoint.prefix == change.writerGuid.prefix) {
+        if (withdrawn_endpoint(change, endpoint) && endpoint.prefix == change.writerGuid.prefix) {
             match_table_.remove_writer(endpoint);
         }
+
         return;
     }
+
     DiscoveredWriterData wd{};
-    if (!deserialise_writer(change.payload.data, change.payload.size, wd)) return;
-    if (!wd.is_valid()) return;
+    if (!deserialise_writer(change.payload.data, change.payload.size, wd) || !wd.is_valid()
+        || wd.writerGuid.prefix != change.writerGuid.prefix) {
+        return;
+    }
+
     match_table_.add_writer(wd);
 }
 
@@ -794,15 +800,19 @@ void SedpReader::on_subscription_change(const CacheChange& change) noexcept
 {
     if (change.kind != ChangeKind::ALIVE) {
         Guid endpoint{};
-        if (withdrawn_endpoint(change, endpoint) &&
-            endpoint.prefix == change.writerGuid.prefix) {
+        if (withdrawn_endpoint(change, endpoint) && endpoint.prefix == change.writerGuid.prefix) {
             match_table_.remove_reader(endpoint);
         }
+
         return;
     }
+
     DiscoveredReaderData rd{};
-    if (!deserialise_reader(change.payload.data, change.payload.size, rd)) return;
-    if (!rd.is_valid()) return;
+    if (!deserialise_reader(change.payload.data, change.payload.size, rd) || !rd.is_valid()
+        || rd.readerGuid.prefix != change.writerGuid.prefix) {
+        return;
+    }
+
     match_table_.add_reader(rd);
 }
 

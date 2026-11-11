@@ -473,6 +473,7 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
     serve_owed_peer(now_ms);
     sedp_writer_.tick(now_ms);
     sedp_reader_.tick(now_ms);
+    finish_peer_refreshes();
     // Both steps are flag checks until a match frees room: a rebind is due
     // only after a proxy frees, and a rescan only after a pair was turned
     // away and a record or waiting place has freed since. Waiting pairs are
@@ -504,12 +505,15 @@ uint32_t RTPSParticipant::ms_until_next_timer(uint32_t now_ms) const noexcept {
         if (candidate < next) next = candidate;
     };
     consider(spdp_reader_.ms_until_next_expiry(now_ms));
-    // An owed parked peer waits for a peer to settle; look again a few
-    // times per settle period.
-    bool owed = false;
-    spdp_reader_.for_each_peer(
-        [&owed](const PeerEntry& peer) noexcept { owed = owed || peer.owed; });
-    if (owed) {
+    // An owed parked peer waits for a peer to settle, and a reactivated
+    // peer's refresh for its replay; look again a few times per settle period.
+    bool waiting = false;
+    spdp_reader_.for_each_peer([&waiting](const PeerEntry& peer) noexcept {
+        const bool refreshing =
+            peer.active() && (peer.parkedPublicationsSn != 0u || peer.parkedSubscriptionsSn != 0u);
+        waiting = waiting || peer.owed || refreshing;
+    });
+    if (waiting) {
         consider(RTPS_PEER_SETTLE_MS / 4u);
     }
 
