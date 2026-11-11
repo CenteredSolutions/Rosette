@@ -197,6 +197,7 @@ set(SEDP_SPEC_TEST_SOURCES
     ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/sn_window.cpp
+    ../../src/rtps/held_changes.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
@@ -321,12 +322,14 @@ add_executable(stateful_reader_spec_tests
     src/test_stateful_reader_8_4_8_8_4_9.cpp
     src/test_stateful_reader_8_4_9_gap_ranges.cpp
     src/test_stateful_reader_8_4_10_4_changes_from_writer.cpp
+    src/test_stateful_reader_8_4_10_4_in_order.cpp
     src/test_stateful_reader_8_4_10_4_locator_reference.cpp
     src/test_stateful_reader_8_4_12_nack_frag_on_heartbeat.cpp
     src/test_stateful_reader_8_4_12_nack_frag_on_quiet.cpp
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/sn_window.cpp
+    ../../src/rtps/held_changes.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
@@ -374,6 +377,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/sn_window.cpp
+    ../../src/rtps/held_changes.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
@@ -443,6 +447,7 @@ add_executable(local_name_limit_spec_tests
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/sn_window.cpp
+    ../../src/rtps/held_changes.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
@@ -481,6 +486,7 @@ add_executable(writer_slot_class_spec_tests
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/sn_window.cpp
+    ../../src/rtps/held_changes.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
@@ -736,7 +742,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         spdp.cpp spdp_peer_records.cpp locator_ranking.cpp buf_pool.cpp)
     rosette_spec_add_fuzz(sedp fuzz/fuzz_sedp.cpp
         sedp.cpp endpoint_match_table.cpp locator_ranking.cpp stateful_reader.cpp
-        fragment_assembler.cpp writer_proxy.cpp sn_window.cpp history_cache.cpp
+        fragment_assembler.cpp writer_proxy.cpp sn_window.cpp held_changes.cpp history_cache.cpp
         reader_proxy.cpp stateful_writer.cpp stateful_writer_replay.cpp proxy_pool.cpp
         message_parser.cpp buf_pool.cpp)
     rosette_spec_add_fuzz(endpoint_match fuzz/fuzz_endpoint_match_table.cpp

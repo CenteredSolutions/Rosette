@@ -136,6 +136,7 @@ void StatefulReader::matched_writer_remove(const Guid& writer_guid) noexcept {
 
     // Release partial assembly buffers for this writer — §8.4.14.
     assembler_.discard_writer(writer_guid);
+    held_.discard_writer(writer_guid);
 }
 
 WriterProxy* StatefulReader::matched_writer_lookup(
@@ -193,22 +194,10 @@ void StatefulReader::on_data(const ParseContext& ctx,
         return;
     }
 
-    // Copy the payload into the smallest pool class that fits it. A
-    // disposal sent as inline QoS alone has no payload to copy.
+    // A disposal sent as inline QoS alone has no payload to copy.
     BufRef payload{};
-    uint32_t copy_size = 0;
-    if (msg.dataFlag || msg.keyFlag) {
-        payload = buf_alloc(msg.serializedPayloadSize);
-        if (!payload.valid()) {
-            RTPS_LOG_E("reader", "buf_alloc failed for DATA payload size=%lu",
-                       static_cast<unsigned long>(msg.serializedPayloadSize));
-            return;
-        }
-        copy_size = (msg.serializedPayloadSize <= payload.capacity())
-                    ? msg.serializedPayloadSize : payload.capacity();
-        if (copy_size > 0 && msg.serializedPayload)
-            memcpy(payload.data, msg.serializedPayload, copy_size);
-        payload.size = copy_size;
+    if ((msg.dataFlag || msg.keyFlag) && !copy_payload(proxy, msg, payload)) {
+        return;
     }
 
     CacheChange change{};
@@ -223,23 +212,45 @@ void StatefulReader::on_data(const ParseContext& ctx,
                static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
                ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
                ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3],
-               static_cast<unsigned long>(copy_size));
+               static_cast<unsigned long>(change.payload.size));
 
+    // A whole DATA supersedes any partial assembly of the same change from
+    // earlier DATA_FRAGs, which would never be completed or requested; its
+    // slot is freed now rather than left to a repair round that may never come.
     if (proxy) {
-        const bool repair = proxy->is_missing(msg.writerSN);
-        record_change(*proxy, msg.writerSN);
-
-        // The change is no longer new, so a partial assembly of it from
-        // earlier DATA_FRAGs is never completed or requested; free its slot
-        // now rather than leave it to a repair round that may never come.
         assembler_.discard(change.writerGuid, msg.writerSN);
-        deliver(change);
-        if (repair) {
-            request_next_repair(*proxy);
-        }
-    } else {
-        deliver(change);
     }
+
+    accept_change(proxy, change);
+}
+
+bool StatefulReader::copy_payload(WriterProxy* proxy, const ParsedData& msg, BufRef& out) noexcept {
+    out = buf_alloc(msg.serializedPayloadSize);
+
+    // An exhausted pool must not wedge this writer: its held changes pin
+    // blocks, and the change that closes its gap would otherwise be dropped
+    // on every resend.
+    SequenceNumber evicted{};
+    while (!out.valid() && proxy != nullptr
+           && held_.evict_highest_above(proxy->remoteWriterGuid, msg.writerSN, evicted)) {
+        proxy->received_change_withdraw(evicted);
+        out = buf_alloc(msg.serializedPayloadSize);
+    }
+
+    if (!out.valid()) {
+        RTPS_LOG_E("reader", "buf_alloc failed for DATA payload size=%lu",
+                   static_cast<unsigned long>(msg.serializedPayloadSize));
+        return false;
+    }
+
+    const uint32_t copy_size =
+        (msg.serializedPayloadSize <= out.capacity()) ? msg.serializedPayloadSize : out.capacity();
+    if (copy_size > 0 && msg.serializedPayload) {
+        memcpy(out.data, msg.serializedPayload, copy_size);
+    }
+
+    out.size = copy_size;
+    return true;
 }
 
 // ============================================================
@@ -321,14 +332,7 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     }
 
     // Sample is complete — treat identically to a full DATA reception.
-    if (proxy) {
-        const bool repair = proxy->is_missing(msg.writerSN);
-        record_change(*proxy, msg.writerSN);
-        deliver(out_change);
-        if (repair) request_next_repair(*proxy);
-    } else {
-        deliver(out_change);
-    }
+    accept_change(proxy, out_change);
 }
 
 // ============================================================
@@ -370,6 +374,9 @@ void StatefulReader::on_heartbeat(const ParseContext&    ctx,
     assembler_.discard_if(proxy->remoteWriterGuid, [&](const SequenceNumber& sn) noexcept {
         return !is_new_change(*proxy, sn);
     });
+
+    // firstSN may have resolved the gap held changes wait behind.
+    release_held(*proxy);
 
     RTPS_LOG_D("reader", "HEARTBEAT first=%d:%lu last=%d:%lu final=%d needs_ack=%d",
                static_cast<int>(msg.firstSN.high), static_cast<unsigned long>(msg.firstSN.low),
@@ -509,7 +516,10 @@ void StatefulReader::on_gap(const ParseContext& ctx,
 
     const bool had_missing = proxy->has_missing_changes();
     proxy->irrelevant_change_set(msg.gapStart, msg.gapList);
-    if (had_missing) request_next_repair(*proxy);
+    release_held(*proxy);
+    if (had_missing) {
+        request_next_repair(*proxy);
+    }
 
     // If all previously missing changes are now LOST, send a pure ACK.
     if (proxy->acknackPending && !proxy->has_missing_changes()) {
@@ -709,7 +719,61 @@ void StatefulReader::account_undelivered(WriterProxy& proxy, const SequenceNumbe
 {
     const bool repair = proxy.is_missing(sn);
     record_change(proxy, sn);
-    if (repair) request_next_repair(proxy);
+    release_held(proxy);
+    if (repair) {
+        request_next_repair(proxy);
+    }
+}
+
+void StatefulReader::accept_change(WriterProxy* proxy, CacheChange& change) noexcept {
+    if (proxy == nullptr) {
+        deliver(change);
+        return;
+    }
+
+    const SequenceNumber sn = change.sequenceNumber;
+    const bool           repair = proxy->is_missing(sn);
+    record_change(*proxy, sn);
+
+    // Every change below the writer's first unresolved one is delivered,
+    // held, or resolved without data, so `sn` is next in order exactly when
+    // recording it moved that bound past it.
+    if (proxy->available_changes_max() < sn) {
+        hold_change(*proxy, change);
+    } else {
+        deliver(change);
+        release_held(*proxy);
+    }
+
+    if (repair) {
+        request_next_repair(*proxy);
+    }
+}
+
+void StatefulReader::hold_change(WriterProxy& proxy, CacheChange& change) noexcept {
+    const SequenceNumber sn = change.sequenceNumber;
+    SequenceNumber       evicted{};
+    if (held_.full() && held_.evict_highest_above(proxy.remoteWriterGuid, sn, evicted)) {
+        proxy.received_change_withdraw(evicted);
+        RTPS_LOG_D("reader", "held SN=%d:%lu evicted for SN=%d:%lu", static_cast<int>(evicted.high),
+                   static_cast<unsigned long>(evicted.low), static_cast<int>(sn.high),
+                   static_cast<unsigned long>(sn.low));
+    }
+
+    if (!held_.hold(change)) {
+        proxy.received_change_withdraw(sn);
+        RTPS_LOG_D("reader", "SN=%d:%lu arrived behind a gap with no hold slot, requested again",
+                   static_cast<int>(sn.high), static_cast<unsigned long>(sn.low));
+    }
+}
+
+void StatefulReader::release_held(WriterProxy& proxy) noexcept {
+    const SequenceNumber limit = proxy.available_changes_max() + 1;
+    CacheChange          next{};
+    while (held_.take_below(proxy.remoteWriterGuid, limit, next)) {
+        deliver(next);
+        next.clear();
+    }
 }
 
 void StatefulReader::deliver(const CacheChange& change) noexcept

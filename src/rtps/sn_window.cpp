@@ -25,6 +25,20 @@ bool SequenceNumberWindow::resolve(const SequenceNumber& sn) noexcept {
     return true;
 }
 
+bool SequenceNumberWindow::unresolve(const SequenceNumber& sn) noexcept {
+    if (!(base_ < sn) || !covers(sn)) {
+        return false;
+    }
+
+    const uint64_t bit = uint64_t{1} << (sn - base_);
+    if ((resolved_ & bit) == 0u) {
+        return false;
+    }
+
+    resolved_ &= ~bit;
+    return true;
+}
+
 void SequenceNumberWindow::resolve_below(const SequenceNumber& first_unresolved) noexcept {
     if (!(base_ < first_unresolved)) return;
     const int64_t shift = first_unresolved - base_;

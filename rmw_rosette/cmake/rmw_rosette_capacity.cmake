@@ -85,6 +85,8 @@ set(RMW_ROSETTE_MAX_WRITER_DEPTH 8 CACHE STRING
     "Deepest KEEP_LAST history a publisher keeps, 1 to 255; deeper requests and KEEP_ALL run at this depth. Writer slots that hold any writer are sized for it, at about 100 octets per history slot on a 32-bit target")
 set(RMW_ROSETTE_REPLY_DEPTH 4 CACHE STRING
     "Replies each service holds until their clients acknowledge them, 1 to RMW_ROSETTE_MAX_WRITER_DEPTH: a reply written while this many are unacknowledged displaces the oldest, whose client never receives it. Every service reply writer has this depth whatever its QoS requests, and takes a writer slot sized for it rather than for the deepest writer")
+set(RMW_ROSETTE_READER_HELD_CHANGES 4 CACHE STRING
+    "Changes each reliable reader holds behind a lost one, at least 1, so they are delivered in the order written once it is repaired; each pins a buffer-pool block until then. A change arriving behind a gap with every slot in use is requested again after the repair")
 set(RMW_ROSETTE_LARGE_BUFFERS 48 CACHE STRING
     "Blocks of RMW_ROSETTE_MAX_SAMPLE_SIZE (and, in the host pool profile, of 16 KiB): samples held in writer histories, reassembly, and take rings")
 set(RMW_ROSETTE_ASSEMBLY_SLOTS "" CACHE STRING
@@ -106,6 +108,9 @@ else()
 endif()
 if(RMW_ROSETTE_MAX_WRITER_DEPTH LESS 1 OR RMW_ROSETTE_MAX_WRITER_DEPTH GREATER 255)
   message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_MAX_WRITER_DEPTH (${RMW_ROSETTE_MAX_WRITER_DEPTH}) must be 1 to 255")
+endif()
+if(RMW_ROSETTE_READER_HELD_CHANGES LESS 1 OR RMW_ROSETTE_READER_HELD_CHANGES GREATER 255)
+  message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_READER_HELD_CHANGES (${RMW_ROSETTE_READER_HELD_CHANGES}) must be 1 to 255")
 endif()
 if(RMW_ROSETTE_REPLY_DEPTH LESS 1 OR RMW_ROSETTE_REPLY_DEPTH GREATER RMW_ROSETTE_MAX_WRITER_DEPTH)
   message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_REPLY_DEPTH (${RMW_ROSETTE_REPLY_DEPTH}) must be 1 to "
@@ -319,6 +324,7 @@ function(rmw_rosette_apply_capacity target)
     RMW_ROSETTE_PUMP_THREAD=$<BOOL:${RMW_ROSETTE_PUMP_THREAD}>
     RMW_ROSETTE_GRAPH_CACHE=$<BOOL:${RMW_ROSETTE_GRAPH_CACHE}>
     RTPS_DEEP_WRITER_DEPTH=${RMW_ROSETTE_MAX_WRITER_DEPTH}
+    RTPS_READER_HELD_CHANGES=${RMW_ROSETTE_READER_HELD_CHANGES}u
     RTPS_SEDP_REBUILD_ANNOUNCEMENTS=${_rr_sedp_rebuild}
     RTPS_MAX_USER_WRITERS=${_rr_rtps_writers}
     RTPS_MAX_SHALLOW_WRITERS=${_rr_services}

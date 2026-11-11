@@ -102,9 +102,9 @@ static bool tc_srr_8_4_8_001(std::string& err) {
     return true;
 }
 
-// §8.4.12.2: a reliable reader delivers a retransmitted change that fills a
-// gap (tracked MISSING), even though a later SN already arrived, and drops
-// true duplicates.
+// §8.4.10.4, §8.4.12.2: a reliable reader delivers a retransmitted change
+// that fills a gap (tracked MISSING), then the later change it held behind
+// the gap, and drops true duplicates.
 static bool tc_srr_8_4_8_002(std::string& err) {
     CaptureTransport tx{};
     ChangeCapture cap{};
@@ -130,10 +130,10 @@ static bool tc_srr_8_4_8_002(std::string& err) {
     };
     deliver(1);
     deliver(3);                        // SN 2 lost in transit
-    CHECK(cap.calls == 2, "SN 1 and SN 3 are delivered");
+    CHECK(cap.calls == 1, "SN 1 is delivered; SN 3 waits behind the gap");
     deliver(2);                        // repair retransmission
-    CHECK(cap.calls == 3 && cap.last_sn.to_int64() == 2,
-          "a retransmitted SN filling a gap must be delivered");
+    CHECK(cap.calls == 3 && cap.last_sn.to_int64() == 3,
+          "the repair of SN 2 is delivered, then the held SN 3");
     deliver(2);
     deliver(3);
     CHECK(cap.calls == 3, "repeats of delivered SNs must be dropped");
@@ -516,7 +516,8 @@ void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests) {
                      "§8.4.8: on_data accepts new DATA as CacheChange and ignores duplicate DATA.",
                      tc_srr_8_4_8_001});
     tests.push_back({"TC-SRR-8.4.8-002",
-                     "§8.4.12.2: a retransmitted change filling a gap below the highest received SN is delivered; repeats of delivered SNs are dropped.",
+                     "§8.4.10.4/§8.4.12.2: a retransmitted change filling a gap is delivered, then "
+                     "the change held behind it; repeats of delivered SNs are dropped.",
                      tc_srr_8_4_8_002});
     tests.push_back({"TC-SRR-8.4.8-003",
                      "§9.6.3.3: a DATA whose StatusInfo withdraws the instance is delivered as NOT_ALIVE with its key hash, even without payload; inline QoS alone otherwise is not delivered.",

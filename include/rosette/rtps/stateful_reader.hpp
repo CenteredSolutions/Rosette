@@ -13,7 +13,11 @@
  * Each matched writer has a WriterProxy (writer_proxy.hpp) recording which of
  * its changes are resolved. A RELIABLE reader delivers every change exactly
  * once, repairs included, and requests MISSING changes in ACKNACKs until DATA
- * or GAP resolves them (§8.4.12.2). A BEST_EFFORT reader delivers only
+ * or GAP resolves them (§8.4.12.2). It delivers each writer's changes in the
+ * order written (§8.4.10.4): a change that arrives while an earlier one is
+ * MISSING waits in a small held store (held_changes.hpp) until the gap
+ * closes, and the ACKNACK never acknowledges a held change before it is
+ * delivered. A BEST_EFFORT reader delivers only
  * changes newer than every change it has seen from that writer (§8.4.12.1).
  * A change that withdraws an instance (inline QoS StatusInfo DISPOSED or
  * UNREGISTERED) is delivered with its NOT_ALIVE ChangeKind even when it
@@ -72,6 +76,7 @@
 #pragma once
 
 #include "fragment_assembler.hpp"
+#include "held_changes.hpp"
 #include "history_cache.hpp"
 #include "message_builder.hpp"
 #include "message_parser.hpp"
@@ -613,6 +618,111 @@ private:
     void account_undelivered(WriterProxy& proxy, const SequenceNumber& sn) noexcept;
 
     /**
+     * @brief Records a complete change and delivers it in its writer's order, or holds it.
+     *
+     * Every DATA and every reassembled DATA_FRAG ends here. A reliable
+     * reader makes one writer's changes available in the order written: a
+     * change whose predecessors are all delivered or resolved without data
+     * (GAP, HEARTBEAT firstSN, undeliverable) is delivered at once, followed
+     * by the run of held changes it unblocks; a change that arrives while an
+     * earlier one is MISSING is held (hold_change()). A held change counts
+     * as received, so it is not requested again, but the ACKNACK's
+     * bitmapBase stays at the first MISSING change and never acknowledges
+     * it before it is delivered. A best-effort change, or one from an
+     * unmatched best-effort writer, is always next in order and is
+     * delivered at once.
+     *
+     * @param[in]     proxy  The writer's proxy; null only for a best-effort
+     *   reader's unmatched writer.
+     * @param[in,out] change The complete change; its payload is delivered,
+     *   moved into the held store, or released when the caller's change
+     *   goes out of scope.
+     *
+     * Verification:
+     * - Correct means: the consumer sees each writer's changes in ascending
+     *   sequence order, each at most once, and acknowledged changes are
+     *   exactly those delivered or resolved without data
+     *   (tests/formal/RosetteReaderDelivery.tla InOrder, NoAckPastUndelivered).
+     * - Covered by: TC-SRR-8.4.10.4-010, TC-SRR-8.4.10.4-011, TC-SRR-8.4.10.4-012.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (WriterProxy), §8.4.12.2 (reliable reader)
+     * - OMG DDS 1.4 §2.2.3.17 (DESTINATION_ORDER)
+     */
+    void accept_change(WriterProxy* proxy, CacheChange& change) noexcept;
+
+    /**
+     * @brief Holds a change that arrived behind a gap, evicting the writer's highest held one
+     *   when the store is full.
+     *
+     * When every hold slot is in use the reader frees the slot of this
+     * writer's highest held change above the arriving one; that change is
+     * withdrawn to MISSING and requested again. When the writer holds
+     * nothing higher, the arriving change itself is withdrawn. Either way
+     * the lowest changes stay, so the change that closes the gap, which
+     * needs no slot, unblocks the most (tests/formal/RosetteReaderDelivery.tla
+     * shows that dropping the arriving change instead can wedge the reader).
+     *
+     * @param[in]     proxy  The writer's proxy; `change` is recorded in it.
+     * @param[in,out] change A change above the writer's first MISSING one.
+     *
+     * Verification:
+     * - Correct means: the store never exceeds RTPS_READER_HELD_CHANGES, and
+     *   every change not held is MISSING again.
+     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-014.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (changes_from_writer)
+     */
+    void hold_change(WriterProxy& proxy, CacheChange& change) noexcept;
+
+    /**
+     * @brief Delivers, in order, every held change of `proxy`'s writer that is no longer behind a
+     * gap.
+     *
+     * Called whenever the writer's first unresolved sequence number may
+     * have moved: after a delivery, a GAP, a HEARTBEAT, or a change resolved
+     * without data.
+     *
+     * @param[in] proxy The writer whose held changes to release.
+     *
+     * Verification:
+     * - Correct means: afterwards no held change of the writer lies below
+     *   its first unresolved sequence number, and the released ones were
+     *   delivered lowest first.
+     * - Covered by: TC-SRR-8.4.10.4-011, TC-SRR-8.4.10.4-012, TC-SRR-8.4.10.4-015.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4
+     */
+    void release_held(WriterProxy& proxy) noexcept;
+
+    /**
+     * @brief Copies a DATA's serialized payload into a pool block.
+     *
+     * Takes the smallest block class that fits. When the pool is exhausted
+     * the reader evicts its own held changes of the same writer above this
+     * one, highest first, until a block frees: held changes are the blocks
+     * this reader can give back, and a lower change is worth more than a
+     * higher one, since only it can unblock delivery.
+     *
+     * @param[in]  proxy The writer's proxy; null for an unmatched best-effort writer.
+     * @param[in]  msg   The DATA, with a payload or key.
+     * @param[out] out   The block, with size set to the copied length.
+     * @return `true` when copied; `false` when no block could be had (the
+     *   change stays MISSING and is repaired later).
+     *
+     * Verification:
+     * - Correct means: a pool shortage never leaves a writer's next change
+     *   undeliverable while this reader holds a later change of that writer.
+     * - Covered by: TC-SRR-8.4.10.4-016.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4
+     */
+    bool copy_payload(WriterProxy* proxy, const ParsedData& msg, BufRef& out) noexcept;
+
+    /**
      * @brief Hands a complete, accepted change to the consumer callback.
      *
      * The reader keeps no copy: holding delivered changes would pin one
@@ -638,6 +748,9 @@ private:
     /// Fragment reassembler — §8.4.14, p. 156. Its slots come from the
     /// assembly pool the reader was constructed with.
     FragmentAssembler assembler_;
+
+    /// Changes held behind a gap until delivered in order (§8.4.10.4).
+    HeldChanges held_;
 
     uint32_t       hb_response_ms_;
     MessageBuilder builder_;

@@ -76,6 +76,29 @@ public:
     bool resolve(const SequenceNumber& sn) noexcept;
 
     /**
+     * @brief Returns a recorded `sn` above base() to unresolved.
+     *
+     * A reliable reader resolves a change it holds behind a gap
+     * (HeldChanges). When it evicts that change to make room for a lower
+     * one, the change must be requested again, so it becomes unresolved.
+     * base() never moves: a number at or below it, or outside the window,
+     * is left as it is.
+     *
+     * @param[in] sn Sequence number of an evicted, held change.
+     * @return `true` when `sn` was resolved inside the window above base()
+     *   and is now unresolved.
+     *
+     * Verification:
+     * - Correct means: only `sn` changes state, base() is unchanged, and a
+     *   later resolve(sn) records it again.
+     * - Covered by: TC-SRR-8.4.10.4-014.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (changes_from_writer)
+     */
+    bool unresolve(const SequenceNumber& sn) noexcept;
+
+    /**
      * @brief Resolves every sequence number below `first_unresolved`.
      *
      * Applies a HEARTBEAT's firstSN (the writer no longer holds anything

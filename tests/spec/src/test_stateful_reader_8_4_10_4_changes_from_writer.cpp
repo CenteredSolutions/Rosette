@@ -39,6 +39,7 @@ struct CaptureTransport : ITransport {
 struct Fixture {
     CaptureTransport tx{};
     std::map<int64_t, int> delivered{};  ///< SN -> times delivered.
+    std::vector<int64_t>   order{};      ///< SNs in the order delivered.
     Guid reader_guid{};
     Guid writer_guid{};
     Locator loc = make_udpv4_locator(0xC0A801A0u, 7411u);
@@ -61,7 +62,9 @@ struct Fixture {
     }
 
     static void on_change(const CacheChange& c, void* user) noexcept {
-        ++static_cast<Fixture*>(user)->delivered[c.sequenceNumber.to_int64()];
+        Fixture* self = static_cast<Fixture*>(user);
+        ++self->delivered[c.sequenceNumber.to_int64()];
+        self->order.push_back(c.sequenceNumber.to_int64());
     }
 
     ParseContext ctx() const {
@@ -122,6 +125,41 @@ struct Fixture {
         return set_bits == expected_bits;
     }
 
+    /// Answers HEARTBEAT(1, last) and delivers what each ACKNACK requests
+    /// until nothing is missing; false when that takes more than `rounds`.
+    bool repair_until_complete(int64_t last, int rounds) {
+        ParsedAckNack ack{};
+        for (int round = 0; round < rounds; ++round) {
+            heartbeat(1, last);
+            if (!last_acknack(ack)) {
+                return false;
+            }
+
+            if (ack.readerSNState.empty()) {
+                return true;
+            }
+
+            for (uint32_t i = 0; i < ack.readerSNState.numBits; ++i) {
+                if (ack.readerSNState.test(i)) {
+                    deliver(ack.readerSNState.bitmapBase.to_int64() + i);
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// True when the changes were delivered in strictly ascending order.
+    bool in_order() const {
+        for (size_t i = 1; i < order.size(); ++i) {
+            if (!(order[i - 1] < order[i])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     bool each_delivered_once(int64_t first, int64_t last) const {
         for (int64_t sn = first; sn <= last; ++sn) {
             auto it = delivered.find(sn);
@@ -135,44 +173,47 @@ struct Fixture {
 
 // §8.4.10.4, §8.4.12.2: a change lost in transit stays MISSING however many
 // later changes arrive before the writer's next HEARTBEAT; the ACKNACK
-// requests it and its repair is delivered.
+// requests it, together with the later changes the reader had no room to
+// hold, and every change is delivered once, in order.
 static bool tc_srr_8_4_10_001(std::string& err) {
+    constexpr int64_t kHeld = HeldChanges::kCapacity;
+    constexpr int64_t kLast = 2 + kHeld + 5;
     Fixture f{};
     f.deliver(1);
-    f.deliver_range(3, 11);  // SN 2 lost; nine later changes arrive
-    f.heartbeat(1, 11);
+    f.deliver_range(3, kLast);  // SN 2 lost; more later changes than the reader holds
+    f.heartbeat(1, kLast);
     ParsedAckNack ack{};
     CHECK(f.last_acknack(ack), "HEARTBEAT is answered");
-    CHECK(!ack.finalFlag && Fixture::requests_exactly(ack, {2}),
-          "the lost SN 2 is still requested after nine later changes");
+    CHECK(!ack.finalFlag && ack.readerSNState.bitmapBase == SequenceNumber::from_int64(2)
+              && Fixture::requests_exactly(
+                  ack, {2, 3 + kHeld, 4 + kHeld, 5 + kHeld, 6 + kHeld, 7 + kHeld}),
+          "the lost SN 2 and the changes past the held ones are requested; nothing past 1 is "
+          "acknowledged");
     f.deliver(2);
-    CHECK(f.each_delivered_once(1, 11), "the repair of SN 2 is delivered; every change exactly once");
+    CHECK(f.each_delivered_once(1, 2 + kHeld), "the repair of SN 2 releases the held changes");
+    CHECK(f.repair_until_complete(kLast, 2), "the rest is repaired");
+    CHECK(f.each_delivered_once(1, kLast) && f.in_order(), "every change once, in order");
     return true;
 }
 
 // §8.4.10.4, §8.4.12.2: changes too far past a hole to be recorded are not
 // delivered on arrival; they are requested once the hole closes and each
-// change is delivered exactly once in the end.
+// change is delivered exactly once, in order, in the end.
 static bool tc_srr_8_4_10_002(std::string& err) {
     Fixture f{};
     f.deliver(1);
     f.deliver_range(3, 80);  // SN 2 lost; 78 later changes arrive
     f.heartbeat(1, 80);
     ParsedAckNack ack{};
-    CHECK(f.last_acknack(ack) && Fixture::requests_exactly(ack, {2}),
-          "the ACKNACK requests the hole at SN 2");
+    CHECK(f.last_acknack(ack) && ack.readerSNState.bitmapBase == SequenceNumber::from_int64(2)
+              && ack.readerSNState.test(0u),
+          "the ACKNACK requests the hole at SN 2 first");
     f.deliver(2);
-    f.heartbeat(1, 80);
-    CHECK(f.last_acknack(ack), "the second HEARTBEAT is answered");
-    for (int64_t sn = 3; sn <= 80; ++sn) {
-        const int64_t off = sn - ack.readerSNState.bitmapBase.to_int64();
-        if (off >= 0 && ack.readerSNState.test(static_cast<uint32_t>(off))) f.deliver(sn);
-    }
-    f.heartbeat(1, 80);
-    CHECK(f.last_acknack(ack) && ack.readerSNState.empty() && ack.finalFlag &&
-          ack.readerSNState.bitmapBase == SequenceNumber::from_int64(81),
-          "after the repairs nothing is missing: a pure ACK of 1-80");
-    CHECK(f.each_delivered_once(1, 80), "every change 1-80 is delivered exactly once");
+    CHECK(f.repair_until_complete(80, 4), "after the repairs nothing is missing");
+    CHECK(f.last_acknack(ack) && ack.finalFlag
+              && ack.readerSNState.bitmapBase == SequenceNumber::from_int64(81),
+          "a pure ACK of 1-80");
+    CHECK(f.each_delivered_once(1, 80) && f.in_order(), "every change 1-80 once, in order");
     return true;
 }
 

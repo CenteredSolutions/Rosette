@@ -170,6 +170,28 @@ public:
     void received_change_set(const SequenceNumber& sn) noexcept;
 
     /**
+     * @brief Returns a received change the reader evicted to MISSING.
+     *
+     * A reader that holds changes behind a gap (HeldChanges) evicts its
+     * highest held change when it runs out of room; that change was
+     * received but never delivered, so it is requested again. Never applied
+     * to a change at or below available_changes_max(): those are delivered.
+     *
+     * @param[in] sn Sequence number of the evicted change.
+     *
+     * Verification:
+     * - Correct means: `sn` is MISSING again and the next ACKNACK names it,
+     *   and available_changes_max() is unchanged.
+     * - Covered by: TC-SRR-8.4.10.4-014.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (changes_from_writer: RECEIVED to MISSING)
+     */
+    void received_change_withdraw(const SequenceNumber& sn) noexcept {
+        (void)changes_.unresolve(sn);
+    }
+
+    /**
      * @brief Records the changes a GAP declares irrelevant.
      *
      * A writer sends GAP for changes it will never deliver to this reader:
