@@ -35,7 +35,10 @@
  *   fragment does not, so repeated traffic cannot postpone the repair. When
  *   the deadline passes, the reader
  *   asks for the missing fragments with a NACK_FRAG instead of waiting for
- *   the writer's next HEARTBEAT (take_due_repair()). The wait doubles after
+ *   the writer's next HEARTBEAT (take_due_repair()). A NACK_FRAG the reader
+ *   sends in answer to a HEARTBEAT_FRAG or with an ACKNACK counts the same
+ *   (repair_requested()), so a resend already asked for is not asked for
+ *   twice. The wait doubles after
  *   each NACK_FRAG, up to RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times, and stays
  *   doubled when a fragment then arrives: a lost repair is asked for again
  *   quickly, while a writer that paces its fragments further apart than the
@@ -334,10 +337,13 @@ static_assert(RTPS_ASSEMBLY_SLOTS_PER_READER >= 1u
 #endif
 
 /// NACK_FRAG rounds a reader sends for a partial sample while no new fragment
-/// arrives in answer. Each newly stored fragment restores them; a duplicate
-/// or rejected one does not. Once they are
-/// spent the sample waits for the writer's HEARTBEAT, so a writer that no
-/// longer holds the sample is not asked for it indefinitely.
+/// arrives in answer, counting those sent in answer to a HEARTBEAT_FRAG or
+/// alongside an ACKNACK. Each newly stored fragment restores them; a
+/// duplicate or rejected one does not. Once they are spent the sample waits
+/// for the writer's HEARTBEAT, so a writer that no longer holds the sample is
+/// not asked for it indefinitely. The slot is freed independently of the
+/// rounds: as soon as the sample arrives whole, a GAP covers it, or a
+/// HEARTBEAT's firstSN passes it (StatefulReader).
 #ifndef RTPS_FRAGMENT_REPAIR_ROUNDS
 #  define RTPS_FRAGMENT_REPAIR_ROUNDS 4u
 #endif
@@ -593,6 +599,42 @@ public:
     /// @brief Drops every partial sample from `writer_guid`; called when the writer unmatches.
     void discard_writer(const Guid& writer_guid) noexcept;
 
+    /**
+     * @brief Drops every partial sample from `writer_guid` whose sequence number `unwanted` names.
+     *
+     * The reader calls this after a HEARTBEAT moves the writer proxy's state,
+     * so a sample the proxy no longer counts as new (one whose SN fell below
+     * the writer's firstSN and is now lost) frees its slot and buffer at
+     * once. That reclaim does not depend on the sample's repair rounds: a
+     * sample whose rounds are spent holds no repair deadline, so no timer
+     * pass would ever look at it again.
+     *
+     * @param[in] writer_guid Writer whose partial samples are examined.
+     * @param[in] unwanted    Callable `bool(const SequenceNumber&) noexcept`, true for an SN the
+     *   reader no longer wants; called once per partial sample of `writer_guid` this assembler
+     *   holds, and must not touch the assembler.
+     *
+     * Verification:
+     * - Correct means: after the call this assembler holds no sample of
+     *   `writer_guid` for which `unwanted` is true, and every other slot,
+     *   including other readers' slots in a shared pool, is unchanged.
+     * - Covered by: TC-SRR-8.4.12-010 (HEARTBEAT firstSN, before and after
+     *   the rounds are spent).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (lost changes), §8.4.14
+     */
+    template <typename Unwanted>
+    void discard_if(const Guid& writer_guid, Unwanted&& unwanted) noexcept {
+        for (uint16_t i = 0; i < pool_.capacity_; ++i) {
+            FragmentedChange& change = pool_.slots_[i].change;
+            if (change.is_active() && pool_.slots_[i].owner == this
+                && change.writerGuid == writer_guid && unwanted(change.sequenceNumber)) {
+                change.clear();
+            }
+        }
+    }
+
     /// @brief Slots this assembler holds.
     uint16_t active_count() const noexcept;
 
@@ -630,6 +672,36 @@ public:
      */
     void schedule_repair(const Guid& writer_guid, const SequenceNumber& writer_sn, uint32_t now_ms,
                          uint32_t delay_ms, uint8_t rounds) noexcept;
+
+    /**
+     * @brief Records a NACK_FRAG for a partial sample that the reader sent outside the timer pass.
+     *
+     * The reader also asks for a sample's fragments in answer to a
+     * HEARTBEAT_FRAG and alongside an ACKNACK. Such a request is a repair
+     * round like one take_due_repair() hands out: it spends a round, doubles
+     * the wait, and sets the next deadline that wait after `now_ms`. Without
+     * this, the timer would ask again for the same fragments while the
+     * writer's resend is still in flight, doubling the resend burst that a
+     * small receive buffer already failed to hold. A sample with no rounds
+     * left, including every sample of a best-effort reader, is unchanged.
+     *
+     * @param[in] writer_guid Writer of the sample.
+     * @param[in] writer_sn   Sequence number of the sample.
+     * @param[in] now_ms      Monotonic time, in milliseconds, at which the NACK_FRAG was sent.
+     * @param[in] delay_ms    The undoubled wait, as passed to schedule_repair().
+     *
+     * Verification:
+     * - Correct means: for a held sample with rounds left, the rounds drop
+     *   by one, the doublings rise by one up to
+     *   RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS, and the deadline is `now_ms`
+     *   plus the doubled wait; every other slot is unchanged.
+     * - Covered by: TC-SRR-8.4.12-011.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.12 (NACK_FRAG), §8.3.7.4 (HEARTBEAT_FRAG)
+     */
+    void repair_requested(const Guid& writer_guid, const SequenceNumber& writer_sn, uint32_t now_ms,
+                          uint32_t delay_ms) noexcept;
 
     /**
      * @brief Hands out one partial sample whose repair deadline has passed, and spends a round.
@@ -689,6 +761,11 @@ public:
 private:
     /// @brief This assembler's slot for (wg, sn), or null.
     AssemblySlot* find_slot(const Guid& wg, const SequenceNumber& sn) const noexcept;
+
+    /// @brief Spends one of `slot`'s repair rounds: doubles its wait, up to
+    /// RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times, and sets its next deadline
+    /// that wait after `now_ms`. The slot must have a round left.
+    static void spend_repair_round(AssemblySlot& slot, uint32_t now_ms, uint32_t delay_ms) noexcept;
 
     /**
      * @brief Chooses the slot a new sample (`wg`, `sn`) goes into, without emptying it.

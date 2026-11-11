@@ -11,8 +11,10 @@
  * sends a NACK_FRAG for the missing fragments on its own, for a bounded
  * number of rounds, doubling the wait after each one. Only a fragment the
  * change lacked counts as progress: duplicates and rejected fragments
- * neither postpone a request nor restore spent rounds. A change received
- * whole, or declared irrelevant by a HEARTBEAT or GAP, is requested no more.
+ * neither postpone a request nor restore spent rounds. A NACK_FRAG answering
+ * a HEARTBEAT_FRAG, or carried with an ACKNACK, counts as a round. A change
+ * received whole, or declared irrelevant by a HEARTBEAT or GAP, is requested
+ * no more and frees its slot at once, whether or not its rounds are spent.
  *
  * Requirement: REQ-SRR-8.4.12-NACKFRAG-ON-QUIET (stateful_reader.matrix.json).
  */
@@ -341,9 +343,10 @@ static bool tc_srr_8_4_12_009(std::string& err) {
 /// How a partial change stops being wanted before its repair deadline.
 enum class Superseded { kWholeData, kHeartbeat, kGap };
 
-/// Runs one TC-SRR-8.4.12-010 case: fragment 1 of SN 1 arrives, `how` makes
-/// SN 1 unwanted, and the deadline passes.
-static bool superseded_partial_case(Superseded how, std::string& err) {
+/// Runs one TC-SRR-8.4.12-010 case: fragment 1 of SN 1 arrives, its repair
+/// rounds are spent when `rounds_spent` is set, `how` makes SN 1 unwanted, and
+/// the slot must be free at once and stay unrequested.
+static bool superseded_partial_case(Superseded how, bool rounds_spent, std::string& err) {
     CaptureTransport                 tx{};
     ProxyPoolStorage<WriterProxy, 1> proxies;
     FragmentAssemblyPoolStorage<1>   assembly;
@@ -358,7 +361,24 @@ static bool superseded_partial_case(Superseded how, std::string& err) {
     deliver_fragment(r, reader, writer, 1, 1u);
     CHECK(assembly.active_count() == 1u, "the partial change holds the slot");
 
-    g_stateful_reader_test_now_ms = 1u;
+    uint32_t now = 1u;
+    if (rounds_spent) {
+        uint32_t due = 0u;
+        for (uint32_t round = 0u; round < RTPS_FRAGMENT_REPAIR_ROUNDS; ++round) {
+            const uint32_t doublings = round < RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS
+                                           ? round
+                                           : RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS;
+            due += RTPS_FRAGMENT_REPAIR_DELAY_MS << doublings;
+            r.tick(due);
+        }
+
+        CHECK(count_nack_frags(tx) == RTPS_FRAGMENT_REPAIR_ROUNDS, "every round is spent");
+        CHECK(r.ms_until_next_timer(due + 1u) == UINT32_MAX, "and no deadline remains");
+        CHECK(assembly.active_count() == 1u, "the stalled change still holds the slot");
+        now = due + 1u;
+    }
+
+    g_stateful_reader_test_now_ms = now;
     if (how == Superseded::kWholeData) {
         static const Octet payload[5] = {0x00u, 0x01u, 0x00u, 0x00u, 0x42u};
         ParsedData         data{};
@@ -385,37 +405,95 @@ static bool superseded_partial_case(Superseded how, std::string& err) {
         gap.gapList.clear();
         gap.gapList.bitmapBase = SequenceNumber::from_int64(2);
         r.on_gap(from(writer), gap);
-        CHECK(assembly.active_count() == 0u, "a GAP frees the slot at once");
     }
 
+    CHECK(assembly.active_count() == 0u, "the slot is freed when the change stops being wanted");
     tx.unicast_msgs.clear();
-    r.tick(RTPS_FRAGMENT_REPAIR_DELAY_MS << RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS);
+    r.tick(now + (RTPS_FRAGMENT_REPAIR_DELAY_MS << RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS));
     CHECK(count_nack_frags(tx) == 0u, "no NACK_FRAG asks for the unwanted change");
-    CHECK(assembly.active_count() == 0u, "and its slot is free");
-    r.tick(10u * (RTPS_FRAGMENT_REPAIR_DELAY_MS << RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS));
+    CHECK(assembly.active_count() == 0u, "and its slot stays free");
+    r.tick(now + 10u * (RTPS_FRAGMENT_REPAIR_DELAY_MS << RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS));
     CHECK(count_nack_frags(tx) == 0u, "nor any later one");
     return true;
 }
 
 // §8.4.12, §8.4.10.4: a partial change received whole as a DATA, made lost by
-// a HEARTBEAT's firstSN, or declared irrelevant by a GAP before its deadline
-// is not requested, and the slot it held is freed.
+// a HEARTBEAT's firstSN, or declared irrelevant by a GAP is not requested,
+// and the slot it held is freed at once: before its deadline, and equally
+// after every repair round is spent, when no timer pass looks at it again.
 static bool tc_srr_8_4_12_010(std::string& err) {
-    if (!superseded_partial_case(Superseded::kWholeData, err)) {
-        err = "whole DATA: " + err;
-        return false;
+    static const struct {
+        Superseded  how;
+        const char* name;
+    } kCases[] = {{Superseded::kWholeData, "whole DATA"},
+                  {Superseded::kHeartbeat, "HEARTBEAT firstSN"},
+                  {Superseded::kGap, "GAP"}};
+
+    for (const auto& c : kCases) {
+        for (const bool rounds_spent : {false, true}) {
+            if (!superseded_partial_case(c.how, rounds_spent, err)) {
+                err = std::string(c.name) + (rounds_spent ? ", rounds spent: " : ": ") + err;
+                return false;
+            }
+        }
     }
 
-    if (!superseded_partial_case(Superseded::kHeartbeat, err)) {
-        err = "HEARTBEAT firstSN: " + err;
-        return false;
-    }
+    return true;
+}
 
-    if (!superseded_partial_case(Superseded::kGap, err)) {
-        err = "GAP: " + err;
-        return false;
-    }
+// §8.4.12, §8.3.7.4: a NACK_FRAG sent in answer to a HEARTBEAT_FRAG, or with
+// an ACKNACK, is a repair round: the quiet-period timer waits the doubled
+// period for its answer instead of asking for the same fragments again.
+static bool tc_srr_8_4_12_011(std::string& err) {
+    constexpr uint32_t kDelay = RTPS_FRAGMENT_REPAIR_DELAY_MS;
+    const Guid         writer = make_guid(0x7Au, make_entity(4u, 5u, 6u, 0x03u));
 
+    CaptureTransport      tx{};
+    const Guid            reader = make_guid(0x79u, make_entity(1u, 2u, 3u, 0x04u));
+    DefaultStatefulReader r(reader, ReliabilityKind::RELIABLE, tx);
+    CHECK(r.matched_writer_add(writer, &kLoc, 1u), "match");
+    g_stateful_reader_test_now_ms = 0u;
+    deliver_fragment(r, reader, writer, 1, 1u);
+    tx.unicast_msgs.clear();
+
+    const uint32_t      asked = kDelay / 2u;
+    ParsedHeartbeatFrag hbf{};
+    hbf.readerId = reader.entityId;
+    hbf.writerId = writer.entityId;
+    hbf.writerSN = SequenceNumber::from_int64(1);
+    hbf.lastFragmentNum = 3u;
+    hbf.count = 1;
+    g_stateful_reader_test_now_ms = asked;
+    r.on_heartbeat_frag(from(writer), hbf);
+    CHECK(count_nack_frags(tx) == 1u, "the HEARTBEAT_FRAG is answered by a NACK_FRAG");
+    CHECK(r.ms_until_next_timer(asked) == 2u * kDelay, "which pushes the deadline a doubled wait");
+    r.tick(kDelay);
+    CHECK(count_nack_frags(tx) == 1u, "so the first deadline sends no second NACK_FRAG");
+    r.tick(asked + 2u * kDelay);
+    CHECK(count_nack_frags(tx) == 2u, "the timer asks once the doubled wait passes");
+
+    CaptureTransport      ack_tx{};
+    const Guid            ack_reader = make_guid(0x7Bu, make_entity(1u, 2u, 3u, 0x04u));
+    DefaultStatefulReader a(ack_reader, ReliabilityKind::RELIABLE, ack_tx);
+    a.heartbeat_response_delay(0u);
+    CHECK(a.matched_writer_add(writer, &kLoc, 1u), "ACKNACK reader match");
+    g_stateful_reader_test_now_ms = 0u;
+    deliver_fragment(a, ack_reader, writer, 1, 1u);
+    ack_tx.unicast_msgs.clear();
+
+    ParsedHeartbeat hb{};
+    hb.readerId = ack_reader.entityId;
+    hb.writerId = writer.entityId;
+    hb.firstSN = SequenceNumber::from_int64(1);
+    hb.lastSN = SequenceNumber::from_int64(1);
+    hb.count = 1;
+    g_stateful_reader_test_now_ms = asked;
+    a.on_heartbeat(from(writer), hb);
+    CHECK(count_nack_frags(ack_tx) == 1u, "the ACKNACK carries the change's NACK_FRAG");
+    CHECK(a.ms_until_next_timer(asked) == 2u * kDelay,
+          "which pushes the deadline a doubled wait too");
+    a.tick(kDelay);
+    CHECK(count_nack_frags(ack_tx) == 1u, "so the first deadline sends no second NACK_FRAG");
     return true;
 }
 
@@ -443,8 +521,14 @@ void append_stateful_reader_tests_8_4_12_nack_frag_on_quiet(std::vector<TestCase
                      tc_srr_8_4_12_009});
     tests.push_back({"TC-SRR-8.4.12-010",
                      "§8.4.12/§8.4.10.4: a partial change received whole, lost to a HEARTBEAT, "
-                     "or GAPped before its deadline is not requested and its slot is freed.",
+                     "or GAPped is not requested and its slot is freed at once, with or without "
+                     "repair rounds left.",
                      tc_srr_8_4_12_010});
+    tests.push_back({"TC-SRR-8.4.12-011",
+                     "§8.4.12/§8.3.7.4: a NACK_FRAG answering a HEARTBEAT_FRAG or carried with "
+                     "an ACKNACK is a repair round; the timer does not repeat it before the "
+                     "doubled wait.",
+                     tc_srr_8_4_12_011});
 }
 
 }  // namespace spec_test
