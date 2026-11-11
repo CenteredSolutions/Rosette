@@ -181,61 +181,51 @@ uint16_t FragmentAssembler::active_count() const noexcept {
 }
 
 void FragmentAssembler::schedule_repair(const Guid& writer_guid, const SequenceNumber& writer_sn,
-                                        uint32_t now_ms, uint32_t delay_ms,
-                                        uint8_t rounds) noexcept {
+                                        uint32_t now_ms) noexcept {
     AssemblySlot* slot = find_slot(writer_guid, writer_sn);
     if (slot != nullptr) {
-        slot->repairDueMs = now_ms + (delay_ms << slot->repairDoublings);
-        slot->repairsLeft = rounds;
-        repairs_pending_ = repairs_pending_ || rounds != 0u;
+        slot->repairDueMs = now_ms + (RTPS_FRAGMENT_REPAIR_DELAY_MS << slot->repairDoublings);
+        slot->repairsLeft = static_cast<uint8_t>(RTPS_FRAGMENT_REPAIR_ROUNDS);
+        repairs_pending_ = repairs_pending_ || slot->repairsLeft != 0u;
     }
 }
 
-void FragmentAssembler::spend_repair_round(AssemblySlot& slot, uint32_t now_ms,
-                                           uint32_t delay_ms) noexcept {
+bool FragmentAssembler::repair_due(const AssemblySlot& slot, uint32_t now_ms) noexcept {
+    return ms_until(slot.repairDueMs, now_ms) == 0u;
+}
+
+void FragmentAssembler::spend_repair_round(AssemblySlot& slot, uint32_t now_ms) noexcept {
     --slot.repairsLeft;
     if (slot.repairDoublings < RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS) {
         ++slot.repairDoublings;
     }
 
-    slot.repairDueMs = now_ms + (delay_ms << slot.repairDoublings);
+    slot.repairDueMs = now_ms + (RTPS_FRAGMENT_REPAIR_DELAY_MS << slot.repairDoublings);
+}
+
+void FragmentAssembler::settle_repair(AssemblySlot& slot, uint32_t now_ms,
+                                      RepairOutcome outcome) noexcept {
+    switch (outcome) {
+        case RepairOutcome::kSent:
+            spend_repair_round(slot, now_ms);
+            break;
+        case RepairOutcome::kNotSent:
+            // Nothing reached the writer, so the round and the wait stand; the
+            // deadline still moves, so the driver sleeps before the next try.
+            slot.repairDueMs = now_ms + (RTPS_FRAGMENT_REPAIR_DELAY_MS << slot.repairDoublings);
+            break;
+        case RepairOutcome::kUnwanted:
+            slot.change.clear();
+            break;
+    }
 }
 
 void FragmentAssembler::repair_requested(const Guid& writer_guid, const SequenceNumber& writer_sn,
-                                         uint32_t now_ms, uint32_t delay_ms) noexcept {
+                                         uint32_t now_ms) noexcept {
     AssemblySlot* slot = find_slot(writer_guid, writer_sn);
     if (slot != nullptr && slot->repairsLeft != 0u) {
-        spend_repair_round(*slot, now_ms, delay_ms);
+        spend_repair_round(*slot, now_ms);
     }
-}
-
-bool FragmentAssembler::take_due_repair(uint32_t now_ms, uint32_t delay_ms, Guid& writer,
-                                        SequenceNumber& sn, FragmentNumberSet& missing) noexcept {
-    if (!repairs_pending_) {
-        return false;
-    }
-
-    bool pending = false;
-    for (uint16_t i = 0; i < pool_.capacity_; ++i) {
-        AssemblySlot& slot = pool_.slots_[i];
-        if (!slot.change.is_active() || slot.owner != this || slot.repairsLeft == 0u) {
-            continue;
-        }
-
-        pending = true;
-        if (ms_until(slot.repairDueMs, now_ms) != 0u) {
-            continue;
-        }
-
-        spend_repair_round(slot, now_ms, delay_ms);
-        writer = slot.change.writerGuid;
-        sn = slot.change.sequenceNumber;
-        slot.change.missing_fragments(UINT32_MAX, missing);
-        return true;
-    }
-
-    repairs_pending_ = pending;
-    return false;
 }
 
 uint32_t FragmentAssembler::ms_until_repair_due(uint32_t now_ms) const noexcept {

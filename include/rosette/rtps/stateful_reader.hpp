@@ -486,7 +486,9 @@ private:
      * and a new sample starts again at the first wait. A NACK_FRAG sent in
      * answer to a HEARTBEAT_FRAG or alongside an ACKNACK spends a round and
      * pushes the deadline out the same way, so the writer is not asked
-     * twice for one resend. A sample the reader has received whole, or that
+     * twice for one resend. Only a NACK_FRAG that went out counts: one that
+     * could not be built or sent is tried again after the same wait, with
+     * its rounds intact. A sample the reader has received whole, or that
      * a GAP or HEARTBEAT declared irrelevant, is discarded when that
      * happens (on_data(), on_gap(), on_heartbeat()), with or without rounds
      * left; this pass discards one it finds unwanted all the same.
@@ -502,11 +504,12 @@ private:
      *   RTPS_FRAGMENT_REPAIR_ROUNDS; a fragment arriving after a request
      *   restarts the current wait, not the first; a NACK_FRAG sent for a
      *   HEARTBEAT_FRAG or with an ACKNACK delays the next timer request by
-     *   the doubled wait; a best-effort reader never sends one; a sample
-     *   received whole, or declared irrelevant by a HEARTBEAT or GAP, is
-     *   requested no more and its slot is freed at once, even after its
-     *   rounds are spent.
-     * - Covered by: TC-SRR-8.4.12-005…011.
+     *   the doubled wait; a request the transport refuses spends no round
+     *   and is retried one current wait later; a best-effort reader never
+     *   sends one; a sample received whole, or declared irrelevant by a
+     *   HEARTBEAT or GAP, is requested no more and its slot is freed at
+     *   once, even after its rounds are spent.
+     * - Covered by: TC-SRR-8.4.12-005…012.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.12 (reader may send NACK_FRAG for missing

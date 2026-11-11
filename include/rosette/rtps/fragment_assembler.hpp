@@ -35,7 +35,7 @@
  *   fragment does not, so repeated traffic cannot postpone the repair. When
  *   the deadline passes, the reader
  *   asks for the missing fragments with a NACK_FRAG instead of waiting for
- *   the writer's next HEARTBEAT (take_due_repair()). A NACK_FRAG the reader
+ *   the writer's next HEARTBEAT (run_due_repairs()). A NACK_FRAG the reader
  *   sends in answer to a HEARTBEAT_FRAG or with an ACKNACK counts the same
  *   (repair_requested()), so a resend already asked for is not asked for
  *   twice. The wait doubles after
@@ -641,45 +641,45 @@ public:
     /**
      * @brief Sets when the reader asks for a partial sample's missing fragments unprompted.
      *
-     * The reader calls this after every submessage that stores a fragment
-     * the sample lacked and leaves it incomplete, so the deadline is reached
-     * only once the writer's burst has stopped making progress. A duplicate
-     * or rejected fragment does not count: a repeated resend of fragments
-     * already held, or a stream of malformed ones, must not hold the
-     * NACK_FRAG for the fragments still missing back indefinitely. The wait
-     * is `delay_ms` doubled once per NACK_FRAG already sent for the sample
-     * (repairDoublings), so a writer that answered a NACK_FRAG, or paces its
-     * fragments, is not asked again sooner than the last wait. It restores
-     * the sample's rounds, since a new fragment shows the writer is still
-     * answering. A sample this assembler does not hold, because it was
-     * refused or has completed, is left alone.
+     * The reader calls this, for a reliable writer, after every submessage
+     * that stores a fragment the sample lacked and leaves it incomplete, so
+     * the deadline is reached only once the writer's burst has stopped
+     * making progress. A duplicate or rejected fragment does not count: a
+     * repeated resend of fragments already held, or a stream of malformed
+     * ones, must not hold the NACK_FRAG for the fragments still missing back
+     * indefinitely. The wait is RTPS_FRAGMENT_REPAIR_DELAY_MS doubled once
+     * per NACK_FRAG already sent for the sample (repairDoublings), so a
+     * writer that answered a NACK_FRAG, or paces its fragments, is not asked
+     * again sooner than the last wait. It restores the sample's
+     * RTPS_FRAGMENT_REPAIR_ROUNDS rounds, since a new fragment shows the
+     * writer is still answering. A sample this assembler does not hold,
+     * because it was refused or has completed, is left alone.
      *
      * @param[in] writer_guid Writer of the sample.
      * @param[in] writer_sn   Sequence number of the sample.
      * @param[in] now_ms      Monotonic time, in milliseconds, of the arriving fragment.
-     * @param[in] delay_ms    Wait before the first NACK_FRAG, in milliseconds.
-     * @param[in] rounds      NACK_FRAG rounds allowed; 0 disables unprompted repair.
      *
      * Verification:
-     * - Correct means: a held sample's deadline is `now_ms` plus `delay_ms`
-     *   doubled repairDoublings times, its rounds are `rounds`, and its
-     *   doublings are unchanged; no other slot changes.
+     * - Correct means: a held sample's deadline is `now_ms` plus
+     *   RTPS_FRAGMENT_REPAIR_DELAY_MS doubled repairDoublings times, its
+     *   rounds are RTPS_FRAGMENT_REPAIR_ROUNDS, and its doublings are
+     *   unchanged; no other slot changes.
      * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-007, TC-SRR-8.4.12-008,
      *   TC-SRR-8.4.12-009.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.12 (NACK_FRAG), §8.4.14
      */
-    void schedule_repair(const Guid& writer_guid, const SequenceNumber& writer_sn, uint32_t now_ms,
-                         uint32_t delay_ms, uint8_t rounds) noexcept;
+    void schedule_repair(const Guid& writer_guid, const SequenceNumber& writer_sn,
+                         uint32_t now_ms) noexcept;
 
     /**
      * @brief Records a NACK_FRAG for a partial sample that the reader sent outside the timer pass.
      *
      * The reader also asks for a sample's fragments in answer to a
      * HEARTBEAT_FRAG and alongside an ACKNACK. Such a request is a repair
-     * round like one take_due_repair() hands out: it spends a round, doubles
-     * the wait, and sets the next deadline that wait after `now_ms`. Without
+     * round like one run_due_repairs() sends: it spends a round, doubles the
+     * wait, and sets the next deadline that wait after `now_ms`. Without
      * this, the timer would ask again for the same fragments while the
      * writer's resend is still in flight, doubling the resend burst that a
      * small receive buffer already failed to hold. A sample with no rounds
@@ -688,7 +688,6 @@ public:
      * @param[in] writer_guid Writer of the sample.
      * @param[in] writer_sn   Sequence number of the sample.
      * @param[in] now_ms      Monotonic time, in milliseconds, at which the NACK_FRAG was sent.
-     * @param[in] delay_ms    The undoubled wait, as passed to schedule_repair().
      *
      * Verification:
      * - Correct means: for a held sample with rounds left, the rounds drop
@@ -700,41 +699,76 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.12 (NACK_FRAG), §8.3.7.4 (HEARTBEAT_FRAG)
      */
-    void repair_requested(const Guid& writer_guid, const SequenceNumber& writer_sn, uint32_t now_ms,
-                          uint32_t delay_ms) noexcept;
+    void repair_requested(const Guid& writer_guid, const SequenceNumber& writer_sn,
+                          uint32_t now_ms) noexcept;
+
+    /// @brief What became of a due repair that run_due_repairs() handed to the reader.
+    enum class RepairOutcome : uint8_t {
+        kSent,      ///< A NACK_FRAG went out: the sample spends a round and its wait doubles.
+        kNotSent,   ///< None went out: the sample is asked for again after its current wait.
+        kUnwanted,  ///< The reader no longer wants the sample: its slot is freed.
+    };
 
     /**
-     * @brief Hands out one partial sample whose repair deadline has passed, and spends a round.
+     * @brief Hands every partial sample whose repair deadline has passed to `request`, once.
      *
-     * The reader's timer pass calls this until it returns false and sends a
-     * NACK_FRAG for each sample it returns. Each call spends one of the
-     * sample's rounds, doubles its wait (up to
-     * RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times), and sets its next deadline
-     * that wait after `now_ms`, so a NACK_FRAG or a repair lost on the way
-     * is asked for again, later each time. Like ms_until_repair_due(), it
-     * reads the shared pool only while repairs_pending_ is set.
+     * The reader's timer pass calls this to send the quiet-period
+     * NACK_FRAGs. For each of this assembler's samples that has rounds left
+     * and whose deadline has passed, `request` receives the sample's writer,
+     * sequence number, and missing fragments, and says what it did. A round
+     * is spent only for kSent, so a NACK_FRAG that could not be built or
+     * sent (buffer pool exhausted, no locator, transport refused it) does
+     * not use up the sample's rounds or double its wait. kNotSent instead
+     * sets the deadline one current wait ahead: the deadline must move, or
+     * the driver, seeing a deadline already due, would call tick() without
+     * sleeping until a send succeeded, which for a writer with no valid
+     * locator is never. kUnwanted frees the slot. The pool is scanned once,
+     * and not at all while repairs_pending_ is clear.
      *
-     * @param[in]  now_ms   Monotonic time, in milliseconds.
-     * @param[in]  delay_ms The undoubled wait, as passed to schedule_repair().
-     * @param[out] writer   Writer of the returned sample.
-     * @param[out] sn       Sequence number of the returned sample.
-     * @param[out] missing  The sample's missing fragments, ready for a NACK_FRAG.
-     * @return true when a sample was due and the outputs describe it; false
-     *   when none is, and the outputs are untouched.
+     * @param[in] now_ms  Monotonic time, in milliseconds.
+     * @param[in] request Callable `RepairOutcome(const Guid& writer, const SequenceNumber& sn,
+     *   const FragmentNumberSet& missing) noexcept`, called once per due sample; it must not
+     *   call into this assembler.
      *
      * Verification:
-     * - Correct means: a sample is returned at most once per call to
-     *   schedule_repair() plus once per retry, never before its deadline,
-     *   and never after its rounds are spent; successive unanswered rounds
-     *   are `delay_ms` × 2, × 4, ... apart, the factor capped at
-     *   2^RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS.
-     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-006, TC-SRR-8.4.12-007.
+     * - Correct means: `request` is called once per due sample per pass,
+     *   never before the sample's deadline and never after its rounds are
+     *   spent; after kSent the rounds drop by one and successive waits are
+     *   RTPS_FRAGMENT_REPAIR_DELAY_MS × 2, × 4, ..., the factor capped at
+     *   2^RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS; after kNotSent the rounds and
+     *   doublings are unchanged and the deadline is one current wait ahead;
+     *   after kUnwanted the slot is free.
+     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-006, TC-SRR-8.4.12-007,
+     *   TC-SRR-8.4.12-012 (sends that fail).
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.12 (NACK_FRAG)
      */
-    bool take_due_repair(uint32_t now_ms, uint32_t delay_ms, Guid& writer, SequenceNumber& sn,
-                         FragmentNumberSet& missing) noexcept;
+    template <typename Request>
+    void run_due_repairs(uint32_t now_ms, Request&& request) noexcept {
+        if (!repairs_pending_) {
+            return;
+        }
+
+        bool              pending = false;
+        FragmentNumberSet missing{};
+        for (uint16_t i = 0; i < pool_.capacity_; ++i) {
+            AssemblySlot& slot = pool_.slots_[i];
+            if (!slot.change.is_active() || slot.owner != this || slot.repairsLeft == 0u) {
+                continue;
+            }
+
+            if (repair_due(slot, now_ms)) {
+                slot.change.missing_fragments(UINT32_MAX, missing);
+                settle_repair(slot, now_ms,
+                              request(slot.change.writerGuid, slot.change.sequenceNumber, missing));
+            }
+
+            pending = pending || (slot.change.is_active() && slot.repairsLeft != 0u);
+        }
+
+        repairs_pending_ = pending;
+    }
 
     /**
      * @brief Time until the earliest repair deadline of this assembler's samples.
@@ -747,7 +781,7 @@ public:
      * it finds none.
      *
      * @param[in] now_ms Monotonic time, in milliseconds.
-     * @return Milliseconds until take_due_repair() has a sample to return, 0
+     * @return Milliseconds until run_due_repairs() has a sample to hand out, 0
      *   when one is due now, or UINT32_MAX when no sample has rounds left.
      *
      * Verification:
@@ -762,10 +796,19 @@ private:
     /// @brief This assembler's slot for (wg, sn), or null.
     AssemblySlot* find_slot(const Guid& wg, const SequenceNumber& sn) const noexcept;
 
+    /// @brief Whether `slot`'s repair deadline has passed at `now_ms`.
+    static bool repair_due(const AssemblySlot& slot, uint32_t now_ms) noexcept;
+
     /// @brief Spends one of `slot`'s repair rounds: doubles its wait, up to
     /// RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times, and sets its next deadline
     /// that wait after `now_ms`. The slot must have a round left.
-    static void spend_repair_round(AssemblySlot& slot, uint32_t now_ms, uint32_t delay_ms) noexcept;
+    static void spend_repair_round(AssemblySlot& slot, uint32_t now_ms) noexcept;
+
+    /// @brief Applies the reader's `outcome` for `slot`'s due repair, as
+    /// run_due_repairs() documents: spends a round for kSent, sets the
+    /// deadline one current wait after `now_ms` for kNotSent, and frees the
+    /// slot for kUnwanted.
+    static void settle_repair(AssemblySlot& slot, uint32_t now_ms, RepairOutcome outcome) noexcept;
 
     /**
      * @brief Chooses the slot a new sample (`wg`, `sn`) goes into, without emptying it.

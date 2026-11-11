@@ -497,6 +497,63 @@ static bool tc_srr_8_4_12_011(std::string& err) {
     return true;
 }
 
+/// A transport that refuses every unicast send while `refuse` is set and captures the rest.
+struct RefusingTransport : CaptureTransport {
+    bool   refuse = true;
+    size_t refused = 0u;
+
+    bool send_unicast(const BufRef& buf, const Locator& dest) noexcept override {
+        if (refuse) {
+            ++refused;
+            return false;
+        }
+
+        return CaptureTransport::send_unicast(buf, dest);
+    }
+};
+
+// §8.4.12: a quiet-period NACK_FRAG that the transport refuses spends no
+// round and does not double the wait; it is tried again one current wait
+// later, never sooner, so the driver sleeps between tries. Once sends go
+// through, the sample still has every round, at the first wait.
+static bool tc_srr_8_4_12_012(std::string& err) {
+    constexpr uint32_t    kDelay = RTPS_FRAGMENT_REPAIR_DELAY_MS;
+    RefusingTransport     tx{};
+    const Guid            reader = make_guid(0x8Cu, make_entity(1u, 2u, 3u, 0x04u));
+    const Guid            writer = make_guid(0x9Du, make_entity(4u, 5u, 6u, 0x03u));
+    DefaultStatefulReader r(reader, ReliabilityKind::RELIABLE, tx);
+    tx.refuse = false;
+    CHECK(r.matched_writer_add(writer, &kLoc, 1u), "match");
+    tx.refuse = true;
+
+    g_stateful_reader_test_now_ms = 0u;
+    deliver_fragment(r, reader, writer, 1, 1u);
+    uint32_t now = 0u;
+    for (uint32_t attempt = 1u; attempt <= 2u * RTPS_FRAGMENT_REPAIR_ROUNDS; ++attempt) {
+        now += kDelay;
+        r.tick(now);
+        CHECK(tx.refused == attempt, "each due pass tries the NACK_FRAG once");
+        CHECK(r.ms_until_next_timer(now) == kDelay,
+              "a refused send waits the same period again, not zero and not doubled");
+    }
+
+    tx.refuse = false;
+    tx.unicast_msgs.clear();
+    uint32_t due = now;
+    for (uint32_t round = 0u; round < RTPS_FRAGMENT_REPAIR_ROUNDS; ++round) {
+        const uint32_t doublings =
+            round < RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS ? round : RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS;
+        due += kDelay << doublings;
+        r.tick(due - 1u);
+        CHECK(count_nack_frags(tx) == round, "no NACK_FRAG before the wait ends");
+        r.tick(due);
+        CHECK(count_nack_frags(tx) == round + 1u, "every round is still available");
+    }
+
+    CHECK(r.ms_until_next_timer(due + 1u) == UINT32_MAX, "and the rounds end after the last");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_12_nack_frag_on_quiet(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.12-005",
                      "§8.4.12/§8.4.14: a partial change whose fragments stop arriving is "
@@ -529,6 +586,10 @@ void append_stateful_reader_tests_8_4_12_nack_frag_on_quiet(std::vector<TestCase
                      "an ACKNACK is a repair round; the timer does not repeat it before the "
                      "doubled wait.",
                      tc_srr_8_4_12_011});
+    tests.push_back({"TC-SRR-8.4.12-012",
+                     "§8.4.12: a quiet-period NACK_FRAG the transport refuses spends no round, "
+                     "keeps its wait, and is retried one wait later.",
+                     tc_srr_8_4_12_012});
 }
 
 }  // namespace spec_test
