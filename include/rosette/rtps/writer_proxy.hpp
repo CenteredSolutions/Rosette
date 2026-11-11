@@ -355,7 +355,7 @@ public:
     }
 
     /**
-     * @brief Starts or renews the gap-repair timer after a new change from the writer.
+     * @brief Starts or renews the gap-repair timer on a new change or a HEARTBEAT.
      *
      * A writer resends a lost change only when a reader names it, and a
      * reader learns of a loss when a later change arrives. Without a request
@@ -370,6 +370,11 @@ public:
      * sending, but do not push a running deadline back, so a writer that
      * streams faster than the wait is still asked in time. With nothing
      * MISSING the timer is idle and the next gap starts at the first wait.
+     * A HEARTBEAT that shows changes MISSING starts or renews the timer the
+     * same way, which covers the tail of a burst, where no later change
+     * reveals the loss: the HEARTBEAT's own answer spends the first round,
+     * and a lost resend is requested again after the doubled wait rather
+     * than at the writer's next HEARTBEAT.
      * This is the repair a partial sample gets from
      * RTPS_FRAGMENT_REPAIR_DELAY_MS, for whole changes.
      *
@@ -380,7 +385,7 @@ public:
      *   RTPS_GAP_REPAIR_ROUNDS and the deadline is `now_ms` plus the doubled
      *   wait unless a deadline was already running, which is kept; with
      *   none the rounds and doublings are 0.
-     * - Covered by: TC-SRR-8.4.12-020, TC-SRR-8.4.12-021.
+     * - Covered by: TC-SRR-8.4.12-020, TC-SRR-8.4.12-021, TC-SRR-8.4.12-024.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.12.2 (a reader may send an ACKNACK without a

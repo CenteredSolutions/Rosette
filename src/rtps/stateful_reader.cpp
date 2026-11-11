@@ -378,6 +378,15 @@ void StatefulReader::on_heartbeat(const ParseContext&    ctx,
     // firstSN may have resolved the gap held changes wait behind.
     release_held(*proxy);
 
+    // lastSN may show changes MISSING that no later change revealed, such
+    // as the tail of a burst; if the resend this HEARTBEAT's answer asks
+    // for is lost, the timer asks again well before the next HEARTBEAT.
+    // It counts from the answer's deadline, so it never undercuts
+    // heartbeatResponseDelay; sending the answer spends its first round.
+    if (needs_acknack) {
+        proxy->schedule_gap_repair(now_ms + hb_response_ms_);
+    }
+
     RTPS_LOG_D("reader", "HEARTBEAT first=%d:%lu last=%d:%lu final=%d needs_ack=%d",
                static_cast<int>(msg.firstSN.high), static_cast<unsigned long>(msg.firstSN.low),
                static_cast<int>(msg.lastSN.high), static_cast<unsigned long>(msg.lastSN.low),

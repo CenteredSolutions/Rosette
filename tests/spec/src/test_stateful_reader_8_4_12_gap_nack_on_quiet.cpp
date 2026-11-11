@@ -200,6 +200,31 @@ static bool tc_srr_8_4_12_023(std::string& err) {
     return true;
 }
 
+// §8.4.12.2: changes a HEARTBEAT shows MISSING with no later change to
+// reveal them (the tail of a burst) are requested again after the doubled
+// wait when the writer's resend does not arrive, not at its next HEARTBEAT.
+static bool tc_srr_8_4_12_024(std::string& err) {
+    constexpr uint32_t d = RTPS_GAP_REPAIR_DELAY_MS;
+    Fixture            f{};
+    f.data(1, 0u);
+    ParsedHeartbeat hb{};
+    hb.readerId = f.reader_guid.entityId;
+    hb.writerId = f.writer_guid.entityId;
+    hb.firstSN = SequenceNumber::from_int64(1);
+    hb.lastSN = SequenceNumber::from_int64(3);
+    hb.count = 1;
+    const size_t before = f.tx.unicast_msgs.size();
+    f.r.on_heartbeat(f.ctx(), hb);
+    CHECK(f.tx.unicast_msgs.size() == before + 1u, "the HEARTBEAT is answered at once");
+    CHECK(f.run(0u, 6u * d) == (std::vector<uint32_t>{2u * d, 6u * d}),
+          "the unanswered request is repeated after 2d, then 4d");
+    ParsedAckNack ack{};
+    CHECK(f.last_acknack(ack) && ack.readerSNState.bitmapBase == SequenceNumber::from_int64(2)
+              && ack.readerSNState.test(0u) && ack.readerSNState.test(1u),
+          "each repeat requests SN 2 and 3");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_12_gap_nack_on_quiet(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.12-020",
                      "§8.4.12.2: a change missing behind a later one is requested one delay later, "
@@ -216,6 +241,10 @@ void append_stateful_reader_tests_8_4_12_gap_nack_on_quiet(std::vector<TestCase>
                      "§8.4.12.2: a gap closed by reordering within the delay, and a best-effort "
                      "reader, send no request.",
                      tc_srr_8_4_12_023});
+    tests.push_back({"TC-SRR-8.4.12-024",
+                     "§8.4.12.2: the tail of a burst a HEARTBEAT shows MISSING is requested again "
+                     "after the doubled wait, not at the next HEARTBEAT.",
+                     tc_srr_8_4_12_024});
 }
 
 }  // namespace spec_test

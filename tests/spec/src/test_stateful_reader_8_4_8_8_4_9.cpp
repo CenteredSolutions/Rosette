@@ -331,13 +331,13 @@ static bool tc_srr_8_4_9_002(std::string& err) {
 }
 
 // §8.4.7.1 heartbeatResponseDelay: a reader reports exactly how long the
-// participant may sleep before the pending ACKNACK is due, and nothing
-// once it is sent.
+// participant may sleep before the pending ACKNACK is due, and once it is
+// sent, the doubled gap-repair wait for the changes it requested.
 static bool tc_srr_8_4_7_001(std::string& err) {
     CaptureTransport tx{};
-    const Guid reader_guid = make_guid(0x71u, 0x72u, 0x73u, make_entity(5u, 5u, 5u, 0x04u));
-    const Guid writer_guid = make_guid(0x81u, 0x82u, 0x83u, make_entity(6u, 6u, 6u, 0x03u));
-    const Locator loc = make_udpv4_locator(0xC0A80144u, 7411u);
+    const Guid       reader_guid = make_guid(0x71u, 0x72u, 0x73u, make_entity(5u, 5u, 5u, 0x04u));
+    const Guid       writer_guid = make_guid(0x81u, 0x82u, 0x83u, make_entity(6u, 6u, 6u, 0x03u));
+    const Locator    loc = make_udpv4_locator(0xC0A80144u, 7411u);
     DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 200u);
     CHECK(r.ms_until_next_timer(0u) == UINT32_MAX, "an unmatched reader has no timer");
     CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
@@ -354,13 +354,16 @@ static bool tc_srr_8_4_7_001(std::string& err) {
     g_stateful_reader_test_now_ms = 100u;
     r.on_heartbeat(ctx, hb);
 
-    CHECK(r.ms_until_next_timer(100u) == 200u, "full heartbeatResponseDelay remains right after the HEARTBEAT");
+    CHECK(r.ms_until_next_timer(100u) == 200u,
+          "full heartbeatResponseDelay remains right after the HEARTBEAT");
     CHECK(r.ms_until_next_timer(250u) == 50u, "the remaining delay shrinks with time");
     CHECK(r.ms_until_next_timer(400u) == 0u, "an overdue ACKNACK reports zero");
     const size_t before = tx.unicast_msgs.size();
+    g_stateful_reader_test_now_ms = 400u;
     r.tick(400u);
     CHECK(tx.unicast_msgs.size() == before + 1u, "tick sends the due ACKNACK");
-    CHECK(r.ms_until_next_timer(400u) == UINT32_MAX, "no timer remains once the ACKNACK is sent");
+    CHECK(r.ms_until_next_timer(400u) == 2u * RTPS_GAP_REPAIR_DELAY_MS,
+          "once the ACKNACK is sent, only the doubled gap-repair wait for SN 1 and 2 remains");
     return true;
 }
 
@@ -522,23 +525,31 @@ void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.8-003",
                      "§9.6.3.3: a DATA whose StatusInfo withdraws the instance is delivered as NOT_ALIVE with its key hash, even without payload; inline QoS alone otherwise is not delivered.",
                      tc_srr_8_4_8_003});
-    tests.push_back({"TC-SRR-8.4.8-004",
-                     "A sample larger than the largest pool block is resolved as LOST on its first fragment: never delivered, never requested again, and later changes still delivered.",
-                     tc_srr_8_4_8_004});
+    tests.push_back(
+        {"TC-SRR-8.4.8-004",
+         "A sample larger than the largest pool block is resolved as LOST on its first fragment: "
+         "never delivered, never requested again, and later changes still delivered.",
+         tc_srr_8_4_8_004});
     tests.push_back({"TC-SRR-8.4.9-001",
-                     "§8.3.7.5/§8.4.9: on_heartbeat schedules ACKNACK when missing changes exist; with heartbeatResponseDelay=0 it is sent immediately.",
+                     "§8.3.7.5/§8.4.9: on_heartbeat schedules ACKNACK when missing changes exist; "
+                     "with heartbeatResponseDelay=0 it is sent immediately.",
                      tc_srr_8_4_9_001});
     tests.push_back({"TC-SRR-8.4.9-002",
-                     "§8.3.7.4/§8.4.12: on_heartbeat_frag computes missing fragment numbers and sends NACK_FRAG for incomplete DATA_FRAG samples.",
+                     "§8.3.7.4/§8.4.12: on_heartbeat_frag computes missing fragment numbers and "
+                     "sends NACK_FRAG for incomplete DATA_FRAG samples.",
                      tc_srr_8_4_9_002});
     tests.push_back({"TC-SRR-8.4.7-001",
-                     "§8.4.7.1: ms_until_next_timer() reports the remaining heartbeatResponseDelay of a pending ACKNACK, zero when due, and no timer when none is pending.",
+                     "§8.4.7.1: ms_until_next_timer() reports the remaining heartbeatResponseDelay "
+                     "of a pending ACKNACK, zero when due, and then the gap-repair wait for the "
+                     "changes still MISSING.",
                      tc_srr_8_4_7_001});
     tests.push_back({"TC-SRR-8.4.7-002",
-                     "§8.4.12.1: on an unrestricted link an ACKNACK requests every missing change; repairs wait for the next HEARTBEAT.",
+                     "§8.4.12.1: on an unrestricted link an ACKNACK requests every missing change; "
+                     "repairs wait for the next HEARTBEAT.",
                      tc_srr_8_4_7_002});
     tests.push_back({"TC-SRR-8.4.7-003",
-                     "§8.4.12.1: on a datagram-limited link an ACKNACK requests only the lowest missing change and each DATA or GAP repair requests the next at once.",
+                     "§8.4.12.1: on a datagram-limited link an ACKNACK requests only the lowest "
+                     "missing change and each DATA or GAP repair requests the next at once.",
                      tc_srr_8_4_7_003});
 }
 
