@@ -82,6 +82,7 @@ void append_stateful_reader_tests_8_4_9_gap_ranges(std::vector<TestCase>& tests)
 void append_stateful_reader_tests_8_4_10_4(std::vector<TestCase>& tests);
 void append_stateful_reader_tests_8_4_10_4_locator_reference(std::vector<TestCase>& tests);
 void append_stateful_reader_tests_8_4_12_nack_frag_on_heartbeat(std::vector<TestCase>& tests);
+void append_stateful_reader_tests_8_4_12_nack_frag_on_quiet(std::vector<TestCase>& tests);
 
 void register_all_stateful_reader_tests(std::vector<TestCase>& tests);
 

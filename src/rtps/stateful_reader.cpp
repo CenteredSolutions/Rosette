@@ -228,8 +228,15 @@ void StatefulReader::on_data(const ParseContext& ctx,
     if (proxy) {
         const bool repair = proxy->is_missing(msg.writerSN);
         record_change(*proxy, msg.writerSN);
+
+        // The change is no longer new, so a partial assembly of it from
+        // earlier DATA_FRAGs is never completed or requested; free its slot
+        // now rather than leave it to a repair round that may never come.
+        assembler_.discard(change.writerGuid, msg.writerSN);
         deliver(change);
-        if (repair) request_next_repair(*proxy);
+        if (repair) {
+            request_next_repair(*proxy);
+        }
     } else {
         deliver(change);
     }
@@ -293,20 +300,25 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     // §8.4.14, p. 156: on_data_frag() returns true when the sample
     // is complete; out_change is populated with the assembled payload.
     CacheChange out_change{};
-    const bool complete = assembler_.on_data_frag(
-        writer_guid,
-        msg.writerSN,
-        msg.fragmentStartingNum,
-        msg.fragmentsInSubmessage,
-        msg.fragmentSize,
-        msg.dataSize,
-        msg.fragmentPayload,
-        msg.fragmentPayloadSize,
-        ctx.sourceTimestamp,
-        out_change,
-        msg.inlineQosPresent ? &msg.inlineQos : nullptr);
+    bool        stored_new = false;
+    const bool  complete = assembler_.on_data_frag(
+        writer_guid, msg.writerSN, msg.fragmentStartingNum, msg.fragmentsInSubmessage,
+        msg.fragmentSize, msg.dataSize, msg.fragmentPayload, msg.fragmentPayloadSize,
+        ctx.sourceTimestamp, out_change, msg.inlineQosPresent ? &msg.inlineQos : nullptr,
+        &stored_new);
 
-    if (!complete) return;
+    // An incomplete sample of a reliable writer is asked for again once new
+    // fragments stop arriving (fragment_assembler.hpp, quiet-period repair).
+    // A duplicate or rejected fragment is not progress and leaves the
+    // deadline and the remaining rounds as they are.
+    if (!complete) {
+        if (stored_new && proxy != nullptr && reliability_ == ReliabilityKind::RELIABLE) {
+            assembler_.schedule_repair(writer_guid, msg.writerSN,
+                                       rosette::platform::monotonic_ms());
+        }
+
+        return;
+    }
 
     // Sample is complete — treat identically to a full DATA reception.
     if (proxy) {
@@ -342,13 +354,22 @@ void StatefulReader::on_heartbeat(const ParseContext&    ctx,
         return;
     }
 
-    if (msg.readerId != entity_id::UNKNOWN &&
-        msg.readerId != guid_.entityId) return;
+    if (msg.readerId != entity_id::UNKNOWN && msg.readerId != guid_.entityId) {
+        return;
+    }
 
     const uint32_t now_ms = rosette::platform::monotonic_ms();
     const bool needs_acknack = proxy->on_heartbeat(
         msg.firstSN, msg.lastSN, msg.count,
         msg.finalFlag, now_ms, hb_response_ms_);
+
+    // A firstSN past a partial sample makes it lost (§8.4.10.4): the writer
+    // will never send its remaining fragments. Its slot is freed here,
+    // whether or not it has repair rounds left. The proxy, not the raw
+    // firstSN, decides, so a HEARTBEAT the proxy rejected frees nothing.
+    assembler_.discard_if(proxy->remoteWriterGuid, [&](const SequenceNumber& sn) noexcept {
+        return !is_new_change(*proxy, sn);
+    });
 
     RTPS_LOG_D("reader", "HEARTBEAT first=%d:%lu last=%d:%lu final=%d needs_ack=%d",
                static_cast<int>(msg.firstSN.high), static_cast<unsigned long>(msg.firstSN.low),
@@ -381,38 +402,69 @@ void StatefulReader::on_heartbeat_frag(const ParseContext&       ctx,
 {
     const Guid writer_guid{ ctx.senderGuidPrefix, msg.writerId };
     WriterProxy* proxy = find_proxy(writer_guid);
-    if (!proxy) return;
+    if (!proxy) {
+        return;
+    }
 
-    if (msg.readerId != entity_id::UNKNOWN &&
-        msg.readerId != guid_.entityId) return;
+    if (msg.readerId != entity_id::UNKNOWN && msg.readerId != guid_.entityId) {
+        return;
+    }
 
     // Ask the assembler for the missing fragment set.
     FragmentNumberSet missing{};
     const bool has_slot = assembler_.missing_fragments(
         writer_guid, msg.writerSN, msg.lastFragmentNum, missing);
 
-    if (!has_slot || missing.empty()) return;
-
-    // Send NACK_FRAG — §9.4.5.8, p. 218.
-    const Locator& dest = proxy->best_locator();
-    if (dest == LOCATOR_INVALID) return;
-
-    if (!builder_.begin(guid_.prefix)) return;
-
-    bool ok = builder_.append_nack_frag(
-        guid_.entityId,
-        msg.writerId,
-        msg.writerSN,
-        missing,
-        ++proxy->acknackCount);
-
-    if (ok) {
-        BufRef buf = builder_.finish();
-        transport_.send_unicast(buf, dest);
-        buf.reset();
-    } else {
-        builder_.abort();
+    if (!has_slot || missing.empty()) {
+        return;
     }
+
+    // This request is a repair round, so the quiet-period timer waits for
+    // its answer instead of asking for the same fragments again.
+    if (send_nack_frag(*proxy, msg.writerSN, missing)) {
+        assembler_.repair_requested(writer_guid, msg.writerSN, rosette::platform::monotonic_ms());
+    }
+}
+
+bool StatefulReader::send_nack_frag(WriterProxy& proxy, const SequenceNumber& sn,
+                                    const FragmentNumberSet& missing) noexcept {
+    const Locator& dest = proxy.best_locator();
+    if (dest == LOCATOR_INVALID || !builder_.begin(guid_.prefix)) {
+        return false;
+    }
+
+    builder_.append_info_dst(proxy.remoteWriterGuid.prefix);
+    if (!builder_.append_nack_frag(guid_.entityId, proxy.remoteWriterGuid.entityId, sn, missing,
+                                   ++proxy.acknackCount)) {
+        RTPS_LOG_W("reader", "NACK_FRAG builder failed (pool exhausted?)");
+        builder_.abort();
+        return false;
+    }
+
+    RTPS_LOG_D("reader", "NACK_FRAG sent SN=%d:%lu from fragment %lu", static_cast<int>(sn.high),
+               static_cast<unsigned long>(sn.low), static_cast<unsigned long>(missing.bitmapBase));
+    BufRef     buf = builder_.finish();
+    const bool sent = transport_.send_unicast(buf, dest);
+    buf.reset();
+    return sent;
+}
+
+void StatefulReader::send_due_fragment_repairs(uint32_t now_ms) noexcept {
+    using Outcome = FragmentAssembler::RepairOutcome;
+    assembler_.run_due_repairs(now_ms, [&](const Guid& writer, const SequenceNumber& sn,
+                                           const FragmentNumberSet& missing) noexcept {
+        // A sample accepted or declared irrelevant meanwhile (a whole DATA,
+        // a GAP, a HEARTBEAT's firstSN) is no longer wanted.
+        WriterProxy* proxy = find_proxy(writer);
+        if (proxy == nullptr || !is_new_change(*proxy, sn)) {
+            return Outcome::kUnwanted;
+        }
+
+        // Only a NACK_FRAG that went out spends a round; one that failed is
+        // tried again after the same wait.
+        const bool sent = !missing.empty() && send_nack_frag(*proxy, sn, missing);
+        return sent ? Outcome::kSent : Outcome::kNotSent;
+    });
 }
 
 // ============================================================
@@ -478,7 +530,9 @@ void StatefulReader::send_acknack(WriterProxy& proxy,
                                   bool         final_flag) noexcept
 {
     const Locator& dest = proxy.best_locator();
-    if (dest == LOCATOR_INVALID) return;
+    if (dest == LOCATOR_INVALID) {
+        return;
+    }
 
     SequenceNumberSet missing{};
     proxy.missing_changes(missing, narrow_repairs() ? 1u : SequenceNumberSet::kMaxBits);
@@ -507,7 +561,9 @@ void StatefulReader::send_acknack(WriterProxy& proxy,
         final_flag = true;
     }
 
-    if (!builder_.begin(guid_.prefix)) return;
+    if (!builder_.begin(guid_.prefix)) {
+        return;
+    }
 
     builder_.append_info_dst(proxy.remoteWriterGuid.prefix);
 
@@ -527,9 +583,17 @@ void StatefulReader::send_acknack(WriterProxy& proxy,
                    static_cast<int>(sn_state.bitmapBase.high),
                    static_cast<unsigned long>(sn_state.bitmapBase.low),
                    static_cast<int>(final_flag));
-        BufRef buf = builder_.finish();
-        transport_.send_unicast(buf, dest);
+        BufRef     buf = builder_.finish();
+        const bool sent = transport_.send_unicast(buf, dest);
         buf.reset();
+
+        // Each NACK_FRAG carried here is a repair round of its sample, so
+        // the quiet-period timer does not ask for the same fragments again
+        // while the writer's resend is on its way.
+        const uint32_t now_ms = rosette::platform::monotonic_ms();
+        for (uint8_t i = 0; sent && i < partial_count; ++i) {
+            assembler_.repair_requested(proxy.remoteWriterGuid, partial[i], now_ms);
+        }
     } else {
         RTPS_LOG_W("reader", "ACKNACK builder failed (pool exhausted?)");
         builder_.abort();
@@ -585,6 +649,8 @@ void StatefulReader::tick(uint32_t now_ms) noexcept {
             proxy.on_acknack_sent();
         }
     }
+
+    send_due_fragment_repairs(now_ms);
 }
 
 // ============================================================
@@ -605,7 +671,9 @@ uint32_t StatefulReader::ms_until_next_timer(uint32_t now_ms) const noexcept {
             next = wait;
         }
     }
-    return next;
+
+    const uint32_t repair = assembler_.ms_until_repair_due(now_ms);
+    return repair < next ? repair : next;
 }
 
 WriterProxy* StatefulReader::find_proxy(const Guid& guid) noexcept {

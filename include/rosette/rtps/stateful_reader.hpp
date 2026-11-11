@@ -44,8 +44,14 @@
  * exactly as a DATA would be. A missing
  * fragment is requested with a NACK_FRAG built from the assembler's missing
  * fragments, in answer to a HEARTBEAT_FRAG or, for a sample the writer's
- * HEARTBEAT shows as missing, alongside the ACKNACK (send_acknack()).
- * Un-matching a writer discards its partial samples.
+ * HEARTBEAT shows as missing, alongside the ACKNACK (send_acknack()). A
+ * reliable writer's partial sample that receives no fragment for
+ * RTPS_FRAGMENT_REPAIR_DELAY_MS is requested unprompted, with the wait
+ * doubling after each request (send_due_fragment_repairs()), so a lost last
+ * fragment costs one quiet period rather than one HEARTBEAT period.
+ * A partial sample's slot is freed as soon as the sample stops being
+ * wanted: received whole, covered by a GAP, or passed by a HEARTBEAT's
+ * firstSN. Un-matching a writer discards its partial samples.
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -307,7 +313,8 @@ public:
     // tick()
     //
     // Periodic maintenance: sends the ACKNACKs whose heartbeatResponseDelay
-    // has elapsed. Call at least as often as ms_until_next_timer() asks.
+    // has elapsed, and the NACK_FRAGs of partial samples whose fragments have
+    // stopped arriving. Call at least as often as ms_until_next_timer() asks.
     // ----------------------------------------------------------
     void tick(uint32_t now_ms) noexcept;
 
@@ -336,10 +343,11 @@ public:
     // ms_until_next_timer()
     //
     // How long tick() can be deferred: the time left on the earliest
-    // pending heartbeatResponseDelay (§8.4.7.1), or UINT32_MAX when no
-    // ACKNACK is pending. The participant driver sleeps no longer than this.
+    // pending heartbeatResponseDelay (§8.4.7.1) or fragment repair deadline,
+    // or UINT32_MAX when neither is pending. The participant driver sleeps no
+    // longer than this.
     //
-    // Verification: TC-SRR-8.4.7-001.
+    // Verification: TC-SRR-8.4.7-001, TC-SRR-8.4.12-005.
     // ----------------------------------------------------------
     uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept;
 
@@ -427,6 +435,89 @@ private:
      * - Covered by: TC-SRR-8.4.7-003.
      */
     void request_next_repair(WriterProxy& proxy) noexcept;
+
+    /**
+     * @brief Sends one NACK_FRAG naming a partial sample's missing fragments.
+     *
+     * Answers a HEARTBEAT_FRAG and a quiet-period repair deadline alike. The
+     * message carries INFO_DST for the writer's participant, as the ACKNACK
+     * does, and advances the proxy's count, which ACKNACK and NACK_FRAG share
+     * so each is above the last the writer processed.
+     *
+     * @param[in,out] proxy   Writer of the sample; its count is advanced.
+     * @param[in]     sn      Sequence number of the sample.
+     * @param[in]     missing Fragments to request; not empty.
+     * @return true when the message was handed to the transport; false when
+     *   the writer has no valid locator, the message could not be built
+     *   (buffer pool exhausted), or the transport refused it. A caller
+     *   counts only a true result as a repair round.
+     *
+     * Verification:
+     * - Correct means: one message, sent to the writer's unicast locator,
+     *   holding INFO_DST and a NACK_FRAG for `sn` with exactly `missing`.
+     * - Covered by: TC-SRR-8.4.12-005, TC-SRR-8.4.12-011.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.7.5 (NACK_FRAG), §9.4.5.8, §8.4.12
+     */
+    bool send_nack_frag(WriterProxy& proxy, const SequenceNumber& sn,
+                        const FragmentNumberSet& missing) noexcept;
+
+    /**
+     * @brief Requests the missing fragments of every partial sample whose fragments stopped
+     * arriving.
+     *
+     * A writer sends a sample's fragments back to back, and repairs a
+     * missing one only when a reader names it. A gap in the middle of a
+     * sample shows once a later fragment arrives, but a lost last fragment
+     * shows only when the writer's next HEARTBEAT or HEARTBEAT_FRAG reports
+     * the sample, which Fast DDS sends every 3 s by default. So each partial
+     * sample of a reliable writer carries a deadline that each fragment it
+     * did not already hold pushes ahead (on_data_frag()); a duplicate or
+     * rejected fragment does not, so repeated traffic cannot postpone the
+     * request. Once the deadline passes, the sample's
+     * missing fragments are requested. The first wait is
+     * RTPS_FRAGMENT_REPAIR_DELAY_MS and each request doubles it, up to
+     * RTPS_FRAGMENT_REPAIR_MAX_DOUBLINGS times: 50, 100, 200 and 400 ms
+     * with the defaults, for up to RTPS_FRAGMENT_REPAIR_ROUNDS rounds while
+     * no new fragment arrives. A new fragment restores the rounds but not
+     * the wait, so a writer pacing its fragments further apart than the
+     * first wait is asked early only until the wait outgrows its pacing,
+     * and a new sample starts again at the first wait. A NACK_FRAG sent in
+     * answer to a HEARTBEAT_FRAG or alongside an ACKNACK spends a round and
+     * pushes the deadline out the same way, so the writer is not asked
+     * twice for one resend. Only a NACK_FRAG that went out counts: one that
+     * could not be built or sent is tried again after the same wait, with
+     * its rounds intact. A sample the reader has received whole, or that
+     * a GAP or HEARTBEAT declared irrelevant, is discarded when that
+     * happens (on_data(), on_gap(), on_heartbeat()), with or without rounds
+     * left; this pass discards one it finds unwanted all the same.
+     *
+     * @param[in] now_ms Monotonic time, in milliseconds.
+     *
+     * Verification:
+     * - Correct means: nothing is sent while fragments keep arriving within
+     *   the delay; duplicate or rejected fragments neither delay a request
+     *   nor restore spent rounds; after a quiet delay exactly one NACK_FRAG per partial
+     *   sample names its missing fragments, including the last; unanswered
+     *   requests follow the doubling waits and stop after
+     *   RTPS_FRAGMENT_REPAIR_ROUNDS; a fragment arriving after a request
+     *   restarts the current wait, not the first; a NACK_FRAG sent for a
+     *   HEARTBEAT_FRAG or with an ACKNACK delays the next timer request by
+     *   the doubled wait; a request the transport refuses spends no round
+     *   and is retried one current wait later; a best-effort reader never
+     *   sends one; a sample received whole, or declared irrelevant by a
+     *   HEARTBEAT or GAP, is requested no more and its slot is freed at
+     *   once, even after its rounds are spent.
+     * - Covered by: TC-SRR-8.4.12-005…012.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.12 (reader may send NACK_FRAG for missing
+     *   fragments), §8.3.7.5 (NACK_FRAG), §8.4.14
+     * - Fast DDS 2.6 StatefulWriter::process_nack_frag (repairs the named
+     *   fragments of any change still in its history)
+     */
+    void send_due_fragment_repairs(uint32_t now_ms) noexcept;
 
     /**
      * @brief Sends the preemptive ACKNACK of a new match, in the form the writer's vendor

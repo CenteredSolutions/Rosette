@@ -14,6 +14,9 @@
  * out, as Fast DDS's reader does. A change the reader holds no fragments of,
  * including one refused because a shared assembly pool was full, is
  * requested whole.
+ *
+ * The NACK_FRAG a reader sends unprompted, once a partial change's fragments
+ * stop arriving, is covered by test_stateful_reader_8_4_12_nack_frag_on_quiet.cpp.
  */
 
 #include "spec_test_common.hpp"
