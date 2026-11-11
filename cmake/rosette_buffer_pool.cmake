@@ -52,10 +52,6 @@ set(ROSETTE_POOL_MEDIUM_BLOCKS "" CACHE STRING
 set(ROSETTE_POOL_DATAGRAM_BLOCKS "" CACHE STRING
     "Blocks of the pool's datagram class (a datagram firmware, 16 KiB host); empty: the profile's")
 
-# Octets of RTPS headers a datagram block keeps ahead of the payload
-# (kRtpsDataHeadroom, rosette/rtps/message_builder.hpp).
-set(_rbp_rtps_headroom 44)
-
 #[[
 Picks one role's block count: the override when its cache entry is set,
 otherwise the formula's value clamped to the uint8_t count a class carries.
@@ -103,6 +99,12 @@ larger than the one before it, so alloc() can promote) or a count is out of
 range.
 ]]
 function(rosette_buffer_pool_layout prefix)
+  # Octets of RTPS headers a datagram block keeps ahead of the payload
+  # (kRtpsDataHeadroom, rosette/rtps/buf_pool.hpp). Set here, not at file
+  # scope: include_guard(GLOBAL) skips the file in every directory but the
+  # first to include it, so a file-scope variable is empty in the others.
+  set(_rbp_rtps_headroom 44)
+
   set(_required PROFILE MAX_DATAGRAM_SIZE MAX_SAMPLE_SIZE LARGE_BLOCKS LARGE_KNOB LOCAL_ENDPOINTS
                 HELD_CHANGES SEDP_REBUILD)
   cmake_parse_arguments(PARSE_ARGV 1 arg "QUIET" "${_required};LABEL" "")
