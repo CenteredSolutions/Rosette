@@ -59,7 +59,9 @@
 #endif
 #ifndef RMW_ROSETTE_MAX_SAMPLE_SIZE
 /// Largest serialized message. Up to 65532 it is also the largest static
-/// buffer-pool class; above that, a hosted build stores it on the heap.
+/// buffer-pool class; above that, a hosted build stores it on heap blocks.
+/// rmw_rosette_capacity.cmake always sets it (1 MiB on a host); this value
+/// serves code compiled without the capacity model.
 #  define RMW_ROSETTE_MAX_SAMPLE_SIZE 65532
 #endif
 
