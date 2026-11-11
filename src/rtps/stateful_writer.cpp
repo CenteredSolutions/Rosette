@@ -74,7 +74,45 @@ CacheChange* StatefulWriter::new_change(ChangeKind kind, BufRef& out_payload,
     return &staging_;
 }
 
+/// How a sample is cut into DATA_FRAGs over one transport.
+struct FragmentLayout {
+    uint32_t overhead;  ///< Octets of RTPS header, DATA_FRAG header and inline QoS per datagram.
+    uint32_t size;      ///< Sample octets per fragment; 0 when no 64-octet fragment fits.
+};
+
+/// @brief The DATA_FRAG layout for a change with `inline_qos` over `transport`.
+static FragmentLayout fragment_layout(const ITransport& transport,
+                                      const InlineQos&  inline_qos) noexcept {
+    FragmentLayout layout{};
+    layout.overhead = sizeof(RTPSMessageHeader) + sizeof(SubmessageHeader)
+                      + sizeof(DataFragSubmessageFixed) + inline_qos_serialized_size(inline_qos);
+    const uint32_t limit = transport.max_datagram_size();
+    if (limit < layout.overhead + 64u) {
+        return layout;
+    }
+
+    // Fragment sizes are 16-bit, and a multiple of 4 keeps every fragment's
+    // payload aligned the same way in the reassembled sample.
+    const uint32_t size = (limit - layout.overhead) & ~3u;
+    layout.size = size < 0xFFFCu ? size : 0xFFFCu;
+    return layout;
+}
+
 bool StatefulWriter::add_change(CacheChange&& change) noexcept {
+    // A reader tracks at most FragmentNumberSet::kMaxBits fragments of a
+    // sample, so a larger one could never complete and would stall every
+    // reliable reader. Refusing it here, before it takes a sequence number,
+    // is the last point at which the application can still be told.
+    const uint32_t frag_size = fragment_layout(transport_, change.inlineQos).size;
+    const uint64_t data_size =
+        uint64_t{change.payload.size} + (change.preframed ? 0u : kEncapsulationSize);
+    if (frag_size != 0u
+        && data_size > uint64_t{frag_size} * static_cast<uint32_t>(FragmentNumberSet::kMaxBits)) {
+        RTPS_LOG_E("writer", "a sample of %lu octets needs more fragments than a reader can track",
+                   static_cast<unsigned long>(data_size));
+        return false;
+    }
+
     change.sequenceNumber = nextSN_;
     ++nextSN_;
 
@@ -132,55 +170,17 @@ bool StatefulWriter::write_async(ChangeKind kind, const Octet* payload_data, uin
     return true;
 }
 
-/**
- * @brief Whether a reader could reassemble a sample sent over `transport`.
- *
- * A receiver tracks at most FragmentNumberSet::kMaxBits fragments, so a larger
- * sample could never complete and would stall a reliable reader. The sender
- * refuses it, because only the sender can report the error to the application.
- *
- * @param[in] transport   Transport whose datagram limit sets the fragment size.
- * @param[in] payload     Serialized body length, without encapsulation, in octets.
- * @param[in] inline_qos  Inline QoS each fragment carries.
- * @return true when the sample fits the receiver's fragment limit.
- *
- * Verification:
- * - Correct means: every accepted sample is sent in at most kMaxBits fragments.
- * - Covered by: send_fragments_to() refuses anything this check would miss.
- *
- * References:
- * - OMG DDSI-RTPS 2.5 §8.3.5.13 (FragmentNumberSet), §8.3.7.3 (DataFrag)
- */
-static bool fits_receiver_fragments(const ITransport& transport, uint32_t payload,
-                                    const InlineQos& inline_qos) noexcept {
-    const uint32_t overhead = sizeof(RTPSMessageHeader) + sizeof(SubmessageHeader)
-                              + sizeof(DataFragSubmessageFixed)
-                              + inline_qos_serialized_size(inline_qos);
-    const uint32_t limit = transport.max_datagram_size();
-    if (limit < overhead + 64u) {
-        return true;  // send_fragments_to() reports this link's misconfiguration.
-    }
-
-    uint32_t frag_size = (limit - overhead) & ~3u;
-    if (frag_size > 0xFFFCu) {
-        frag_size = 0xFFFCu;
-    }
-
-    const uint64_t total = uint64_t{payload} + kEncapsulationSize;
-    return total <= uint64_t{frag_size} * static_cast<uint32_t>(FragmentNumberSet::kMaxBits);
-}
-
 bool StatefulWriter::write_async_owned(ChangeKind kind, BufRef&& payload,
                                        const InlineQos& inline_qos,
                                        SequenceNumber* out_sn) noexcept {
-    if (!payload.valid() || payload.size == 0) return false;
-    if (!fits_receiver_fragments(transport_, payload.size, inline_qos)) {
-        RTPS_LOG_E("writer", "sample of %lu octets exceeds the fragments a reader can track",
-                   static_cast<unsigned long>(payload.size));
+    if (!payload.valid() || payload.size == 0) {
         return false;
     }
 
-    if (staging_.payload.valid()) staging_.payload.reset();
+    if (staging_.payload.valid()) {
+        staging_.payload.reset();
+    }
+
     staging_.kind           = kind;
     staging_.writerGuid     = guid_;
     staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
@@ -882,18 +882,16 @@ bool StatefulWriter::send_fragments_to(const CacheChange& ch, ReaderProxy& proxy
     static constexpr Octet kCdrLe[kEncapsulationSize] = {0x00u, 0x01u, 0x00u, 0x00u};
     const uint16_t prefix_len = ch.preframed ? 0u : kEncapsulationSize;
     const uint32_t data_size = prefix_len + ch.payload.size;
-    const uint32_t overhead = sizeof(RTPSMessageHeader) + sizeof(SubmessageHeader) +
-                              sizeof(DataFragSubmessageFixed) +
-                              inline_qos_serialized_size(ch.inlineQos);
-    const uint32_t limit = transport_.max_datagram_size();
-    if (limit < overhead + 64u) {
+    const FragmentLayout   layout = fragment_layout(transport_, ch.inlineQos);
+    const uint32_t         overhead = layout.overhead;
+    const uint32_t         frag_size = layout.size;
+    const uint32_t         limit = transport_.max_datagram_size();
+    if (frag_size == 0u) {
         RTPS_LOG_E("writer", "datagram limit %lu leaves no room for fragments",
                    static_cast<unsigned long>(limit));
         return false;
     }
 
-    uint32_t frag_size = (limit - overhead) & ~3u;
-    if (frag_size > 0xFFFCu) frag_size = 0xFFFCu;
     const uint32_t frag_count = (data_size + frag_size - 1u) / frag_size;
     if (frag_count > static_cast<uint32_t>(FragmentNumberSet::kMaxBits)) {
         RTPS_LOG_E("writer", "a sample of %lu fragments cannot be reassembled",

@@ -224,15 +224,25 @@ public:
      * add_change() itself sends nothing. A RELIABLE writer also counts the
      * change toward its next piggybacked HEARTBEAT (see heartbeat_due()).
      *
+     * A change whose payload would need more DATA_FRAGs over this writer's
+     * transport than a reader can track (FragmentNumberSet::kMaxBits) is
+     * refused: no reader could ever complete it, and a reliable one would
+     * stall behind it.
+     *
      * @param[in] change Change from new_change() (or built by the caller);
      *   the history takes ownership of its payload.
-     * @return `true` on success.
+     * @return `true` when added; `false` when the change needs too many
+     *   fragments, which takes no sequence number, or the history cannot
+     *   take it.
      *
      * Verification:
-     * - Correct means: sequence numbers increase by one per change, and the
+     * - Correct means: sequence numbers increase by one per added change; the
      *   new change is the next UNSENT change of every matched proxy that has
-     *   been sent everything before it.
-     * - Covered by: TC-SWR-8.4.1.4-001, TC-SWR-8.2.2-001, TC-SWR-8.2.2-002.
+     *   been sent everything before it; a change of more than kMaxBits
+     *   fragments is refused and the next change takes the number it would
+     *   have had.
+     * - Covered by: TC-SWR-8.4.1.4-001, TC-SWR-8.2.2-001, TC-SWR-8.2.2-002,
+     *   rmw_rosette test_publish_fragment_limit.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (add_change), §8.3.3 (KEEP_LAST)
@@ -1042,7 +1052,7 @@ private:
      * @param[in] heartbeat Also send a HEARTBEAT advertising the history's
      *   current range; heartbeatCount_ must already be advanced for it.
      * @param[in] only_fragments For a fragmented change, the fragments to
-     *   send (bit k-1 for fragment k, see send_fragments_to()); null for all.
+     *   send; null for all.
      *   Ignored for a change sent as one DATA.
      * @return `true` when every DATA or DATA_FRAG datagram was handed to the
      *   transport.
@@ -1135,8 +1145,7 @@ private:
      * @param[in] proxy     Reader to send to.
      * @param[in] dest      The reader's locator.
      * @param[in] heartbeat Also send a HEARTBEAT, as for send_data_to().
-     * @param[in] only_fragments The fragments to send
-     *   (fragments above 64 are never selected); null sends every fragment.
+     * @param[in] only_fragments The fragments to send; null sends every fragment.
      * @return `true` when every fragment was handed to the transport.
      *
      * Verification:
@@ -1158,11 +1167,12 @@ private:
      *
      * The writer holds one pending fragment repair: a board rarely has more
      * than one reader repairing a fragmented change at once, and the record
-     * costs a pointer, a sequence number and a 64-bit mask rather than a
-     * FragmentNumberSet per reader proxy. A second NACK_FRAG from the same
+     * costs a pointer, a sequence number and a FragmentRepairSet rather than
+     * a FragmentNumberSet per reader proxy. A second NACK_FRAG from the same
      * reader for the same change adds its fragments; one from another
      * reader, or for another change, while the record is taken, leaves its
-     * change to be resent whole, as is one naming a fragment above 64. tick()
+     * change to be resent whole, as is one naming a fragment the set cannot
+     * hold (above FragmentRepairSet::kMaxFragment). tick()
      * consumes the record when it repairs that reader.
      *
      * @param[in] proxy     Reader that sent the NACK_FRAG.
