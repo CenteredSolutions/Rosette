@@ -76,6 +76,28 @@ public:
     bool resolve(const SequenceNumber& sn) noexcept;
 
     /**
+     * @brief Returns a recorded `sn` above base() to unresolved.
+     *
+     * A reliable reader records a change on arrival and may then fail to
+     * keep it (WriterProxy::received_change_withdraw()); unresolved, it is
+     * requested again. base() never moves: a number at or below it, or
+     * outside the window, is left as it is.
+     *
+     * @param[in] sn Sequence number of a change recorded but not kept.
+     * @return `true` when `sn` was resolved inside the window above base()
+     *   and is now unresolved.
+     *
+     * Verification:
+     * - Correct means: only `sn` changes state, base() is unchanged, and a
+     *   later resolve(sn) records it again.
+     * - Covered by: TC-SRR-8.4.10.4-016, TC-SRR-8.4.10.4-017, TC-SRR-8.4.10.4-019.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (changes_from_writer)
+     */
+    bool unresolve(const SequenceNumber& sn) noexcept;
+
+    /**
      * @brief Resolves every sequence number below `first_unresolved`.
      *
      * Applies a HEARTBEAT's firstSN (the writer no longer holds anything

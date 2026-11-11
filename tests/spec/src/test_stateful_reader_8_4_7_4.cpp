@@ -187,6 +187,7 @@ bool tc_srr_8_4_7_4_006(std::string& err) {
     CaptureTransport tx{};
     ProxyPoolStorage<WriterProxy, 3> pool;
     FragmentAssemblyPoolStorage<2> assembly;
+    HeldChangePoolStorage<2>         held;
     CHECK(pool.reserve(2u), "two floors of 1 must fit a pool of 3");
 
     const Guid busy_guid = make_guid(0x01u, 0x02u, 0x03u, make_entity(0u, 0u, 1u, 0x04u));
@@ -198,10 +199,10 @@ bool tc_srr_8_4_7_4_006(std::string& err) {
     }
 
     SharedPoolStatefulReader quiet(quiet_guid, ReliabilityKind::RELIABLE, tx, pool, 1u, 3u,
-                                   assembly, 1u);
+                                   assembly, 1u, held, 2u);
     {
         SharedPoolStatefulReader busy(busy_guid, ReliabilityKind::RELIABLE, tx, pool, 1u, 3u,
-                                      assembly, 1u);
+                                      assembly, 1u, held, 2u);
         CHECK(busy.matched_writer_add(writers[0], &loc, 1u), "busy binds its floor");
         CHECK(busy.matched_writer_add(writers[1], &loc, 1u), "busy borrows the unpromised proxy");
         tx.sent.clear();

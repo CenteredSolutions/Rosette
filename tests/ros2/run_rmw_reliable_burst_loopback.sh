@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Runs rmw_reliable_burst_probe.py on one host: a stock-RMW publisher sends one
 # reliable burst while the rmw_rosette subscription is not taking, and the
-# subscription must then take exactly the newest min(count, depth) samples.
+# subscription must then take exactly the newest min(count, depth) samples, in
+# order. The subscriber's windows start when the publisher has published, so
+# slow discovery under packet loss does not cut short the repair.
 # Passes only when both roles pass.
 #
 # Prerequisite: a sourced ROS 2 environment plus the colcon overlay that
@@ -25,7 +27,9 @@ PEER_RMW="${ROSETTE_PEER_RMW:-rmw_fastrtps_cpp}"
 DOMAIN="${ROSETTE_DOMAIN:-42}"
 COUNT="${ROSETTE_COUNT:-5}"
 DEPTH="${ROSETTE_DEPTH:-10}"
-SESSION="burst_$(date +%s)_$$"
+# The random part keeps sessions apart when several start in the same second
+# with the same PID, as in parallel containers.
+SESSION="burst_$(date +%s)_$$_${RANDOM}"
 LOG_DIR="${TMPDIR:-/tmp}/rosette-rmw-burst-${SESSION}"
 mkdir -p "${LOG_DIR}"
 
@@ -35,7 +39,7 @@ run_probe() {
   local role="$1" rmw="$2"
   RMW_IMPLEMENTATION="${rmw}" python3 "${PROBE}" \
     --role "${role}" --domain "${DOMAIN}" --session "${SESSION}" \
-    --count "${COUNT}" --depth "${DEPTH}" \
+    --count "${COUNT}" --depth "${DEPTH}" --published-marker "${LOG_DIR}/published" \
     >"${LOG_DIR}/${role}.log" 2>&1
 }
 

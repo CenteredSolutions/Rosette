@@ -193,6 +193,7 @@ static bool tc_srr_8_4_12_004(std::string& err) {
     CaptureTransport tx{};
     ProxyPoolStorage<WriterProxy, 2> proxies;
     FragmentAssemblyPoolStorage<1> assembly;
+    HeldChangePoolStorage<2>         held;
     CHECK(proxies.reserve(2u), "one floor for each reader");
     int delivered = 0;
     const auto count = [](const CacheChange&, void* n) noexcept {
@@ -203,9 +204,9 @@ static bool tc_srr_8_4_12_004(std::string& err) {
     const Guid busy_writer = make_guid(0x81u, make_entity(4u, 5u, 6u, 0x03u));
     const Guid quiet_writer = make_guid(0x82u, make_entity(4u, 5u, 7u, 0x03u));
     SharedPoolStatefulReader busy(busy_guid, ReliabilityKind::RELIABLE, tx, proxies, 1u, 1u,
-                                  assembly, 1u);
+                                  assembly, 1u, held, 2u);
     SharedPoolStatefulReader quiet(quiet_guid, ReliabilityKind::RELIABLE, tx, proxies, 1u, 1u,
-                                   assembly, 1u, count, &delivered);
+                                   assembly, 1u, held, 2u, count, &delivered);
     CHECK(busy.matched_writer_add(busy_writer, &kLoc, 1u)
               && quiet.matched_writer_add(quiet_writer, &kLoc, 1u),
           "each reader matches its writer");

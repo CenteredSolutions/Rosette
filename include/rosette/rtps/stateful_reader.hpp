@@ -13,8 +13,13 @@
  * Each matched writer has a WriterProxy (writer_proxy.hpp) recording which of
  * its changes are resolved. A RELIABLE reader delivers every change exactly
  * once, repairs included, and requests MISSING changes in ACKNACKs until DATA
- * or GAP resolves them (§8.4.12.2). A BEST_EFFORT reader delivers only
- * changes newer than every change it has seen from that writer (§8.4.12.1).
+ * or GAP resolves them (§8.4.12.2). It delivers each writer's changes in the
+ * order written (§8.4.10.4), holding those that arrive behind a gap; the
+ * table in held_changes.hpp gives what happens to each arriving change. The
+ * ACKNACK never acknowledges a held change before it is delivered. A gap is
+ * requested without waiting for the writer's HEARTBEAT, on the gap-repair
+ * timer (writer_proxy.hpp). A BEST_EFFORT reader delivers only changes newer than
+ * every change it has seen from that writer (§8.4.12.1).
  * A change that withdraws an instance (inline QoS StatusInfo DISPOSED or
  * UNREGISTERED) is delivered with its NOT_ALIVE ChangeKind even when it
  * carries no payload, so consumers such as SEDP learn of the withdrawal.
@@ -72,6 +77,7 @@
 #pragma once
 
 #include "fragment_assembler.hpp"
+#include "held_changes.hpp"
 #include "history_cache.hpp"
 #include "message_builder.hpp"
 #include "message_parser.hpp"
@@ -290,8 +296,18 @@ public:
      *
      * @param[in,out] proxy      Writer to acknowledge; its count is not
      *   advanced here (the caller calls on_acknack_sent()).
+     * A non-final ACKNACK that goes out is a repair request, and spends a
+     * round of the writer's quiet-period gap repair
+     * (WriterProxy::gap_repair_sent()), so the timer does not ask again
+     * while the writer's resend is in flight.
+     *
+     * @param[in,out] proxy      Writer to acknowledge; its count is not
+     *   advanced here (the caller calls on_acknack_sent()).
      * @param[in]     final_flag F-flag: the writer need not answer with a
      *   HEARTBEAT.
+     * @return `true` when the transport accepted the message; `false` when
+     *   the writer has no locator, the message could not be built, or the
+     *   transport refused it.
      *
      * Verification:
      * - Correct means: bitmapBase is at most the lowest MISSING change, every
@@ -306,15 +322,16 @@ public:
      *   (ACKNACK), §8.3.7.5 (NACK_FRAG)
      * - Fast DDS 2.6 StatefulReader::send_acknack (NACK_FRAG for incomplete changes)
      */
-    void send_acknack(WriterProxy& proxy,
-                      bool         final_flag = false) noexcept;
+    bool send_acknack(WriterProxy& proxy, bool final_flag = false) noexcept;
 
     // ----------------------------------------------------------
     // tick()
     //
     // Periodic maintenance: sends the ACKNACKs whose heartbeatResponseDelay
-    // has elapsed, and the NACK_FRAGs of partial samples whose fragments have
-    // stopped arriving. Call at least as often as ms_until_next_timer() asks.
+    // has elapsed, the ACKNACKs naming the MISSING changes of writers that
+    // have gone quiet (WriterProxy::schedule_gap_repair()), and the
+    // NACK_FRAGs of partial samples whose fragments have stopped arriving.
+    // Call at least as often as ms_until_next_timer() asks.
     // ----------------------------------------------------------
     void tick(uint32_t now_ms) noexcept;
 
@@ -343,11 +360,11 @@ public:
     // ms_until_next_timer()
     //
     // How long tick() can be deferred: the time left on the earliest
-    // pending heartbeatResponseDelay (§8.4.7.1) or fragment repair deadline,
-    // or UINT32_MAX when neither is pending. The participant driver sleeps no
+    // pending heartbeatResponseDelay (§8.4.7.1), gap repair, or fragment
+    // repair deadline, or UINT32_MAX when none is pending. The participant driver sleeps no
     // longer than this.
     //
-    // Verification: TC-SRR-8.4.7-001, TC-SRR-8.4.12-005.
+    // Verification: TC-SRR-8.4.7-001, TC-SRR-8.4.12-005, TC-SRR-8.4.12-020.
     // ----------------------------------------------------------
     uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept;
 
@@ -379,6 +396,11 @@ protected:
      *   samples in, possibly shared with other readers; outlives the reader.
      * @param[in] assembly_limit  Most slots of `assembly_pool` the reader
      *   holds at once, 1 to its capacity.
+     * @param[in] held_pool       Slots the reader holds changes in behind a
+     *   gap, possibly shared with other readers; outlives the reader.
+     * @param[in] held_limit      Most slots of `held_pool` the reader holds
+     *   at once, 1 to its capacity; also how far past the next expected
+     *   change of a writer it accepts one.
      * @param[in] on_change_avail Callback fired on each new complete change;
      *   null discards delivered changes.
      * @param[in] user_data       Forwarded to on_change_avail.
@@ -391,8 +413,8 @@ protected:
     StatefulReader(const Guid& guid, ReliabilityKind reliability, ITransport& transport,
                    WriterProxyPool& pool, uint8_t min_writers, uint8_t max_writers,
                    FragmentAssemblyPool& assembly_pool, uint16_t assembly_limit,
-                   OnChangeAvailable on_change_avail, void* user_data,
-                   uint32_t hb_response_ms) noexcept;
+                   HeldChangePool& held_pool, uint8_t held_limit, OnChangeAvailable on_change_avail,
+                   void* user_data, uint32_t hb_response_ms) noexcept;
 
     /// @brief Returns every bound proxy to the pool.
     ~StatefulReader() noexcept;
@@ -613,6 +635,148 @@ private:
     void account_undelivered(WriterProxy& proxy, const SequenceNumber& sn) noexcept;
 
     /**
+     * @brief Delivers a complete change in its writer's order, or holds it (rows R1, R3, R4).
+     *
+     * Every DATA and every reassembled DATA_FRAG ends here. A held change
+     * counts as received, so it is not requested again, but the ACKNACK's
+     * bitmapBase stays at the first MISSING change. A best-effort change is
+     * always next in order and is delivered at once.
+     *
+     * @param[in]     proxy  The writer's proxy; null only for a best-effort
+     *   reader's unmatched writer.
+     * @param[in,out] change The complete change; its payload is delivered,
+     *   moved into a hold slot, or released when the caller's change goes
+     *   out of scope.
+     *
+     * Verification:
+     * - Correct means: the consumer sees each writer's changes in ascending
+     *   sequence order, each at most once, and acknowledged changes are
+     *   exactly those delivered or resolved without data
+     *   (tests/formal/RosetteReaderDelivery.tla InOrder, NoAckPastUndelivered).
+     * - Covered by: TC-SRR-8.4.10.4-010, TC-SRR-8.4.10.4-011, TC-SRR-8.4.10.4-012.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (WriterProxy), §8.4.12.2 (reliable reader)
+     * - OMG DDS 1.4 §2.2.3.17 (DESTINATION_ORDER)
+     */
+    void accept_change(WriterProxy* proxy, CacheChange& change) noexcept;
+
+    /**
+     * @brief Holds a change that arrived behind a gap (R3), or makes it MISSING again (R4).
+     *
+     * @param[in]     proxy  The writer's proxy; `change` is recorded in it.
+     * @param[in,out] change A change inside the window, above the writer's first MISSING one.
+     *
+     * Verification:
+     * - Correct means: the reader never holds more than its limit nor the
+     *   pool more than its capacity, no held change is given up for it, and
+     *   a change not held is MISSING and named by the next ACKNACK.
+     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-017.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (changes_from_writer)
+     */
+    void hold_change(WriterProxy& proxy, CacheChange& change) noexcept;
+
+    /**
+     * @brief True when `sn` lies beyond a reliable reader's hold window for `proxy`'s writer (R6).
+     *
+     * @param[in] proxy The writer's proxy.
+     * @param[in] sn    The change's sequence number.
+     * @return `true` for a RELIABLE reader when `sn` is above
+     *   available_changes_max() + 1 + `held_.limit()`; always `false` for BEST_EFFORT.
+     *
+     * Verification:
+     * - Correct means: with next expected change Y + 1 and limit N, exactly
+     *   the changes above Y + 1 + N are beyond the window
+     *   (RosetteReaderDelivery.tla HoldsInWindow).
+     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-014.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4
+     */
+    bool beyond_hold_window(const WriterProxy& proxy, const SequenceNumber& sn) const noexcept;
+
+    /**
+     * @brief Refuses a change beyond the hold window before its payload is copied (R6).
+     *
+     * @param[in,out] proxy The writer's proxy; null for an unmatched best-effort writer.
+     * @param[in]     sn    The arriving change's sequence number.
+     * @return `true` when the change was refused and the caller drops it.
+     *
+     * Verification:
+     * - Correct means: a refused change is MISSING, as a HEARTBEAT announcing
+     *   it would leave it, is not acknowledged, takes no buffer block or
+     *   assembly slot, and is requested by the next ACKNACK.
+     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-014, TC-SRR-8.4.10.4-018.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (missing_changes_update), §8.4.12.2
+     */
+    bool refuse_beyond_window(WriterProxy* proxy, const SequenceNumber& sn) noexcept;
+
+    /**
+     * @brief Makes a change evicted for its block (R2) MISSING again in the reader that held it.
+     *
+     * @param[in] evicted The change given up and the reader that held it,
+     *   which may be another reader of the same hold pool.
+     *
+     * Verification:
+     * - Correct means: the evicted change is MISSING in its reader afterwards
+     *   and that reader's gap-repair timer is running, so it is requested
+     *   again without waiting for a HEARTBEAT.
+     * - Covered by: TC-SRR-8.4.10.4-016, TC-SRR-8.4.10.4-019.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4
+     */
+    void withdraw_evicted(const HeldEviction& evicted) noexcept;
+
+    /**
+     * @brief Delivers, lowest first, the held changes of `proxy`'s writer no longer behind a gap.
+     *
+     * Called whenever the writer's first unresolved sequence number may
+     * have moved: after a delivery, a GAP, a HEARTBEAT, or a change resolved
+     * without data.
+     *
+     * @param[in] proxy The writer whose held changes to release.
+     *
+     * Verification:
+     * - Correct means: afterwards no held change of the writer lies below
+     *   its first unresolved sequence number, and the released ones were
+     *   delivered lowest first.
+     * - Covered by: TC-SRR-8.4.10.4-011, TC-SRR-8.4.10.4-012, TC-SRR-8.4.10.4-015.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4
+     */
+    void release_held(WriterProxy& proxy) noexcept;
+
+    /**
+     * @brief Copies a DATA's serialized payload into a pool block, applying rows R2 and R5.
+     *
+     * @param[in]  proxy The writer's proxy; null for an unmatched best-effort writer.
+     * @param[in]  msg   The DATA, with a payload or key.
+     * @param[out] out   The block, with size set to the copied length.
+     * @return `true` when copied; `false` when no block could be had or the
+     *   change was refused under R5 (the change stays MISSING and is
+     *   requested again).
+     *
+     * Verification:
+     * - Correct means: a pool shortage never leaves a writer's next change
+     *   undeliverable while any reader of the same hold pool holds a change,
+     *   and a change that is only held never takes the last block an
+     *   ACKNACK fits in (RosetteReaderDelivery.tla, BlockRule "evict_any",
+     *   AckReserve).
+     * - Covered by: TC-SRR-8.4.10.4-016, TC-SRR-8.4.10.4-019,
+     *   TC-SRR-8.4.10.4-022.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4
+     */
+    bool copy_payload(WriterProxy* proxy, const ParsedData& msg, BufRef& out) noexcept;
+
+    /**
      * @brief Hands a complete, accepted change to the consumer callback.
      *
      * The reader keeps no copy: holding delivered changes would pin one
@@ -639,6 +803,10 @@ private:
     /// assembly pool the reader was constructed with.
     FragmentAssembler assembler_;
 
+    /// Changes held behind a gap until delivered in order (§8.4.10.4). Its
+    /// slots come from the hold pool the reader was constructed with.
+    HeldChanges held_;
+
     uint32_t       hb_response_ms_;
     MessageBuilder builder_;
 
@@ -651,9 +819,9 @@ private:
 };
 
 namespace detail {
-/// @brief The private pools of a BoundedStatefulReader, writer proxies and
-/// assembly slots, as a base class so they are constructed before the
-/// StatefulReader base that points into them.
+/// @brief The private pools of a BoundedStatefulReader, writer proxies,
+/// assembly slots and hold slots, as a base class so they are constructed
+/// before the StatefulReader base that points into them.
 template <uint8_t kMaxWriters>
 struct BoundedReaderSlots {
     /// One partial sample per writer the reader matches (KEEP_LAST(1) per
@@ -663,6 +831,7 @@ struct BoundedReaderSlots {
 
     ProxyPoolStorage<WriterProxy, kMaxWriters> proxies;
     FragmentAssemblyPoolStorage<kAssemblySlots> assembly;
+    HeldChangePoolStorage<RTPS_BOUNDED_READER_HELD_CHANGES> held;
 
     /// Promises the whole private pool to its one reader, whose floor is kMaxWriters.
     BoundedReaderSlots() noexcept { (void)proxies.reserve(kMaxWriters); }
@@ -675,8 +844,9 @@ struct BoundedReaderSlots {
  * Its capacity is its own and always available: floor and cap are both
  * kMaxWriters, and it reassembles fragmented samples in a private pool of
  * one slot per writer, up to RTPS_ASSEMBLY_SLOTS_PER_READER, as many as a
- * participant's user reader may hold. The SEDP builtin readers are of this
- * kind. The protocol
+ * participant's user reader may hold. It holds changes behind a gap in a
+ * private pool of RTPS_BOUNDED_READER_HELD_CHANGES slots. The SEDP builtin
+ * readers are of this kind. The protocol
  * logic lives once in StatefulReader (stateful_reader.cpp); this template
  * only adds the pool, so readers of different capacities share all code.
  *
@@ -699,30 +869,34 @@ public:
                           uint32_t hb_response_ms = RTPS_HEARTBEAT_RESPONSE_DELAY_MS) noexcept
         : StatefulReader(guid, reliability, transport, this->proxies, kMaxWriters, kMaxWriters,
                          this->assembly, detail::BoundedReaderSlots<kMaxWriters>::kAssemblySlots,
-                         on_change_avail, user_data, hb_response_ms) {}
+                         this->held, RTPS_BOUNDED_READER_HELD_CHANGES, on_change_avail, user_data,
+                         hb_response_ms) {}
 };
 
 /// A standalone reader for user topics: up to RTPS_MAX_MATCHED_WRITERS matched writers.
 using DefaultStatefulReader = BoundedStatefulReader<RTPS_MAX_MATCHED_WRITERS>;
 
 /**
- * @brief A StatefulReader whose WriterProxies and assembly slots come from
- *   pools its owner shares among readers.
+ * @brief A StatefulReader whose WriterProxies, assembly slots and hold slots
+ *   come from pools its owner shares among readers.
  *
  * RTPSParticipant creates its user readers as these, all binding from the
- * participant's WriterProxy pool and reassembling in its assembly pool, so
- * per-match storage scales with the matches the participant has at once
- * rather than with readers × cap.
+ * participant's WriterProxy pool, reassembling in its assembly pool, and
+ * holding changes behind a gap in its hold pool, so per-match storage
+ * scales with the matches and losses the participant has at once rather
+ * than with readers × cap.
  *
  * Example:
  * @code{.cpp}
  * rosette::rtps::ProxyPoolStorage<rosette::rtps::WriterProxy, 16> pool;
  * rosette::rtps::FragmentAssemblyPoolStorage<6> assembly;
- * (void)pool.reserve(1);                 // this reader's floor
+ * rosette::rtps::HeldChangePoolStorage<8> held;
+ * (void)pool.reserve(1);  // this reader's floor
  * rosette::rtps::SharedPoolStatefulReader reader(guid, rosette::rtps::ReliabilityKind::RELIABLE,
- * transport, pool, 1, 8, assembly, 5, on_change, &app); if (reader.matched_writer_add(writer_guid,
- * &locator, 1u, rosette::rtps::VENDORID_UNKNOWN)) {
- *     // DATA from that writer now reaches on_change.
+ *                                                transport, pool, 1, 8, assembly, 5, held, 4,
+ *                                                on_change, &app);
+ * if (reader.matched_writer_add(writer_guid, &locator, 1u, rosette::rtps::VENDORID_UNKNOWN)) {
+ *     // DATA from that writer now reaches on_change, in the order written.
  * }
  * @endcode
  * Full program: tests/spec/src/test_stateful_reader_8_4_7_4.cpp (TC-SRR-8.4.7.4-006)
@@ -742,6 +916,8 @@ public:
      * @param[in] max_writers     Cap: most matches at once, at least `min_writers` and 1.
      * @param[in] assembly_pool   Assembly slots shared with other readers; outlives the reader.
      * @param[in] assembly_limit  Most of those slots this reader holds at once.
+     * @param[in] held_pool       Hold slots shared with other readers; outlives the reader.
+     * @param[in] held_limit      Most of those slots this reader holds at once.
      * @param[in] on_change_avail Callback fired on each new complete change; null discards.
      * @param[in] user_data       Forwarded to on_change_avail.
      * @param[in] hb_response_ms  heartbeatResponseDelay in milliseconds (§8.4.7.1).
@@ -749,11 +925,12 @@ public:
     SharedPoolStatefulReader(const Guid& guid, ReliabilityKind reliability, ITransport& transport,
                              WriterProxyPool& pool, uint8_t min_writers, uint8_t max_writers,
                              FragmentAssemblyPool& assembly_pool, uint16_t assembly_limit,
+                             HeldChangePool& held_pool, uint8_t held_limit,
                              OnChangeAvailable on_change_avail = nullptr, void* user_data = nullptr,
                              uint32_t hb_response_ms = RTPS_HEARTBEAT_RESPONSE_DELAY_MS) noexcept
         : StatefulReader(guid, reliability, transport, pool, min_writers, max_writers,
-                         assembly_pool, assembly_limit, on_change_avail, user_data,
-                         hb_response_ms) {}
+                         assembly_pool, assembly_limit, held_pool, held_limit, on_change_avail,
+                         user_data, hb_response_ms) {}
 };
 
 }  // namespace rosette::rtps

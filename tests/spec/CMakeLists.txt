@@ -197,6 +197,7 @@ set(SEDP_SPEC_TEST_SOURCES
     ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/writer_proxy.cpp
     ../../src/rtps/sn_window.cpp
+    ../../src/rtps/held_changes.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
@@ -312,7 +313,11 @@ add_test(
     COMMAND stateful_writer_spec_tests --emit-pass-json ${STATEFUL_WRITER_PASSED_JSON}
 )
 
-add_executable(stateful_reader_spec_tests
+# Built twice: stateful_reader_spec_tests_firmware_pool runs the reader with
+# the rmw_rosette firmware profile's buffer pool (rmw_rosette_capacity.cmake):
+# 256 B, 512 B, 1 KiB, datagram and large blocks, in the counts a small board
+# carries, where held changes and ACKNACKs share the smallest class.
+set(STATEFUL_READER_SPEC_TEST_SOURCES
     src/stateful_reader_spec_tests.cpp
     src/spec_test_common.cpp
     src/spec_stateful_reader_test_registry.cpp
@@ -321,12 +326,17 @@ add_executable(stateful_reader_spec_tests
     src/test_stateful_reader_8_4_8_8_4_9.cpp
     src/test_stateful_reader_8_4_9_gap_ranges.cpp
     src/test_stateful_reader_8_4_10_4_changes_from_writer.cpp
+    src/test_stateful_reader_8_4_10_4_in_order.cpp
+    src/test_stateful_reader_8_4_10_4_shared_hold_pool.cpp
+    src/test_stateful_reader_8_4_10_4_simulated_writers.cpp
+    src/test_stateful_reader_8_4_12_gap_nack_on_quiet.cpp
     src/test_stateful_reader_8_4_10_4_locator_reference.cpp
     src/test_stateful_reader_8_4_12_nack_frag_on_heartbeat.cpp
     src/test_stateful_reader_8_4_12_nack_frag_on_quiet.cpp
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/sn_window.cpp
+    ../../src/rtps/held_changes.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
@@ -337,13 +347,23 @@ add_executable(stateful_reader_spec_tests
     ../../src/rtps/buf_pool.cpp
 )
 
-target_include_directories(stateful_reader_spec_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/../..
-)
-
-target_compile_definitions(stateful_reader_spec_tests PRIVATE
-    RTPS_LOG_LEVEL=0
+add_executable(stateful_reader_spec_tests ${STATEFUL_READER_SPEC_TEST_SOURCES})
+add_executable(stateful_reader_spec_tests_firmware_pool ${STATEFUL_READER_SPEC_TEST_SOURCES})
+foreach(_reader_target stateful_reader_spec_tests stateful_reader_spec_tests_firmware_pool)
+    target_include_directories(${_reader_target} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    )
+    target_compile_definitions(${_reader_target} PRIVATE
+        RTPS_LOG_LEVEL=0
+    )
+endforeach()
+target_compile_definitions(stateful_reader_spec_tests_firmware_pool PRIVATE
+    RTPS_POOL_CLASS0_SIZE=256u RTPS_POOL_CLASS0_COUNT=16u
+    RTPS_POOL_CLASS1_SIZE=512u RTPS_POOL_CLASS1_COUNT=8u
+    RTPS_POOL_CLASS2_SIZE=1024u RTPS_POOL_CLASS2_COUNT=2u
+    RTPS_POOL_CLASS3_SIZE=1520u RTPS_POOL_CLASS3_COUNT=6u
+    RTPS_POOL_CLASS4_SIZE=4096u RTPS_POOL_CLASS4_COUNT=2u
 )
 
 set(STATEFUL_READER_PASSED_JSON
@@ -352,6 +372,11 @@ set(STATEFUL_READER_PASSED_JSON
 add_test(
     NAME stateful_reader_spec_conformance
     COMMAND stateful_reader_spec_tests --emit-pass-json ${STATEFUL_READER_PASSED_JSON}
+)
+
+add_test(
+    NAME stateful_reader_spec_conformance_firmware_pool
+    COMMAND stateful_reader_spec_tests_firmware_pool
 )
 
 # Built twice: participant_spec_tests_rebuild runs the participant with SEDP
@@ -374,6 +399,7 @@ set(PARTICIPANT_SPEC_TEST_SOURCES
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/sn_window.cpp
+    ../../src/rtps/held_changes.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
@@ -443,6 +469,7 @@ add_executable(local_name_limit_spec_tests
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/sn_window.cpp
+    ../../src/rtps/held_changes.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
@@ -481,6 +508,7 @@ add_executable(writer_slot_class_spec_tests
     ../../src/rtps/stateful_reader.cpp
     ../../src/rtps/fragment_assembler.cpp
     ../../src/rtps/sn_window.cpp
+    ../../src/rtps/held_changes.cpp
     ../../src/rtps/history_cache.cpp
     ../../src/rtps/reader_proxy.cpp
     ../../src/rtps/stateful_writer.cpp
@@ -736,7 +764,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         spdp.cpp spdp_peer_records.cpp locator_ranking.cpp buf_pool.cpp)
     rosette_spec_add_fuzz(sedp fuzz/fuzz_sedp.cpp
         sedp.cpp endpoint_match_table.cpp locator_ranking.cpp stateful_reader.cpp
-        fragment_assembler.cpp writer_proxy.cpp sn_window.cpp history_cache.cpp
+        fragment_assembler.cpp writer_proxy.cpp sn_window.cpp held_changes.cpp history_cache.cpp
         reader_proxy.cpp stateful_writer.cpp stateful_writer_replay.cpp proxy_pool.cpp
         message_parser.cpp buf_pool.cpp)
     rosette_spec_add_fuzz(endpoint_match fuzz/fuzz_endpoint_match_table.cpp

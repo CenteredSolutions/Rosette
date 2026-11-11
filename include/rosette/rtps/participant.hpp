@@ -73,6 +73,12 @@
  * another topic's. The SEDP builtin readers keep private pools. Design:
  * docs/design/shared_proxy_pools.md.
  *
+ * Changes held for in-order delivery
+ * ----------------------------------
+ * The user readers share one pool of RTPS_HELD_CHANGES hold slots, each
+ * reader holding at most RTPS_HELD_CHANGES_PER_READER; the SEDP builtin
+ * readers keep private pools. held_changes.hpp gives the rules.
+ *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
  *   RTPSParticipant            — §8.5.1,   p. 149
@@ -1187,6 +1193,13 @@ private:
     // before the reader storage, whose readers return their slots on
     // destruction.
     FragmentAssemblyPoolStorage<RTPS_ASSEMBLY_SLOTS> assembly_slots_;
+
+    // Hold slots of the user readers' changes waiting behind a gap;
+    // declared before the reader storage for the same reason.
+    static_assert(RTPS_HELD_CHANGES_PER_READER >= 1u
+                      && RTPS_HELD_CHANGES_PER_READER <= RTPS_HELD_CHANGES,
+                  "RTPS_HELD_CHANGES_PER_READER must be 1 to RTPS_HELD_CHANGES");
+    HeldChangePoolStorage<RTPS_HELD_CHANGES> held_slots_;
 
     // Writer storage: opaque byte arrays, each holding one
     // SharedPoolStatefulWriter<D>; writers_ points at the StatefulWriter
