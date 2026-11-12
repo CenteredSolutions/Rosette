@@ -233,24 +233,29 @@ endif()
 option(RMW_ROSETTE_HEAP_SAMPLES "Store samples above the largest pool block on the heap" ${_rr_heap_default})
 set(RMW_ROSETTE_HEAP_BUDGET 67108864 CACHE STRING
     "Most octets heap-stored samples of a process may hold at once, half for samples it writes and half for samples peers send")
-math(EXPR _rr_min_heap_budget "2 * ${RMW_ROSETTE_MAX_SAMPLE_SIZE}")
-if(RMW_ROSETTE_HEAP_SAMPLES AND RMW_ROSETTE_HEAP_BUDGET LESS _rr_min_heap_budget)
-  message(FATAL_ERROR "RMW_ROSETTE_HEAP_BUDGET must hold two RMW_ROSETTE_MAX_SAMPLE_SIZE samples, one per half")
-endif()
 if(RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER 16777215)
   message(FATAL_ERROR "RMW_ROSETTE_MAX_SAMPLE_SIZE must be below 16 MiB (a 24-bit block capacity)")
 endif()
-if(RMW_ROSETTE_HEAP_SAMPLES AND RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER 65532)
+
+# Heap blocks exist only when a sample can outgrow the largest class, whose
+# size is 16-bit (65532). At or below it, the class holds every sample and
+# the build has no heap path, even with RMW_ROSETTE_HEAP_SAMPLES on.
+if(RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER 65532)
+  if(NOT RMW_ROSETTE_HEAP_SAMPLES)
+    message(FATAL_ERROR "RMW_ROSETTE_MAX_SAMPLE_SIZE above 65532 needs RMW_ROSETTE_HEAP_SAMPLES")
+  endif()
+
+  math(EXPR _rr_min_heap_budget "2 * ${RMW_ROSETTE_MAX_SAMPLE_SIZE}")
+  if(RMW_ROSETTE_HEAP_BUDGET LESS _rr_min_heap_budget)
+    message(FATAL_ERROR "RMW_ROSETTE_HEAP_BUDGET must hold two RMW_ROSETTE_MAX_SAMPLE_SIZE samples, one per half")
+  endif()
+
   set(_rr_large_block 65532)
-elseif(RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER 65532)
-  message(FATAL_ERROR "RMW_ROSETTE_MAX_SAMPLE_SIZE above 65532 needs RMW_ROSETTE_HEAP_SAMPLES")
-else()
-  set(_rr_large_block ${RMW_ROSETTE_MAX_SAMPLE_SIZE})
-endif()
-if(RMW_ROSETTE_HEAP_SAMPLES)
   set(_rr_heap_blocks 1)
+  # A sample above 64 KiB may span every fragment a NACK_FRAG can name.
   set(_rr_repair_words 8)
 else()
+  set(_rr_large_block ${RMW_ROSETTE_MAX_SAMPLE_SIZE})
   set(_rr_heap_blocks 0)
   set(_rr_repair_words 2)
 endif()

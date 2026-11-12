@@ -49,7 +49,8 @@
  * Heap blocks (optional)
  * ----------------------
  * A build that defines RTPS_HEAP_BLOCKS also stores samples larger than every
- * class on the heap. rmw_rosette turns it on for hosted builds
+ * class on the heap. rmw_rosette turns it on for a hosted build whose
+ * RMW_ROSETTE_MAX_SAMPLE_SIZE exceeds the largest class
  * (RMW_ROSETTE_HEAP_SAMPLES); firmware leaves it off and never calls malloc.
  * A heap block has the same header as a slab block, so references, sharing,
  * and prepend() work unchanged. A request is served by its size and by who
@@ -167,16 +168,28 @@ static constexpr uint32_t kPoolMaxBlockSize = RTPS_POOL_CLASS4_SIZE;
 #ifndef RTPS_HEAP_BLOCKS
 #  define RTPS_HEAP_BLOCKS 0
 #endif
-#ifndef RTPS_MAX_HEAP_BLOCK_SIZE
-#  define RTPS_MAX_HEAP_BLOCK_SIZE RTPS_POOL_CLASS4_SIZE
-#endif
-#ifndef RTPS_HEAP_BLOCK_BUDGET
-#  define RTPS_HEAP_BLOCK_BUDGET (64u * 1024u * 1024u)
-#endif
+
+#if RTPS_HEAP_BLOCKS
+// No default: a heap no larger than the largest class could never be used,
+// and a build that turned it on would only find out when large writes fail.
+#  ifndef RTPS_MAX_HEAP_BLOCK_SIZE
+#    error "RTPS_HEAP_BLOCKS needs RTPS_MAX_HEAP_BLOCK_SIZE, the largest sample it stores"
+#  endif
+#  ifndef RTPS_HEAP_BLOCK_BUDGET
+#    define RTPS_HEAP_BLOCK_BUDGET (64u * 1024u * 1024u)
+#  endif
+
+static_assert(RTPS_MAX_HEAP_BLOCK_SIZE > RTPS_POOL_CLASS4_SIZE,
+              "heap blocks hold samples larger than the largest class");
+static_assert(RTPS_HEAP_BLOCK_BUDGET / 2u >= RTPS_MAX_HEAP_BLOCK_SIZE,
+              "each half of the heap budget holds at least one largest sample");
 
 /// Largest sample this build can store: what senders and receivers are held to.
-static constexpr uint32_t kMaxSampleOctets =
-    RTPS_HEAP_BLOCKS ? RTPS_MAX_HEAP_BLOCK_SIZE : kPoolMaxBlockSize;
+static constexpr uint32_t kMaxSampleOctets = RTPS_MAX_HEAP_BLOCK_SIZE;
+#else
+/// Largest sample this build can store: what senders and receivers are held to.
+static constexpr uint32_t kMaxSampleOctets = kPoolMaxBlockSize;
+#endif
 
 /// BufBlock::size_class of a heap block charged to samples this process wrote.
 static constexpr uint8_t kHeapSizeClass = 0xFEu;
@@ -187,10 +200,6 @@ static constexpr uint8_t kHeapReceivedSizeClass = 0xFDu;
 enum class HeapBudgetSide : uint8_t { Local = 0u, Received = 1u };
 
 static_assert(kMaxSampleOctets < (1u << 24), "BufBlock::block_cap holds 24 bits");
-#if RTPS_HEAP_BLOCKS
-static_assert(RTPS_HEAP_BLOCK_BUDGET / 2u >= RTPS_MAX_HEAP_BLOCK_SIZE,
-              "each half of the heap budget holds at least one largest sample");
-#endif
 
 #ifndef RTPS_BUF_BLOCK_SIZE
 #  define RTPS_BUF_BLOCK_SIZE RTPS_POOL_CLASS4_SIZE
