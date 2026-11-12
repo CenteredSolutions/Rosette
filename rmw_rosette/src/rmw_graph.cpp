@@ -11,11 +11,11 @@
  * (EndpointMatchTable::count()). Which ROS node owns an endpoint, and which
  * nodes exist at all, is carried only by the rmw_dds_common
  * ParticipantEntitiesInfo messages each participant publishes on
- * `ros_discovery_info`; queries that need node names return
- * RMW_RET_UNSUPPORTED, because this participant publishes that topic but
- * does not read it. Topic and service listings need names the table does not
- * keep: a hosted build answers them from the GraphCache (rmw_graph_names.cpp),
- * and a build without the cache returns RMW_RET_UNSUPPORTED here.
+ * `ros_discovery_info`. Topic, service, and node listings need names the
+ * table does not keep: a hosted build answers them from the GraphCache
+ * (rmw_graph_names.cpp, rmw_graph_node_names.cpp), and a build without the
+ * cache returns RMW_RET_UNSUPPORTED here. The per-node and per-topic detail
+ * queries and enclave listings return RMW_RET_UNSUPPORTED on every build.
  *
  * Every query takes the context lock: the tables it reads are updated by
  * the thread driving the participant.
@@ -128,7 +128,6 @@ rmw_ret_t rmw_get_service_names_and_types(const rmw_node_t* node, rcutils_alloca
     (void)service_names_and_types;
     return RMW_RET_UNSUPPORTED;
 }
-#endif  // !RMW_ROSETTE_GRAPH_CACHE
 
 /// @brief Returns RMW_RET_UNSUPPORTED (see the file comment).
 rmw_ret_t rmw_get_node_names(const rmw_node_t* node, rcutils_string_array_t* node_names,
@@ -137,6 +136,7 @@ rmw_ret_t rmw_get_node_names(const rmw_node_t* node, rcutils_string_array_t* nod
     RMW_SET_ERROR_MSG("rmw_rosette: rmw_get_node_names not implemented");
     return RMW_RET_UNSUPPORTED;
 }
+#endif  // !RMW_ROSETTE_GRAPH_CACHE
 
 /// @brief Counts publishers on a ROS topic across the graph; see count_endpoints().
 rmw_ret_t rmw_count_publishers(const rmw_node_t* node, const char* topic_name, size_t* count) {
