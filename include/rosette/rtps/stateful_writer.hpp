@@ -590,7 +590,7 @@ public:
      *   this writer again receives what a newly matched reader would; a
      *   non-final announcement is always answered, by a final HEARTBEAT
      *   when the writer has written nothing.
-     * - Covered by: TC-SWR-8.4.3-004, TC-SWR-8.4.3-001, TC-SWR-8.4.3-002, TC-SWR-8.4.3-003,
+     * - Covered by: TC-SWR-8.4.3-001, TC-SWR-8.4.3-002, TC-SWR-8.4.3-003, TC-SWR-8.4.3-004,
      *   TC-SWR-8.4.9-001, TC-SWR-8.2.2-003, TC-SWR-8.4.1.4-004,
      *   TC-SWR-8.4.1.4-005, TC-SWR-8.4.1.4-006, TC-SWR-8.4.9.1-001.
      *

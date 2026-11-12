@@ -552,24 +552,17 @@ private:
      * for eProsima and RTI (which sends the same form), bitmapBase 1 for
      * everyone else (WriterProxy::zeroBaseAcknack).
      *
-     * One preemptive ACKNACK is not enough. A writer whose proxy for this
-     * reader already holds everything acknowledged (a peer that kept this
-     * reader matched while this participant parked it) sends nothing on its
-     * own, so if the ACKNACK or its answer is lost the writer is never heard
-     * and nothing it holds is ever replayed. The proxy therefore owes another
-     * RTPS_PREEMPTIVE_ACKNACK_RETRY_MS later, which tick() sends, until a
-     * HEARTBEAT, DATA or GAP from the writer cancels it (WriterProxy::heard).
-     *
-     * @param[in,out] proxy  The matched writer; its count is advanced and,
-     *   while it is unheard, the next attempt is scheduled.
-     * @param[in]     now_ms rosette::platform::monotonic_ms().
+     * @param[in,out] proxy The matched writer; its count is advanced and,
+     *   while it is unheard, the next attempt is owed
+     *   RTPS_PREEMPTIVE_ACKNACK_RETRY_MS later, whether or not this one left.
      *
      * Verification:
      * - Correct means: one ACKNACK to the writer's unicast locator, empty
      *   set, F-flag clear, a count above every earlier one, bitmapBase 0
      *   exactly for eProsima and RTI; repeated every retry period until the
      *   writer is heard, and never after.
-     * - Covered by: TC-SRR-8.4.7.4-002, TC-SRR-8.4.7.4-004, TC-SRR-8.4.7.4-008.
+     * - Covered by: TC-SRR-8.4.7.4-002, TC-SRR-8.4.7.4-004, TC-SRR-8.4.7.4-008,
+     *   TC-SRR-8.4.7.4-009.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.7.1 (ACKNACK), §8.3.5.5 (SequenceNumberSet)

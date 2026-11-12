@@ -495,25 +495,20 @@ public:
                         SequenceNumber& subscriptions) noexcept;
 
     /**
-     * @brief Reports whether each of a peer's matched SEDP announcers has been heard since
-     * matching.
+     * @brief Reports whether each of a peer's matched SEDP announcers has spoken since matching.
      *
-     * caught_up_with() holds for an announcer that has told this reader of
-     * nothing, which is also what a reader whose preemptive ACKNACK was lost
-     * sees: the announcer believes this reader up to date and stays silent.
-     * The participant therefore settles a peer only once both announcers have
-     * sent a HEARTBEAT, DATA or GAP to the proxies matched at its activation
-     * (RTPSParticipant::peer_is_settled()), so their replay, which announces
-     * the peer's readers of this participant's writers, has started.
+     * Use it alongside caught_up_with(), which also holds for an announcer
+     * that has sent nothing, as it is when this reader's preemptive ACKNACK
+     * was lost; heard_from() tells the two apart.
      *
      * @param[in] peer_prefix GUID prefix of the peer.
      * @return `true` when every announcer of the peer that is matched has
      *   been heard; an announcer the peer does not have counts as heard.
      *
      * Verification:
-     * - Correct means: false from activation until a HEARTBEAT, DATA or GAP
-     *   from each matched announcer arrives, then true until the peer is
-     *   matched again.
+     * - Correct means: false from matching until a HEARTBEAT, DATA, GAP or
+     *   fragment submessage from each matched announcer arrives, then true
+     *   until the peer is matched again.
      * - Covered by: TC-PART-8.5.3-019.
      *
      * References:
