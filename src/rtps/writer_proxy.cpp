@@ -19,7 +19,7 @@ void WriterProxy::init(const Guid& writer_guid, const Locator* unicast_locs,
     unicastLocator = preferred_unicast_locator(unicast_locs, unicast_count);
 }
 
-// Any HEARTBEAT, DATA or GAP is the writer heard: a preemptive ACKNACK
+// Any HEARTBEAT, DATA, GAP or fragment submessage is the writer heard: a preemptive ACKNACK
 // still pending is no longer needed, since the writer now knows this reader
 // and its HEARTBEATs drive the exchange from here.
 void WriterProxy::on_heard() noexcept {

@@ -252,8 +252,8 @@ An active peer is **settled** when all of these hold:
   `ros_discovery_info` writer is not an application endpoint: every stock
   ROS 2 participant reads it, so counting it would leave no peer settled.
 * Every one of its SEDP announcers that this side reads has been heard since
-  its activation (a HEARTBEAT, DATA or GAP), and has been processed, with no
-  gaps, up to the `lastSN` of its latest HEARTBEAT.
+  its activation (a HEARTBEAT, DATA, GAP or fragment submessage), and has
+  been processed, with no gaps, up to the `lastSN` of its latest HEARTBEAT.
 * Its SEDP readers have acknowledged everything both of this side's SEDP
   announcers have written.
 * Its `ros_discovery_info` reader, if it has one, has acknowledged the

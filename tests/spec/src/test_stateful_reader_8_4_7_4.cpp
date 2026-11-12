@@ -326,6 +326,46 @@ bool tc_srr_8_4_7_4_008(std::string& err) {
     return true;
 }
 
+bool tc_srr_8_4_7_4_009(std::string& err) {
+    CaptureTransport   tx{};
+    const Guid         reader_guid = make_guid(0x11u, 0x12u, 0x13u, make_entity(1u, 2u, 3u, 0xC7u));
+    const Guid         writer_guid = make_guid(0x21u, 0x22u, 0x23u, make_entity(4u, 5u, 6u, 0xC2u));
+    const Locator      loc = make_udpv4_locator(0xC0A80114u, 7411u);
+    constexpr uint32_t kRetry = RTPS_PREEMPTIVE_ACKNACK_RETRY_MS;
+
+    g_stateful_reader_test_now_ms = 1000u;
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u, VENDORID_EPROSIMA),
+          "matched_writer_add should succeed");
+    CHECK(tx.sent.size() == 1u, "the match sends the preemptive ACKNACK");
+
+    // The first of three fragments of SN 1: the sample stays partial.
+    const Octet    bytes[4] = {0x00u, 0x01u, 0x00u, 0x00u};
+    ParsedDataFrag df{};
+    df.readerId = reader_guid.entityId;
+    df.writerId = writer_guid.entityId;
+    df.writerSN = SequenceNumber::from_int64(1);
+    df.fragmentStartingNum = 1u;
+    df.fragmentsInSubmessage = 1u;
+    df.fragmentSize = 4u;
+    df.dataSize = 12u;
+    df.fragmentPayload = bytes;
+    df.fragmentPayloadSize = sizeof(bytes);
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+    r.on_data_frag(ctx, df);
+    CHECK(r.matched_writer_lookup(writer_guid)->heard, "a DATA_FRAG marks the writer heard");
+
+    r.tick(1000u + kRetry);
+    r.tick(1000u + 2u * kRetry);
+    for (size_t i = 1u; i < tx.sent.size(); ++i) {
+        ParsedAckNack ack{};
+        CHECK(!parse_acknack(tx.sent[i], ack), "no preemptive ACKNACK follows a DATA_FRAG");
+    }
+
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.7.4-001",
                      "§8.4.7.4: matched_writer_add creates one WriterProxy for a newly matched writer, and matched_writer_remove removes it from the matched set.",
@@ -361,6 +401,10 @@ void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
                      "§8.4.7.4/§8.3.7.1: the preemptive ACKNACK is resent every "
                      "RTPS_PREEMPTIVE_ACKNACK_RETRY_MS until the writer is heard, then never.",
                      tc_srr_8_4_7_4_008});
+    tests.push_back({"TC-SRR-8.4.7.4-009",
+                     "§8.4.7.4/§8.3.7.4: a DATA_FRAG marks its writer heard, so a writer sending "
+                     "a fragmented sample is not sent the preemptive ACKNACK again.",
+                     tc_srr_8_4_7_4_009});
 }
 
 } // namespace spec_test

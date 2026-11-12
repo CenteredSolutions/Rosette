@@ -276,6 +276,10 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
         return;
     }
 
+    if (proxy) {
+        proxy->on_heard();
+    }
+
     // A fragment of a sample already delivered (the writer resends whole
     // samples on NACK_FRAG) must not assemble and deliver it again.
     if (proxy && !is_new_change(*proxy, msg.writerSN)) {
@@ -423,6 +427,8 @@ void StatefulReader::on_heartbeat_frag(const ParseContext&       ctx,
     if (msg.readerId != entity_id::UNKNOWN && msg.readerId != guid_.entityId) {
         return;
     }
+
+    proxy->on_heard();
 
     // Ask the assembler for the missing fragment set.
     FragmentNumberSet missing{};
