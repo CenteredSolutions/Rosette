@@ -75,10 +75,10 @@ set(RMW_ROSETTE_MATCHED_WRITERS "" CACHE STRING
     "Remote writers matched across all local readers at once (the WriterProxy pool); empty: every reader at RMW_ROSETTE_MAX_MATCHED_ENDPOINTS")
 set(RMW_ROSETTE_MAX_REMOTE_ENDPOINTS 128 CACHE STRING
     "Remote writers (and, separately, remote readers) known from SEDP; a stock rclpy/rclcpp node has about 9 of each. When full, an endpoint that matches a local one displaces one that matches none, so on a large network this need only cover the remote endpoints this process matches")
-set(RMW_ROSETTE_MAX_DATAGRAM_SIZE 65507 CACHE STRING
-    "Largest UDP datagram sent or received: 65507 on hosts; 1472 (1500-byte MTU) where IP fragmentation is unavailable (WIZnet hardware UDP). Larger samples go out as DATA_FRAG; peers must cap their datagrams to this too")
-set(RMW_ROSETTE_MAX_SAMPLE_SIZE 65532 CACHE STRING
-    "Largest serialized message (publish, service request or reply) in octets; sizes the largest buffer-pool class (at most 65532)")
+set(RMW_ROSETTE_MAX_DATAGRAM_SIZE 65500 CACHE STRING
+    "Largest UDP datagram sent or received: 65500 on hosts, the largest message Fast DDS accepts; 1472 (1500-byte MTU) where IP fragmentation is unavailable (WIZnet hardware UDP). Larger samples go out as DATA_FRAG; peers must cap their datagrams to this too")
+set(RMW_ROSETTE_MAX_SAMPLE_SIZE 1048576 CACHE STRING
+    "Largest serialized message (publish, service request or reply) in octets. At most 65532 without RMW_ROSETTE_HEAP_SAMPLES, when it sizes the largest buffer-pool class")
 set(RMW_ROSETTE_MAX_PENDING_CHANGES 10 CACHE STRING
     "Deepest KEEP_LAST history a subscription, service, or client keeps between takes; deeper requests and KEEP_ALL run at this depth (10 holds rmw_qos_profile_default whole)")
 set(RMW_ROSETTE_MAX_WRITER_DEPTH 8 CACHE STRING
@@ -156,9 +156,6 @@ endif()
 math(EXPR _rr_match_records
      "${_rr_reader_proxies} + ${_rr_writer_proxies} + ${RMW_ROSETTE_MATCH_WAITERS}")
 
-if(RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER 65532)
-  message(FATAL_ERROR "RMW_ROSETTE_MAX_SAMPLE_SIZE must be at most 65532 (16-bit pool block sizes)")
-endif()
 if(RMW_ROSETTE_MAX_DATAGRAM_SIZE LESS 512 OR RMW_ROSETTE_MAX_DATAGRAM_SIZE GREATER 65507)
   message(FATAL_ERROR "RMW_ROSETTE_MAX_DATAGRAM_SIZE must be between 512 and 65507")
 endif()
@@ -225,6 +222,44 @@ if(NOT _rr_sedp_rebuild MATCHES "^[01]$")
   message(FATAL_ERROR "RTPS_SEDP_REBUILD_ANNOUNCEMENTS must be 0 or 1")
 endif()
 
+# A hosted build stores samples above the largest static block on the heap,
+# bounded by the sample limit and a budget. Firmware has no heap path: its
+# largest block is the sample limit.
+if(RMW_ROSETTE_POOL_PROFILE STREQUAL "host")
+  set(_rr_heap_default ON)
+else()
+  set(_rr_heap_default OFF)
+endif()
+option(RMW_ROSETTE_HEAP_SAMPLES "Store samples above the largest pool block on the heap" ${_rr_heap_default})
+set(RMW_ROSETTE_HEAP_BUDGET 67108864 CACHE STRING
+    "Most octets heap-stored samples of a process may hold at once, half for samples it writes and half for samples peers send")
+if(RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER 16777215)
+  message(FATAL_ERROR "RMW_ROSETTE_MAX_SAMPLE_SIZE must be below 16 MiB (a 24-bit block capacity)")
+endif()
+
+# Heap blocks exist only when a sample can outgrow the largest class, whose
+# size is 16-bit (65532). At or below it, the class holds every sample and
+# the build has no heap path, even with RMW_ROSETTE_HEAP_SAMPLES on.
+if(RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER 65532)
+  if(NOT RMW_ROSETTE_HEAP_SAMPLES)
+    message(FATAL_ERROR "RMW_ROSETTE_MAX_SAMPLE_SIZE above 65532 needs RMW_ROSETTE_HEAP_SAMPLES")
+  endif()
+
+  math(EXPR _rr_min_heap_budget "2 * ${RMW_ROSETTE_MAX_SAMPLE_SIZE}")
+  if(RMW_ROSETTE_HEAP_BUDGET LESS _rr_min_heap_budget)
+    message(FATAL_ERROR "RMW_ROSETTE_HEAP_BUDGET must hold two RMW_ROSETTE_MAX_SAMPLE_SIZE samples, one per half")
+  endif()
+
+  set(_rr_large_block 65532)
+  set(_rr_heap_blocks 1)
+  # A sample above 64 KiB may span every fragment a NACK_FRAG can name.
+  set(_rr_repair_words 8)
+else()
+  set(_rr_large_block ${RMW_ROSETTE_MAX_SAMPLE_SIZE})
+  set(_rr_heap_blocks 0)
+  set(_rr_repair_words 2)
+endif()
+
 if(RMW_ROSETTE_POOL_PROFILE STREQUAL "host")
   set(_rr_size0 256)
   set(_rr_size1 512)
@@ -239,7 +274,7 @@ elseif(RMW_ROSETTE_POOL_PROFILE STREQUAL "firmware")
   set(_rr_size1 512)
   set(_rr_size2 1024)
   math(EXPR _rr_size3 "((${RMW_ROSETTE_MAX_DATAGRAM_SIZE} + 44 + 7) / 8) * 8")
-  if(NOT RMW_ROSETTE_MAX_SAMPLE_SIZE GREATER _rr_size3)
+  if(NOT _rr_large_block GREATER _rr_size3)
     message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_MAX_SAMPLE_SIZE (${RMW_ROSETTE_MAX_SAMPLE_SIZE}) must "
                         "exceed the datagram class (${_rr_size3} octets) in the firmware profile")
   endif()
@@ -347,7 +382,11 @@ function(rmw_rosette_apply_capacity target)
     RTPS_POOL_CLASS2_COUNT=${_rr_pool2}u
     RTPS_POOL_CLASS3_SIZE=${_rr_size3}u
     RTPS_POOL_CLASS3_COUNT=${_rr_pool3}u
-    RTPS_POOL_CLASS4_SIZE=${RMW_ROSETTE_MAX_SAMPLE_SIZE}u
+    RTPS_POOL_CLASS4_SIZE=${_rr_large_block}u
+    RTPS_HEAP_BLOCKS=${_rr_heap_blocks}
+    RTPS_MAX_HEAP_BLOCK_SIZE=${RMW_ROSETTE_MAX_SAMPLE_SIZE}u
+    RTPS_HEAP_BLOCK_BUDGET=${RMW_ROSETTE_HEAP_BUDGET}u
+    RTPS_FRAGMENT_REPAIR_WORDS=${_rr_repair_words}
     RTPS_POOL_CLASS4_COUNT=${_rr_pool4}u
     RTPS_ASSEMBLY_SLOTS=${_rr_assembly_slots}u
   )

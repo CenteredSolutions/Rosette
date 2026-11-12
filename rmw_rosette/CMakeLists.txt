@@ -202,7 +202,7 @@ if(BUILD_TESTING)
   set(_rmw_rosette_tests test_introspection_c_codec test_guard_condition test_pub_sub_loopback
                          test_change_ring test_local_node_entities test_service_departed_client
                          test_service_reply_depth test_init_options test_argument_checks
-                         test_live_context_refusals)
+                         test_live_context_refusals test_publish_fragment_limit)
   if(RMW_ROSETTE_CXX_TYPESUPPORT)
     list(APPEND _rmw_rosette_tests test_introspection_cpp_codec)
   endif()
