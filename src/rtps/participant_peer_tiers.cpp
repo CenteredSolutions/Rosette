@@ -13,17 +13,31 @@
  * (see "Known and active peers" in rtps/spdp.hpp).
  *
  * Admission. A new or pending peer is activated when a slot is free.
- * Otherwise the idle active peer whose last SEDP DATA is oldest is parked to
- * make room. Idle is settled or stalled. A settled peer has exchanged
- * everything with this participant and shares no match that counts
- * (peer_is_settled()). A stalled peer shares no match either, but its
- * exchange has not completed within RTPS_PEER_EXCHANGE_TIMEOUT_MS
- * (peer_is_stalled()): its unicast locator is unreachable, or a firewall is
- * in the way. It is parked owed, so it is tried again when a slot is free,
- * and cannot hold a slot that a reachable peer needs. A peer that shares a
- * match is never parked, so the slots end up held by the peers this
- * participant really talks to, and the remaining slots rotate through the
- * rest of the network.
+ * Otherwise the idle active peer whose last SEDP DATA (or activation) is
+ * oldest is parked to make room. An active peer is idle when it is settled
+ * or stalled, and neither ever shares a match that counts (one other than
+ * with the discovery writer), so the slots end up held by the peers this
+ * participant really talks to and the rest rotate through the network.
+ *
+ * | Active peer | No SEDP DATA for              | And also                        | Parked as  |
+ * |-------------|-------------------------------|---------------------------------|------------|
+ * | settled     | RTPS_PEER_SETTLE_MS           | both announcers heard, caught   | not owed   |
+ * |             |                               | up; its readers acknowledged    |            |
+ * |             |                               | every local SEDP and user write |            |
+ * | stalled     | RTPS_PEER_EXCHANGE_TIMEOUT_MS | nothing else                    | owed       |
+ * | neither     |                               |                                 | not parked |
+ *
+ * Settling waits for both of the peer's announcers to be heard, not only
+ * caught up, because of what this participant sends. Its discovery writer
+ * has a proxy for the peer's reader only once the announcers' replay has
+ * announced that reader again, and an acknowledgment check passes for a
+ * reader it has no proxy for. A reactivated peer whose replay never started
+ * (the preemptive ACKNACK lost) would settle without the
+ * `ros_discovery_info` sample it was reactivated to receive. Stalling
+ * bounds a peer whose SPDP arrives but whose SEDP exchange never completes
+ * (an unreachable unicast locator, a firewall): SPDP keeps its lease alive,
+ * and without the deadline it would hold its slot for good. It is parked
+ * owed, so it is tried again when a slot is free.
  *
  * Parking forgets nothing the peer needs. It already holds every
  * announcement and every `ros_discovery_info` sample this participant wrote,
@@ -34,8 +48,10 @@
  * received again in full. When this participant's own announcements
  * change, or its discovery writer writes new contents
  * (discovery_info_changed()), every parked peer is owed them and is
- * reactivated in turn, the one whose last SEDP DATA or activation is
- * oldest first (serve_owed_peer()).
+ * reactivated in turn, oldest last SEDP DATA or activation first
+ * (serve_owed_peer()). Every activation restamps a peer, so stalled peers
+ * taking turns in a slot fall behind one that has been waiting; table order
+ * would let two of them starve a reachable peer behind them.
  *
  * Parking is invisible to the graph observer, which lists the network's
  * endpoints rather than the active tier's. Reactivation starts a refresh of
