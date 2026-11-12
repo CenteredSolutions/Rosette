@@ -84,8 +84,8 @@ public:
     /// Count of the last ACKNACK or NACK_FRAG sent to this writer (§8.3.7.1).
     int32_t acknackCount = 0;
 
-    /// The writer has been heard since matching: a HEARTBEAT, DATA or GAP
-    /// arrived from it. Until then the reader keeps announcing itself with
+    /// The writer has been heard since matching: a HEARTBEAT, DATA, GAP or
+    /// fragment submessage arrived from it. Until then the reader keeps announcing itself with
     /// a preemptive ACKNACK (StatefulReader::tick()), since a writer that
     /// believes this reader up to date has no reason to send anything.
     bool heard = false;
@@ -334,14 +334,14 @@ public:
         }
     }
 
+    /// @brief Marks the writer heard, cancelling a pending preemptive ACKNACK; idempotent.
+    void on_heard() noexcept;
+
     /// @brief Locator for ACKNACKs: the referenced locator's current value, or
     /// LOCATOR_INVALID when there is none (referenced_locator()).
     const Locator& best_locator() const noexcept { return referenced_locator(unicastLocator); }
 
 private:
-    /// Marks the writer heard and cancels a pending preemptive ACKNACK.
-    void on_heard() noexcept;
-
     SequenceNumberWindow changes_;          ///< Resolved changes (changes_from_writer).
     SequenceNumber       last_available_ = SEQUENCENUMBER_ZERO;  ///< Highest SN the writer holds.
 };
