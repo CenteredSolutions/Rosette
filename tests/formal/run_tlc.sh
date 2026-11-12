@@ -4,17 +4,19 @@
 #
 # Checks one property of MCRosettePeerTiers under one variant with TLC.
 #
-# Usage: tests/formal/run_tlc.sh <delivery> <sweep_rule> <park_rule> <property> [max_sn] [net_cap]
+# Usage: tests/formal/run_tlc.sh <delivery> <sweep_rule> <park_rule> <settle_rule> <property>
+#                                 [max_sn] [net_cap]
 #   delivery    on_arrival (the code) | in_order (DDSI-RTPS 2.5 §8.4.10.4)
 #   sweep_rule  caught_up (the code)  | post_activation_hb
 #   park_rule   keep_refresh_target (the code) | resolved_only
+#   settle_rule heard_writer (the code) | caught_up
 #   property    NoLiveDrop | NoListAfterDisposal | UnconfirmedOnlyInRefresh | TypeOK
 #               | EventuallyConsistent (liveness: checked under FairSpec, without symmetry)
 #
 # TLC runs in a JRE container; tla2tools.jar is pinned by version and checksum.
 set -euo pipefail
 
-delivery=$1 sweep=$2 park=$3 property=$4 max_sn=${5:-4} net_cap=${6:-3}
+delivery=$1 sweep=$2 park=$3 settle=$4 property=$5 max_sn=${6:-3} net_cap=${7:-2}
 here=$(cd "$(dirname "$0")" && pwd)
 jar_dir=${TLA_TOOLS_DIR:-$HOME/.local/share/tlaplus/v1.7.4}
 jar_sha=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
@@ -38,6 +40,7 @@ CONSTANTS
     Delivery = "$delivery"
     SweepRule = "$sweep"
     ParkRule = "$park"
+    SettleRule = "$settle"
 SPECIFICATION $spec
 $symmetry
 $check

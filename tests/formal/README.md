@@ -19,8 +19,8 @@ each choice costs.
 ## Running
 
 ```sh
-tests/formal/run_tlc.sh <delivery> <sweep_rule> <park_rule> <property> [max_sn] [net_cap]
-tests/formal/run_tlc.sh in_order caught_up keep_refresh_target EventuallyConsistent 3 2
+tests/formal/run_tlc.sh <delivery> <sweep_rule> <park_rule> <settle_rule> <property> [max_sn] [net_cap]
+tests/formal/run_tlc.sh in_order caught_up keep_refresh_target heard_writer EventuallyConsistent
 ```
 
 ```sh
@@ -52,6 +52,9 @@ without it.
   could request.
 * Fairness: the reader's tick runs, and a message the announcer keeps
   offering eventually arrives (`Transmit`).
+* A reactivated peer answers. Phases 1 and 2 let its HEARTBEAT reach the
+  fresh proxy eventually; phase 3 checks that resending the preemptive
+  ACKNACK (`RTPS_PREEMPTIVE_ACKNACK_RETRY_MS`) is what makes it answer.
 
 ## Properties
 
@@ -64,18 +67,22 @@ without it.
 
 ## Phase 1 results
 
-Bounds: two endpoints, `MaxSN = 3`, two messages in flight. `SweepRule` is
-`caught_up` (the code) unless stated.
+Bounds: two endpoints, `MaxSN = 3`, two messages in flight (the
+`run_tlc.sh` defaults). `SweepRule` is `caught_up` (the code) unless stated.
 
-| Delivery | ParkRule | NoListAfterDisposal | UnconfirmedOnlyInRefresh | EventuallyConsistent |
-|---|---|---|---|---|
-| on_arrival (code) | resolved_only | violated | violated | violated |
-| on_arrival (code) | keep_refresh_target (code) | violated | holds | violated |
-| in_order (§8.4.10.4) | resolved_only | holds | violated | violated |
-| in_order (§8.4.10.4) | keep_refresh_target (code) | holds | holds | **holds** |
+| SettleRule | Delivery | ParkRule | NoListAfterDisposal | UnconfirmedOnlyInRefresh | EventuallyConsistent |
+|---|---|---|---|---|---|
+| caught_up | on_arrival (code) | resolved_only | violated | violated | violated |
+| caught_up | on_arrival (code) | keep_refresh_target (code) | violated | holds | violated |
+| caught_up | in_order (§8.4.10.4) | resolved_only | holds | violated | violated |
+| caught_up | in_order (§8.4.10.4) | keep_refresh_target (code) | holds | holds | holds |
+| heard_writer (code) | on_arrival (code) | resolved_only | violated | holds | violated |
+| heard_writer (code) | on_arrival (code) | keep_refresh_target (code) | violated | holds | violated |
+| heard_writer (code) | in_order (§8.4.10.4) | resolved_only | holds | holds | violated |
+| heard_writer (code) | in_order (§8.4.10.4) | keep_refresh_target (code) | holds | holds | **holds** |
 
 `NoLiveDrop` is violated under both sweep rules, `caught_up` and
-`post_activation_hb`. What each violation shows:
+`post_activation_hb`, with either settle rule. What each violation shows:
 
 * **Delivery on arrival re-lists a withdrawn endpoint.** A reannouncement or
   repair DATA overtaken by the disposal that supersedes it is still
@@ -83,13 +90,19 @@ Bounds: two endpoints, `MaxSN = 3`, two messages in flight. `SweepRule` is
   disposal (`stateful_reader.cpp`, `is_new_change()` then `deliver()`). The
   endpoint stays listed for as long as the peer lives. Delivering only up to
   `available_changes_max`, as §8.4.10.4 describes, removes it.
-* **Parking during a refresh must not abandon it.** An owed reactivation whose
-  replay is lost leaves a fresh proxy that is trivially caught up; the peer
-  settles, and keeping `available_changes_max`, 0, as the parked number
-  (`resolved_only`) means the next activation starts no refresh, and an
-  endpoint the peer withdrew while parked stays listed. `park_peer()` keeps the larger
-  of the refresh target and `available_changes_max`, which resumes the
-  refresh (TC-PART-8.5.3-018).
+* **Parking during a refresh must not abandon it, or lower its target.**
+  Under `caught_up`, an owed reactivation whose replay is lost leaves a fresh
+  proxy that is trivially caught up; the peer settles, and keeping
+  `available_changes_max`, 0, as the parked number (`resolved_only`) means
+  the next activation starts no refresh, and an endpoint the peer withdrew
+  while parked stays listed. `heard_writer` forbids that park, but being
+  heard is not reaching the target: a proxy that has heard only a GAP for an
+  old number is caught up to it, so `resolved_only` lowers the target to that
+  number. The next owed reactivation then sweeps once the same GAP arrives,
+  before the replay reaches the announcement that confirms a live endpoint,
+  and the endpoint flickers out of the listing on every reactivation.
+  `park_peer()` keeps the larger of the refresh target and
+  `available_changes_max`, which resumes the refresh (TC-PART-8.5.3-018).
 * **No sweep rule prevents a transient drop.** After reactivation, a GAP
   for an old announcement can arrive, and the reader be caught up to every
   number it knows of, before the DATA of that endpoint's newer announcement.
@@ -103,17 +116,17 @@ Bounds: two endpoints, `MaxSN = 3`, two messages in flight. `SweepRule` is
 
 `RosettePeerTable` with three peers (four in the larger runs), one to three
 slots, a record for every peer, and four or five environment events (joins,
-leaves, announcements, local endpoint changes) per behavior.
+leaves, announcements, local endpoint changes) per behavior. A peer settles only
+once its announcements are processed, which covers being heard since
+activation, as `peer_is_settled()` requires.
 
 * **The invariants hold:** at most `RTPS_MAX_PEERS` peers are active, the
   oldest-first order covers exactly the active peers, a parked peer is never
   matched, and a matched peer is never parked to make room.
 * **Liveness holds when the board has room.** Once the network is quiet and
   fewer live peers share a match than there are slots, every peer is
-  eventually exchanged with and every shared match is made, including the
-  owed peers that `serve_owed_peer()` serves in table order rather than
-  oldest first. More matching peers than slots is the over-capacity case the
-  design accepts.
+  eventually exchanged with and every shared match is made. More matching
+  peers than slots is the over-capacity case the design accepts.
 * **A peer that cannot complete its exchange must not hold its slot for
   good.** A peer whose SPDP multicast arrives but whose SEDP exchange never
   completes (unicast filtered, an unreachable announced locator) never
@@ -190,10 +203,10 @@ design to the same modules:
    over-capacity promotion retries, lease expiry and disposal in both tiers.
    Properties: no lockout, a peer with a real match is never parked, at most
    `RTPS_MAX_PEERS` active.
-3. **Outbound.** Owed peers caught up through borrowed reader slots, oldest
-   first, and `ros_discovery_info`. Properties: every known peer eventually
-   acknowledges this side's latest announcements; nothing is acknowledged
-   before it is processed.
+3. **Outbound.** One owed peer and this side's `ros_discovery_info` sample
+   across a lossy reactivation. Properties: a peer is never parked without
+   the current sample, eventually receives it, and can always be parked
+   again.
 4. **Quiescence.** HEARTBEAT and ACKNACK response rules, to check that a
    settled network stops exchanging SEDP (the HEARTBEAT storm of PR #41).
 5. **Refinement.** A mapping from `RosettePeerTiers` to `SedpReliable`: every

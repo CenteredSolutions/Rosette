@@ -12,6 +12,12 @@
 (*  - Parking: RTPSParticipant::park_peer(), allowed once the peer has    *)
 (*    settled (RTPS_PEER_SETTLE_MS without SEDP DATA, an abstract timer   *)
 (*    here) and its reader is caught up (SedpReader::caught_up_with()).   *)
+(*    SettleRule = "heard_writer", the code, also requires that the proxy *)
+(*    has heard a HEARTBEAT, DATA or GAP since activation               *)
+(*    (SedpReader::heard_from()); "caught_up" does not, so a fresh proxy  *)
+(*    that has heard nothing counts as caught up. The announcer's         *)
+(*    periodic HEARTBEAT stands in for the preemptive ACKNACK retry that *)
+(*    makes the peer answer, which RosettePeerOutbound checks.            *)
 (*  - Reactivation: by a DATA or HEARTBEAT above the kept number          *)
 (*    (on_announcer_traffic(), which then routes the message to the new   *)
 (*    proxy), or at any time because this side owes the peer something   *)
@@ -45,23 +51,26 @@ EXTENDS SedpReliable
 CONSTANTS
     Delivery,    \* "on_arrival" (the code) or "in_order" (§8.4.10.4).
     SweepRule,   \* "caught_up" (the code) or "post_activation_hb".
-    ParkRule     \* "keep_refresh_target" (the code) or "resolved_only".
+    ParkRule,    \* "keep_refresh_target" (the code) or "resolved_only".
+    SettleRule   \* "heard_writer" (the code) or "caught_up".
 
 ASSUME Delivery \in {"on_arrival", "in_order"}
 ASSUME SweepRule \in {"caught_up", "post_activation_hb"}
 ASSUME ParkRule \in {"keep_refresh_target", "resolved_only"}
+ASSUME SettleRule \in {"heard_writer", "caught_up"}
 
 VARIABLES
     tier,        \* "active" or "parked".
     proxy,       \* The WriterProxy while active; FreshProxy while parked.
     kept,        \* PeerEntry::parkedPublicationsSn: kept number, or refresh target.
     settled,     \* The settle timer has run out since the last DATA or activation.
+    heard,       \* WriterProxy::heard: a HEARTBEAT, DATA or GAP since activation.
     delivered,   \* in_order only: changes delivered up to this number.
     cache,       \* [Endpoints -> {"absent", "confirmed", "unconfirmed"}]
     disposedSeen \* Ghost: endpoints whose disposal this side has delivered.
 
-localVars == <<tier, proxy, kept, settled, delivered, cache, disposedSeen>>
-vars == <<written, wsn, irrelevant, withdrawn, net, tier, proxy, kept, settled, delivered,
+localVars == <<tier, proxy, kept, settled, heard, delivered, cache, disposedSeen>>
+vars == <<written, wsn, irrelevant, withdrawn, net, tier, proxy, kept, settled, heard, delivered,
           cache, disposedSeen>>
 
 Listed(e) == cache[e] # "absent"
@@ -73,6 +82,7 @@ TypeOK ==
     /\ proxy \in Proxies
     /\ kept \in 0..MaxSN
     /\ settled \in BOOLEAN
+    /\ heard \in BOOLEAN
     /\ delivered \in 0..MaxSN
     /\ cache \in [Endpoints -> {"absent", "confirmed", "unconfirmed"}]
     /\ disposedSeen \subseteq Endpoints
@@ -83,6 +93,7 @@ Init ==
     /\ proxy = FreshProxy
     /\ kept = 0
     /\ settled = FALSE
+    /\ heard = FALSE
     /\ delivered = 0
     /\ cache = [e \in Endpoints |-> "absent"]
     /\ disposedSeen = {}
@@ -145,6 +156,7 @@ TakeActive(m) ==
           /\ delivered' = out.d
           /\ disposedSeen' = disposedSeen \cup out.seen
           /\ settled' = IF m.type = "DATA" THEN FALSE ELSE settled
+          /\ heard' = TRUE
     /\ UNCHANGED <<peerVars, tier, kept>>
 
 \* A parked peer's message: above the kept number it reactivates the peer and
@@ -160,6 +172,7 @@ TakeParked(m) ==
                /\ delivered' = out.d
                /\ disposedSeen' = disposedSeen \cup out.seen
                /\ settled' = FALSE
+               /\ heard' = TRUE
                /\ UNCHANGED kept
        ELSE UNCHANGED localVars
     /\ UNCHANGED peerVars
@@ -179,13 +192,14 @@ OwedReactivate ==
     /\ cache' = CacheOnActivation
     /\ delivered' = 0
     /\ settled' = FALSE
+    /\ heard' = FALSE
     /\ UNCHANGED <<peerVars, net, kept, disposedSeen>>
 
 SettleTimerExpires ==
     /\ tier = "active"
     /\ ~settled
     /\ settled' = TRUE
-    /\ UNCHANGED <<peerVars, net, tier, proxy, kept, delivered, cache, disposedSeen>>
+    /\ UNCHANGED <<peerVars, net, tier, proxy, kept, heard, delivered, cache, disposedSeen>>
 
 \* park_peer(): the kept number is the reader's available_changes_max, and
 \* under "keep_refresh_target" no less than an unfinished refresh's target.
@@ -193,12 +207,14 @@ Park ==
     /\ tier = "active"
     /\ settled
     /\ ~HasMissing(proxy)
+    /\ SettleRule = "heard_writer" => heard
     /\ net = {}
     /\ tier' = "parked"
     /\ kept' = IF ParkRule = "resolved_only" THEN AvailMax(proxy) ELSE Max(kept, AvailMax(proxy))
     /\ proxy' = FreshProxy
     /\ delivered' = 0
     /\ settled' = FALSE
+    /\ heard' = FALSE
     /\ UNCHANGED <<peerVars, net, cache, disposedSeen>>
 
 SweepReady ==
@@ -213,7 +229,7 @@ FinishRefresh ==
     /\ SweepReady
     /\ cache' = [e \in Endpoints |-> IF cache[e] = "unconfirmed" THEN "absent" ELSE cache[e]]
     /\ kept' = 0
-    /\ UNCHANGED <<peerVars, net, tier, proxy, settled, delivered, disposedSeen>>
+    /\ UNCHANGED <<peerVars, net, tier, proxy, settled, heard, delivered, disposedSeen>>
 
 \* The peer drops a disposal once this side has acknowledged it. Parking is
 \* local: the peer keeps this side's SEDP reader matched, so what counts is

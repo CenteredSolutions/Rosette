@@ -20,9 +20,14 @@
 (*    oldest is parked to make room (park_settled_peer()); with none       *)
 (*    settled, admission fails and is retried by the next trigger.         *)
 (*  - Settled (peer_is_settled()): no match with a local endpoint, this    *)
-(*    side's announcements acknowledged, and the settle timer run out. The *)
-(*    reader's catch-up is not required here: a peer's new announcement   *)
-(*    may still be in flight, which is why parked traffic promotes.       *)
+(*    side's announcements acknowledged, the peer's announcements         *)
+(*    processed, and the settle timer run out. Activation sets peerNews,  *)
+(*    so a processed peer is also one whose SEDP writers were heard since *)
+(*    activation (SedpReader::heard_from()) and whose reader is caught up *)
+(*    (caught_up_with()). Catch-up covers only what the reader has heard  *)
+(*    of: an announcement still in flight is not, which is why parked     *)
+(*    traffic promotes. The settle timer and rebuildable() are a step    *)
+(*    that eventually fires once the rest holds.                          *)
 (*  - Owed (owe_parked_peers()): every local endpoint created or deleted   *)
 (*    marks each parked peer owed; serve_owed_peer() admits one owed peer  *)
 (*    per tick. ServeOrder is Rosette's choice of which: "table" takes the *)
@@ -238,12 +243,12 @@ Exchange(p) ==
     /\ lru' = IF peerNews[p] THEN Append(Without(lru, p), p) ELSE lru
     /\ UNCHANGED <<alive, status, owed, shares, budget>>
 
-\* peer_is_settled(): the settle timer runs out with nothing to acknowledge
-\* and no local match.
+\* peer_is_settled(): the settle timer runs out with nothing unprocessed on
+\* either side and no local match.
 Settle(p) ==
     /\ status[p] = "active"
     /\ ~settled[p]
-    /\ ~ourNews[p]
+    /\ ~peerNews[p] /\ ~ourNews[p]
     /\ ~matched[p]
     /\ settled' = [settled EXCEPT ![p] = TRUE]
     /\ UNCHANGED <<alive, status, peerNews, ourNews, owed, shares, matched, stalled, lru, budget>>
