@@ -735,12 +735,45 @@ public:
     const HistoryCache& cache()   const noexcept { return writer_cache_; }
 
     /// nack_response_delay() — §8.4.1.1, p. 104.
-    uint32_t nack_response_delay()            const noexcept { return nack_delay_ms_; }
-    void     nack_response_delay(uint32_t ms)       noexcept { nack_delay_ms_ = ms; }
+    uint32_t nack_response_delay() const noexcept { return nack_delay_ms_; }
+
+    void nack_response_delay(uint32_t ms) noexcept {
+        nack_delay_ms_ = ms;
+        note_timer_sooner();
+    }
 
     /// heartbeat_period() — §8.4.1.1, p. 104.
-    uint32_t heartbeat_period()               const noexcept { return hb_period_ms_; }
-    void     heartbeat_period(uint32_t ms)          noexcept { hb_period_ms_ = ms; }
+    uint32_t heartbeat_period() const noexcept { return hb_period_ms_; }
+
+    void heartbeat_period(uint32_t ms) noexcept {
+        hb_period_ms_ = ms;
+        note_timer_sooner();
+    }
+
+    /**
+     * @brief Names the flag this writer sets when one of its timers may have
+     *   come nearer.
+     *
+     * A participant remembers how long its soonest timer is away and skips
+     * its endpoints until then (RTPSParticipant::tick()). The application
+     * writes to a writer directly, not through the participant, so the
+     * writer tells it: a write starts the heartbeat period for readers that
+     * were fully acknowledged, a replay falls due at once, and a changed
+     * period or delay moves a running timer.
+     *
+     * @param[in] sooner Set to true on each such event, never cleared here;
+     *   null for a writer nobody caches the timers of. Must outlive the
+     *   writer.
+     *
+     * Verification:
+     * - Correct means: after any call that can make ms_until_next_timer()
+     *   return less than it would have before the call, `*sooner` is true.
+     * - Covered by: TC-PART-8.5.1-015 (tests/spec).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.9.2 (heartbeat and repair timers)
+     */
+    void set_timer_notice(bool* sooner) noexcept { timerSooner_ = sooner; }
 
     /**
      * @brief Makes this a service reply writer that drops each reply once its requester has it.
@@ -1497,6 +1530,16 @@ private:
         WaitingReaderQuery fn = nullptr;
         void* context = nullptr;
     } waitingReaderQuery_;
+
+    bool* timerSooner_ = nullptr;  ///< Set by note_timer_sooner() (set_timer_notice()).
+
+    /// @brief Tells whoever caches this writer's timers that one may be nearer.
+    void note_timer_sooner() noexcept {
+        if (timerSooner_ != nullptr) {
+            *timerSooner_ = true;
+        }
+    }
+
     PayloadBuilder payloadBuilder_ = nullptr;  ///< Builds payloads of on-demand changes.
     void* payloadBuilderUser_ = nullptr;
     PayloadSizer   payloadSizer_ = nullptr;  ///< Sizes them, for replay packing.

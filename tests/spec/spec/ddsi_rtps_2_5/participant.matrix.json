@@ -193,6 +193,14 @@
       "test_ids": ["TC-PART-8.5.1-014"]
     },
     {
+      "id": "REQ-PART-8.5.1-REMEMBERED-TIMER",
+      "section": "8.5.1",
+      "normativity": "implementation-behavior",
+      "statement": "tick() remembers how far away the participant's soonest timer was and walks no endpoint until that time has passed, unless something may have brought a timer nearer: a write, a match or unmatch, a created or deleted endpoint, an address, or a datagram other than a known peer's SPDP renewal whose lease is at least the remembered wait. No timer runs later than it would if every tick walked every endpoint.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.1-015"]
+    },
+    {
       "id": "REQ-PART-8.4.1.4-WAITING-MATCHES",
       "section": "8.4.1.4",
       "normativity": "implementation-behavior",

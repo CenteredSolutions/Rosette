@@ -470,6 +470,7 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
     if (known != nullptr && known->parked
         && announces_prefix(payload, payload_len, sender_prefix)) {
         known->leaseExpiryMs = now_ms + known->leaseMs;
+        last_lease_ms_ = known->leaseMs;
         return true;
     }
 
@@ -517,6 +518,7 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
     record->remember(announced);
     record->leaseMs = lease_ms;
     record->leaseExpiryMs = now_ms + lease_ms;
+    last_lease_ms_ = lease_ms;
 
     if (record->active()) {
         // The slot is overwritten in place, never moved: matched proxies

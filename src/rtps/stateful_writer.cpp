@@ -137,6 +137,7 @@ bool StatefulWriter::add_change(CacheChange&& change) noexcept {
         ++writesSinceHb_;
     }
 
+    note_timer_sooner();
     return true;
 }
 
@@ -298,6 +299,7 @@ bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* 
     if (durability_ == DurabilityKind::TRANSIENT_LOCAL && slot->has_unsent_changes(writer_cache_)) {
         slot->replaying = true;
         replayPending_ = true;
+        note_timer_sooner();
     }
 
     return true;
@@ -454,6 +456,7 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
         && proxy->has_unsent_changes(writer_cache_)) {
         proxy->replaying = true;
         replayPending_ = true;
+        note_timer_sooner();
     }
 
     // NACKed SNs: repair what the reader can have after nackResponseDelay,

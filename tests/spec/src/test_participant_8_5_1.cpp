@@ -802,6 +802,114 @@ static bool tc_part_8_5_1_006(std::string& err) {
     return true;
 }
 
+/// Number of HEARTBEAT submessages in the captured packets.
+static size_t count_heartbeats(const CaptureTransport& tx) {
+    size_t   count = 0u;
+    ParseOps ops{};
+    ops.on_heartbeat = [](const ParseContext& ctx, const ParsedHeartbeat&) noexcept {
+        ++*static_cast<size_t*>(ctx.user_data);
+    };
+    for (const auto& packet : tx.packets) {
+        (void)parse_message(packet.bytes.data(), static_cast<uint32_t>(packet.bytes.size()),
+                            GuidPrefix{}, ops, &count);
+    }
+
+    return count;
+}
+
+/// Delivers a peer's SPDP announcement as the datagram it arrives in.
+static bool receive_spdp(RTPSParticipant& p, const GuidPrefix& prefix, uint32_t lease_seconds,
+                         uint32_t now_ms) {
+    std::vector<Octet> payload{};
+    std::vector<Octet> msg{};
+    g_participant_test_now_ms = now_ms;
+    return build_spdp_payload(prefix, lease_seconds, make_udpv4_locator(0xC0A80171u, 7410u),
+                              payload, make_udpv4_locator(0xC0A80171u, 7411u))
+           && build_data_message(prefix, entity_id::SPDP_BUILTIN_PARTICIPANT_READER,
+                                 entity_id::SPDP_BUILTIN_PARTICIPANT_WRITER, payload, msg)
+           && p.parse_received(msg.data(), static_cast<uint32_t>(msg.size())) == ParseResult::OK;
+}
+
+// §8.4.9.2/§8.5.3.2: tick() remembers how far away the soonest timer is and
+// skips the endpoints until then. Whatever brings a timer nearer must make it
+// look again: a write starts the heartbeat period, and a peer that renews
+// with a lease shorter than the remembered wait expires on time. A renewal
+// that only moves an expiry later leaves the remembered wait as it was.
+static bool tc_part_8_5_1_015(std::string& err) {
+    constexpr uint32_t kHeartbeatMs = 50u;
+    const GuidPrefix   peer = make_prefix(0xD1u, 0xD2u, 0xD3u);
+
+    // A write: the writer's heartbeat period is far shorter than any
+    // discovery timer, so only the write can make the next timer that near.
+    {
+        CaptureTransport tx{};
+        RTPSParticipant  p(0u, 1u, tx);
+        CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup");
+        CHECK(receive_spdp(p, peer, 30u, 0u), "the peer is accepted");
+
+        WriterConfig wcfg{};
+        wcfg.topicName.assign("rt/timers");
+        wcfg.typeName.assign("pkg::msg::dds_::T_");
+        wcfg.reliability = ReliabilityKind::RELIABLE;
+        wcfg.hbPeriodMs = kHeartbeatMs;
+        StatefulWriter* w = p.create_writer<4>(wcfg);
+        CHECK(w != nullptr, "the writer is created");
+        DiscoveredReaderData rd{};
+        rd.readerGuid = Guid{peer, make_entity(0x40u, 0x41u, 0x01u, 0x07u)};
+        rd.topicName.assign("rt/timers");
+        rd.typeName.assign("pkg::msg::dds_::T_");
+        rd.reliabilityKind = ReliabilityKind::RELIABLE;
+        p.match_table().add_reader(rd);
+        CHECK(w->matched_reader_count() == 1u, "the remote reader is matched");
+
+        uint32_t now = 0u;
+        for (int i = 0; i < 16 && (i == 0 || p.ms_until_next_timer(now) == 0u); ++i) {
+            g_participant_test_now_ms = ++now;
+            p.tick(now);
+        }
+
+        const uint32_t quiet = p.ms_until_next_timer(now);
+        CHECK(quiet > kHeartbeatMs + 2u, "with nothing unacknowledged, no user heartbeat is due");
+        tx.packets.clear();
+        p.tick(now + 1u);
+        CHECK(tx.packets.empty(), "a tick before the soonest timer sends nothing");
+
+        const Octet payload[4] = {0x00u, 0x01u, 0x00u, 0x00u};
+        CHECK(w->write_async(ChangeKind::ALIVE, payload, 4u), "the write is accepted");
+        const uint32_t after_write = p.ms_until_next_timer(now + 1u);
+        CHECK(after_write <= kHeartbeatMs, "a write pulls the next timer in to the heartbeat");
+        tx.packets.clear();
+        g_participant_test_now_ms = now + 1u + after_write;
+        p.tick(now + 1u + after_write);
+        CHECK(count_heartbeats(tx) >= 1u, "the heartbeat goes out when its period ends");
+    }
+
+    // Lease renewals: with no endpoint to announce, the SPDP period is the
+    // soonest timer once the peer is active.
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup");
+    CHECK(receive_spdp(p, peer, 30u, 0u), "the peer is accepted");
+    uint32_t now = 0u;
+    for (int i = 0; i < 16 && (i == 0 || p.ms_until_next_timer(now) == 0u); ++i) {
+        g_participant_test_now_ms = ++now;
+        p.tick(now);
+    }
+
+    const uint32_t quiet = p.ms_until_next_timer(now);
+    CHECK(quiet > 1000u + 2u, "the soonest timer is further away than a one-second lease");
+    CHECK(receive_spdp(p, peer, 30u, now + 2u), "the renewal is accepted");
+    CHECK(p.ms_until_next_timer(now + 2u) == quiet - 2u,
+          "a renewal that extends a lease leaves the remembered wait running");
+
+    CHECK(receive_spdp(p, peer, 1u, now + 2u), "the short-lease renewal is accepted");
+    CHECK(p.ms_until_next_timer(now + 2u) == 1000u, "a shorter lease pulls the next timer in");
+    g_participant_test_now_ms = now + 1002u;
+    p.tick(now + 1002u);
+    CHECK(p.spdp_reader().find_peer(peer) == nullptr, "the peer's lease expires on time");
+    return true;
+}
+
 // The graph observer fires when SPDP discovers a peer, when SEDP records or
 // withdraws an endpoint, and when the peer's lease expires; a repeated
 // identical endpoint announcement does not fire it.
@@ -1004,6 +1112,11 @@ void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.1-006",
                      "§8.5.3.2/§8.5.3.3: ms_until_next_timer() is unbounded without addresses, zero before the first SPDP announcement, and bounded by the SPDP period and peer lease expiry.",
                      tc_part_8_5_1_006});
+    tests.push_back({"TC-PART-8.5.1-015",
+                     "§8.4.9.2/§8.5.3.2: tick() skips the endpoints until the soonest timer it "
+                     "remembers; a write and a renewal with a shorter lease bring that timer "
+                     "nearer, and a renewal that only extends a lease leaves it running.",
+                     tc_part_8_5_1_015});
     tests.push_back({"TC-PART-8.5.1-010",
                      "§8.5.3.2 / RFC 6724 §6: an address added with its prefix length makes the "
                      "participant answer a peer at the peer address inside that prefix; removing "

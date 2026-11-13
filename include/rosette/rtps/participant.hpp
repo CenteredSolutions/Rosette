@@ -410,6 +410,7 @@ public:
               cfg.nackDelayMs, cfg.hbPeriodMs);
         w->release_replies_on_delivery(cfg.releaseRepliesOnDelivery);
         w->set_waiting_reader_query(&RTPSParticipant::has_waiting_reader, this);
+        w->set_timer_notice(&timers_stale_);
 
         writers_[slot] = w;
         writer_alive_[slot] = true;
@@ -474,8 +475,13 @@ public:
      * @brief Runs the participant's timed work: SPDP, lease expiry, waiting
      *   matches, and every endpoint's heartbeats and repairs.
      *
-     * The driver calls this whenever ms_until_next_timer() has elapsed or a
-     * datagram was handled. Nothing runs until the participant has an
+     * The driver calls this on every pass, and the call returns at once
+     * unless a timer is due: the participant remembers how long its soonest
+     * timer was away when it last looked, and looks again only when that
+     * time has passed or something may have brought a timer nearer (a
+     * datagram other than a peer's SPDP lease renewal, a write, a match, a
+     * created or deleted endpoint, an address). A pass that has nothing to
+     * do therefore walks no endpoint. Nothing runs until the participant has an
      * address.
      *
      * After a user endpoint's proxy frees (an unmatch or a deleted
@@ -506,6 +512,9 @@ public:
 
     // ----------------------------------------------------------
     // ms_until_next_timer()
+    //
+    // Answered from the time tick() remembered while that still holds, and
+    // by looking at every timer otherwise.
     //
     // How long tick() can be deferred: the soonest of the SPDP
     // announcement, any peer lease expiry, and every builtin and user
@@ -1212,6 +1221,41 @@ private:
     /// A user endpoint's proxy freed since the last tick that bound no
     /// waiting match, so one may bind now.
     bool rebind_due_ = false;
+
+    /// What tick() last found: timers_wait_ms_ was the time to the soonest
+    /// timer at timers_checked_ms_. Stale once anything may have brought a
+    /// timer nearer; a timer that only moved later leaves it alone, and
+    /// costs one early look.
+    uint32_t timers_checked_ms_ = 0u;
+    uint32_t timers_wait_ms_ = 0u;
+    bool     timers_stale_ = true;
+
+    /**
+     * @brief Looks at every timer of the participant for the soonest one.
+     *
+     * The walk behind ms_until_next_timer() and the time tick() remembers:
+     * the SPDP announcement, peer lease expiries, the settle poll of owed and
+     * refreshing peers, a due rebind or rescan, and each builtin and user
+     * endpoint's own ms_until_next_timer().
+     *
+     * @param[in] now_ms Current platform::monotonic_ms().
+     * @return Milliseconds until the soonest timer; 0 when one is due.
+     *
+     * Verification:
+     * - Correct means: the result is the minimum over every timed action
+     *   tick() performs, so sleeping that long makes none of them late.
+     * - Covered by: TC-PART-8.5.1-006, TC-PART-8.5.1-015.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2, §8.4.7.1, §8.4.9.2
+     */
+    uint32_t scan_timers(uint32_t now_ms) const noexcept;
+
+    /// @brief What is left at `now_ms` of the wait tick() remembered; 0 once it has passed.
+    uint32_t remembered_timer_wait(uint32_t now_ms) const noexcept {
+        const uint32_t elapsed = now_ms - timers_checked_ms_;
+        return elapsed >= timers_wait_ms_ ? 0u : timers_wait_ms_ - elapsed;
+    }
 
     /// @brief Lets each reply writer release the replies a just-bound reader
     ///   was the last to hold (StatefulWriter::on_waiting_reader_bound()).

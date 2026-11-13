@@ -255,6 +255,7 @@ StatefulReader* RTPSParticipant::create_reader(
         StatefulReader::OnChangeAvailable on_change_avail,
         void*                             user_data) noexcept
 {
+    timers_stale_ = true;
     if (!local_endpoint_fits(cfg.topicName, cfg.typeName, /*is_writer=*/false)) {
         return nullptr;
     }
@@ -311,6 +312,7 @@ StatefulReader* RTPSParticipant::create_reader(
 bool RTPSParticipant::delete_writer(StatefulWriter* writer) noexcept
 {
     if (!writer) return false;
+    timers_stale_ = true;
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i) {
         if (!writer_alive_[i] || writers_[i] != writer) continue;
         const Guid guid = writer->guid();
@@ -333,6 +335,7 @@ bool RTPSParticipant::delete_writer(StatefulWriter* writer) noexcept
 bool RTPSParticipant::delete_reader(StatefulReader* reader) noexcept
 {
     if (!reader) return false;
+    timers_stale_ = true;
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
         if (!reader_alive_[i] || user_reader(i) != reader) continue;
         const Guid guid = reader->guid();
@@ -386,6 +389,7 @@ void RTPSParticipant::release_endpoint_floor(ProxyPool& pool, uint8_t floor) noe
 void RTPSParticipant::register_writer_endpoint(const Guid&         writer_guid,
                                                const WriterConfig& cfg) noexcept
 {
+    timers_stale_ = true;
     DiscoveredWriterData wd{};
     wd.writerGuid      = writer_guid;
     wd.topicName       = cfg.topicName;
@@ -468,6 +472,10 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
         return;
     }
 
+    if (!timers_stale_ && remembered_timer_wait(now_ms) != 0u) {
+        return;
+    }
+
     spdp_writer_.tick(now_ms);
     spdp_reader_.tick(now_ms);
     serve_owed_peer(now_ms);
@@ -490,16 +498,34 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
         match_table_.rescan_unrecorded();
     }
 
-    for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
-        if (writer_alive_[i] && writers_[i])
+    for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i) {
+        if (writer_alive_[i] && writers_[i]) {
             writers_[i]->tick(now_ms);
-    for (int i = 0; i < RTPS_MAX_USER_READERS; ++i)
-        if (reader_alive_[i])
+        }
+    }
+
+    for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
+        if (reader_alive_[i]) {
             user_reader(i)->tick(now_ms);
+        }
+    }
+
+    // Everything the walk did, and everything that went stale during it, is
+    // in the timers as they now stand.
+    timers_wait_ms_ = scan_timers(now_ms);
+    timers_checked_ms_ = now_ms;
+    timers_stale_ = false;
 }
 
 uint32_t RTPSParticipant::ms_until_next_timer(uint32_t now_ms) const noexcept {
-    if (!has_addresses()) return UINT32_MAX;
+    if (!has_addresses()) {
+        return UINT32_MAX;
+    }
+
+    return timers_stale_ ? scan_timers(now_ms) : remembered_timer_wait(now_ms);
+}
+
+uint32_t RTPSParticipant::scan_timers(uint32_t now_ms) const noexcept {
     uint32_t next = spdp_writer_.ms_until_next_announce(now_ms);
     auto consider = [&next](uint32_t candidate) noexcept {
         if (candidate < next) next = candidate;
@@ -600,6 +626,7 @@ bool RTPSParticipant::remove_ipv6_address(const uint8_t ipv6[16]) noexcept
 
 void RTPSParticipant::clear_addresses() noexcept
 {
+    timers_stale_ = true;
     local_participant_data_.metatrafficUnicastLocatorCount = 0u;
     local_participant_data_.defaultUnicastLocatorCount = 0u;
     local_subnets_.clear();
@@ -623,6 +650,7 @@ void RTPSParticipant::on_spdp_new_peer(const PeerEntry& peer,
     // pending; it is activated when the active tier has room or a settled
     // peer can be parked for it (participant_peer_tiers.cpp).
     auto* p = static_cast<RTPSParticipant*>(self);
+    p->timers_stale_ = true;
     PeerEntry* known = p->spdp_reader_.find_peer(peer.guidPrefix);
     if (known != nullptr) {
         (void)p->admit_peer(*known, rosette::platform::monotonic_ms());
@@ -633,6 +661,7 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
                                            void*            self) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(self);
+    p->timers_stale_ = true;
     RTPS_LOG_I("participant", "SPDP peer removed %02x%02x%02x%02x%02x%02x",
                peer.guidPrefix.value[0], peer.guidPrefix.value[1], peer.guidPrefix.value[2],
                peer.guidPrefix.value[3], peer.guidPrefix.value[4], peer.guidPrefix.value[5]);
@@ -665,6 +694,7 @@ bool RTPSParticipant::on_endpoint_match(const MatchedEndpoint&       writer,
                                         const MatchedEndpoint&       reader,
                                         [[maybe_unused]] const char* topic, void* self) noexcept {
     auto* p = static_cast<RTPSParticipant*>(self);
+    p->timers_stale_ = true;
     bool bound = true;
 
     // Local writer matched to a reader.
@@ -767,6 +797,7 @@ void RTPSParticipant::on_endpoint_unmatch(const Guid& writer_guid,
                                           void*       self) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(self);
+    p->timers_stale_ = true;
     RTPS_LOG_I("participant", "endpoint unmatch: writer %02x%02x%02x%02x reader %02x%02x%02x%02x",
                writer_guid.prefix.value[0], writer_guid.prefix.value[1],
                writer_guid.prefix.value[2], writer_guid.prefix.value[3],
@@ -827,6 +858,7 @@ void RTPSParticipant::for_each_addressed_reader(const EntityId& writer_id,
                                                 const EntityId& reader_id,
                                                 Deliver&&       deliver) noexcept
 {
+    timers_stale_ = true;
     if (StatefulReader* builtin = sedp_reader_.reader_for_writer(writer_id)) {
         deliver(*builtin);
         return;
@@ -867,9 +899,19 @@ void RTPSParticipant::dispatch_data(const ParseContext& ctx,
             p->spdp_reader_.remove_peer(gone);
             return;
         }
-        p->spdp_reader_.on_data(ctx.senderGuidPrefix,
-                                msg.serializedPayload,
-                                msg.serializedPayloadSize, now_ms);
+
+        // A renewed lease moves that peer's expiry later, which the
+        // remembered wait survives: tick() looks early and finds nothing.
+        // Only a lease shorter than that wait could expire unseen. A peer
+        // that is new, or still asking for an active slot, marks the timers
+        // stale itself (on_spdp_new_peer()), so the hundred renewals a large
+        // network sends between two timers cost no walk.
+        const bool accepted = p->spdp_reader_.on_data(ctx.senderGuidPrefix, msg.serializedPayload,
+                                                      msg.serializedPayloadSize, now_ms);
+        if (accepted && p->spdp_reader_.last_lease_ms() < p->timers_wait_ms_) {
+            p->timers_stale_ = true;
+        }
+
         return;
     }
 
@@ -929,16 +971,22 @@ void RTPSParticipant::dispatch_acknack(const ParseContext&  ctx,
                static_cast<int>(msg.readerSNState.bitmapBase.high),
                static_cast<unsigned long>(msg.readerSNState.bitmapBase.low),
                static_cast<unsigned long>(msg.count));
+    p->timers_stale_ = true;
     StatefulWriter* iw = p->find_writer(msg.writerId);
-    if (iw) iw->on_acknack(ctx, msg);
+    if (iw) {
+        iw->on_acknack(ctx, msg);
+    }
 }
 
 void RTPSParticipant::dispatch_nack_frag(const ParseContext&   ctx,
                                          const ParsedNackFrag& msg) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(ctx.user_data);
+    p->timers_stale_ = true;
     StatefulWriter* iw = p->find_writer(msg.writerId);
-    if (iw) iw->on_nack_frag(ctx, msg);
+    if (iw) {
+        iw->on_nack_frag(ctx, msg);
+    }
 }
 
 void RTPSParticipant::dispatch_gap(const ParseContext& ctx,
@@ -1068,6 +1116,7 @@ uint8_t RTPSParticipant::append_default_unicast_locators(Locator* out,
 
 bool RTPSParticipant::add_address_locator_pair(const Locator& meta, const Locator& user,
                                                uint8_t prefix_len) noexcept {
+    timers_stale_ = true;
     const uint8_t meta_count_before = local_participant_data_.metatrafficUnicastLocatorCount;
     const uint8_t user_count_before = local_participant_data_.defaultUnicastLocatorCount;
 
@@ -1098,6 +1147,7 @@ bool RTPSParticipant::add_address_locator_pair(const Locator& meta, const Locato
 bool RTPSParticipant::remove_address_locator_pair(const Locator& meta,
                                                   const Locator& user) noexcept
 {
+    timers_stale_ = true;
     bool changed = false;
     changed |= remove_locator(local_participant_data_.metatrafficUnicastLocatorList,
                               local_participant_data_.metatrafficUnicastLocatorCount,

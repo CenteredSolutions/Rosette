@@ -667,6 +667,10 @@ public:
     // ----------------------------------------------------------
     uint32_t ms_until_next_expiry(uint32_t now_ms) const noexcept;
 
+    /// @brief Lease duration, in ms, of the peer whose announcement on_data()
+    ///   last accepted: how far ahead that peer's expiry now lies.
+    uint32_t last_lease_ms() const noexcept { return last_lease_ms_; }
+
     /**
      * @brief Sets the addresses peer locator lists are ranked against.
      *
@@ -792,6 +796,7 @@ private:
     /// The announcement on_data() is processing, while on_new_peer runs.
     const DiscoveredParticipant* announcement_ = nullptr;
     const LocalSubnets* subnets_ = &kNoSubnets;
+    uint32_t                     last_lease_ms_ = 0u;  ///< See last_lease_ms().
     OnNewPeer  on_new_peer_;
     OnPeerRemoved on_peer_removed_;
     void*      user_data_;
