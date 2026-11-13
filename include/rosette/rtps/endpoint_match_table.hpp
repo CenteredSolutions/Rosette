@@ -698,7 +698,7 @@ public:
      * @brief True when a remote participant has an endpoint in a match that counts.
      *
      * The participant keeps a peer active while this is true and may park it
-     * otherwise (RTPSParticipant::peer_is_settled()). A match with
+     * otherwise (RTPSParticipant::peer_idleness()). A match with
      * `except_local` does not count: that is the endpoint every participant
      * on the network matches, such as `ros_discovery_info` for ROS 2, whose
      * readers are served by reactivating parked peers instead.

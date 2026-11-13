@@ -808,6 +808,32 @@ static bool tc_part_8_5_3_021(std::string& err) {
     return true;
 }
 
+// A settled peer is parked before a stalled one, however much older the
+// stalled one is: a stalled peer would be parked owed, and the next tick
+// would park the settled peer to bring it straight back.
+static bool tc_part_8_5_3_022(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1000u), "two peers are active");
+    CHECK(hear_announcers(p, b, 1000u), "only B's announcers answer; A cannot be reached");
+    CHECK(deliver_announcement(p, b, true, "rt/b", 1, 1150u), "B announces a writer");
+
+    CHECK(announce(p, c, 0x13u, 1600u), "a third peer arrives once A is stalled and B settled");
+    CHECK(is_parked(p, b) && !record(p, b)->owed, "the settled peer is parked, owed nothing");
+    CHECK(is_active(p, a) && is_active(p, c), "the older, stalled peer keeps its slot");
+
+    g_participant_test_now_ms = 1700u;
+    p.tick(1700u);
+    CHECK(is_active(p, a) && is_active(p, c) && is_parked(p, b),
+          "with nothing owed, the next tick parks no one");
+    return true;
+}
+
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.3-011",
                      "§8.5.3.2/§8.5.4.1: a peer finding the active tier full waits until a "
@@ -857,6 +883,11 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "§8.5.4.1: owed parked peers are reactivated oldest first, by their last "
                      "SEDP DATA or activation, so none is starved by peers taking turns.",
                      tc_part_8_5_3_021});
+    tests.push_back({"TC-PART-8.5.3-022",
+                     "§8.5.3.2: with every slot taken, a settled peer is parked before a stalled "
+                     "one, whatever their ages, so the stalled peer is not owed and brought "
+                     "straight back.",
+                     tc_part_8_5_3_022});
 }
 
 }  // namespace spec_test

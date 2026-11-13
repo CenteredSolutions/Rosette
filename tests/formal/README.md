@@ -118,7 +118,7 @@ Bounds: two endpoints, `MaxSN = 3`, two messages in flight (the
 slots, a record for every peer, and four or five environment events (joins,
 leaves, announcements, local endpoint changes) per behavior. A peer settles only
 once its announcements are processed, which covers being heard since
-activation, as `peer_is_settled()` requires.
+activation, as `peer_idleness()` requires.
 
 * **The invariants hold:** at most `RTPS_MAX_PEERS` peers are active, the
   oldest-first order covers exactly the active peers, a parked peer is never
@@ -134,7 +134,7 @@ activation, as `peer_is_settled()` requires.
   keeps its lease alive. Without a limit (`StallRule = "none"`) it costs a
   slot exactly as a matched peer does, and with matched and unreachable
   peers filling every slot a reachable peer stays pending forever.
-  `peer_is_stalled()` (`"deadline"`) lets a peer with no match whose exchange
+  `peer_idleness()` (`"deadline"`) lets a peer with no match whose exchange
   has not completed within `RTPS_PEER_EXCHANGE_TIMEOUT_MS` be parked like a
   settled one, but owed, so it is tried again.
 * **The deadline does not know who is reachable, and need not.** It counts
@@ -198,7 +198,11 @@ announcements per behavior.
   preemptive ACKNACK until it has (`RTPS_PREEMPTIVE_ACKNACK_RETRY_MS`). The
   peer then always receives the current sample and can always be parked
   again (TC-PART-8.5.3-019). A peer that cannot be reached at all is never
-  heard; the phase 2 deadline is what frees its slot.
+  heard; the phase 2 deadline is what frees its slot. The code sends at most
+  `RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS`, which outlast that deadline: a
+  peer still unheard then is stalled, parked owed, and its next activation
+  matches afresh and resends, so the model's unbounded retry is the code's
+  retries across activations.
 
 ## Phases
 

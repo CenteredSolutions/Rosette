@@ -469,7 +469,7 @@ public:
      * @brief Reports whether every announcement a peer has sent was received.
      *
      * The participant parks only a peer whose announcements this reader
-     * holds completely (RTPSParticipant::peer_is_settled()), and keeps the
+     * holds completely (RTPSParticipant::peer_idleness()), and keeps the
      * highest sequence number of each announcer so a parked peer that
      * announces something newer can be told apart from one repeating
      * itself.
