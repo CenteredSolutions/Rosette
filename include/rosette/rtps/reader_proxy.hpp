@@ -151,14 +151,21 @@ public:
     /// — §8.4.1.1, p. 103; updated in acked_changes_set().
     SequenceNumber highestAckedSN = SEQUENCENUMBER_ZERO;
 
-    /// Count field from the last ACKNACK processed for this proxy.
-    /// Used to detect and drop duplicate / reordered ACKNACKs.
-    /// — §8.4.7.3, p. 140 (by analogy: count is monotone).
-    int32_t lastAcknackCount = 0;
+    /// lastAcknackCount and lastNackFragCount before the reader has sent
+    /// one. §8.3.7.1 says only that a reader increments the count, not where
+    /// it starts: Cyclone DDS starts at 0, Fast DDS at 1, so any first count
+    /// must pass the duplicate check.
+    static constexpr int32_t kNoCount = INT32_MIN;
 
-    /// Count field from the last NACK_FRAG processed for this proxy; a
-    /// NACK_FRAG whose count is not above it is a duplicate. — §8.3.7.5.
-    int32_t lastNackFragCount = 0;
+    /// Count field from the last ACKNACK processed for this proxy, or
+    /// kNoCount. An ACKNACK whose count is not above it is a duplicate or
+    /// reordered and is dropped. — §8.3.7.1 (count).
+    int32_t lastAcknackCount = kNoCount;
+
+    /// Count field from the last NACK_FRAG processed for this proxy, or
+    /// kNoCount; a NACK_FRAG whose count is not above it is a duplicate.
+    /// — §8.3.7.5.
+    int32_t lastNackFragCount = kNoCount;
 
     /// True when a NACK has been received and nackResponseDelay is pending.
     /// Set by requested_changes_set(); cleared by StatefulWriter::tick()
