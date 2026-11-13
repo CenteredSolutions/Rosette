@@ -94,6 +94,11 @@ public:
     /// (eProsima, RTI) rather than 1 (StatefulReader::send_preemptive_acknack()).
     bool zeroBaseAcknack = false;
 
+    /// Preemptive ACKNACKs still to send while the writer is unheard, the
+    /// next included (RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS, or the builtin
+    /// readers' RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS, at match).
+    uint8_t preemptiveAcknacksLeft = 0;
+
     /// True while an ACKNACK is owed: one answering a HEARTBEAT, or, before
     /// the writer is heard, the next preemptive ACKNACK.
     bool acknackPending = false;
@@ -321,14 +326,19 @@ public:
     }
 
     /**
-     * @brief Records a preemptive ACKNACK sent, and owes the next one while the writer is unheard.
+     * @brief Records a preemptive ACKNACK sent, and owes the next one while the writer is
+     * unheard and attempts are left.
      *
      * @param[in] now_ms   rosette::platform::monotonic_ms() when it was sent.
      * @param[in] retry_ms RTPS_PREEMPTIVE_ACKNACK_RETRY_MS: when the next one is due.
      */
     void on_preemptive_acknack_sent(uint32_t now_ms, uint32_t retry_ms) noexcept {
         on_acknack_sent();
-        if (!heard) {
+        if (preemptiveAcknacksLeft > 0u) {
+            --preemptiveAcknacksLeft;
+        }
+
+        if (!heard && preemptiveAcknacksLeft > 0u) {
             acknackPending = true;
             heartbeatResponseDeadlineMs = now_ms + retry_ms;
         }

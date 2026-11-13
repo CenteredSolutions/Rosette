@@ -126,7 +126,9 @@ public:
      * F-flag clear. The writer answers with a HEARTBEAT, the HEARTBEAT shows
      * the dropped changes as MISSING, and the ordinary ACKNACK requests them,
      * so the loss costs a few round trips instead of a HEARTBEAT period. The
-     * preemptive ACKNACK is resent until the writer is heard (tick()). A
+     * preemptive ACKNACK is resent until the writer is heard (tick()), at
+     * most RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS times in all, or
+     * RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS for a builtin reader. A
      * BEST_EFFORT reader sends nothing.
      *
      * @param[in] writer_guid      GUID of the remote writer.
@@ -552,17 +554,20 @@ private:
      * for eProsima and RTI (which sends the same form), bitmapBase 1 for
      * everyone else (WriterProxy::zeroBaseAcknack).
      *
-     * @param[in,out] proxy The matched writer; its count is advanced and,
-     *   while it is unheard, the next attempt is owed
-     *   RTPS_PREEMPTIVE_ACKNACK_RETRY_MS later, whether or not this one left.
+     * @param[in,out] proxy The matched writer; its count is advanced, one of
+     *   its attempts is spent, and, while it is unheard and attempts are
+     *   left, the next is owed RTPS_PREEMPTIVE_ACKNACK_RETRY_MS later,
+     *   whether or not this one left.
      *
      * Verification:
      * - Correct means: one ACKNACK to the writer's unicast locator, empty
      *   set, F-flag clear, a count above every earlier one, bitmapBase 0
      *   exactly for eProsima and RTI; repeated every retry period until the
-     *   writer is heard, and never after.
+     *   writer is heard, and never after; never more than the reader's
+     *   attempts (RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS for a user reader,
+     *   RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS for a builtin one).
      * - Covered by: TC-SRR-8.4.7.4-002, TC-SRR-8.4.7.4-004, TC-SRR-8.4.7.4-008,
-     *   TC-SRR-8.4.7.4-009.
+     *   TC-SRR-8.4.7.4-009, TC-SRR-8.4.7.4-010.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.7.1 (ACKNACK), §8.3.5.5 (SequenceNumberSet)
