@@ -654,7 +654,6 @@ void RTPSParticipant::on_spdp_peer_removed(const PeerEntry& peer,
                                            void*            self) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(self);
-    p->timers_stale_ = true;
     RTPS_LOG_I("participant", "SPDP peer removed %02x%02x%02x%02x%02x%02x",
                peer.guidPrefix.value[0], peer.guidPrefix.value[1], peer.guidPrefix.value[2],
                peer.guidPrefix.value[3], peer.guidPrefix.value[4], peer.guidPrefix.value[5]);
@@ -687,7 +686,6 @@ bool RTPSParticipant::on_endpoint_match(const MatchedEndpoint&       writer,
                                         const MatchedEndpoint&       reader,
                                         [[maybe_unused]] const char* topic, void* self) noexcept {
     auto* p = static_cast<RTPSParticipant*>(self);
-    p->timers_stale_ = true;
     bool bound = true;
 
     // Local writer matched to a reader.
@@ -790,7 +788,6 @@ void RTPSParticipant::on_endpoint_unmatch(const Guid& writer_guid,
                                           void*       self) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(self);
-    p->timers_stale_ = true;
     RTPS_LOG_I("participant", "endpoint unmatch: writer %02x%02x%02x%02x reader %02x%02x%02x%02x",
                writer_guid.prefix.value[0], writer_guid.prefix.value[1],
                writer_guid.prefix.value[2], writer_guid.prefix.value[3],
@@ -810,8 +807,10 @@ void RTPSParticipant::on_endpoint_unmatch(const Guid& writer_guid,
         }
     }
 
-    // The freed proxy may let a waiting match bind at the next tick().
+    // The freed proxy may let a waiting match bind at the next tick(), which
+    // is then due at once.
     p->rebind_due_ = true;
+    p->timers_stale_ = true;
 }
 
 // ============================================================
@@ -893,15 +892,15 @@ void RTPSParticipant::dispatch_data(const ParseContext& ctx,
             return;
         }
 
-        // A renewed lease moves that peer's expiry later, which the
-        // remembered wait survives: tick() looks early and finds nothing.
-        // Only a lease shorter than that wait could expire unseen. A peer
-        // that is new, or still asking for an active slot, marks the timers
-        // stale itself (on_spdp_new_peer()), so the hundred renewals a large
+        // A renewed lease moves that peer's expiry later, which the timers
+        // survive: tick() walks early and finds nothing. Only a lease
+        // shorter than the time left could expire unseen. A peer that is
+        // new, or still asking for an active slot, marks the timers stale
+        // itself (on_spdp_new_peer()), so the hundred renewals a large
         // network sends between two timers cost no walk.
-        const bool accepted = p->spdp_reader_.on_data(ctx.senderGuidPrefix, msg.serializedPayload,
-                                                      msg.serializedPayloadSize, now_ms);
-        if (accepted && p->spdp_reader_.last_lease_ms() < p->ms_until_next_timer(now_ms)) {
+        const PeerEntry* renewed = p->spdp_reader_.on_data(
+            ctx.senderGuidPrefix, msg.serializedPayload, msg.serializedPayloadSize, now_ms);
+        if (renewed != nullptr && renewed->leaseMs < p->ms_until_next_timer(now_ms)) {
             p->timers_stale_ = true;
         }
 

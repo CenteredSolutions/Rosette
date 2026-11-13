@@ -457,11 +457,8 @@ bool SpdpReader::announces_prefix(const Octet* payload, uint32_t len,
 //    and updates the Participant's view of remote participants."
 // ----------------------------------------------------------
 
-bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
-                          const Octet*      payload,
-                          uint32_t          payload_len,
-                          uint32_t          now_ms) noexcept
-{
+const PeerEntry* SpdpReader::on_data(const GuidPrefix& sender_prefix, const Octet* payload,
+                                     uint32_t payload_len, uint32_t now_ms) noexcept {
     // A parked peer's announcement only renews its lease: nothing it could
     // change is used until the peer is active again, and skipping the decode
     // keeps a large network's announcements cheap. Its next announcement
@@ -470,15 +467,14 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
     if (known != nullptr && known->parked
         && announces_prefix(payload, payload_len, sender_prefix)) {
         known->leaseExpiryMs = now_ms + known->leaseMs;
-        last_lease_ms_ = known->leaseMs;
-        return true;
+        return known;
     }
 
     SPDPdiscoveredParticipantData parsed{};
     if (!deserialise(payload, payload_len, *subnets_, parsed)) {
         RTPS_LOG_W("spdp", "failed to deserialise participant data (%lu bytes)",
                    static_cast<unsigned long>(payload_len));
-        return false;
+        return nullptr;
     }
 
     // Use the sender_prefix from the RTPS header if the payload's GUID
@@ -503,7 +499,7 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
             RTPS_LOG_W("spdp", "known-peer table full, dropping %02x%02x%02x%02x",
                        parsed.guidPrefix.value[0], parsed.guidPrefix.value[1],
                        parsed.guidPrefix.value[2], parsed.guidPrefix.value[3]);
-            return false;
+            return nullptr;
         }
 
         *record = PeerEntry{};
@@ -518,7 +514,6 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
     record->remember(announced);
     record->leaseMs = lease_ms;
     record->leaseExpiryMs = now_ms + lease_ms;
-    last_lease_ms_ = lease_ms;
 
     if (record->active()) {
         // The slot is overwritten in place, never moved: matched proxies
@@ -526,7 +521,7 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
         // rtps/reader_proxy.hpp), so a peer that re-announces from a new
         // address is reached there from the next send on.
         slots_[record->activeSlot] = announced;
-        return true;
+        return record;
     }
 
     // A new peer is reported once; a pending one asks for an active slot
@@ -539,7 +534,7 @@ bool SpdpReader::on_data(const GuidPrefix& sender_prefix,
         announcement_ = nullptr;
     }
 
-    return true;
+    return record;
 }
 
 // ----------------------------------------------------------

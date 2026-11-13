@@ -748,7 +748,7 @@ public:
 
     void nack_response_delay(uint32_t ms) noexcept {
         nack_delay_ms_ = ms;
-        note_timer_sooner();
+        mark_timers_stale();
     }
 
     /// heartbeat_period() — §8.4.1.1, p. 104.
@@ -756,33 +756,34 @@ public:
 
     void heartbeat_period(uint32_t ms) noexcept {
         hb_period_ms_ = ms;
-        note_timer_sooner();
+        mark_timers_stale();
     }
 
     /**
-     * @brief Names the flag this writer sets when one of its timers may have
-     *   come nearer.
+     * @brief Names the participant's stale-timers flag, which this writer
+     *   sets when the application brings one of its timers nearer.
      *
-     * A participant remembers how long its soonest timer is away and skips
-     * its endpoints until then (RTPSParticipant::tick()). The application
-     * writes to a writer directly, not through the participant, so the
-     * writer tells it: a write starts the heartbeat period for readers that
-     * were fully acknowledged, a replay falls due at once, and a changed
-     * period or delay moves a running timer.
+     * A participant walks its endpoints only when its soonest timer is due
+     * or its timers are stale (RTPSParticipant::tick()). Datagrams, matches
+     * and endpoint changes pass through the participant, which marks the
+     * flag itself; the application calls the writer directly, so the writer
+     * marks it for those calls: a write starts the heartbeat period for
+     * readers that were fully acknowledged, and a changed heartbeat period
+     * or NACK response delay moves a running timer.
      *
-     * @param[in] sooner Set to true on each such event, never cleared here;
-     *   null for a writer nobody caches the timers of. Must outlive the
-     *   writer.
+     * @param[in] stale Set to true on each such call, never cleared here;
+     *   null for a writer no participant caches the timers of. Must outlive
+     *   the writer.
      *
      * Verification:
-     * - Correct means: after any call that can make ms_until_next_timer()
-     *   return less than it would have before the call, `*sooner` is true.
-     * - Covered by: TC-PART-8.5.1-015 (tests/spec).
+     * - Correct means: after any application call that can make
+     *   ms_until_next_timer() return less than before, `*stale` is true.
+     * - Covered by: TC-PART-8.5.1-015, TC-PART-8.5.1-016 (tests/spec).
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.9.2 (heartbeat and repair timers)
      */
-    void set_timer_notice(bool* sooner) noexcept { timerSooner_ = sooner; }
+    void set_timers_stale_flag(bool* stale) noexcept { timersStale_ = stale; }
 
     /**
      * @brief Makes this a service reply writer that drops each reply once its requester has it.
@@ -1540,12 +1541,12 @@ private:
         void* context = nullptr;
     } waitingReaderQuery_;
 
-    bool* timerSooner_ = nullptr;  ///< Set by note_timer_sooner() (set_timer_notice()).
+    bool* timersStale_ = nullptr;  ///< See set_timers_stale_flag().
 
-    /// @brief Tells whoever caches this writer's timers that one may be nearer.
-    void note_timer_sooner() noexcept {
-        if (timerSooner_ != nullptr) {
-            *timerSooner_ = true;
+    /// @brief Marks the participant's timers stale (set_timers_stale_flag()).
+    void mark_timers_stale() noexcept {
+        if (timersStale_ != nullptr) {
+            *timersStale_ = true;
         }
     }
 

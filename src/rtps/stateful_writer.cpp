@@ -139,7 +139,7 @@ bool StatefulWriter::add_change(CacheChange&& change) noexcept {
         ++writesSinceHb_;
     }
 
-    note_timer_sooner();
+    mark_timers_stale();
     return true;
 }
 
@@ -301,7 +301,6 @@ bool StatefulWriter::matched_reader_add(const Guid& reader_guid, const Locator* 
     if (durability_ == DurabilityKind::TRANSIENT_LOCAL && slot->has_unsent_changes(writer_cache_)) {
         slot->replaying = true;
         replayPending_ = true;
-        note_timer_sooner();
     }
 
     return true;
@@ -458,7 +457,6 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
         && proxy->has_unsent_changes(writer_cache_)) {
         proxy->replaying = true;
         replayPending_ = true;
-        note_timer_sooner();
     }
 
     // NACKed SNs: repair what the reader can have after nackResponseDelay,
@@ -544,7 +542,7 @@ uint32_t StatefulWriter::tick(uint32_t now_ms) noexcept {
     // The same pass notes the soonest NACK still waiting and whether any
     // reader is announcing, which is all the next timer depends on.
     uint32_t next = UINT32_MAX;
-    bool any_announcing = false;
+    bool     any_announcing = false;
     for (ReaderProxy& proxy : matched()) {
         if (serves_reliably(proxy) && proxy.is_announcing(writer_cache_)) {
             any_announcing = true;

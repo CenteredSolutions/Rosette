@@ -410,7 +410,7 @@ public:
               cfg.nackDelayMs, cfg.hbPeriodMs);
         w->release_replies_on_delivery(cfg.releaseRepliesOnDelivery);
         w->set_waiting_reader_query(&RTPSParticipant::has_waiting_reader, this);
-        w->set_timer_notice(&timers_stale_);
+        w->set_timers_stale_flag(&timers_stale_);
 
         writers_[slot] = w;
         writer_alive_[slot] = true;
@@ -480,9 +480,14 @@ public:
      * endpoint, and each endpoint's tick() returns how long until its next
      * timer, so the same walk yields the participant's next deadline. Until
      * that deadline passes, a pass walks nothing. Anything that may bring a
-     * timer nearer marks the timers stale, which makes the next pass walk:
-     * a datagram other than a known peer's SPDP renewal, a write, a match,
-     * a created or deleted endpoint, an address. Nothing runs until the
+     * timer nearer marks the timers stale, which makes the next pass walk.
+     * The marks sit where events enter the participant: a datagram other
+     * than a known peer's SPDP renewal, an application write (through
+     * StatefulWriter::set_timers_stale_flag()), a created or deleted
+     * endpoint, an address; and where a timer is born due, an unmatch that
+     * may let a waiting match bind. A match needs no mark of its own: it
+     * comes from one of those events, or from a step of the walk that runs
+     * before the endpoints it matches are ticked. Nothing runs until the
      * participant has an address.
      *
      * After a user endpoint's proxy frees (an unmatch or a deleted

@@ -830,11 +830,11 @@ static bool receive_spdp(RTPSParticipant& p, const GuidPrefix& prefix, uint32_t 
            && p.parse_received(msg.data(), static_cast<uint32_t>(msg.size())) == ParseResult::OK;
 }
 
-// §8.4.9.2/§8.5.3.2: tick() remembers how far away the soonest timer is and
+// §8.4.9.2/§8.5.3.2: tick() keeps the deadline of the soonest timer and
 // skips the endpoints until then. Whatever brings a timer nearer must make it
 // look again: a write starts the heartbeat period, and a peer that renews
-// with a lease shorter than the remembered wait expires on time. A renewal
-// that only moves an expiry later leaves the remembered wait as it was.
+// with a lease shorter than the time left expires on time. A renewal
+// that only moves an expiry later leaves the deadline as it was.
 static bool tc_part_8_5_1_015(std::string& err) {
     constexpr uint32_t kHeartbeatMs = 50u;
     const GuidPrefix   peer = make_prefix(0xD1u, 0xD2u, 0xD3u);
@@ -902,7 +902,7 @@ static bool tc_part_8_5_1_015(std::string& err) {
     CHECK(quiet > 1000u + 2u, "the soonest timer is further away than a one-second lease");
     CHECK(receive_spdp(p, peer, 30u, now + 2u), "the renewal is accepted");
     CHECK(p.ms_until_next_timer(now + 2u) == quiet - 2u,
-          "a renewal that extends a lease leaves the remembered wait running");
+          "a renewal that extends a lease leaves the deadline running");
 
     CHECK(receive_spdp(p, peer, 1u, now + 2u), "the short-lease renewal is accepted");
     CHECK(p.ms_until_next_timer(now + 2u) == 0u, "a shorter lease makes the next pass walk");
@@ -948,7 +948,7 @@ static bool tc_part_8_5_1_016(std::string& err) {
     wcfg.reliability = ReliabilityKind::RELIABLE;
     wcfg.hbPeriodMs = 70u;
     StatefulWriter* w = p.create_writer<4>(wcfg);
-    ReaderConfig rcfg{};
+    ReaderConfig    rcfg{};
     rcfg.topicName.assign("rt/in");
     rcfg.typeName.assign("pkg::msg::dds_::T_");
     rcfg.reliability = ReliabilityKind::RELIABLE;
@@ -961,7 +961,7 @@ static bool tc_part_8_5_1_016(std::string& err) {
     rd.typeName.assign("pkg::msg::dds_::T_");
     rd.reliabilityKind = ReliabilityKind::RELIABLE;
     p.match_table().add_reader(rd);
-    const Guid remote_writer{peer, make_entity(0x50u, 0x51u, 0x01u, 0x02u)};
+    const Guid           remote_writer{peer, make_entity(0x50u, 0x51u, 0x01u, 0x02u)};
     DiscoveredWriterData wd{};
     wd.writerGuid = remote_writer;
     wd.topicName.assign("rt/in");
@@ -1203,8 +1203,8 @@ void append_participant_tests_8_5_1(std::vector<TestCase>& tests) {
                      "§8.5.3.2/§8.5.3.3: ms_until_next_timer() is unbounded without addresses, zero before the first SPDP announcement, and bounded by the SPDP period and peer lease expiry.",
                      tc_part_8_5_1_006});
     tests.push_back({"TC-PART-8.5.1-015",
-                     "§8.4.9.2/§8.5.3.2: tick() skips the endpoints until the soonest timer it "
-                     "remembers; a write and a renewal with a shorter lease bring that timer "
+                     "§8.4.9.2/§8.5.3.2: tick() skips the endpoints until its soonest timer "
+                     "falls due; a write and a renewal with a shorter lease bring that timer "
                      "nearer, and a renewal that only extends a lease leaves it running.",
                      tc_part_8_5_1_015});
     tests.push_back({"TC-PART-8.5.1-016",
