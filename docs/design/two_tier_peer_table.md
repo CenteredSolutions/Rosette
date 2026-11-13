@@ -303,6 +303,11 @@ settled peer could go would only have the next tick park the settled peer to
 bring the stalled one straight back, replaying every announcement to a
 locator that does not answer.
 
+Ages are compared as `now - lastSedpMs` in 32-bit milliseconds, which wraps
+after 49.7 days. Each participant tick caps every peer's age at 2^31 - 1 ms
+(about 24.8 days) by moving its stamp forward, so a peer quiet for months
+still ranks oldest; peers past the cap tie.
+
 Parking on demand means a host build, or a board on a small network, never
 parks anyone and behaves exactly as a single-tier table. On a large network,
 the first boot wave parks peers about as fast as they settle.
