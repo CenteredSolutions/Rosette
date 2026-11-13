@@ -148,7 +148,7 @@ RTPSParticipant::PeerIdleness RTPSParticipant::peer_idleness(const PeerEntry& pe
     SequenceNumber publications;
     SequenceNumber subscriptions;
 
-    bool complete = sedp_reader_.heard_from(prefix)
+    bool complete = sedp_reader_.heard_from(prefix, peer.availableBuiltinEndpoints)
                     && sedp_reader_.caught_up_with(prefix, publications, subscriptions)
                     && sedp_writer_.acknowledged_by(prefix);
     for (int i = 0; complete && i < RTPS_MAX_USER_WRITERS; ++i) {
