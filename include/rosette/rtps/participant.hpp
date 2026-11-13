@@ -1003,14 +1003,23 @@ private:
      * per call; admit_peer() parks an idle peer for it when the tier is full,
      * and leaves it owed for the next call when none is idle.
      *
+     * The same walk over the known peers caps each peer's age
+     * (now_ms - lastSedpMs) at 2^31 - 1 ms, about 24.8 days, by moving
+     * lastSedpMs forward. Every age comparison in the peer tiers is then
+     * exact below the cap, and a peer quiet for longer than 2^32 ms never
+     * looks newer than one stamped seconds ago; peers past the cap tie.
+     *
      * @param[in] now_ms rosette::platform::monotonic_ms(); ages are taken
      *   wrap-safely against lastSedpMs.
      *
      * Verification:
      * - Correct means: the owed peer with the oldest stamp is the one
-     *   admitted; no owed peer waits forever while slots can be made.
+     *   admitted; no owed peer waits forever while slots can be made; no
+     *   peer's age exceeds 2^31 - 1 ms after the call, however long it
+     *   has been quiet.
      * - Covered by: TC-PART-8.5.3-021; RosettePeerTable (tests/formal),
-     *   EveryPeerServed with two unreachable peers and ServeOrder "oldest".
+     *   EveryPeerServed with two unreachable peers and ServeOrder "oldest";
+     *   TC-PART-8.5.3-023 (age cap).
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.4.1 (SEDP builtin endpoints, TRANSIENT_LOCAL replay)

@@ -296,11 +296,22 @@ void RTPSParticipant::finish_peer_refreshes() noexcept {
 }
 
 void RTPSParticipant::serve_owed_peer(uint32_t now_ms) noexcept {
+    // Ages are compared as now_ms - lastSedpMs, which wraps after 2^32 ms
+    // (49.7 days) and would make a peer quiet that long look newest. Capping
+    // every age at 2^31 - 1 ms here, a walk tick() makes far more often than
+    // that, keeps each comparison exact below the cap and ties the rest as
+    // equally old.
+    constexpr uint32_t kMaxAgeMs = 0x7FFFFFFFu;
+
     // Oldest first: every activation stamps lastSedpMs, so peers that take
     // turns in a slot (stalled peers parked owed again) move behind one that
     // has waited, and every owed peer is eventually served.
     PeerEntry* owed = nullptr;
     spdp_reader_.for_each_peer([&](PeerEntry& peer) noexcept {
+        if (now_ms - peer.lastSedpMs > kMaxAgeMs) {
+            peer.lastSedpMs = now_ms - kMaxAgeMs;
+        }
+
         if (peer.owed
             && (owed == nullptr || now_ms - peer.lastSedpMs > now_ms - owed->lastSedpMs)) {
             owed = &peer;

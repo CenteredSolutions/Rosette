@@ -834,6 +834,63 @@ static bool tc_part_8_5_3_022(std::string& err) {
     return true;
 }
 
+// A peer's age is capped at 2^31 - 1 ms on every tick, so one quiet for
+// more than 2^32 ms (49.7 days) still ranks oldest: uncapped, its age would
+// wrap to a few milliseconds and a peer stamped moments ago would be served
+// first.
+static bool tc_part_8_5_3_023(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+    const GuidPrefix d = make_prefix(0xD1u, 0xD2u, 0xD3u);
+
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1000u)
+              && hear_announcers(p, a, 1000u) && hear_announcers(p, b, 1000u),
+          "two peers are active and heard");
+    CHECK(deliver_announcement(p, a, true, "rt/a", 1, 1100u), "A's last SEDP DATA is newer");
+    CHECK(announce(p, c, 0x13u, 1300u) && hear_announcers(p, c, 1300u) && is_parked(p, b),
+          "B is parked for a third peer");
+    CHECK(announce(p, d, 0x14u, 1300u) && hear_announcers(p, d, 1300u) && is_parked(p, a),
+          "A is parked for a fourth");
+
+    // Ticks every 2^30 ms, each peer renewing its lease, until B has been
+    // quiet for 2^32 + 50 ms; the clock wraps to 1050.
+    constexpr uint32_t kStep = 0x40000000u;
+    for (uint32_t k = 1u; k <= 3u; ++k) {
+        const uint32_t now = 1000u + k * kStep;
+        CHECK(announce(p, a, 0x11u, now) && announce(p, b, 0x12u, now) && announce(p, c, 0x13u, now)
+                  && announce(p, d, 0x14u, now),
+              "every peer renews its lease");
+        g_participant_test_now_ms = now;
+        p.tick(now);
+    }
+
+    const uint32_t end = 1050u;
+    CHECK(announce(p, a, 0x11u, end) && announce(p, b, 0x12u, end) && announce(p, c, 0x13u, end)
+              && announce(p, d, 0x14u, end),
+          "every peer renews its lease again");
+    p.spdp_reader().find_peer(a)->lastSedpMs = end - 100u;
+
+    WriterConfig wcfg{};
+    wcfg.topicName.assign("rt/local");
+    wcfg.typeName.assign("pkg::msg::dds_::T_");
+    wcfg.reliability = ReliabilityKind::RELIABLE;
+    CHECK(p.create_writer<1>(wcfg) != nullptr, "a local writer is created");
+    CHECK(record(p, a)->owed && record(p, b)->owed, "both parked peers are owed it");
+    CHECK(acknowledge_sedp(p, c, true, 1) && acknowledge_sedp(p, c, false, 0)
+              && acknowledge_sedp(p, d, true, 1) && acknowledge_sedp(p, d, false, 0),
+          "the active peers acknowledge it");
+
+    g_participant_test_now_ms = end;
+    p.tick(end);
+    CHECK(is_active(p, b) && is_parked(p, a),
+          "B, quiet for more than 2^32 ms, is served before A, stamped 100 ms ago");
+    return true;
+}
+
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.3-011",
                      "§8.5.3.2/§8.5.4.1: a peer finding the active tier full waits until a "
@@ -888,6 +945,10 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "one, whatever their ages, so the stalled peer is not owed and brought "
                      "straight back.",
                      tc_part_8_5_3_022});
+    tests.push_back({"TC-PART-8.5.3-023",
+                     "§8.5.3.2: each tick caps a peer's age at 2^31 - 1 ms, so a peer quiet for "
+                     "more than 2^32 ms is still served before one stamped moments ago.",
+                     tc_part_8_5_3_023});
 }
 
 }  // namespace spec_test
