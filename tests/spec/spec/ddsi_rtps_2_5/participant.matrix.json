@@ -161,9 +161,9 @@
       "id": "REQ-PART-8.5.3.2-STALLED-PEER-YIELDS-SLOT",
       "section": "8.5.3.2",
       "normativity": "implementation-behavior",
-      "statement": "An active peer that shares no match and has sent no SEDP DATA for RTPS_PEER_EXCHANGE_TIMEOUT_MS without settling is stalled; it is parked for a waiting peer as a settled one would be, stays owed this participant's announcements, and is tried again when a slot can be made. Owed peers are reactivated oldest first, by their last SEDP DATA or activation, so stalled peers taking turns in a slot cannot starve a waiting one.",
+      "statement": "An active peer that shares no match and has sent no SEDP DATA for RTPS_PEER_EXCHANGE_TIMEOUT_MS without settling is stalled; it is parked for a waiting peer when no active peer is settled (a settled peer is parked first, whatever its age), stays owed this participant's announcements, and is tried again when a slot can be made. Owed peers are reactivated oldest first, by their last SEDP DATA or activation, so stalled peers taking turns in a slot cannot starve a waiting one.",
       "status": "implemented",
-      "test_ids": ["TC-PART-8.5.3-018", "TC-PART-8.5.3-020", "TC-PART-8.5.3-021"]
+      "test_ids": ["TC-PART-8.5.3-018", "TC-PART-8.5.3-020", "TC-PART-8.5.3-021", "TC-PART-8.5.3-022"]
     },
     {
       "id": "REQ-PART-8.5.4.1-PARKED-PEERS-STAY-LISTED",

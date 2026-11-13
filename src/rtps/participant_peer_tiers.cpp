@@ -13,11 +13,15 @@
  * (see "Known and active peers" in rtps/spdp.hpp).
  *
  * Admission. A new or pending peer is activated when a slot is free.
- * Otherwise the idle active peer whose last SEDP DATA (or activation) is
- * oldest is parked to make room. An active peer is idle when it is settled
- * or stalled, and neither ever shares a match that counts (one other than
- * with the discovery writer), so the slots end up held by the peers this
- * participant really talks to and the rest rotate through the network.
+ * Otherwise an idle active peer is parked to make room: the settled one
+ * whose last SEDP DATA (or activation) is oldest, or, when none is settled,
+ * the oldest stalled one. An active peer is idle when it is settled or
+ * stalled (peer_idleness()), and neither ever shares a match that counts
+ * (one other than with the discovery writer), so the slots end up held by
+ * the peers this participant really talks to and the rest rotate through
+ * the network. A settled peer goes first because a stalled peer is parked
+ * owed: parking it while a settled peer could go would only have the next
+ * tick park the settled peer to bring the stalled one straight back.
  *
  * | Active peer | No SEDP DATA for              | And also                        | Parked as  |
  * |-------------|-------------------------------|---------------------------------|------------|
@@ -132,37 +136,31 @@ void RTPSParticipant::activate_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
     notify_graph_change();
 }
 
-bool RTPSParticipant::peer_is_settled(const PeerEntry& peer, uint32_t now_ms) noexcept {
-    if (!peer.active() || !peer.rebuildable() || now_ms - peer.lastSedpMs < RTPS_PEER_SETTLE_MS) {
-        return false;
-    }
-
+RTPSParticipant::PeerIdleness RTPSParticipant::peer_idleness(const PeerEntry& peer,
+                                                             uint32_t         now_ms) noexcept {
+    const uint32_t    quiet_ms = now_ms - peer.lastSedpMs;
     const GuidPrefix& prefix = peer.guidPrefix;
-    if (match_table_.has_match_with(prefix, discovery_writer_guid_)) {
-        return false;
+    if (!peer.active() || !peer.rebuildable() || quiet_ms < RTPS_PEER_SETTLE_MS
+        || match_table_.has_match_with(prefix, discovery_writer_guid_)) {
+        return PeerIdleness::busy;
     }
 
     SequenceNumber publications;
     SequenceNumber subscriptions;
-    if (!sedp_reader_.heard_from(prefix)
-        || !sedp_reader_.caught_up_with(prefix, publications, subscriptions)
-        || !sedp_writer_.acknowledged_by(prefix)) {
-        return false;
+
+    bool complete = sedp_reader_.heard_from(prefix)
+                    && sedp_reader_.caught_up_with(prefix, publications, subscriptions)
+                    && sedp_writer_.acknowledged_by(prefix);
+    for (int i = 0; complete && i < RTPS_MAX_USER_WRITERS; ++i) {
+        complete =
+            !writer_alive_[i] || !writers_[i] || writers_[i]->acknowledged_by_participant(prefix);
     }
 
-    for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i) {
-        if (writer_alive_[i] && writers_[i] && !writers_[i]->acknowledged_by_participant(prefix)) {
-            return false;
-        }
+    if (complete) {
+        return PeerIdleness::settled;
     }
 
-    return true;
-}
-
-bool RTPSParticipant::peer_is_stalled(const PeerEntry& peer, uint32_t now_ms) noexcept {
-    return peer.active() && peer.rebuildable()
-           && now_ms - peer.lastSedpMs >= RTPS_PEER_EXCHANGE_TIMEOUT_MS
-           && !match_table_.has_match_with(peer.guidPrefix, discovery_writer_guid_);
+    return quiet_ms >= RTPS_PEER_EXCHANGE_TIMEOUT_MS ? PeerIdleness::stalled : PeerIdleness::busy;
 }
 
 void RTPSParticipant::park_peer(PeerEntry& peer) noexcept {
@@ -200,35 +198,38 @@ void RTPSParticipant::park_peer(PeerEntry& peer) noexcept {
 }
 
 bool RTPSParticipant::park_idle_peer(uint32_t now_ms) noexcept {
-    PeerEntry* oldest = nullptr;
-    bool       oldest_settled = false;
+    const auto older = [now_ms](const PeerEntry& peer, const PeerEntry* than) noexcept {
+        return than == nullptr || now_ms - peer.lastSedpMs > now_ms - than->lastSedpMs;
+    };
+
+    // A stalled peer goes only when none is settled: it is parked owed, so
+    // the next serve_owed_peer() would park a settled peer to bring it back.
+    PeerEntry* settled = nullptr;
+    PeerEntry* stalled = nullptr;
     spdp_reader_.for_each_peer([&](PeerEntry& peer) noexcept {
-        if (!peer.active()) {
+        const bool could_win = older(peer, settled) || (settled == nullptr && older(peer, stalled));
+        if (!peer.active() || !could_win) {
             return;
         }
 
-        const bool older =
-            oldest == nullptr || now_ms - peer.lastSedpMs > now_ms - oldest->lastSedpMs;
-        if (!older) {
-            return;
-        }
-
-        const bool settled = peer_is_settled(peer, now_ms);
-        if (settled || peer_is_stalled(peer, now_ms)) {
-            oldest = &peer;
-            oldest_settled = settled;
+        const PeerIdleness idleness = peer_idleness(peer, now_ms);
+        if (idleness == PeerIdleness::settled && older(peer, settled)) {
+            settled = &peer;
+        } else if (idleness == PeerIdleness::stalled && older(peer, stalled)) {
+            stalled = &peer;
         }
     });
 
-    if (oldest == nullptr) {
+    PeerEntry* parked = settled != nullptr ? settled : stalled;
+    if (parked == nullptr) {
         return false;
     }
 
-    park_peer(*oldest);
+    park_peer(*parked);
 
     // A stalled peer has not received everything this participant
     // announced; owing it them brings it back when a slot is free.
-    oldest->owed = !oldest_settled;
+    parked->owed = settled == nullptr;
     return true;
 }
 
