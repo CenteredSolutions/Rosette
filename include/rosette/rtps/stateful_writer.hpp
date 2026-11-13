@@ -716,10 +716,19 @@ public:
      * piggybacked HEARTBEAT. A reader served best-effort requests nothing and
      * is never announcing, so tick() sends it nothing.
      *
+     * The repair pass over the matched readers also finds the next timer, so
+     * the participant learns when to tick this writer again without a second
+     * pass (RTPSParticipant::tick()).
+     *
      * @param[in] now_ms Current rosette::platform::monotonic_ms().
+     * @return What ms_until_next_timer(now_ms) returns once the call is done:
+     *   0 while a replay still has datagrams to send, UINT32_MAX when no
+     *   timer runs.
      *
      * Verification:
-     * - Covered by: TC-SWR-8.4.2.2-001, TC-SWR-8.4.9-004, TC-SWR-8.4.9-002,
+     * - Correct means: the return equals ms_until_next_timer(now_ms) called
+     *   right after; the sends follow the order above.
+     * - Covered by: TC-PART-8.5.1-016, TC-SWR-8.4.2.2-001, TC-SWR-8.4.9-004, TC-SWR-8.4.9-002,
      *   TC-SWR-8.2.2-003, TC-SWR-8.4.4-001, TC-SWR-8.4.9.1-001,
      *   TC-SWR-8.4.1.4-003, TC-SWR-8.4.1.4-010.
      *
@@ -727,7 +736,7 @@ public:
      * - OMG DDSI-RTPS 2.5 §8.4.1.1 (nackResponseDelay, heartbeatPeriod), §8.4.9.2,
      *   §8.4.9.1
      */
-    void tick(uint32_t now_ms) noexcept;
+    uint32_t tick(uint32_t now_ms) noexcept;
 
     const Guid&     guid()        const noexcept { return guid_; }
     ReliabilityKind reliability() const noexcept { return reliability_; }

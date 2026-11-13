@@ -583,7 +583,8 @@ bool SpdpReader::remove_peer(const GuidPrefix& prefix) noexcept {
     return true;
 }
 
-void SpdpReader::tick(uint32_t now_ms) noexcept {
+uint32_t SpdpReader::tick(uint32_t now_ms) noexcept {
+    uint32_t next = UINT32_MAX;
     for (PeerEntry& peer : peers_) {
         if (!peer.alive) {
             continue;
@@ -599,8 +600,12 @@ void SpdpReader::tick(uint32_t now_ms) noexcept {
                        peer.guidPrefix.value[3], peer.guidPrefix.value[4],
                        peer.guidPrefix.value[5]);
             forget(peer);
+        } else if (peer.leaseExpiryMs - now_ms < next) {
+            next = peer.leaseExpiryMs - now_ms;
         }
     }
+
+    return next;
 }
 
 }  // namespace rosette::rtps

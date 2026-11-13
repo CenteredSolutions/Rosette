@@ -510,13 +510,17 @@ public:
     // first tick announces and the next announce waits one period.
     //
     // @param now_ms  Current rosette::platform::monotonic_ms().
+    // @return Milliseconds until the next announcement, as
+    //   ms_until_next_announce() then reports it.
     // ----------------------------------------------------------
-    void tick(uint32_t now_ms) noexcept {
+    uint32_t tick(uint32_t now_ms) noexcept {
         if (!announced_once_ || (now_ms - last_sent_ms_) >= resend_ms_) {
             announce();
             last_sent_ms_ = now_ms;
             announced_once_ = true;
         }
+
+        return ms_until_next_announce(now_ms);
     }
 
     // Milliseconds until tick() next announces; 0 when due (including before
@@ -639,9 +643,16 @@ public:
     //   "If a participant does not receive a refresh within
     //    leaseDuration, it removes the remote participant entry."
     //
+    // The same pass finds the soonest lease left, so the participant need
+    // not walk the peers a second time to know when to look again.
+    //
     // @param now_ms  Current rosette::platform::monotonic_ms().
+    // @return What ms_until_next_expiry(now_ms) returns once the call is
+    //   done: the time to the soonest surviving lease expiry, UINT32_MAX
+    //   when no peer is left.
+    // Verification: TC-SPDP-8.5.3-002 (expiry), TC-PART-8.5.1-016 (return).
     // ----------------------------------------------------------
-    void tick(uint32_t now_ms) noexcept;
+    uint32_t tick(uint32_t now_ms) noexcept;
 
     // ----------------------------------------------------------
     // remove_peer()

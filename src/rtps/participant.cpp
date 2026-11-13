@@ -9,6 +9,7 @@
 #include "participant.hpp"
 
 #include <string.h>
+#include <algorithm>
 #include <atomic>
 #include <new>
 #include "log.hpp"
@@ -472,15 +473,19 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
         return;
     }
 
-    if (!timers_stale_ && remembered_timer_wait(now_ms) != 0u) {
+    if (!timers_stale_ && static_cast<int32_t>(next_timer_due_ms_ - now_ms) > 0) {
         return;
     }
 
-    spdp_writer_.tick(now_ms);
-    spdp_reader_.tick(now_ms);
+    // Cleared before the walk, so a match or peer change made during it
+    // leaves the timers stale and the next pass walks again.
+    timers_stale_ = false;
+
+    uint32_t next = spdp_writer_.tick(now_ms);
+    next = std::min(next, spdp_reader_.tick(now_ms));
     serve_owed_peer(now_ms);
-    sedp_writer_.tick(now_ms);
-    sedp_reader_.tick(now_ms);
+    next = std::min(next, sedp_writer_.tick(now_ms));
+    next = std::min(next, sedp_reader_.tick(now_ms));
     finish_peer_refreshes();
     // Both steps are flag checks until a match frees room: a rebind is due
     // only after a proxy frees, and a rescan only after a pair was turned
@@ -498,23 +503,33 @@ void RTPSParticipant::tick(uint32_t now_ms) noexcept {
         match_table_.rescan_unrecorded();
     }
 
+    // The user endpoints come after every step that can match them, so the
+    // wait each one returns already counts what those steps did.
     for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i) {
         if (writer_alive_[i] && writers_[i]) {
-            writers_[i]->tick(now_ms);
+            next = std::min(next, writers_[i]->tick(now_ms));
         }
     }
 
     for (int i = 0; i < RTPS_MAX_USER_READERS; ++i) {
         if (reader_alive_[i]) {
-            user_reader(i)->tick(now_ms);
+            next = std::min(next, user_reader(i)->tick(now_ms));
         }
     }
 
-    // Everything the walk did, and everything that went stale during it, is
-    // in the timers as they now stand.
-    timers_wait_ms_ = scan_timers(now_ms);
-    timers_checked_ms_ = now_ms;
-    timers_stale_ = false;
+    // An owed parked peer waits for a peer to settle, and a reactivated
+    // peer's refresh for its replay; look again a few times per settle period.
+    if (peers_settling()) {
+        next = std::min<uint32_t>(next, RTPS_PEER_SETTLE_MS / 4u);
+    }
+
+    if (rebind_due_ || match_table_.rescan_due()) {
+        next = 0u;
+    }
+
+    // The SPDP period bounds the wait whenever there is an address; the cap
+    // keeps the deadline comparison in tick() wrap-safe regardless.
+    next_timer_due_ms_ = now_ms + std::min<uint32_t>(next, 0x7FFFFFFFu);
 }
 
 uint32_t RTPSParticipant::ms_until_next_timer(uint32_t now_ms) const noexcept {
@@ -522,40 +537,18 @@ uint32_t RTPSParticipant::ms_until_next_timer(uint32_t now_ms) const noexcept {
         return UINT32_MAX;
     }
 
-    return timers_stale_ ? scan_timers(now_ms) : remembered_timer_wait(now_ms);
+    const int32_t left = static_cast<int32_t>(next_timer_due_ms_ - now_ms);
+    return timers_stale_ || left <= 0 ? 0u : static_cast<uint32_t>(left);
 }
 
-uint32_t RTPSParticipant::scan_timers(uint32_t now_ms) const noexcept {
-    uint32_t next = spdp_writer_.ms_until_next_announce(now_ms);
-    auto consider = [&next](uint32_t candidate) noexcept {
-        if (candidate < next) next = candidate;
-    };
-    consider(spdp_reader_.ms_until_next_expiry(now_ms));
-    // An owed parked peer waits for a peer to settle, and a reactivated
-    // peer's refresh for its replay; look again a few times per settle period.
-    bool waiting = false;
-    spdp_reader_.for_each_peer([&waiting](const PeerEntry& peer) noexcept {
+bool RTPSParticipant::peers_settling() const noexcept {
+    bool settling = false;
+    spdp_reader_.for_each_peer([&settling](const PeerEntry& peer) noexcept {
         const bool refreshing =
             peer.active() && (peer.parkedPublicationsSn != 0u || peer.parkedSubscriptionsSn != 0u);
-        waiting = waiting || peer.owed || refreshing;
+        settling = settling || peer.owed || refreshing;
     });
-    if (waiting) {
-        consider(RTPS_PEER_SETTLE_MS / 4u);
-    }
-
-    if (rebind_due_ || match_table_.rescan_due()) {
-        consider(0u);
-    }
-
-    consider(sedp_writer_.ms_until_next_timer(now_ms));
-    consider(sedp_reader_.ms_until_next_timer(now_ms));
-    for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i)
-        if (writer_alive_[i] && writers_[i])
-            consider(writers_[i]->ms_until_next_timer(now_ms));
-    for (int i = 0; i < RTPS_MAX_USER_READERS; ++i)
-        if (reader_alive_[i])
-            consider(user_reader(i)->ms_until_next_timer(now_ms));
-    return next;
+    return settling;
 }
 
 void RTPSParticipant::announce() noexcept {
@@ -908,7 +901,7 @@ void RTPSParticipant::dispatch_data(const ParseContext& ctx,
         // network sends between two timers cost no walk.
         const bool accepted = p->spdp_reader_.on_data(ctx.senderGuidPrefix, msg.serializedPayload,
                                                       msg.serializedPayloadSize, now_ms);
-        if (accepted && p->spdp_reader_.last_lease_ms() < p->timers_wait_ms_) {
+        if (accepted && p->spdp_reader_.last_lease_ms() < p->ms_until_next_timer(now_ms)) {
             p->timers_stale_ = true;
         }
 
