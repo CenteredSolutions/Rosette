@@ -30,9 +30,9 @@
       "section": "8.4.7.4",
       "page": 141,
       "normativity": "may",
-      "statement": "A RELIABLE StatefulReader sends an ACKNACK when it matches a writer, with an empty readerSNState and the F-flag clear, so the writer answers with a HEARTBEAT and DATA sent before the match is requested without waiting for the writer's periodic HEARTBEAT; bitmapBase is 0 for an eProsima or RTI writer (the only form Fast DDS answers) and 1 otherwise; it is resent every RTPS_PREEMPTIVE_ACKNACK_RETRY_MS until any HEARTBEAT, DATA, GAP or fragment submessage from the writer arrives; a BEST_EFFORT reader sends none.",
+      "statement": "A RELIABLE StatefulReader sends an ACKNACK when it matches a writer, with an empty readerSNState and the F-flag clear, so the writer answers with a HEARTBEAT and DATA sent before the match is requested without waiting for the writer's periodic HEARTBEAT; bitmapBase is 0 for an eProsima or RTI writer (the only form Fast DDS answers) and 1 otherwise; it is resent every RTPS_PREEMPTIVE_ACKNACK_RETRY_MS until any HEARTBEAT, DATA, GAP or fragment submessage from the writer arrives, at most RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS times in all for a user reader and RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS for a builtin one; a BEST_EFFORT reader sends none.",
       "status": "implemented",
-      "test_ids": ["TC-SRR-8.4.7.4-002", "TC-SRR-8.4.7.4-003", "TC-SRR-8.4.7.4-004", "TC-SRR-8.4.7.4-008", "TC-SRR-8.4.7.4-009"]
+      "test_ids": ["TC-SRR-8.4.7.4-002", "TC-SRR-8.4.7.4-003", "TC-SRR-8.4.7.4-004", "TC-SRR-8.4.7.4-008", "TC-SRR-8.4.7.4-009", "TC-SRR-8.4.7.4-010"]
     },
     {
       "id": "REQ-SRR-8.4.8-DATA-RECEPTION-DUPLICATE-FILTER",

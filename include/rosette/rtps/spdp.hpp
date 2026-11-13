@@ -288,6 +288,11 @@ struct DiscoveredParticipant {
 
 static_assert(RTPS_PEER_EXCHANGE_TIMEOUT_MS > RTPS_PEER_SETTLE_MS,
               "a peer must have the chance to settle before it counts as stalled");
+static_assert(RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS * RTPS_PREEMPTIVE_ACKNACK_RETRY_MS
+                  > RTPS_PEER_EXCHANGE_TIMEOUT_MS,
+              "the SEDP readers' preemptive ACKNACKs must outlast the exchange deadline, "
+              "or an empty announcer whose answers were lost keeps its peer from settling "
+              "until it stalls");
 
 static_assert(RTPS_MAX_KNOWN_PEERS >= RTPS_MAX_PEERS && RTPS_MAX_KNOWN_PEERS < 256,
               "RTPS_MAX_KNOWN_PEERS must hold every active peer and fit a one-octet index");

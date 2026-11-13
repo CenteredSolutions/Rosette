@@ -101,6 +101,10 @@ bool StatefulReader::matched_writer_add(const Guid& writer_guid, const Locator* 
     slot->acknackCount = acknack_count_floor_;
     slot->zeroBaseAcknack =
         writer_vendor == VENDORID_EPROSIMA || writer_vendor == VENDORID_RTI_CONNEXT;
+    // §9.3.1.2: an entityKind with both top bits set is a builtin entity.
+    const bool builtin = (guid_.entityId.entityKind & 0xC0u) == 0xC0u;
+    slot->preemptiveAcknacksLeft =
+        builtin ? RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS : RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS;
     RTPS_LOG_I("reader", "writer matched %02x%02x%02x%02x entity=%02x%02x%02x%02x",
                writer_guid.prefix.value[0], writer_guid.prefix.value[1],
                writer_guid.prefix.value[2], writer_guid.prefix.value[3],

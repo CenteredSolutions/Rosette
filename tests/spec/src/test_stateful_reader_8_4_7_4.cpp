@@ -366,6 +366,58 @@ bool tc_srr_8_4_7_4_009(std::string& err) {
     return true;
 }
 
+// A writer that never answers is sent only so many preemptive ACKNACKs:
+// RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS from a user reader, and
+// RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS from a builtin one, after which
+// nothing is owed. A HEARTBEAT that arrives later is still answered.
+static bool tc_srr_8_4_7_4_010(std::string& err) {
+    constexpr uint32_t kRetry = RTPS_PREEMPTIVE_ACKNACK_RETRY_MS;
+    const Guid         writer_guid = make_guid(0x21u, 0x22u, 0x23u, make_entity(4u, 5u, 6u, 0x02u));
+    const Locator      loc = make_udpv4_locator(0xC0A80114u, 7411u);
+
+    const struct {
+        Octet    reader_kind;
+        uint32_t attempts;
+    } cases[] = {{0x07u, RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS},
+                 {0xC7u, RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS}};
+
+    for (const auto& c : cases) {
+        CaptureTransport tx{};
+        const Guid       reader_guid =
+            make_guid(0x11u, 0x12u, 0x13u, make_entity(1u, 2u, 3u, c.reader_kind));
+        g_stateful_reader_test_now_ms = 1000u;
+        DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
+        CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+
+        for (uint32_t i = 1u; i <= c.attempts + 2u; ++i) {
+            r.tick(1000u + i * kRetry);
+        }
+
+        CHECK(tx.sent.size() == c.attempts, "the preemptive ACKNACK stops after its attempts");
+        CHECK(r.ms_until_next_timer(1000u + (c.attempts + 2u) * kRetry) == UINT32_MAX,
+              "and nothing is owed after the last");
+
+        ParsedHeartbeat hb{};
+        hb.writerId = writer_guid.entityId;
+        hb.readerId = reader_guid.entityId;
+        hb.firstSN = SequenceNumber::from_int64(1);
+        hb.lastSN = SequenceNumber::from_int64(1);
+        hb.count = 1;
+        ParseContext ctx{};
+        ctx.senderGuidPrefix = writer_guid.prefix;
+        const uint32_t later = 1000u + (c.attempts + 3u) * kRetry;
+        g_stateful_reader_test_now_ms = later;
+        r.on_heartbeat(ctx, hb);
+        r.tick(later + RTPS_HEARTBEAT_RESPONSE_DELAY_MS);
+        ParsedAckNack ack{};
+        CHECK(tx.sent.size() == c.attempts + 1u && parse_acknack(tx.sent.back(), ack)
+                  && !ack.readerSNState.empty(),
+              "a later HEARTBEAT is answered with an ACKNACK requesting SN 1");
+    }
+
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.7.4-001",
                      "§8.4.7.4: matched_writer_add creates one WriterProxy for a newly matched writer, and matched_writer_remove removes it from the matched set.",
@@ -405,6 +457,12 @@ void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
                      "§8.4.7.4/§8.3.7.4: a DATA_FRAG marks its writer heard, so a writer sending "
                      "a fragmented sample is not sent the preemptive ACKNACK again.",
                      tc_srr_8_4_7_4_009});
+    tests.push_back({"TC-SRR-8.4.7.4-010",
+                     "§8.4.7.4: the preemptive ACKNACK is sent at most "
+                     "RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS times by a user reader and "
+                     "RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS by a builtin one; a later HEARTBEAT "
+                     "is still answered.",
+                     tc_srr_8_4_7_4_010});
 }
 
 } // namespace spec_test
