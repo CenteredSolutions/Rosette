@@ -254,6 +254,9 @@ An active peer is **settled** when all of these hold:
 * Every one of its SEDP announcers that this side reads has been heard since
   its activation (a HEARTBEAT, DATA, GAP or fragment submessage), and has
   been processed, with no gaps, up to the `lastSN` of its latest HEARTBEAT.
+  The announcers are the ones its SPDP `availableBuiltinEndpoints`
+  advertises: one advertised but never matched is unheard, so the peer
+  stalls rather than settling without its replay.
 * Its SEDP readers have acknowledged everything both of this side's SEDP
   announcers have written.
 * Its `ros_discovery_info` reader, if it has one, has acknowledged the

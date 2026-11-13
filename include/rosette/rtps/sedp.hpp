@@ -495,26 +495,35 @@ public:
                         SequenceNumber& subscriptions) noexcept;
 
     /**
-     * @brief Reports whether each of a peer's matched SEDP announcers has spoken since matching.
+     * @brief Reports whether each SEDP announcer a peer advertises has spoken since matching.
      *
      * Use it alongside caught_up_with(), which also holds for an announcer
      * that has sent nothing, as it is when this reader's preemptive ACKNACK
-     * was lost; heard_from() tells the two apart.
+     * was lost; heard_from() tells the two apart. It is keyed to what the
+     * peer advertises, not to the proxies this reader holds: an advertised
+     * announcer with no proxy (one that could not be matched) is unheard,
+     * so the peer cannot settle without the replay, and stalls instead.
      *
      * @param[in] peer_prefix GUID prefix of the peer.
-     * @return `true` when every announcer of the peer that is matched has
-     *   been heard; an announcer the peer does not have counts as heard.
+     * @param[in] advertised  The peer's SPDP availableBuiltinEndpoints
+     *   (PeerEntry::availableBuiltinEndpoints); only its two SEDP announcer
+     *   bits are read.
+     * @return `true` when every announcer the peer advertises is matched
+     *   and has been heard; an announcer it does not advertise counts as
+     *   heard.
      *
      * Verification:
      * - Correct means: false from matching until a HEARTBEAT, DATA, GAP or
-     *   fragment submessage from each matched announcer arrives, then true
-     *   until the peer is matched again.
-     * - Covered by: TC-PART-8.5.3-019.
+     *   fragment submessage from each advertised announcer arrives, then
+     *   true until the peer is matched again; false while an advertised
+     *   announcer has no proxy.
+     * - Covered by: TC-PART-8.5.3-019, TC-SEDP-8.5.4-021.
      *
      * References:
-     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (WriterProxy), §8.5.4.1 (SEDP replay)
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (WriterProxy), §8.5.4.1 (SEDP replay),
+     *   §8.5.4.3 (availableBuiltinEndpoints)
      */
-    bool heard_from(const GuidPrefix& peer_prefix) noexcept;
+    bool heard_from(const GuidPrefix& peer_prefix, uint32_t advertised) noexcept;
 
     /**
      * @brief The builtin reader matched with the SEDP announcer `writer_id`.

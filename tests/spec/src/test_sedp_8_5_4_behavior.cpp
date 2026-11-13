@@ -676,6 +676,32 @@ static bool tc_sedp_8_5_4_014(std::string& err) {
     return true;
 }
 
+// §8.5.4.1/§8.5.4.3: heard_from() is keyed to the announcers a peer
+// advertises. One it advertises but this reader has no proxy for is unheard,
+// not vacuously heard; one it does not advertise counts as heard; a matched
+// one is heard once it sends anything.
+static bool tc_sedp_8_5_4_021(std::string& err) {
+    FakeTransport      tx{};
+    EndpointMatchTable table(nullptr, nullptr, nullptr);
+    const GuidPrefix   local_prefix = make_guid(0x13u, 0x24u, 0x35u, entity_id::PARTICIPANT).prefix;
+    SedpReader         reader(local_prefix, tx, table);
+    const SedpPeer     peer{make_guid(0x46u, 0x57u, 0x68u, entity_id::PARTICIPANT).prefix,
+                        make_udpv4_locator(0xC0A80146u, 7410u)};
+    const uint32_t     both = builtin_endpoint::DISC_BUILTIN_ENDPOINT_PUBLICATIONS_ANNOUNCER
+                          | builtin_endpoint::DISC_BUILTIN_ENDPOINT_SUBSCRIPTIONS_ANNOUNCER;
+
+    CHECK(!reader.heard_from(peer.prefix, both), "advertised announcers with no proxy are unheard");
+    CHECK(reader.heard_from(peer.prefix, 0u), "announcers the peer does not have count as heard");
+
+    peer.discover(reader);
+    CHECK(!reader.heard_from(peer.prefix, both), "matched announcers are unheard until they speak");
+    peer.heartbeat(reader, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER, 1, 0, 1);
+    CHECK(!reader.heard_from(peer.prefix, both), "one announcer heard is not enough");
+    peer.heartbeat(reader, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER, 1, 0, 1);
+    CHECK(reader.heard_from(peer.prefix, both), "both heard");
+    return true;
+}
+
 void append_sedp_tests_8_5_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-8.5.4-001",
                      "§8.5.4/§8.5.4.3: SEDP writer announces registered local publications and subscriptions as DATA submessages with PL_CDR payloads.",
@@ -714,6 +740,11 @@ void append_sedp_tests_8_5_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SEDP-8.5.4-014",
                      "§8.5.4: count() counts local and remote endpoints per topic whatever their type; on_change fires once per recorded or forgotten endpoint.",
                      tc_sedp_8_5_4_014});
+    tests.push_back({"TC-SEDP-8.5.4-021",
+                     "§8.5.4.1/§8.5.4.3: heard_from() counts an advertised announcer without a "
+                     "proxy as unheard, an unadvertised one as heard, and a matched one as heard "
+                     "once it has sent anything.",
+                     tc_sedp_8_5_4_021});
 }
 
 } // namespace spec_test

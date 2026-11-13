@@ -113,6 +113,15 @@
       "test_ids": ["TC-SEDP-8.5.4-018"]
     },
     {
+      "id": "REQ-SEDP-8.5.4.1-HEARD-ADVERTISED-ANNOUNCERS",
+      "section": "8.5.4.1",
+      "page": 165,
+      "normativity": "implementation-behavior",
+      "statement": "A peer's SEDP announcers count as heard only once each one its availableBuiltinEndpoints advertises is matched and has sent a HEARTBEAT, DATA, GAP or fragment submessage; an advertised announcer without a proxy is unheard, and one it does not advertise counts as heard.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-8.5.4-021"]
+    },
+    {
       "id": "REQ-SEDP-8.5.5.1-TOPIC-TYPE",
       "section": "8.5.5.1",
       "page": 169,
