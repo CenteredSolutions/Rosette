@@ -258,6 +258,35 @@ static bool tc_swr_8_4_3_004(std::string& err) {
     return true;
 }
 
+// §8.3.7.1: a reader's ACKNACK count need not start at 1. Cyclone DDS
+// announces a reader with count 0; a writer that has seen no ACKNACK from it
+// accepts that one and answers it, and drops a repeat of the same count.
+static bool tc_swr_8_4_3_005(std::string& err) {
+    CaptureTransport tx{};
+    const Guid       writer_guid = make_guid(0xE1u, 0xE2u, 0xE3u, make_entity(1u, 1u, 1u, 0x03u));
+    const Guid       reader_guid = make_guid(0xF1u, 0xF2u, 0xF3u, make_entity(2u, 2u, 2u, 0x04u));
+    const Locator    loc = make_udpv4_locator(0xC0A80149u, 7411u);
+    StatefulWriterStorage<2, 1> w(writer_guid, ReliabilityKind::RELIABLE,
+                                  DurabilityKind::TRANSIENT_LOCAL, tx);
+    CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
+    tx.unicast_msgs.clear();
+
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = reader_guid.prefix;
+    ParsedAckNack ack{};
+    ack.readerId = reader_guid.entityId;
+    ack.writerId = writer_guid.entityId;
+    ack.readerSNState = make_empty_sn_set_from(SequenceNumber::from_int64(1));
+    ack.count = 0;
+    ack.finalFlag = false;
+    w.on_acknack(ctx, ack);
+    CHECK(count_heartbeats(tx, nullptr) == 1, "the count-0 announcement is answered");
+
+    w.on_acknack(ctx, ack);
+    CHECK(count_heartbeats(tx, nullptr) == 1, "a repeat of count 0 is a duplicate");
+    return true;
+}
+
 // §8.4.2.2, §8.4.3: an ACKNACK that requests nothing from a reader that has
 // acknowledged changes before is not an announcement, even while the writer
 // has written past it; answering it would pair every HEARTBEAT with another
@@ -525,6 +554,10 @@ void append_stateful_writer_tests_8_4_3_8_4_4(std::vector<TestCase>& tests) {
                      "§8.3.7.1: a writer that has written nothing answers a reader's non-final "
                      "announcement with a directed final HEARTBEAT showing an empty history.",
                      tc_swr_8_4_3_004});
+    tests.push_back({"TC-SWR-8.4.3-005",
+                     "§8.3.7.1: a reader's first ACKNACK is accepted whatever its count, so "
+                     "Cyclone DDS's count-0 announcement is answered; a repeat is a duplicate.",
+                     tc_swr_8_4_3_005});
     tests.push_back({"TC-SWR-8.4.3-002",
                      "§8.4.15.4: a preemptive ACKNACK (no NACK bits, base below the next SN) is answered with a directed HEARTBEAT; an up-to-date ACK is not.",
                      tc_swr_8_4_3_002});
