@@ -12,7 +12,7 @@
 #   serve_order  oldest (the code) | table
 set -euo pipefail
 
-property=$1 peers=${2:-3} slots=${3:-2} records=${4:-$peers} unreachable=${5:-"{}"} budget=${6:-4} stall_rule=${7:-deadline} serve_order=${8:-oldest}
+liveness="" property=$1 peers=${2:-3} slots=${3:-2} records=${4:-$peers} unreachable=${5:-"{}"} budget=${6:-4} stall_rule=${7:-deadline} serve_order=${8:-oldest}
 here=$(cd "$(dirname "$0")" && pwd)
 jar_dir=${TLA_TOOLS_DIR:-$HOME/.local/share/tlaplus/v1.7.4}
 jar_sha=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
@@ -20,7 +20,7 @@ echo "$jar_sha  $jar_dir/tla2tools.jar" | sha256sum --check --quiet
 
 case $property in
     NeverParkMatched) check="PROPERTY $property" spec=Spec ;;
-    Every*) check="PROPERTY $property" spec=FairSpec ;;
+    Every*) check="PROPERTY $property" spec=FairSpec liveness="-lncheck final" ;;
     *) check="INVARIANT $property" spec=Spec ;;
 esac
 
@@ -43,4 +43,4 @@ CFG
 
 docker run --rm -v "$work":/model -v "$jar_dir":/tla -w /model eclipse-temurin:21-jre \
     java -XX:+UseParallelGC -Xmx6g -cp /tla/tla2tools.jar tlc2.TLC \
-    -workers auto -config Table.cfg -cleanup RosettePeerTable.tla
+    -workers auto ${liveness} -config Table.cfg -cleanup RosettePeerTable.tla

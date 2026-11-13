@@ -46,9 +46,11 @@
 (* it alive. "deadline": an active peer with no match whose exchange has   *)
 (* not completed RTPS_PEER_EXCHANGE_TIMEOUT_MS after its last SEDP DATA is *)
 (* stalled, and may be parked like a settled peer; it stays owed, so it is *)
-(* tried again when a slot is free. The deadline is assumed to outlast any *)
-(* exchange that can complete, as phase 1 assumes a datagram's delay is   *)
-(* shorter than the settle time.                                           *)
+(* tried again when a slot is free. The deadline does not know whether a   *)
+(* peer is reachable: a reachable peer whose repairs are lost for that long *)
+(* stalls mid-exchange too. That loss is an environment event, drawn on    *)
+(* the Budget below, so it is not permanent: once the network is quiet, a  *)
+(* reachable peer's exchange completes.                                     *)
 (*                                                                         *)
 (* The environment (joins, leaves, announcements, local endpoint changes)  *)
 (* draws on a finite Budget, so every behavior goes quiet and liveness is  *)
@@ -254,18 +256,18 @@ Settle(p) ==
     /\ UNCHANGED <<alive, status, peerNews, ourNews, owed, shares, matched, stalled, lru, budget>>
 
 \* peer_is_stalled(): the exchange deadline runs out on an active peer with
-\* no local match that cannot settle, because this side's announcements
-\* are still unacknowledged. The deadline outlasts any exchange that can
-\* complete, so a reachable peer stalls only once its exchange is done,
-\* and then it can settle instead: only an unreachable peer stalls.
+\* no local match whose exchange is still pending, reachable or not. One
+\* with nothing pending would have settled first: the deadline is longer
+\* than RTPS_PEER_SETTLE_MS. For a reachable peer, the loss that kept its
+\* exchange from completing is an environment event.
 Stall(p) ==
     /\ StallRule = "deadline"
     /\ status[p] = "active"
     /\ ~settled[p] /\ ~stalled[p] /\ ~matched[p]
-    /\ ourNews[p]
-    /\ p \notin Unreachable => ~ExchangePending(p)
+    /\ ExchangePending(p)
+    /\ IF p \in Unreachable THEN UNCHANGED budget ELSE Spend
     /\ stalled' = [stalled EXCEPT ![p] = TRUE]
-    /\ UNCHANGED <<alive, status, peerNews, ourNews, owed, shares, matched, settled, lru, budget>>
+    /\ UNCHANGED <<alive, status, peerNews, ourNews, owed, shares, matched, settled, lru>>
 
 Environment ==
     \/ \E p \in Peers : Join(p) \/ Leave(p) \/ PeerAnnounces(p)
@@ -279,8 +281,8 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
-\* SPDP is periodic, HEARTBEATs repeat, the tick runs, and reachable peers'
-\* exchanges complete.
+\* SPDP is periodic, HEARTBEATs repeat, the tick runs, and a reachable peer's
+\* exchange completes once the network stops losing its repairs.
 FairSpec ==
     /\ Spec
     /\ \A p \in Peers :

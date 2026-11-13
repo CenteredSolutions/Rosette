@@ -137,6 +137,12 @@ activation, as `peer_is_settled()` requires.
   `peer_is_stalled()` (`"deadline"`) lets a peer with no match whose exchange
   has not completed within `RTPS_PEER_EXCHANGE_TIMEOUT_MS` be parked like a
   settled one, but owed, so it is tried again.
+* **The deadline does not know who is reachable, and need not.** It counts
+  from the last SEDP DATA, so a reachable peer whose repairs are lost for
+  that long stalls mid-exchange and is parked owed, even when it shares a
+  match the exchange has not yet learned. The loss is an environment event
+  (`Stall` of a reachable peer spends from `Budget`), so it ends; every
+  property holds with every peer reachable, with two slots and with one.
 * **Owed peers must be served oldest first.** With the deadline alone, two
   unreachable peers can take turns in one slot forever: each is parked owed,
   and `serve_owed_peer()` in table order (`ServeOrder = "table"`) always
@@ -149,10 +155,14 @@ activation, as `peer_is_settled()` requires.
 |---|---|---|---|---|
 | none | table | {1} of 3 | violated | holds |
 | none | oldest | {1} of 3 | violated | holds |
-| deadline | table | {1, 2} of 4 | violated | holds |
-| deadline | oldest (code) | {1} of 3, {1, 2} of 4 | **holds** | **holds** |
+| deadline | table | {1} of 3 | holds | holds |
+| deadline | table | {1, 2} of 4 | violated | |
+| deadline | oldest (code) | {} and {1} of 3 | **holds** | **holds** |
+| deadline | oldest (code) | {1, 2} of 4 | **holds** | |
 
-  The invariants and `NeverParkMatched` hold under every combination.
+  The invariants and `NeverParkMatched` hold under every combination. The
+  four-peer `EveryMatchMade` cells are left empty: that check runs for many
+  hours on one core, since TLC's liveness phase is single-threaded.
 
 ## Phase 3 results
 
