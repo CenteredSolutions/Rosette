@@ -456,8 +456,9 @@ it really matches, plus a few for peers in their first exchange.
   preemptive ACKNACK to a writer it has not heard; one heartbeat period by
   default.
 * `RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS`: how many preemptive ACKNACKs a
-  builtin SEDP reader sends an unheard writer; 6 by default, which must span
-  `RTPS_PEER_EXCHANGE_TIMEOUT_MS` (a `static_assert` checks it). User readers
+  builtin SEDP reader sends an unheard writer; 7 by default. The first leaves
+  at the match, so the last leaves after `RTPS_PEER_EXCHANGE_TIMEOUT_MS` only
+  while (attempts - 1) retry periods exceed it (a `static_assert` checks it). User readers
   send `RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS`, 3 by default.
 
 ### Graph listing

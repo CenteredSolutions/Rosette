@@ -63,7 +63,7 @@
  * replay has caught up, so an endpoint withdrawn while the peer was parked
  * leaves the listing too.
  *
- * Verification: TC-PART-8.5.3-011 to -021 (tests/spec), at network scale
+ * Verification: TC-PART-8.5.3-011 to -023 (tests/spec), at network scale
  * tests/ros2/discovery_scale, and as a design by the TLA+ models
  * RosettePeerTable and RosettePeerOutbound (tests/formal).
  *

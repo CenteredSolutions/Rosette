@@ -977,10 +977,12 @@ enum class TopicKind : uint32_t {
 /// As RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS, for the builtin SEDP readers. A
 /// peer settles only once both of its SEDP announcers are heard, and an
 /// announcer with nothing to announce speaks only to answer an ACKNACK, so
-/// these readers keep asking until the peer's exchange deadline
-/// (RTPS_PEER_EXCHANGE_TIMEOUT_MS) has passed: a peer still unheard then is
-/// stalled, and its next activation matches afresh and asks again.
-#  define RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS 6u
+/// these readers keep asking past the peer's exchange deadline
+/// (RTPS_PEER_EXCHANGE_TIMEOUT_MS): the first goes out at the match, so the
+/// last leaves (attempts - 1) retry periods later. A peer still unheard at
+/// the deadline is stalled, and its next activation matches afresh and asks
+/// again.
+#  define RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS 7u
 #endif
 
 /// Most writers one user StatefulReader matches at once (its cap in the
