@@ -418,6 +418,47 @@ static bool tc_srr_8_4_7_4_010(std::string& err) {
     return true;
 }
 
+// TC-SRR-8.4.7.4-011: a DATA the reader cannot keep, for want of a buffer,
+// still comes from the writer, so it marks the writer heard and the
+// preemptive ACKNACK stops, as a DATA_FRAG does (TC-SRR-8.4.7.4-009).
+static bool tc_srr_8_4_7_4_011(std::string& err) {
+    CaptureTransport tx{};
+    const Guid       reader_guid = make_guid(0x11u, 0x12u, 0x13u, make_entity(1u, 2u, 3u, 0xC7u));
+    const Guid       writer_guid = make_guid(0x21u, 0x22u, 0x23u, make_entity(4u, 5u, 6u, 0xC2u));
+    const Locator    loc = make_udpv4_locator(0xC0A80114u, 7411u);
+
+    g_stateful_reader_test_now_ms = 1000u;
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u, VENDORID_EPROSIMA),
+          "matched_writer_add should succeed");
+
+    const Octet         wire_payload[7] = {0x00u, 0x01u, 0x00u, 0x00u, 0xAAu, 0xBBu, 0xCCu};
+    std::vector<BufRef> held{};
+    for (BufRef b = buf_alloc(sizeof(wire_payload)); b.valid();
+         b = buf_alloc(sizeof(wire_payload))) {
+        held.push_back(static_cast<BufRef&&>(b));
+    }
+
+    ParsedData data{};
+    data.readerId = reader_guid.entityId;
+    data.writerId = writer_guid.entityId;
+    data.writerSN = SequenceNumber::from_int64(1);
+    data.dataFlag = true;
+    data.serializedPayload = wire_payload;
+    data.serializedPayloadSize = sizeof(wire_payload);
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+    r.on_data(ctx, data);
+    held.clear();
+
+    const WriterProxy* proxy = r.matched_writer_lookup(writer_guid);
+    CHECK(proxy->heard, "a DATA dropped for want of a buffer marks the writer heard");
+    CHECK(r.ms_until_next_timer(1000u) == UINT32_MAX, "and no preemptive ACKNACK is owed");
+    r.tick(1000u + RTPS_PREEMPTIVE_ACKNACK_RETRY_MS);
+    CHECK(tx.sent.size() == 1u, "none is sent again");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.7.4-001",
                      "§8.4.7.4: matched_writer_add creates one WriterProxy for a newly matched writer, and matched_writer_remove removes it from the matched set.",
@@ -463,6 +504,10 @@ void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
                      "RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS by a builtin one; a later HEARTBEAT "
                      "is still answered.",
                      tc_srr_8_4_7_4_010});
+    tests.push_back({"TC-SRR-8.4.7.4-011",
+                     "§8.4.7.4: a DATA the reader cannot keep for want of a buffer still marks "
+                     "its writer heard, so the preemptive ACKNACK is not sent again.",
+                     tc_srr_8_4_7_4_011});
 }
 
 } // namespace spec_test
