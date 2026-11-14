@@ -558,7 +558,106 @@ static bool tc_sedp_8_5_5_1_013(std::string& err) {
     return true;
 }
 
+// release_participant(), which RTPSParticipant::park_peer() calls: every pair
+// of the released participant, bound or waiting for a proxy, is reported
+// unmatched once and no other pair is; the graph observer hears nothing;
+// on_change fires once per forgotten endpoint; and announcing one of the
+// participant's endpoints again matches it anew. The formal model holds the
+// peer table to the same terms (tests/formal, ParkedUnmatched).
+struct ReleaseObs {
+    int        matches = 0;
+    int        unmatches = 0;
+    int        foreign_unmatches = 0;
+    int        changes = 0;
+    int        observer_calls = 0;
+    GuidPrefix released{};
+    Guid       refused = GUID_UNKNOWN;
+};
+
+static bool tc_sedp_8_5_5_1_014(std::string& err) {
+    ReleaseObs         obs{};
+    EndpointMatchTable t(
+        [](const MatchedEndpoint&, const MatchedEndpoint& r, const char*, void* u) noexcept {
+            auto* o = static_cast<ReleaseObs*>(u);
+            o->matches++;
+            return r.guid != o->refused;
+        },
+        [](const Guid& w, const Guid& r, void* u) noexcept {
+            auto* o = static_cast<ReleaseObs*>(u);
+            o->unmatches++;
+            if (w.prefix != o->released && r.prefix != o->released) {
+                o->foreign_unmatches++;
+            }
+        },
+        &obs, [](void* u) noexcept { static_cast<ReleaseObs*>(u)->changes++; });
+    GraphEndpointObserver observer{};
+    observer.user = &obs;
+    observer.on_endpoint = [](void*, const Guid&, const char*, const char*, bool) noexcept {
+    };
+    observer.on_endpoint_gone = [](void* u, const Guid&) noexcept {
+        static_cast<ReleaseObs*>(u)->observer_calls++;
+    };
+    observer.on_participant_gone = [](void* u, const GuidPrefix&) noexcept {
+        static_cast<ReleaseObs*>(u)->observer_calls++;
+    };
+    t.set_graph_endpoint_observer(&observer);
+
+    const char* type = "std_msgs::msg::dds_::String_";
+    const auto  writer = [&](Octet p, Octet key, const char* topic) {
+        return make_writer(make_guid(p, p, p, make_entity(key, key, key, 0x03u)), topic, type,
+                            ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    };
+    const auto reader = [&](Octet p, Octet key, const char* topic) {
+        return make_reader(make_guid(p, p, p, make_entity(key, key, key, 0x04u)), topic, type,
+                           ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    };
+    const Octet local = 0x10u;
+    const Octet peer_a = 0xA0u;
+    const Octet peer_b = 0xB0u;
+    t.set_local_prefix(make_guid(local, local, local, entity_id::UNKNOWN).prefix);
+    const DiscoveredWriterData local_writer = writer(local, 1u, "rt/a");
+    const DiscoveredReaderData waiting_reader = reader(peer_a, 3u, "rt/a");
+    obs.refused = waiting_reader.readerGuid;
+    t.add_writer(local_writer);
+    t.add_reader(reader(local, 2u, "rt/b"));
+    t.add_reader(reader(peer_a, 2u, "rt/a"));
+    t.add_reader(waiting_reader);
+    t.add_writer(writer(peer_a, 4u, "rt/b"));
+    t.add_reader(reader(peer_b, 2u, "rt/a"));
+    t.add_writer(writer(peer_b, 4u, "rt/b"));
+    CHECK(obs.matches == 5, "five local-remote pairs are made");
+    CHECK(t.has_waiting_reader(local_writer.writerGuid, waiting_reader.readerGuid.prefix),
+          "the refused pair waits for a proxy");
+
+    const int changes_before = obs.changes;
+    obs.released = waiting_reader.readerGuid.prefix;
+    t.release_participant(obs.released);
+    CHECK(obs.unmatches == 3 && obs.foreign_unmatches == 0,
+          "the released participant's three pairs, and only those, are unmatched");
+    CHECK(!t.has_waiting_reader(local_writer.writerGuid, obs.released),
+          "the waiting pair is released with the bound ones");
+    CHECK(obs.changes - changes_before == 3, "on_change fires once per forgotten endpoint");
+    CHECK(obs.observer_calls == 0, "the graph observer is not told of a release");
+    CHECK(t.count("rt/a", false) == 1u && t.count("rt/b", true) == 1u,
+          "only the other participant's remote endpoints remain");
+    CHECK(t.count("rt/a", true) == 1u && t.count("rt/b", false) == 1u, "local endpoints remain");
+
+    t.add_reader(reader(peer_a, 2u, "rt/a"));
+    CHECK(obs.matches == 6, "a released endpoint announced again matches anew");
+
+    obs.released = make_guid(peer_b, peer_b, peer_b, entity_id::UNKNOWN).prefix;
+    t.release_participant(obs.released);
+    CHECK(obs.unmatches == 5 && obs.foreign_unmatches == 0,
+          "the other participant's two pairs survived the first release");
+    return true;
+}
+
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests) {
+    tests.push_back({"TC-SEDP-8.5.5.1-014",
+                     "§8.5.5.1/two-tier peer table: releasing a parked participant unmatches each "
+                     "of its pairs, bound or waiting, once and no other, forgets its endpoints, "
+                     "and tells the graph observer nothing.",
+                     tc_sedp_8_5_5_1_014});
     tests.push_back({"TC-SEDP-8.5.5.1-013",
                      "§8.5.4.2: a remote endpoint's announced locators are kept most reachable "
                      "first against this participant's addresses, as a participant's are.",

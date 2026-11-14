@@ -907,15 +907,21 @@ bool EndpointMatchTable::match_oldest_waiting() noexcept {
 // Removal
 // ------------------------------------------------------------
 
+void EndpointMatchTable::drop_pair(MatchRecord& m) noexcept {
+    const MatchRecord gone = m;
+    m = MatchRecord{};
+    room_freed_ = true;
+    if (on_unmatch_) {
+        on_unmatch_(gone.writer_guid, gone.reader_guid, user_data_);
+    }
+}
+
 void EndpointMatchTable::dissolve(const Guid& guid, bool is_writer) noexcept
 {
     for (MatchRecord& m : matches_) {
-        if (!m.active()) continue;
-        if ((is_writer ? m.writer_guid : m.reader_guid) != guid) continue;
-        const MatchRecord gone = m;
-        m = MatchRecord{};
-        room_freed_ = true;
-        if (on_unmatch_) on_unmatch_(gone.writer_guid, gone.reader_guid, user_data_);
+        if (m.active() && (is_writer ? m.writer_guid : m.reader_guid) == guid) {
+            drop_pair(m);
+        }
     }
 }
 
@@ -1009,17 +1015,31 @@ void EndpointMatchTable::remove_participant(const GuidPrefix& gone_prefix) noexc
 }
 
 void EndpointMatchTable::release_participant(const GuidPrefix& prefix) noexcept {
-    // Copy each GUID: removal clears the record it lives in. remove_endpoint()
-    // leaves the graph observer alone; the caller decides what it hears.
-    for (const RemoteEndpoint& w : remote_writers_) {
-        if (w.valid() && origins_[w.origin].prefix == prefix) {
-            remove_endpoint(guid_of(w), /*is_writer=*/true);
+    // Every pair has one local and one remote side, so a pair with the
+    // participant's prefix on either side is one of its endpoints' pairs. One
+    // pass over the pairs replaces a pass per endpoint: a parked peer often
+    // has a dozen or more endpoints, and walking every pair for each of them
+    // stalled the pump for milliseconds. The pairs go before the records, as
+    // remove_endpoint() orders them, so on_unmatch still sees the records.
+    for (MatchRecord& m : matches_) {
+        if (m.active() && (m.writer_guid.prefix == prefix || m.reader_guid.prefix == prefix)) {
+            drop_pair(m);
         }
     }
 
-    for (const RemoteEndpoint& r : remote_readers_) {
+    // The graph observer is left alone; the caller decides what it hears.
+    // on_change fires once per forgotten endpoint, as remove_endpoint() does.
+    for (RemoteEndpoint& w : remote_writers_) {
+        if (w.valid() && origins_[w.origin].prefix == prefix) {
+            clear_remote(w);
+            changed();
+        }
+    }
+
+    for (RemoteEndpoint& r : remote_readers_) {
         if (r.valid() && origins_[r.origin].prefix == prefix) {
-            remove_endpoint(guid_of(r), /*is_writer=*/false);
+            clear_remote(r);
+            changed();
         }
     }
 }
