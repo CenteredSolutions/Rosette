@@ -170,8 +170,8 @@ identically) at the firmware defaults:
 | `HistoryChange` (one history entry) | 68 B | writer depth |
 | `ReaderProxy` (one matched remote reader) and its pool link | 80 + 2 B | `RTPS_READER_PROXY_POOL` |
 | `WriterProxy` (one matched remote writer) and its pool link | 64 + 2 B | `RTPS_WRITER_PROXY_POOL` |
-| `SharedPoolStatefulWriter<1>` / `<4>` / `<8>` | 308 / 512 / 784 B | depth × 68 + ~240 |
-| Writer slot | 784 B | `RTPS_PARTICIPANT_MAX_WRITER_BYTES` |
+| `SharedPoolStatefulWriter<1>` / `<4>` / `<8>` | 240 / 444 / 716 B | depth × 68 + ~172 |
+| Writer slot | 716 B | `RTPS_PARTICIPANT_MAX_WRITER_BYTES` |
 | Reader slot (`SharedPoolStatefulReader`) | 76 B | `RTPS_MAX_USER_READERS` |
 | `AssemblySlot` (one fragmented sample in reassembly) | 136 B | `RTPS_ASSEMBLY_SLOTS` |
 | SEDP builtin reader (`BoundedStatefulReader<8>`: private proxies and 5 assembly slots) | 1,312 B | `RTPS_MAX_PEERS` |
@@ -306,10 +306,10 @@ counts, which is why a publisher costs more than a subscription there.
 
 | Knob | Firmware default | What it sizes | Cost per unit |
 | --- | ---: | --- | --- |
-| `RMW_ROSETTE_MAX_PUBLISHERS` | 4 | writer slot, 8 reader proxies, local endpoint and match records, SEDP history, publisher handle | 2,628 B |
+| `RMW_ROSETTE_MAX_PUBLISHERS` | 4 | writer slot, 8 reader proxies, local endpoint and match records, SEDP history, publisher handle | 2,572 B |
 | `RMW_ROSETTE_MAX_SUBSCRIPTIONS` | 4 | reader slot, 8 writer proxies, match records, subscription handle with its `ChangeRing` | 936 B |
-| `RMW_ROSETTE_MAX_SERVICES` | 4 | one reply writer in a shallow slot **and** one reader, with their proxies, records, and handle | 3,196 B |
-| `RMW_ROSETTE_MAX_CLIENTS` | 2 | one writer and one reader, with their proxies, records, and handle | 3,468 B |
+| `RMW_ROSETTE_MAX_SERVICES` | 4 | one reply writer in a shallow slot **and** one reader, with their proxies, records, and handle | 3,148 B |
+| `RMW_ROSETTE_MAX_CLIENTS` | 2 | one writer and one reader, with their proxies, records, and handle | 3,420 B |
 | `RMW_ROSETTE_MAX_NODES` | 1 | node pool; multiplies the per-node entities below | |
 | `RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE` | 0 | 6 for `rclc_parameter_server`, 0 without | 6 services per node (≈ 24 KB) |
 | `RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE` | 0 | `/rosout`, `/parameter_events` | 0 when rcl logging is off, as in the firmware C stack |
