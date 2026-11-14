@@ -171,6 +171,12 @@ void StatefulReader::on_data(const ParseContext& ctx,
         return;
     }
 
+    // Heard even when the sample cannot be kept (no buffer), as in
+    // on_data_frag(): the writer is talking, so the preemptive ACKNACK stops.
+    if (proxy) {
+        proxy->on_heard();
+    }
+
     if (proxy && !is_new_change(*proxy, msg.writerSN)) {
         RTPS_LOG_T("reader", "DATA SN=%d:%lu from %02x%02x%02x%02x not new, dropped",
                    static_cast<int>(msg.writerSN.high),
