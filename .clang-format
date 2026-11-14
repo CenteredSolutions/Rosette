@@ -45,10 +45,14 @@ AllowShortFunctionsOnASingleLine: Inline
 IndentPPDirectives: AfterHash
 PPIndentWidth: 2
 
-# Air between blocks is kept; runs of blank lines collapse to one.
+# Air between blocks is kept; runs of blank lines collapse to one. Blank lines
+# between definitions are the author's: a run of one-line definitions (a
+# register map, a table of constexpr traits) may sit together like the table it
+# is, and a multi-line definition is still followed by a blank line because its
+# closing `}` sits on a line by itself (tools/style/check_blank_after_brace.py).
 MaxEmptyLinesToKeep: 1
 KeepEmptyLinesAtTheStartOfBlocks: false
-SeparateDefinitionBlocks: Always
+SeparateDefinitionBlocks: Leave
 
 # Include blocks stay as written: FreeRTOS and pico-sdk headers depend on
 # their order, so a header that must come first sits in its own block.

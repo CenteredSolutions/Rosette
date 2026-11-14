@@ -76,6 +76,9 @@ struct W5100S final : ChipBase {
     /// SLIR bits that end a socket-less command: TIMEOUT, ARP, PING.
     static constexpr uint8_t socketless_status_done_mask() { return 0x07u; }
 
+    /// SLCR ARP resolves a next hop without a socket, so the board can run an ARP cache.
+    static constexpr bool has_socketless_arp() { return true; }
+
     /// The destination MAC is chosen per SEND (SEND_MAC), not per socket (Sn_MR2).
     static constexpr bool dest_mac_per_socket() { return false; }
 

@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Centered Solutions, LLC
 # SPDX-License-Identifier: Apache-2.0
 
-# ports/os/freertos — the FreeRTOS OS layer: kernel mutex and binary semaphore.
+# ports/os/freertos — the FreeRTOS OS layer: kernel mutex and binary semaphore, and the
+# kernel's failure hooks (rosette_freertos_hooks.c).
 #
 # Included by cmake/rosette_platform.cmake with ROSETTE_PORT_DIR set to this
 # directory, after the chip port. Every target that links `rosette_platform`
@@ -61,6 +62,7 @@ if(NOT TARGET freertos_kernel)
   endif()
 endif()
 
+target_sources(rosette_platform PRIVATE ${ROSETTE_PORT_DIR}/rosette_freertos_hooks.c)
 target_include_directories(rosette_platform PUBLIC ${ROSETTE_PORT_DIR})
 target_link_libraries(rosette_platform PUBLIC freertos_kernel)
 

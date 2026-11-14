@@ -25,7 +25,7 @@ ports/
 boards/
   <board>/              board.cmake (ROSETTE_CHIP / ROSETTE_OS / ROSETTE_NET_STACK, ROSETTE_BOARD_COMMON, pins),
                         board_config.h, board_init.c
-  common/rp2_wiznet/    composition shared by the WIZnet EVB-Pico boards: bus choice, driver types, board network
+  common/wiznet/        composition shared by the WIZnet boards: driver types over the chip port's bus, board network
   common/freertos/      FreeRTOSConfig.h
 include/rosette/, src/  portable only
 ```
@@ -51,6 +51,7 @@ Three choices follow from this layout:
 | Zone | May include |
 |---|---|
 | `ports/chip/rp2/` | Pico SDK, `board_config.h` |
+| `ports/chip/imxrt/` | MCUXpresso SDK (with CMSIS), `board_config.h` |
 | `ports/chip/host/`, `ports/os/posix/`, `ports/net/posix/` | POSIX |
 | `ports/net/wiznet/` | nothing third-party (it only has a `port.cmake`) |
 | `ports/os/baremetal/` | nothing third-party: it is built on chip-layer hooks |
@@ -79,7 +80,7 @@ Three choices follow from this layout:
 | chip | `__atomic_*` helpers (`fetch_add`, `exchange`, `compare_exchange`, ...) on a core without atomic instructions | the RTPS buffer pool's `std::atomic` counts call them on Cortex-M0+; the Pico SDK's `pico_atomic` supplies them on the RP2040, `ports/chip/stub/stub_atomic.c` shows the set |
 | os | `rosette_os_port.hpp`: `Mutex`, `Event` (with `signal_from_isr`), `sleep_ms` | one per `ports/os/<name>/` |
 | net | `rosette::net::SocketProvider`, `AddressProvider`, `Interface` | |
-| net | `rosette/net/board_network.hpp`: `bring_up_board_network`, `poll_board_network`, `board_socket_provider`, `board_ipv4_address`, `board_network_watch`, ... | each network port (`ports/net/posix/`) or board composition (`boards/common/rp2_wiznet/`) implements it; `rmw_rosette/src/network_port.cpp` forwards to it |
+| net | `rosette/net/board_network.hpp`: `bring_up_board_network`, `poll_board_network`, `board_socket_provider`, `board_ipv4_address`, `board_network_watch`, ... | each network port (`ports/net/posix/`) or board composition (`boards/common/wiznet/`) implements it; `rmw_rosette/src/network_port.cpp` forwards to it |
 
 ### What an application includes
 
@@ -117,11 +118,11 @@ fails there as a link error, not only as an include finding.
   `close_socket()`, and each register access acquires again), so a lock there must be re-entrant. Every board drives
   its chip from one thread, so the rp2 buses hold nothing. Before a second thread uses the chip, either the platform
   contract gains a recursive mutex or the device takes the lock once per public call and the bus never does.
-- **FreeRTOS+TCP** (`ports/net/freertos_tcp/`) configures and compiles off-target against FreeRTOS+TCP V4.2.2, but
-  no image links yet: nothing implements `board_network.hpp` over it (`freertos_tcp_board_network.cpp` would call
-  `add_board_network_interface()`, add endpoints, start the IP task, and hand out a `FreeRtosSocketProvider`), and
-  nothing starts the scheduler. On the RP2350, the kernel's `ARM_CM33_NTZ` port also needs `configENABLE_FPU`,
-  `configENABLE_MPU` and `configENABLE_TRUSTZONE` in `FreeRTOSConfig.h`; the Raspberry Pi kernel fork's RP2350 port
-  is the likely base. Once it links, a WIZnet board in MACRAW mode with `ROSETTE_OS=freertos` and
-  `ROSETTE_NET_STACK=freertos_tcp` gets a CI build.
+- **FreeRTOS+TCP** (`ports/net/freertos_tcp/`): `board_network.cpp` implements `board_network.hpp` over it, the
+  NetworkConfig as FreeRTOS+TCP endpoints on an interface the board supplies (`board_interface.hpp`). The
+  MIMXRT1020-EVK (`boards/mimxrt1020-evk`) builds it on the i.MX RT1021 with the kernel's `GCC_ARM_CM4F` port
+  (docs/design/imxrt_enet_mac_device.md). On the RP2350, the kernel's `ARM_CM33_NTZ` port also needs
+  `configENABLE_FPU`, `configENABLE_MPU` and `configENABLE_TRUSTZONE` in `FreeRTOSConfig.h`; the Raspberry Pi
+  kernel fork's RP2350 port is the likely base. A WIZnet board in MACRAW mode with `ROSETTE_OS=freertos` and
+  `ROSETTE_NET_STACK=freertos_tcp` would show the composition model working on a second MAC.
 - **lwIP** will be `ports/net/lwip/`. The boundary check already has its zone and header family.

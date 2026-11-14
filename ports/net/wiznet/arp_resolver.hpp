@@ -123,11 +123,15 @@ public:
      * auto socket = sockets.open(SocketDomain::ipv4);    // sends now use the table
      * arp.poll(rosette::platform::monotonic_ms());        // from the network's poll step
      * @endcode
-     * Full program: boards/common/rp2_wiznet/wiznet_board_network.cpp
+     * Full program: boards/common/wiznet/wiznet_board_network.cpp
      */
     WiznetArpResolver(device_type& device, ArpCache& cache,
                       const ArpProbeTiming& timing = {}) noexcept
-        : device_(device), cache_(cache), timing_(timing) {}
+        : device_(device), cache_(cache), timing_(timing) {
+        static_assert(Chip::has_socketless_arp(),
+                      "WiznetArpResolver needs a chip that ARPs without a socket (SLCR); "
+                      "a board on any other part attaches no resolver");
+    }
 
     WiznetArpResolver(const WiznetArpResolver&) = delete;
     WiznetArpResolver& operator=(const WiznetArpResolver&) = delete;
@@ -403,33 +407,36 @@ private:
      * as unanswered, so its entry is retried rather than left in flight.
      */
     void service_locked(uint32_t now_ms) noexcept {
-        if (probing_) {
-            Mac mac{};
-            const auto outcome = device_.poll_arp_probe(mac);
-            if (outcome == device_type::ArpProbe::pending) {
+        // Unreachable for a chip without SLCR ARP: the constructor refuses one.
+        if constexpr (Chip::has_socketless_arp()) {
+            if (probing_) {
+                Mac        mac{};
+                const auto outcome = device_.poll_arp_probe(mac);
+                if (outcome == device_type::ArpProbe::pending) {
+                    return;
+                }
+
+                probing_ = false;
+                if (outcome == device_type::ArpProbe::answered) {
+                    cache_.answered(probe_ip_, mac, now_ms);
+                } else {
+                    cache_.unanswered(probe_ip_, now_ms);
+                }
+            }
+
+            Ipv4 ip{};
+            if (!cache_.next_query(now_ms, ip)) {
                 return;
             }
 
-            probing_ = false;
-            if (outcome == device_type::ArpProbe::answered) {
-                cache_.answered(probe_ip_, mac, now_ms);
-            } else {
-                cache_.unanswered(probe_ip_, now_ms);
+            if (!device_.start_arp_probe(ip, timing_.timeout_ms, timing_.retries)) {
+                cache_.requeue(ip);
+                return;
             }
-        }
 
-        Ipv4 ip{};
-        if (!cache_.next_query(now_ms, ip)) {
-            return;
+            probing_ = true;
+            probe_ip_ = ip;
         }
-
-        if (!device_.start_arp_probe(ip, timing_.timeout_ms, timing_.retries)) {
-            cache_.requeue(ip);
-            return;
-        }
-
-        probing_ = true;
-        probe_ip_ = ip;
     }
 
     device_type& device_;
