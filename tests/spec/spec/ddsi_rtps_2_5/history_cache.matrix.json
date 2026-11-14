@@ -23,20 +23,20 @@
       "test_ids": ["TC-HC-8.3.1-001"]
     },
     {
-      "id": "REQ-HC-8.3.3.1-KEEP-LAST-SAME-WRITER-EVICT",
+      "id": "REQ-HC-8.3.3.1-KEEP-LAST-EVICT",
       "section": "8.3.3.1",
       "page": 68,
       "normativity": "shall",
-      "statement": "When full, KEEP_LAST-style insertion evicts the oldest change for the same writer.",
+      "statement": "When full, KEEP_LAST-style insertion evicts the oldest change.",
       "status": "implemented",
       "test_ids": ["TC-HC-8.3.3.1-001"]
     },
     {
-      "id": "REQ-HC-8.3.3.1-KEEP-LAST-GLOBAL-EVICT-FALLBACK",
+      "id": "REQ-HC-8.3.3.1-KEEP-LAST-EVICT-BY-SEQUENCE",
       "section": "8.3.3.1",
       "page": 68,
       "normativity": "shall",
-      "statement": "When full and no same-writer entry exists, insertion evicts the globally oldest change as implementation fallback.",
+      "statement": "The change evicted from a full cache is the one with the lowest sequence number, whatever order the changes were inserted in.",
       "status": "implemented",
       "test_ids": ["TC-HC-8.3.3.1-002"]
     },
@@ -54,7 +54,7 @@
       "section": "8.3.1",
       "page": 63,
       "normativity": "shall",
-      "statement": "HistoryCache iteration traverses each live CacheChange exactly once for const and mutable visitor forms.",
+      "statement": "HistoryCache iteration traverses each live change exactly once for const and mutable visitor forms.",
       "status": "implemented",
       "test_ids": ["TC-HC-8.3.1-003"]
     },

@@ -132,7 +132,7 @@ int count_of(const std::vector<int64_t>& sns, int64_t sn) {
 /// in a block with the same headroom and tailroom.
 constexpr uint32_t kBuiltPayload = 100u;
 
-BufRef build_payload(void* /*user*/, const CacheChange& change) noexcept {
+BufRef build_payload(void* /*user*/, const HistoryChange& change) noexcept {
     BufRef payload = buf_alloc_with_headroom(kBuiltPayload + kRtpsHeartbeatTailroom,
                                              kRtpsDataHeadroom + kMaxInlineQosSize);
     if (!payload.valid()) {
@@ -144,7 +144,7 @@ BufRef build_payload(void* /*user*/, const CacheChange& change) noexcept {
     return payload;
 }
 
-uint32_t size_payload(void* /*user*/, const CacheChange& /*change*/) noexcept {
+uint32_t size_payload(void* /*user*/, const HistoryChange& /*change*/) noexcept {
     return kBuiltPayload;
 }
 
@@ -346,12 +346,12 @@ static bool tc_swr_8_4_1_4_014(std::string& err) {
 
     // add_change() alone sends nothing: the change stays UNSENT with no send due.
     BufRef       buf{};
-    CacheChange* change = w.new_change(ChangeKind::ALIVE, buf, 4u);
-    CHECK(change != nullptr, "stage a change");
+    HistoryChange change = w.new_change(ChangeKind::ALIVE, buf, 4u);
+    CHECK(change.payload.valid(), "stage a change");
     memset(buf.data, 0x11, 4u);
     buf.size = 4u;
-    change->payload.size = 4u;
-    CHECK(w.add_change(static_cast<CacheChange&&>(*change)), "add the change without sending it");
+    change.payload.size = 4u;
+    CHECK(w.add_change(static_cast<HistoryChange&&>(change)), "add the change without sending it");
     CHECK(tx.sent.empty(), "add_change() sends nothing");
 
     acknack(w, reader, writer, 1, 1, {1});
@@ -361,7 +361,7 @@ static bool tc_swr_8_4_1_4_014(std::string& err) {
 }
 
 /// A payload builder for an exhausted pool: it counts the attempt and builds nothing.
-static BufRef starved_payload(void* attempts, const CacheChange& /*change*/) noexcept {
+static BufRef starved_payload(void* attempts, const HistoryChange& /*change*/) noexcept {
     ++*static_cast<uint32_t*>(attempts);
     return BufRef{};
 }

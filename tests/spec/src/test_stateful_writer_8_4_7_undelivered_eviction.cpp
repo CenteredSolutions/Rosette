@@ -252,15 +252,15 @@ static bool tc_swr_8_4_7_014(std::string& err) {
 /// Adds one change to @p w's history without a send pass.
 static bool add_unsent(StatefulWriter& w) {
     BufRef       payload{};
-    CacheChange* change = w.new_change(ChangeKind::ALIVE, payload, 4u);
-    if (change == nullptr) {
+    HistoryChange change = w.new_change(ChangeKind::ALIVE, payload, 4u);
+    if (!change.payload.valid()) {
         return false;
     }
 
     memcpy(payload.data, kPayload, 4u);
     payload.size = 4u;
-    change->payload.size = 4u;
-    return w.add_change(static_cast<CacheChange&&>(*change));
+    change.payload.size = 4u;
+    return w.add_change(static_cast<HistoryChange&&>(change));
 }
 
 // §8.4.7.1, §8.7.2.2.1: a VOLATILE reader matched after SN 1 was written

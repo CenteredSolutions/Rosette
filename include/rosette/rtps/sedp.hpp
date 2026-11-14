@@ -343,10 +343,10 @@ private:
      * @brief Rebuilds the announcement a builtin writer's history change stands for.
      *
      * The StatefulWriter::PayloadBuilder of both builtin writers. The
-     * change's key hash is the endpoint GUID and its writer GUID names the
-     * builtin writer, which says whether the endpoint is a writer or a
-     * reader; the source describes it and serialise_writer() or
-     * serialise_reader() encodes it with in-place framing headroom.
+     * change's key hash is the endpoint GUID, which the source knows as
+     * either a writer or a reader; the source describes it and
+     * serialise_writer() or serialise_reader() encodes it with in-place
+     * framing headroom.
      *
      * @param[in] user   This SedpWriter.
      * @param[in] change A live announcement from either builtin writer.
@@ -361,7 +361,7 @@ private:
      * References:
      * - OMG DDSI-RTPS 2.5 §9.6.3.2 (PL_CDR endpoint data), §9.4.5.3 (DATA)
      */
-    static BufRef build_announcement(void* user, const CacheChange& change) noexcept;
+    static BufRef build_announcement(void* user, const HistoryChange& change) noexcept;
 
     /**
      * @brief Sizes the announcement build_announcement() would build for a change.
@@ -386,7 +386,7 @@ private:
      * - OMG DDSI-RTPS 2.5 §9.6.3.2 (PL_CDR endpoint data), §9.4.2.11
      *   (ParameterList, 4-octet alignment)
      */
-    static uint32_t announcement_size(void* user, const CacheChange& change) noexcept;
+    static uint32_t announcement_size(void* user, const HistoryChange& change) noexcept;
 
     /// Serialise one DiscoveredWriterData as PL_CDR_LE.
     uint32_t serialise_writer(const DiscoveredWriterData& wd,

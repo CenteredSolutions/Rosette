@@ -79,7 +79,7 @@ RTPSParticipant ─────────────────────�
 │                                 endpoints as 16-byte records; match pairs
 ├── writer_storage_[RTPS_MAX_USER_WRITERS]   each slot holds one
 │       SharedPoolStatefulWriter<Depth>
-│         └── HistoryCache of Depth CacheChanges ─► BufRef into the pool
+│         └── HistoryCache of Depth changes ────► BufRef into the pool
 ├── reader_storage_[RTPS_MAX_USER_READERS]   each slot holds one
 │       SharedPoolStatefulReader (a FragmentAssembler view, no slots)
 ├── reader_proxies_   RTPS_READER_PROXY_POOL × ReaderProxy, bound by the
@@ -167,11 +167,11 @@ identically) at the firmware defaults:
 
 | Object | Size | Scales with |
 | --- | ---: | --- |
-| `CacheChange` (one history entry) | 100 B | writer depth |
+| `HistoryChange` (one history entry) | 68 B | writer depth |
 | `ReaderProxy` (one matched remote reader) and its pool link | 80 + 2 B | `RTPS_READER_PROXY_POOL` |
 | `WriterProxy` (one matched remote writer) and its pool link | 64 + 2 B | `RTPS_WRITER_PROXY_POOL` |
-| `SharedPoolStatefulWriter<1>` / `<4>` / `<8>` | 352 / 648 / 1,048 B | depth × 100 + ~250 |
-| Writer slot | 1,048 B | `RTPS_PARTICIPANT_MAX_WRITER_BYTES` |
+| `SharedPoolStatefulWriter<1>` / `<4>` / `<8>` | 240 / 444 / 716 B | depth × 68 + ~172 |
+| Writer slot | 716 B | `RTPS_PARTICIPANT_MAX_WRITER_BYTES` |
 | Reader slot (`SharedPoolStatefulReader`) | 76 B | `RTPS_MAX_USER_READERS` |
 | `AssemblySlot` (one fragmented sample in reassembly) | 136 B | `RTPS_ASSEMBLY_SLOTS` |
 | SEDP builtin reader (`BoundedStatefulReader<8>`: private proxies and 5 assembly slots) | 1,312 B | `RTPS_MAX_PEERS` |
@@ -306,10 +306,10 @@ counts, which is why a publisher costs more than a subscription there.
 
 | Knob | Firmware default | What it sizes | Cost per unit |
 | --- | ---: | --- | --- |
-| `RMW_ROSETTE_MAX_PUBLISHERS` | 4 | writer slot, 8 reader proxies, local endpoint and match records, SEDP history, publisher handle | 3,388 B |
+| `RMW_ROSETTE_MAX_PUBLISHERS` | 4 | writer slot, 8 reader proxies, local endpoint and match records, SEDP history, publisher handle | 2,572 B |
 | `RMW_ROSETTE_MAX_SUBSCRIPTIONS` | 4 | reader slot, 8 writer proxies, match records, subscription handle with its `ChangeRing` | 936 B |
-| `RMW_ROSETTE_MAX_SERVICES` | 4 | one reply writer in a shallow slot **and** one reader, with their proxies, records, and handle | 3,668 B |
-| `RMW_ROSETTE_MAX_CLIENTS` | 2 | one writer and one reader, with their proxies, records, and handle | 4,068 B |
+| `RMW_ROSETTE_MAX_SERVICES` | 4 | one reply writer in a shallow slot **and** one reader, with their proxies, records, and handle | 3,148 B |
+| `RMW_ROSETTE_MAX_CLIENTS` | 2 | one writer and one reader, with their proxies, records, and handle | 3,420 B |
 | `RMW_ROSETTE_MAX_NODES` | 1 | node pool; multiplies the per-node entities below | |
 | `RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE` | 0 | 6 for `rclc_parameter_server`, 0 without | 6 services per node (≈ 24 KB) |
 | `RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE` | 0 | `/rosout`, `/parameter_events` | 0 when rcl logging is off, as in the firmware C stack |
@@ -322,8 +322,8 @@ counts, which is why a publisher costs more than a subscription there.
 | `RMW_ROSETTE_MIN_MATCHED_ENDPOINTS` | 1 | floor: proxies reserved for every endpoint slot, so its first matches never wait | raises the pools' minimum size |
 | `RMW_ROSETTE_MATCH_WAITERS` | 8 (`MAX_MATCHED_ENDPOINTS`) | matches waiting for a proxy at once, oldest bound first | 36 B (one match record) |
 | `RMW_ROSETTE_ASSEMBLY_SLOTS` | empty: the datagram and large block counts (6) | fragmented samples in reassembly at once, across all readers | 136 B |
-| `RMW_ROSETTE_MAX_WRITER_DEPTH` | 8 | deepest KEEP_LAST history a publisher keeps (1 to 255); deeper requests and KEEP_ALL run at this depth; sizes the deep writer slots | 100 B per history slot per deep writer |
-| `RMW_ROSETTE_REPLY_DEPTH` | 4 | replies each service holds until acknowledged (1 to `RMW_ROSETTE_MAX_WRITER_DEPTH`); a reply written while this many are unacknowledged displaces the oldest; sizes the shallow writer slots | 100 B per reply per service |
+| `RMW_ROSETTE_MAX_WRITER_DEPTH` | 8 | deepest KEEP_LAST history a publisher keeps (1 to 255); deeper requests and KEEP_ALL run at this depth; sizes the deep writer slots | 68 B per history slot per deep writer |
+| `RMW_ROSETTE_REPLY_DEPTH` | 4 | replies each service holds until acknowledged (1 to `RMW_ROSETTE_MAX_WRITER_DEPTH`); a reply written while this many are unacknowledged displaces the oldest; sizes the shallow writer slots | 68 B per reply per service |
 | `RMW_ROSETTE_MAX_PENDING_CHANGES` | 10 | `ChangeRing` depth ceiling per subscription, service, and client | 72 B per entry per entity, plus the blocks unread entries pin |
 | `RMW_ROSETTE_MAX_DATAGRAM_SIZE` | 1472 | receive buffer, datagram pool class, DATA_FRAG threshold | the datagram class × 4 blocks |
 | `RMW_ROSETTE_MAX_SAMPLE_SIZE` | 4096 | largest pool class: the biggest message sent or received | × `RMW_ROSETTE_LARGE_BUFFERS` |
@@ -397,7 +397,7 @@ translation unit must see the same values (the one-definition rule).
 | `RTPS_MAX_USER_WRITERS`, `RTPS_MAX_USER_READERS` | `participant.hpp` | slot counts |
 | `RTPS_DEEP_WRITER_DEPTH` | `participant.hpp` | deepest history any writer keeps (1 to 255), which deep writer slots are sized for; `rmw_rosette` sets it to `RMW_ROSETTE_MAX_WRITER_DEPTH` |
 | `RTPS_MAX_SHALLOW_WRITERS`, `RTPS_SHALLOW_WRITER_DEPTH` | `participant.hpp` | shallow writer slots, out of `RTPS_MAX_USER_WRITERS`, and the deepest history one holds (at most `RTPS_DEEP_WRITER_DEPTH`); `rmw_rosette` sets one per service at `RMW_ROSETTE_REPLY_DEPTH` |
-| `RTPS_PARTICIPANT_MAX_WRITER_BYTES` | `participant.hpp` | deep slot size; lowering it below `StatefulWriterStorage<8, R>` saves ~700 B per slot but makes `create_writer<8>()` fail to compile, and `rmw_rosette` instantiates depths 1, 4, and 8 (`kSupportedWriterDepths` in `qos.hpp`) |
+| `RTPS_PARTICIPANT_MAX_WRITER_BYTES` | `participant.hpp` | deep slot size; lowering it below `StatefulWriterStorage<8, R>` saves ~480 B per slot but makes `create_writer<8>()` fail to compile, and `rmw_rosette` instantiates depths 1, 4, and 8 (`kSupportedWriterDepths` in `qos.hpp`) |
 | `RTPS_MAX_MATCHED_READERS`, `RTPS_MAX_MATCHED_WRITERS` | `stateful_writer.hpp`, `types.hpp` | cap: proxies per endpoint |
 | `RTPS_READER_PROXY_POOL`, `RTPS_WRITER_PROXY_POOL`, `RTPS_MIN_MATCHES_PER_ENDPOINT` | `participant.hpp`, `proxy_pool.hpp` | shared proxy pools and the floor reserved per endpoint slot; a `static_assert` proves the pools hold every floor |
 | `RTPS_MAX_WAITING_MATCHES` | `endpoint_match_table.hpp` | matches waiting for a proxy; `RTPS_MAX_MATCH_RECORDS` must cover both pools plus these |
