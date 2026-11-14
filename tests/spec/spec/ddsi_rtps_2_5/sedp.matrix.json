@@ -146,7 +146,7 @@
       "normativity": "derived-behavior",
       "statement": "Participant endpoint removal dissolves existing matches, and rediscovered endpoints can rematch cleanly.",
       "status": "implemented",
-      "test_ids": ["TC-SEDP-8.5.5.1-004", "TC-SEDP-8.5.5.1-014"]
+      "test_ids": ["TC-SEDP-8.5.5.1-004", "TC-SEDP-8.5.5.1-017"]
     },
     {
       "id": "REQ-SEDP-9.6.3.2-PLCDR-UNKNOWN-SKIP",

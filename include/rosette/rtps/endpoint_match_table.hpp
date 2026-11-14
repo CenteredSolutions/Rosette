@@ -680,7 +680,7 @@ public:
      *   reported unmatched once and no other pair is, and on_change fires
      *   once per forgotten endpoint; the graph observer receives no callback.
      *   Its cost is one pass over the pairs, whatever the endpoint count.
-     * - Covered by: TC-SEDP-8.5.5.1-014, TC-PART-8.5.3-015.
+     * - Covered by: TC-SEDP-8.5.5.1-017, TC-PART-8.5.3-015.
      *
      * References:
      * - docs/design/two_tier_peer_table.md
