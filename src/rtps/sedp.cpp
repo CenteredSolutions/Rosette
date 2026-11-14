@@ -584,10 +584,10 @@ StatefulWriter* SedpWriter::find_writer(const EntityId& writer_id) noexcept
     return nullptr;
 }
 
-void SedpWriter::tick(uint32_t now_ms) noexcept
-{
-    publications_writer_.tick(now_ms);
-    subscriptions_writer_.tick(now_ms);
+uint32_t SedpWriter::tick(uint32_t now_ms) noexcept {
+    const uint32_t a = publications_writer_.tick(now_ms);
+    const uint32_t b = subscriptions_writer_.tick(now_ms);
+    return a < b ? a : b;
 }
 
 // ============================================================

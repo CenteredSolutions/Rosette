@@ -410,6 +410,7 @@ public:
               cfg.nackDelayMs, cfg.hbPeriodMs);
         w->release_replies_on_delivery(cfg.releaseRepliesOnDelivery);
         w->set_waiting_reader_query(&RTPSParticipant::has_waiting_reader, this);
+        w->set_timers_stale_flag(&timers_stale_);
 
         writers_[slot] = w;
         writer_alive_[slot] = true;
@@ -474,9 +475,20 @@ public:
      * @brief Runs the participant's timed work: SPDP, lease expiry, waiting
      *   matches, and every endpoint's heartbeats and repairs.
      *
-     * The driver calls this whenever ms_until_next_timer() has elapsed or a
-     * datagram was handled. Nothing runs until the participant has an
-     * address.
+     * The driver calls this on every pass, and the call returns at once
+     * unless a timer is due or the timers are stale. A walk ticks every
+     * endpoint, and each endpoint's tick() returns how long until its next
+     * timer, so the same walk yields the participant's next deadline. Until
+     * that deadline passes, a pass walks nothing. Anything that may bring a
+     * timer nearer marks the timers stale, which makes the next pass walk.
+     * The marks sit where events enter the participant: a datagram other
+     * than a known peer's SPDP renewal, an application write (through
+     * StatefulWriter::set_timers_stale_flag()), a created or deleted
+     * endpoint, an address; and where a timer is born due, an unmatch that
+     * may let a waiting match bind. A match needs no mark of its own: it
+     * comes from one of those events, or from a step of the walk that runs
+     * before the endpoints it matches are ticked. Nothing runs until the
+     * participant has an address.
      *
      * After a user endpoint's proxy frees (an unmatch or a deleted
      * endpoint), each tick binds at most one waiting match, the oldest the
@@ -492,10 +504,14 @@ public:
      *
      * Verification:
      * - Correct means: no timer runs late by more than the driver's wake-up
-     *   latency, and a waiting match binds within one tick per match ahead
-     *   of it once a proxy is free for it; a turned-away pair is recorded
-     *   on the first tick after room frees that binds no waiting match.
-     * - Covered by: TC-PART-8.5.1-006, TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-002,
+     *   latency; after a walk, ms_until_next_timer() equals the minimum of
+     *   every endpoint's own ms_until_next_timer(), the SPDP announcement
+     *   and the lease expiries; a waiting match binds within one tick per
+     *   match ahead of it once a proxy is free for it; a turned-away pair is
+     *   recorded on the first tick after room frees that binds no waiting
+     *   match.
+     * - Covered by: TC-PART-8.5.1-006, TC-PART-8.5.1-015, TC-PART-8.5.1-016,
+     *   TC-PART-8.4.1.4-001, TC-PART-8.4.1.4-002,
      *   TC-PART-8.4.1.4-005, TC-PART-8.4.1.4-008.
      *
      * References:
@@ -510,11 +526,13 @@ public:
     // How long tick() can be deferred: the soonest of the SPDP
     // announcement, any peer lease expiry, and every builtin and user
     // writer's and reader's pending timer, or now while a freed proxy may
-    // let a waiting match bind or a rescan is due. A driver that sleeps between ticks waits no
-    // longer than this, so no heartbeat, repair, lease expiry, or waiting
-    // match is late.
+    // let a waiting match bind or a rescan is due. tick() finds it as it
+    // walks; this reads what the last walk found, and answers 0 while the
+    // timers are stale. A driver that sleeps between ticks waits no longer
+    // than this, so no heartbeat, repair, lease expiry, or waiting match is
+    // late.
     //
-    // Verification: TC-PART-8.5.1-006.
+    // Verification: TC-PART-8.5.1-006, TC-PART-8.5.1-016.
     //
     // @param now_ms  Current platform::monotonic_ms().
     // @returns Milliseconds until the next timed action; 0 when one is due;
@@ -1212,6 +1230,17 @@ private:
     /// A user endpoint's proxy freed since the last tick that bound no
     /// waiting match, so one may bind now.
     bool rebind_due_ = false;
+
+    /// When the soonest timer the last walk found falls due. Stale once
+    /// anything may have brought a timer nearer; a timer that only moved
+    /// later leaves it alone, and costs one early walk.
+    uint32_t next_timer_due_ms_ = 0u;
+    bool     timers_stale_ = true;
+
+    /// @brief True while an owed parked peer waits for a peer to settle, or a
+    ///   reactivated peer's SEDP refresh is unfinished; tick() then looks
+    ///   again every RTPS_PEER_SETTLE_MS / 4.
+    bool peers_settling() const noexcept;
 
     /// @brief Lets each reply writer release the replies a just-bound reader
     ///   was the last to hold (StatefulWriter::on_waiting_reader_bound()).

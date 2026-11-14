@@ -312,21 +312,14 @@ public:
     /// the participant routes ACKNACK and NACK_FRAG through it.
     StatefulWriter* find_writer(const EntityId& writer_id) noexcept;
 
-    // Drive builtin writer periodic maintenance, and the announcement replay
-    // to newly discovered peers (StatefulWriter::drain_replays()).
-    void tick(uint32_t now_ms) noexcept;
+    /// @brief Runs both builtin writers' heartbeats, repairs and announcement
+    ///   replays (StatefulWriter::tick()); returns the sooner of their next timers.
+    uint32_t tick(uint32_t now_ms) noexcept;
 
     /// @brief True while either builtin writer is still replaying its
     ///   announcements to a newly discovered peer from tick().
     bool replay_pending() const noexcept {
         return publications_writer_.replay_pending() || subscriptions_writer_.replay_pending();
-    }
-
-    // Soonest timed action of the two builtin writers (heartbeat or repair).
-    uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept {
-        const uint32_t a = publications_writer_.ms_until_next_timer(now_ms);
-        const uint32_t b = subscriptions_writer_.ms_until_next_timer(now_ms);
-        return a < b ? a : b;
     }
 
 private:
@@ -515,16 +508,11 @@ public:
      */
     StatefulReader* reader_for_writer(const EntityId& writer_id) noexcept;
 
-    /// @brief Sends ACKNACKs whose heartbeatResponseDelay has elapsed.
-    void tick(uint32_t now_ms) noexcept {
-        publications_reader_.tick(now_ms);
-        subscriptions_reader_.tick(now_ms);
-    }
-
-    /// @brief Soonest pending ACKNACK of the two builtin readers, or UINT32_MAX.
-    uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept {
-        const uint32_t a = publications_reader_.ms_until_next_timer(now_ms);
-        const uint32_t b = subscriptions_reader_.ms_until_next_timer(now_ms);
+    /// @brief Sends both builtin readers' due ACKNACKs (StatefulReader::tick());
+    ///   returns the sooner of their next timers, or UINT32_MAX.
+    uint32_t tick(uint32_t now_ms) noexcept {
+        const uint32_t a = publications_reader_.tick(now_ms);
+        const uint32_t b = subscriptions_reader_.tick(now_ms);
         return a < b ? a : b;
     }
 

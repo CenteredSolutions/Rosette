@@ -309,14 +309,30 @@ public:
     void send_acknack(WriterProxy& proxy,
                       bool         final_flag = false) noexcept;
 
-    // ----------------------------------------------------------
-    // tick()
-    //
-    // Periodic maintenance: sends the ACKNACKs whose heartbeatResponseDelay
-    // has elapsed, and the NACK_FRAGs of partial samples whose fragments have
-    // stopped arriving. Call at least as often as ms_until_next_timer() asks.
-    // ----------------------------------------------------------
-    void tick(uint32_t now_ms) noexcept;
+    /**
+     * @brief Sends the reader's due ACKNACKs and NACK_FRAGs, and says when it
+     *   next has one due.
+     *
+     * Sends the ACKNACK of each writer whose heartbeatResponseDelay has
+     * elapsed, and the NACK_FRAGs of partial samples whose fragments have
+     * stopped arriving. The pass over the matched writers also finds the
+     * soonest ACKNACK still waiting, so the participant learns when to tick
+     * this reader again without a second pass (RTPSParticipant::tick()).
+     *
+     * @param[in] now_ms Current rosette::platform::monotonic_ms().
+     * @return What ms_until_next_timer(now_ms) returns once the call is done:
+     *   milliseconds until the next ACKNACK or fragment repair, UINT32_MAX
+     *   when none is pending.
+     *
+     * Verification:
+     * - Correct means: every ACKNACK whose deadline has passed is sent once,
+     *   and the return equals ms_until_next_timer(now_ms) called right after.
+     * - Covered by: TC-PART-8.5.1-016, TC-SRR-8.4.7-002, TC-SRR-8.4.12-001.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.12.2 (heartbeatResponseDelay), §8.4.7.3
+     */
+    uint32_t tick(uint32_t now_ms) noexcept;
 
     // ----------------------------------------------------------
     // Accessors

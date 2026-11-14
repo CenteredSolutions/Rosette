@@ -12,6 +12,8 @@
 #include "log.hpp"
 #include <string.h>
 
+#include <algorithm>
+
 namespace rosette::rtps {
 
 namespace {
@@ -652,15 +654,19 @@ void StatefulReader::request_next_repair(WriterProxy& proxy) noexcept
 // tick()
 // ============================================================
 
-void StatefulReader::tick(uint32_t now_ms) noexcept {
+uint32_t StatefulReader::tick(uint32_t now_ms) noexcept {
+    uint32_t next = UINT32_MAX;
     for (WriterProxy& proxy : matched()) {
         if (proxy.acknack_response_due(now_ms)) {
             send_acknack(proxy, !proxy.has_missing_changes());
             proxy.on_acknack_sent();
+        } else if (proxy.acknackPending) {
+            next = std::min(next, proxy.heartbeatResponseDeadlineMs - now_ms);
         }
     }
 
     send_due_fragment_repairs(now_ms);
+    return std::min(next, assembler_.ms_until_repair_due(now_ms));
 }
 
 // ============================================================

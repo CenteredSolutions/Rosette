@@ -510,13 +510,17 @@ public:
     // first tick announces and the next announce waits one period.
     //
     // @param now_ms  Current rosette::platform::monotonic_ms().
+    // @return Milliseconds until the next announcement, as
+    //   ms_until_next_announce() then reports it.
     // ----------------------------------------------------------
-    void tick(uint32_t now_ms) noexcept {
+    uint32_t tick(uint32_t now_ms) noexcept {
         if (!announced_once_ || (now_ms - last_sent_ms_) >= resend_ms_) {
             announce();
             last_sent_ms_ = now_ms;
             announced_once_ = true;
         }
+
+        return ms_until_next_announce(now_ms);
     }
 
     // Milliseconds until tick() next announces; 0 when due (including before
@@ -610,9 +614,12 @@ public:
      *   representation header; borrowed for the call only.
      * @param[in] payload_len   Payload length in octets.
      * @param[in] now_ms        Current rosette::platform::monotonic_ms().
-     * @return `true` when the announcement was accepted (a lease renewed or a
-     *   record written); `false` when the payload does not decode or the
-     *   known-peer table is full, in which case no record or lease changes.
+     * @return The peer's record when the announcement was accepted (a lease
+     *   renewed or a record written), so the caller can read the lease it
+     *   now runs on; null when the payload does not decode or the known-peer
+     *   table is full, in which case no record or lease changes. The record
+     *   lives in the reader's table and stays valid until the peer is
+     *   forgotten.
      *
      * Verification:
      * - Correct means: a parked peer's lease is renewed only by a well-formed
@@ -625,10 +632,8 @@ public:
      * - OMG DDSI-RTPS 2.5 §8.5.3.2 (lease), §8.5.3.3 (SPDP reader),
      *   §9.6.2 (PL_CDR parameter list), §9.6.3.1 (Table 9.14)
      */
-    bool on_data(const GuidPrefix& sender_prefix,
-                 const Octet*      payload,
-                 uint32_t          payload_len,
-                 uint32_t          now_ms) noexcept;
+    const PeerEntry* on_data(const GuidPrefix& sender_prefix, const Octet* payload,
+                             uint32_t payload_len, uint32_t now_ms) noexcept;
 
     // ----------------------------------------------------------
     // tick()
@@ -639,9 +644,16 @@ public:
     //   "If a participant does not receive a refresh within
     //    leaseDuration, it removes the remote participant entry."
     //
+    // The same pass finds the soonest lease left, so the participant need
+    // not walk the peers a second time to know when to look again.
+    //
     // @param now_ms  Current rosette::platform::monotonic_ms().
+    // @return What ms_until_next_expiry(now_ms) returns once the call is
+    //   done: the time to the soonest surviving lease expiry, UINT32_MAX
+    //   when no peer is left.
+    // Verification: TC-SPDP-8.5.3-002 (expiry), TC-PART-8.5.1-016 (return).
     // ----------------------------------------------------------
-    void tick(uint32_t now_ms) noexcept;
+    uint32_t tick(uint32_t now_ms) noexcept;
 
     // ----------------------------------------------------------
     // remove_peer()

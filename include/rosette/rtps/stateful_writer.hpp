@@ -716,10 +716,19 @@ public:
      * piggybacked HEARTBEAT. A reader served best-effort requests nothing and
      * is never announcing, so tick() sends it nothing.
      *
+     * The repair pass over the matched readers also finds the next timer, so
+     * the participant learns when to tick this writer again without a second
+     * pass (RTPSParticipant::tick()).
+     *
      * @param[in] now_ms Current rosette::platform::monotonic_ms().
+     * @return What ms_until_next_timer(now_ms) returns once the call is done:
+     *   0 while a replay still has datagrams to send, UINT32_MAX when no
+     *   timer runs.
      *
      * Verification:
-     * - Covered by: TC-SWR-8.4.2.2-001, TC-SWR-8.4.9-004, TC-SWR-8.4.9-002,
+     * - Correct means: the return equals ms_until_next_timer(now_ms) called
+     *   right after; the sends follow the order above.
+     * - Covered by: TC-PART-8.5.1-016, TC-SWR-8.4.2.2-001, TC-SWR-8.4.9-004, TC-SWR-8.4.9-002,
      *   TC-SWR-8.2.2-003, TC-SWR-8.4.4-001, TC-SWR-8.4.9.1-001,
      *   TC-SWR-8.4.1.4-003, TC-SWR-8.4.1.4-010.
      *
@@ -727,7 +736,7 @@ public:
      * - OMG DDSI-RTPS 2.5 §8.4.1.1 (nackResponseDelay, heartbeatPeriod), §8.4.9.2,
      *   §8.4.9.1
      */
-    void tick(uint32_t now_ms) noexcept;
+    uint32_t tick(uint32_t now_ms) noexcept;
 
     const Guid&     guid()        const noexcept { return guid_; }
     ReliabilityKind reliability() const noexcept { return reliability_; }
@@ -735,12 +744,46 @@ public:
     const HistoryCache& cache()   const noexcept { return writer_cache_; }
 
     /// nack_response_delay() — §8.4.1.1, p. 104.
-    uint32_t nack_response_delay()            const noexcept { return nack_delay_ms_; }
-    void     nack_response_delay(uint32_t ms)       noexcept { nack_delay_ms_ = ms; }
+    uint32_t nack_response_delay() const noexcept { return nack_delay_ms_; }
+
+    void nack_response_delay(uint32_t ms) noexcept {
+        nack_delay_ms_ = ms;
+        mark_timers_stale();
+    }
 
     /// heartbeat_period() — §8.4.1.1, p. 104.
-    uint32_t heartbeat_period()               const noexcept { return hb_period_ms_; }
-    void     heartbeat_period(uint32_t ms)          noexcept { hb_period_ms_ = ms; }
+    uint32_t heartbeat_period() const noexcept { return hb_period_ms_; }
+
+    void heartbeat_period(uint32_t ms) noexcept {
+        hb_period_ms_ = ms;
+        mark_timers_stale();
+    }
+
+    /**
+     * @brief Names the participant's stale-timers flag, which this writer
+     *   sets when the application brings one of its timers nearer.
+     *
+     * A participant walks its endpoints only when its soonest timer is due
+     * or its timers are stale (RTPSParticipant::tick()). Datagrams, matches
+     * and endpoint changes pass through the participant, which marks the
+     * flag itself; the application calls the writer directly, so the writer
+     * marks it for those calls: a write starts the heartbeat period for
+     * readers that were fully acknowledged, and a changed heartbeat period
+     * or NACK response delay moves a running timer.
+     *
+     * @param[in] stale Set to true on each such call, never cleared here;
+     *   null for a writer no participant caches the timers of. Must outlive
+     *   the writer.
+     *
+     * Verification:
+     * - Correct means: after any application call that can make
+     *   ms_until_next_timer() return less than before, `*stale` is true.
+     * - Covered by: TC-PART-8.5.1-015, TC-PART-8.5.1-016 (tests/spec).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.9.2 (heartbeat and repair timers)
+     */
+    void set_timers_stale_flag(bool* stale) noexcept { timersStale_ = stale; }
 
     /**
      * @brief Makes this a service reply writer that drops each reply once its requester has it.
@@ -1497,6 +1540,16 @@ private:
         WaitingReaderQuery fn = nullptr;
         void* context = nullptr;
     } waitingReaderQuery_;
+
+    bool* timersStale_ = nullptr;  ///< See set_timers_stale_flag().
+
+    /// @brief Marks the participant's timers stale (set_timers_stale_flag()).
+    void mark_timers_stale() noexcept {
+        if (timersStale_ != nullptr) {
+            *timersStale_ = true;
+        }
+    }
+
     PayloadBuilder payloadBuilder_ = nullptr;  ///< Builds payloads of on-demand changes.
     void* payloadBuilderUser_ = nullptr;
     PayloadSizer   payloadSizer_ = nullptr;  ///< Sizes them, for replay packing.

@@ -15,6 +15,8 @@
 
 #include <string.h>
 
+#include <algorithm>
+
 #include "rosette/rtps/gap_encoding.hpp"
 #include "rosette/rtps/log.hpp"
 
@@ -137,6 +139,7 @@ bool StatefulWriter::add_change(CacheChange&& change) noexcept {
         ++writesSinceHb_;
     }
 
+    mark_timers_stale();
     return true;
 }
 
@@ -529,15 +532,29 @@ void StatefulWriter::record_fragment_repair(const ReaderProxy& proxy, const Sequ
     }
 }
 
-void StatefulWriter::tick(uint32_t now_ms) noexcept {
+uint32_t StatefulWriter::tick(uint32_t now_ms) noexcept {
     // Phase 0: the next part of any TRANSIENT_LOCAL replay.
     if (replayPending_) {
         drain_replays();
     }
 
     // Phase 1: repair what readers NACKed, once nackResponseDelay has passed.
+    // The same pass notes the soonest NACK still waiting and whether any
+    // reader is announcing, which is all the next timer depends on.
+    uint32_t next = UINT32_MAX;
+    bool     any_announcing = false;
     for (ReaderProxy& proxy : matched()) {
-        if (!proxy.nack_delay_elapsed(now_ms, nack_delay_ms_)) continue;
+        if (serves_reliably(proxy) && proxy.is_announcing(writer_cache_)) {
+            any_announcing = true;
+        }
+
+        if (!proxy.nack_delay_elapsed(now_ms, nack_delay_ms_)) {
+            if (proxy.nackPending) {
+                next = std::min(next, nack_delay_ms_ - (now_ms - proxy.nackPendingSinceMs));
+            }
+
+            continue;
+        }
 
         bool any_sent = false;
         SequenceNumberSet evicted{};
@@ -594,6 +611,16 @@ void StatefulWriter::tick(uint32_t now_ms) noexcept {
             send_heartbeat_to(entity_id::UNKNOWN, dest, /*final=*/false);
         }
     }
+
+    if (replayPending_) {
+        return 0u;
+    }
+
+    if (any_announcing) {
+        next = std::min(next, hb_period_ms_ - (now_ms - lastHbSentMs_));
+    }
+
+    return next;
 }
 
 bool StatefulWriter::acknowledged_by_all() const noexcept {
