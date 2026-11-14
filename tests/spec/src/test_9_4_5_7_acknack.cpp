@@ -56,9 +56,52 @@ static bool tc_9_4_5_7_002(std::string& err) {
     return true;
 }
 
+// One ACKNACK whose readerSNState has the given bitmapBase and no bits.
+static ParseResult parse_acknack_with_base(int32_t high, uint32_t low, int& calls) {
+    std::vector<Octet> msg{};
+    append_header(msg);
+    std::vector<Octet> ack{};
+    append_entity_id(ack, make_entity(1u, 2u, 3u, 0xC7u));
+    append_entity_id(ack, make_entity(4u, 5u, 6u, 0xC2u));
+    write_i32(ack, high, true);
+    write_u32(ack, low, true);
+    write_u32(ack, 0u, true);
+    write_i32(ack, 1, true);
+    append_submessage(msg, SubmessageKind::ACKNACK, FLAG_E, ack);
+
+    ParseOps ops{};
+    ops.on_acknack = [](const ParseContext& ctx, const ParsedAckNack&) noexcept {
+        ++*static_cast<int*>(ctx.user_data);
+    };
+    return parse_message(msg.data(), static_cast<uint32_t>(msg.size()), GuidPrefix{}, ops, &calls);
+}
+
+// Found by stateful_endpoints_fuzz: the writer computed bitmapBase - 1 on INT64_MIN.
+static bool tc_9_4_5_7_003(std::string& err) {
+    int               calls = 0;
+    const ParseResult r = parse_acknack_with_base(INT32_MIN, 0u, calls);
+    CHECK(r == ParseResult::MALFORMED, "expected MALFORMED for a negative bitmapBase");
+    CHECK(calls == 0, "a negative bitmapBase must not reach the writer");
+    return true;
+}
+
+static bool tc_9_4_5_7_004(std::string& err) {
+    int               calls = 0;
+    const ParseResult r = parse_acknack_with_base(INT32_MAX, 0xFFFFFFFFu, calls);
+    CHECK(r == ParseResult::MALFORMED, "expected MALFORMED when bitmapBase + numBits overflows");
+    CHECK(calls == 0, "an overflowing bitmapBase must not reach the writer");
+    return true;
+}
+
 void append_tests_9_4_5_7(std::vector<TestCase>& tests) {
     tests.push_back({"TC-9.4.5.7-001", "Invalid ACKNACK SequenceNumberSet bounds are malformed.", tc_9_4_5_7_001});
     tests.push_back({"TC-9.4.5.7-002", "ACKNACK final flag is decoded from submessage flags.", tc_9_4_5_7_002});
+    tests.push_back({"TC-9.4.5.7-003",
+                     "§8.3.5.5: an ACKNACK with a negative bitmapBase is malformed.",
+                     tc_9_4_5_7_003});
+    tests.push_back({"TC-9.4.5.7-004",
+                     "§8.3.5.5: an ACKNACK whose bitmapBase + numBits overflows is malformed.",
+                     tc_9_4_5_7_004});
 }
 
 } // namespace spec_test
