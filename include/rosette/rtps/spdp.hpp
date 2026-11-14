@@ -288,7 +288,9 @@ struct DiscoveredParticipant {
 
 static_assert(RTPS_PEER_EXCHANGE_TIMEOUT_MS > RTPS_PEER_SETTLE_MS,
               "a peer must have the chance to settle before it counts as stalled");
-static_assert(RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS * RTPS_PREEMPTIVE_ACKNACK_RETRY_MS
+// The first preemptive ACKNACK leaves at the match, so N attempts span N - 1
+// retry periods.
+static_assert((RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS - 1u) * RTPS_PREEMPTIVE_ACKNACK_RETRY_MS
                   > RTPS_PEER_EXCHANGE_TIMEOUT_MS,
               "the SEDP readers' preemptive ACKNACKs must outlast the exchange deadline, "
               "or an empty announcer whose answers were lost keeps its peer from settling "
