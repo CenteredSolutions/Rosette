@@ -252,7 +252,8 @@ static bool tc_part_8_5_3_011(std::string& err) {
 
     const uint32_t expiry = record(p, a)->leaseExpiryMs;
     CHECK(announce(p, a, 0x11u, 1300u), "the parked peer's announcement is accepted");
-    CHECK(is_parked(p, a) && record(p, a)->leaseExpiryMs == expiry + 300u,
+    const PeerEntry* entry = record(p, a);
+    CHECK(entry != nullptr && entry->parked && entry->leaseExpiryMs == expiry + 300u,
           "a parked peer's announcement renews its lease and nothing else");
 
     CHECK(deliver_announcement(p, a, true, "rt/new_topic", 1, 1400u),
@@ -340,9 +341,10 @@ static bool tc_part_8_5_3_013(std::string& err) {
           "peer A acknowledges the announcement");
 
     CHECK(announce(p, c, 0x13u, 2000u), "a third peer is recorded");
-    CHECK(is_parked(p, a) && is_active(p, c),
+    const PeerEntry* parked = record(p, a);
+    CHECK(parked != nullptr && parked->parked && is_active(p, c),
           "A, matched only with the discovery writer, is parked");
-    CHECK(!record(p, a)->owed, "a peer is owed nothing when it is parked");
+    CHECK(!parked->owed, "a peer is owed nothing when it is parked");
 
     p.discovery_info_changed();
     const PeerEntry* owed_peer = record(p, a);
@@ -353,7 +355,8 @@ static bool tc_part_8_5_3_013(std::string& err) {
           "peer C acknowledges the announcement");
     g_participant_test_now_ms = 2200u;
     p.tick(2200u);
-    CHECK(is_active(p, a) && !record(p, a)->owed,
+    const PeerEntry* entry = record(p, a);
+    CHECK(entry != nullptr && entry->active() && !entry->owed,
           "the next tick reactivates the owed peer in place of a settled one");
 
     const Guid a_reader{a, make_entity(0x61u, 0x62u, 1u, 0x04u)};
@@ -401,12 +404,15 @@ static bool tc_part_8_5_3_014(std::string& err) {
     CHECK(!reader.on_data(a, truncated.data(), static_cast<uint32_t>(truncated.size()), 1300u),
           "a parameter list cut short is rejected");
     reader.on_data(a, foreign.data(), static_cast<uint32_t>(foreign.size()), 1300u);
-    CHECK(is_parked(p, a) && record(p, a)->leaseExpiryMs == expiry,
+    const PeerEntry* entry = record(p, a);
+    CHECK(entry != nullptr && entry->parked && entry->leaseExpiryMs == expiry,
           "none of them renews the parked peer's lease");
 
     CHECK(reader.on_data(a, valid.data(), static_cast<uint32_t>(valid.size()), 1300u),
           "the peer's own announcement is accepted");
-    CHECK(is_parked(p, a) && record(p, a)->leaseExpiryMs == expiry + 300u, "and renews its lease");
+    entry = record(p, a);
+    CHECK(entry != nullptr && entry->parked && entry->leaseExpiryMs == expiry + 300u,
+          "and renews its lease");
     return true;
 }
 
@@ -461,7 +467,8 @@ static bool tc_part_8_5_3_016(std::string& err) {
     CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1010u), "two peers are active");
     CHECK(deliver_announcement(p, a, true, "rt/withdrawn", 1, 1000u), "A announces a writer");
     CHECK(announce(p, c, 0x13u, 1200u) && is_parked(p, a), "A is parked for a third peer");
-    CHECK(record(p, a)->parkedPublicationsSn == 1u, "the parked number is kept");
+    const PeerEntry* entry = record(p, a);
+    CHECK(entry != nullptr && entry->parkedPublicationsSn == 1u, "the parked number is kept");
 
     // While parked, A withdrew writer 1 (SN 2) and announced writer 3 (SN 3).
     CHECK(deliver_announcement(p, a, true, "rt/new", 3, 1400u), "A announces a new writer");
@@ -481,8 +488,10 @@ static bool tc_part_8_5_3_016(std::string& err) {
     CHECK(log.refreshed == 1, "the refresh completes once the replay has caught up");
     CHECK(!log.lists(announced_writer(a, 1)), "the writer withdrawn while parked is forgotten");
     CHECK(log.lists(announced_writer(a, 3)), "the replayed writer stays listed");
-    CHECK(record(p, a)->parkedPublicationsSn == 0u && record(p, a)->parkedSubscriptionsSn == 0u,
-          "no refresh remains under way");
+    entry = record(p, a);
+    CHECK(
+        entry != nullptr && entry->parkedPublicationsSn == 0u && entry->parkedSubscriptionsSn == 0u,
+        "no refresh remains under way");
 
     g_participant_test_now_ms = 1600u;
     p.tick(1600u);
@@ -510,7 +519,8 @@ static bool tc_part_8_5_3_017(std::string& err) {
               && deliver_announcement(p, a, true, "rt/still", 2, 1000u),
           "A announces two writers");
     CHECK(announce(p, c, 0x13u, 1200u) && is_parked(p, a), "A is parked for a third peer");
-    CHECK(record(p, a)->parkedPublicationsSn == 2u, "the parked number is kept");
+    const PeerEntry* entry = record(p, a);
+    CHECK(entry != nullptr && entry->parkedPublicationsSn == 2u, "the parked number is kept");
 
     // While parked, A re-announced writer 1 at SN 3; SN 1 is now irrelevant.
     CHECK(deliver_publications_heartbeat(p, a, 1, 3, 1400u), "A's announcer advertises SN 3");
