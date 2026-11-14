@@ -15,6 +15,7 @@
  *    `payload_size` bytes of serialized payload:
  *      magic[4]      = 0x52545053 ('RTPS')
  *      version[2]    = 0x0001
+ *      flags[2]      = bit 0: the payload is preframed (HistoryChange::preframed)
  *      entity_id[4]  = writer EntityId bytes
  *      seq_num_high[4]
  *      seq_num_low[4]
@@ -46,10 +47,11 @@ namespace rosette::rtps {
 struct LittleFsPersistenceHeader {
     static constexpr uint32_t kMagic   = 0x52545053u;
     static constexpr uint16_t kVersion = 0x0001u;
+    static constexpr uint16_t kFlagPreframed = 0x0001u;
 
     uint32_t magic       = 0;
     uint16_t version     = 0;
-    uint16_t reserved    = 0;
+    uint16_t flags = 0;  ///< kFlagPreframed, or 0 for a CDR body.
     Octet    entityId[4] = {};
     Long     snHigh      = 0;
     ULong    snLow       = 0;
@@ -60,10 +62,32 @@ struct LittleFsPersistenceHeader {
 static_assert(sizeof(LittleFsPersistenceHeader) <= 32u,
               "LittleFsPersistenceHeader unexpectedly large");
 
+/**
+ * @brief Durable storage for the last change of a TRANSIENT_LOCAL writer.
+ *
+ * A writer's history holds HistoryChange slots, which carry no writer GUID,
+ * so the writer names itself by EntityId and the backend stores and returns
+ * the slot as the history holds it: load() yields a change that add_change()
+ * takes back unaltered.
+ *
+ * Verification:
+ * - Correct means: store() then load() for one writer yields a change with
+ *   the stored sequence number, payload octets, kind ALIVE and preframed
+ *   flag; a corrupted or foreign file loads nothing.
+ * - Covered by: no test yet; a LittleFS RAM block device round trip would
+ *   check it.
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §8.7.2.2 (TRANSIENT_LOCAL and PERSISTENT durability)
+ */
 struct IPersistenceBackend {
     virtual ~IPersistenceBackend() = default;
-    virtual bool load(const Guid& writer_guid, CacheChange& out_change) noexcept = 0;
-    virtual bool store(const CacheChange& change) noexcept = 0;
+
+    /// @brief Reads `writer`'s stored change into `out`; false when there is none or it is corrupt.
+    virtual bool load(const EntityId& writer, HistoryChange& out) noexcept = 0;
+
+    /// @brief Replaces `writer`'s stored change with `change`; false when it cannot be written.
+    virtual bool store(const EntityId& writer, const HistoryChange& change) noexcept = 0;
 };
 
 #ifndef RTPS_MAX_PERSISTENT_WRITERS
@@ -90,8 +114,8 @@ public:
         count_ = n;
     }
 
-    bool load(const Guid& writer_guid, CacheChange& out) noexcept override;
-    bool store(const CacheChange& change) noexcept override;
+    bool load(const EntityId& writer, HistoryChange& out) noexcept override;
+    bool store(const EntityId& writer, const HistoryChange& change) noexcept override;
 
 private:
     lfs_t         *lfs_ = nullptr;

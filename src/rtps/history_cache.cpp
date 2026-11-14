@@ -91,9 +91,15 @@ void HistoryCache::clear_all() noexcept {
 HistoryChange* HistoryCache::find_oldest() noexcept {
     HistoryChange* oldest = nullptr;
     for (uint8_t i = 0; i < capacity_; ++i) {
-        if (!slots_[i].is_valid()) continue;
-        if (!oldest || slots_[i].sequenceNumber < oldest->sequenceNumber) oldest = &slots_[i];
+        if (!slots_[i].is_valid()) {
+            continue;
+        }
+
+        if (!oldest || slots_[i].sequenceNumber < oldest->sequenceNumber) {
+            oldest = &slots_[i];
+        }
     }
+
     return oldest;
 }
 

@@ -54,26 +54,21 @@ StatefulWriter::~StatefulWriter() noexcept {
     }
 }
 
-HistoryChange* StatefulWriter::new_change(ChangeKind kind, BufRef& out_payload,
-                                          size_t payload_size) noexcept {
-    if (staging_.payload.valid())
-        staging_.payload.reset();
-
+HistoryChange StatefulWriter::new_change(ChangeKind kind, BufRef& out_payload,
+                                         size_t payload_size) noexcept {
+    HistoryChange change{};
+    change.kind = kind;
     out_payload = buf_alloc(static_cast<uint32_t>(payload_size));
     if (!out_payload.valid()) {
         RTPS_LOG_E("writer", "buf_alloc failed (%zu) for new_change (pool exhausted)", payload_size);
-        return nullptr;
+        return change;
     }
 
-    staging_.kind = kind;
-    staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;  // Assigned in add_change.
-    staging_.inlineQos      = {};
-    staging_.preframed      = false;
-    staging_.payload.block  = out_payload.block;
-    staging_.payload.data   = out_payload.data;
-    staging_.payload.size   = out_payload.size;
+    change.payload.block = out_payload.block;
+    change.payload.data = out_payload.data;
+    change.payload.size = out_payload.size;
     out_payload.retain();
-    return &staging_;
+    return change;
 }
 
 /// How a sample is cut into DATA_FRAGs over one transport.
@@ -149,11 +144,13 @@ void StatefulWriter::remove_change(const SequenceNumber& sn) noexcept {
 
 bool StatefulWriter::write_async(ChangeKind kind, const Octet* payload_data, uint32_t payload_size,
                                  const InlineQos& inline_qos, SequenceNumber* out_sn) noexcept {
-    if (!payload_data || payload_size == 0) return false;
+    if (!payload_data || payload_size == 0) {
+        return false;
+    }
 
-    BufRef payload_buf;
-    HistoryChange* ch = new_change(kind, payload_buf, payload_size);
-    if (!ch) {
+    BufRef        payload_buf;
+    HistoryChange change = new_change(kind, payload_buf, payload_size);
+    if (!change.payload.valid()) {
         RTPS_LOG_E("writer", "write_async: new_change failed");
         return false;
     }
@@ -161,11 +158,9 @@ bool StatefulWriter::write_async(ChangeKind kind, const Octet* payload_data, uin
     const uint32_t sz = (payload_size < payload_buf.capacity()) ? payload_size : payload_buf.capacity();
     memcpy(payload_buf.data, payload_data, sz);
     payload_buf.size = sz;
-    ch->payload.size = sz;
-    ch->inlineQos    = inline_qos;
-
-    if (!add_change(static_cast<HistoryChange&&>(*ch))) {
-        payload_buf.reset();
+    change.payload.size = sz;
+    change.inlineQos = inline_qos;
+    if (!add_change(static_cast<HistoryChange&&>(change))) {
         return false;
     }
 
@@ -184,16 +179,11 @@ bool StatefulWriter::write_async_owned(ChangeKind kind, BufRef&& payload,
         return false;
     }
 
-    if (staging_.payload.valid()) {
-        staging_.payload.reset();
-    }
-
-    staging_.kind = kind;
-    staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
-    staging_.inlineQos      = inline_qos;
-    staging_.preframed      = false;
-    staging_.payload        = static_cast<BufRef&&>(payload);
-    if (!add_change(static_cast<HistoryChange&&>(staging_))) {
+    HistoryChange change{};
+    change.kind = kind;
+    change.inlineQos = inline_qos;
+    change.payload = static_cast<BufRef&&>(payload);
+    if (!add_change(static_cast<HistoryChange&&>(change))) {
         return false;
     }
 
@@ -208,8 +198,9 @@ bool StatefulWriter::write_async_owned(ChangeKind kind, BufRef&& payload,
 bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* serialized_payload,
                                            uint32_t payload_size, SequenceNumber* out_sn,
                                            const InlineQos& inline_qos) noexcept {
-    if (!serialized_payload || payload_size == 0) return false;
-    if (staging_.payload.valid()) staging_.payload.reset();
+    if (!serialized_payload || payload_size == 0) {
+        return false;
+    }
 
     // Headroom covers the RTPS/DATA headers plus this change's inline QoS,
     // and tailroom one HEARTBEAT, so send_data_to() can always frame this
@@ -226,17 +217,12 @@ bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* seriali
     memcpy(payload_buf.data, serialized_payload, sz);
     payload_buf.size = sz;
 
-    staging_.kind = kind;
-    staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
-    staging_.inlineQos      = inline_qos;
-    staging_.preframed      = true;
-    staging_.payload.block  = payload_buf.block;
-    staging_.payload.data   = payload_buf.data;
-    staging_.payload.size   = payload_buf.size;
-    payload_buf.retain();
-
-    if (!add_change(static_cast<HistoryChange&&>(staging_))) {
-        payload_buf.reset();
+    HistoryChange change{};
+    change.kind = kind;
+    change.inlineQos = inline_qos;
+    change.preframed = true;
+    change.payload = static_cast<BufRef&&>(payload_buf);
+    if (!add_change(static_cast<HistoryChange&&>(change))) {
         return false;
     }
 
@@ -259,15 +245,11 @@ bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* seriali
         return false;
     }
 
-    if (staging_.payload.valid()) {
-        staging_.payload.reset();
-    }
-
-    staging_.kind = kind;
-    staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
-    staging_.inlineQos = inline_qos;
-    staging_.preframed = true;
-    if (!add_change(static_cast<HistoryChange&&>(staging_))) {
+    HistoryChange change{};
+    change.kind = kind;
+    change.inlineQos = inline_qos;
+    change.preframed = true;
+    if (!add_change(static_cast<HistoryChange&&>(change))) {
         return false;
     }
 

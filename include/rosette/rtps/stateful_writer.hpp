@@ -196,24 +196,34 @@ public:
     virtual ~StatefulWriter() noexcept;
 
     /**
-     * @brief Stages a new change and allocates a pool buffer for its payload.
+     * @brief Creates a change of `kind` with a fresh pool buffer for its payload.
      *
-     * The caller writes the serialized payload into `out_payload`, sets the
-     * staged change's payload size, and passes it to add_change(). Staging
-     * again releases a previously staged, unadded payload.
+     * The first half of the §8.4.1.4 write: the caller writes the serialized
+     * payload into `out_payload`, sets the change's payload size, and moves
+     * the change into add_change(), which numbers it and stores it. The
+     * change lives in the caller until then, so the writer keeps no slot for
+     * it; a change that is never added releases its buffer when it goes out
+     * of scope.
      *
      * @param[in]  kind         ChangeKind of the change (ALIVE, NOT_ALIVE_*).
-     * @param[out] out_payload  The allocated buffer (an extra reference to
-     *   the staged change's payload) on success.
+     * @param[out] out_payload  The allocated buffer (a second reference to
+     *   the change's payload) on success; invalid on failure.
      * @param[in]  payload_size Octets the caller will write; the pool may
      *   return a larger block.
-     * @return The staged change, or null when the pool has no block that size.
+     * @return The change, with no sequence number yet and no inline QoS.
+     *   Its payload is invalid when the pool has no block that size.
+     *
+     * Verification:
+     * - Correct means: the returned change and `out_payload` share one pool
+     *   block; adding the change numbers it nextSN; dropping it unadded
+     *   returns the block to the pool.
+     * - Covered by: TC-SWR-8.4.1.4-001, TC-SWR-8.2.2-001.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (new_change)
      */
-    HistoryChange* new_change(ChangeKind kind, BufRef& out_payload,
-                              size_t payload_size = kPoolMaxBlockSize) noexcept;
+    HistoryChange new_change(ChangeKind kind, BufRef& out_payload,
+                             size_t payload_size = kPoolMaxBlockSize) noexcept;
 
     /**
      * @brief Assigns the next sequence number and adds the change to the history.
@@ -1515,7 +1525,6 @@ private:
     ReaderProxyPool& pool_;
     ProxyList readers_;  ///< Bound proxies, floor and cap.
 
-    HistoryChange  staging_{};  ///< Staging area for new_change().
     int32_t        heartbeatCount_ = 0;
     SequenceNumber nextSN_         = SequenceNumber::from_int64(1);
     uint32_t       nack_delay_ms_;

@@ -277,6 +277,62 @@ static bool tc_sedp_8_5_4_019(std::string& err) {
     return true;
 }
 
+/// RecordedEndpoints that counts how often the writer table is consulted.
+struct CountingEndpoints : RecordedEndpoints {
+    uint32_t writer_lookups = 0u;
+
+    LocalEndpointSource source() noexcept {
+        return LocalEndpointSource{count_writer, describe_reader, this};
+    }
+
+    static bool count_writer(void* user, const Guid& guid, DiscoveredWriterData& out) noexcept {
+        ++static_cast<CountingEndpoints*>(user)->writer_lookups;
+        return describe_writer(user, guid, out);
+    }
+};
+
+// The endpoint GUID's entityKind (§9.3.1.2, Table 9.1) names the table a
+// rebuilt announcement is described from: a reader's never searches the
+// writer table, and both kinds still rebuild to their stored bytes.
+static bool tc_sedp_8_5_4_021(std::string& err) {
+    const EntityId keyed_writer = make_entity(0u, 0u, 1u, 0x02u);
+    const EntityId writer = make_entity(0u, 0u, 1u, 0x03u);
+    const EntityId builtin_writer = make_entity(0u, 0u, 1u, 0xC3u);
+    const EntityId reader = make_entity(0u, 0u, 1u, 0x04u);
+    const EntityId keyed_reader = make_entity(0u, 0u, 1u, 0x07u);
+    CHECK(keyed_writer.is_writer() && writer.is_writer() && builtin_writer.is_writer()
+              && entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER.is_writer(),
+          "user and built-in writer kinds are writers");
+    CHECK(!reader.is_writer() && !keyed_reader.is_writer()
+              && !entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR.is_writer()
+              && !entity_id::PARTICIPANT.is_writer(),
+          "reader and participant kinds are not writers");
+
+    const GuidPrefix   local = make_guid(0x41u, entity_id::PARTICIPANT).prefix;
+    const GuidPrefix   peer = make_guid(0x42u, entity_id::PARTICIPANT).prefix;
+    const Locator      dest = make_udpv4_locator(0xC0A80142u, 7410u);
+    CountingEndpoints  endpoints{};
+    RecordingTransport stored_tx{};
+    RecordingTransport rebuilt_tx{};
+    SedpWriter         stored(local, stored_tx);
+    SedpWriter         rebuilt(local, rebuilt_tx, endpoints.source());
+    for (Octet i = 0u; i < 2u; ++i) {
+        DiscoveredReaderData rd = make_reader(make_guid(0x41u, make_entity(i, 0u, 1u, 0x04u)));
+        endpoints.readers.push_back(rd);
+        CHECK(stored.register_reader(rd) && rebuilt.register_reader(rd), "registration");
+    }
+
+    stored.announce_to_peer(peer, dest);
+    finish_replay(stored, 0u);
+    rebuilt.announce_to_peer(peer, dest);
+    finish_replay(rebuilt, 0u);
+    CHECK(data_payloads(stored_tx.sent).size() == 2u, "the stored replay sends both readers");
+    CHECK(data_payloads(rebuilt_tx.sent) == data_payloads(stored_tx.sent),
+          "the rebuilt readers carry the stored bytes");
+    CHECK(endpoints.writer_lookups == 0u, "no reader announcement searched the writer table");
+    return true;
+}
+
 void append_sedp_tests_8_5_4_rebuild(std::vector<TestCase>& tests) {
     tests.push_back(
         {"TC-SEDP-8.5.4-015",
@@ -296,6 +352,10 @@ void append_sedp_tests_8_5_4_rebuild(std::vector<TestCase>& tests) {
                      "before building it and packs several per datagram, carrying the same "
                      "announcements in order as a stored replay.",
                      tc_sedp_8_5_4_019});
+    tests.push_back({"TC-SEDP-8.5.4-021",
+                     "§9.3.1.2: a rebuilt announcement is described from the table its "
+                     "endpoint's entityKind names; a reader's never searches the writer table.",
+                     tc_sedp_8_5_4_021});
 }
 
 }  // namespace spec_test

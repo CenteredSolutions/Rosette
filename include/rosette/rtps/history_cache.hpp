@@ -11,10 +11,11 @@
  * Design
  * ------
  *  - A change has two shapes. CacheChange is the whole of Table 8.11 and is
- *    what a reader delivers: it exists only for the length of a callback.
- *    HistoryChange is what a writer keeps per history slot, for as long as
- *    the change may need repair, so it holds only what differs from one
- *    change of that writer to the next.
+ *    what a reader builds and delivers: it lives for the length of a listener
+ *    callback, or, for a fragmented sample, in a FragmentAssembler slot until
+ *    the sample is complete. HistoryChange is what a writer keeps per history
+ *    slot, for as long as the change may need repair, so it holds only what
+ *    differs from one change of that writer to the next.
  *  - HistoryCache is one compiled class (src/rtps/history_cache.cpp) that
  *    operates on slot storage it is given: a pointer to HistoryChange slots
  *    and their count. HistoryCacheStorage<N> owns an array of N slots and
@@ -91,7 +92,8 @@ struct CacheChange {
  * The part of a CacheChange that a writer needs to send and repair the
  * change. The writer GUID is the owning writer's and no source timestamp is
  * sent, so neither is stored per change. A slot is 68 octets on a 32-bit
- * target, and a writer of depth N holds N + 1 of them.
+ * target, and a writer of depth N holds N of them; a change being written
+ * lives on the caller's stack until add_change() moves it into a slot.
  *
  * | CacheChange field  | Here                | Notes                          |
  * |--------------------|---------------------|--------------------------------|
@@ -118,7 +120,10 @@ struct HistoryChange {
     }
 
     void clear() noexcept {
-        if (payload.valid()) payload.release();
+        if (payload.valid()) {
+            payload.release();
+        }
+
         *this = HistoryChange{};
     }
 };
@@ -170,8 +175,9 @@ public:
      *
      * Verification:
      * - Correct means: after capacity() insertions, the next insertion
-     *   removes exactly the lowest sequence number and keeps the rest.
-     * - Covered by: TC-HC-8.3.1-001, TC-HC-8.3.3.1-001.
+     *   removes exactly the lowest sequence number and keeps the rest,
+     *   whatever order the changes were inserted in.
+     * - Covered by: TC-HC-8.3.1-001, TC-HC-8.3.3.1-001, TC-HC-8.3.3.1-002.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.1 (add_change), §8.3.3.1 (KEEP_LAST)

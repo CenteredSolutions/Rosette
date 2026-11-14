@@ -258,6 +258,26 @@ struct EntityId {
     bool operator!=(const EntityId& o) const noexcept {
         return !(*this == o);
     }
+
+    /**
+     * @brief True when entityKind names a writer, user-defined or built-in.
+     *
+     * The two high bits of the kind say who defined the entity (user, built-in,
+     * vendor); the low six say what it is, and a writer is 0x02 (with key) or
+     * 0x03 (no key). Reader kinds are 0x04 and 0x07.
+     *
+     * Verification:
+     * - Correct means: true for 0x02, 0x03, 0xC2 and 0xC3; false for 0x04,
+     *   0x07, 0xC4, 0xC7 and the participant's 0xC1.
+     * - Covered by: TC-SEDP-8.5.4-021.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §9.3.1.2, Table 9.1 (entityKind values)
+     */
+    bool is_writer() const noexcept {
+        const Octet kind = static_cast<Octet>(entityKind & 0x3Fu);
+        return kind == 0x02u || kind == 0x03u;
+    }
 };
 
 // §8.2.4, Table 8.4 — Pre-defined EntityId values (p. 28-29).

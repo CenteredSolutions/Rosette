@@ -64,14 +64,12 @@ static uint32_t crc32_extend(uint32_t seed, const void* data, uint32_t len) noex
     return ~crc;
 }
 
-bool LittleFsPersistenceBackend::load(const Guid& writer_guid,
-                                      CacheChange& out) noexcept
-{
+bool LittleFsPersistenceBackend::load(const EntityId& writer, HistoryChange& out) noexcept {
     if (!lfs_) {
         return false;
     }
 
-    const WriterMapping* m = find_mapping(writer_guid.entityId);
+    const WriterMapping* m = find_mapping(writer);
     if (!m || !m->path) {
         return false;
     }
@@ -95,7 +93,7 @@ bool LittleFsPersistenceBackend::load(const Guid& writer_guid,
         return false;
     }
 
-    if (memcmp(hdr.entityId, &writer_guid.entityId, sizeof(hdr.entityId)) != 0) {
+    if (memcmp(hdr.entityId, &writer, sizeof(hdr.entityId)) != 0) {
         (void)lfs_file_close(lfs_, &file);
         return false;
     }
@@ -134,21 +132,21 @@ bool LittleFsPersistenceBackend::load(const Guid& writer_guid,
         return false;
     }
 
+    out.clear();
     out.kind = ChangeKind::ALIVE;
-    out.writerGuid = writer_guid;
     out.sequenceNumber = SequenceNumber{hdr.snHigh, hdr.snLow};
-    out.sourceTimestamp = TIME_INVALID;
+    out.preframed = (hdr.flags & LittleFsPersistenceHeader::kFlagPreframed) != 0u;
     out.payload = static_cast<BufRef&&>(payload);
     return true;
 }
 
-bool LittleFsPersistenceBackend::store(const CacheChange& change) noexcept
-{
+bool LittleFsPersistenceBackend::store(const EntityId&      writer,
+                                       const HistoryChange& change) noexcept {
     if (!lfs_ || !change.payload.valid()) {
         return false;
     }
 
-    const WriterMapping* m = find_mapping(change.writerGuid.entityId);
+    const WriterMapping* m = find_mapping(writer);
     if (!m || !m->path) {
         return false;
     }
@@ -165,7 +163,8 @@ bool LittleFsPersistenceBackend::store(const CacheChange& change) noexcept
     LittleFsPersistenceHeader hdr{};
     hdr.magic = LittleFsPersistenceHeader::kMagic;
     hdr.version = LittleFsPersistenceHeader::kVersion;
-    memcpy(hdr.entityId, &change.writerGuid.entityId, sizeof(hdr.entityId));
+    hdr.flags = change.preframed ? LittleFsPersistenceHeader::kFlagPreframed : 0u;
+    memcpy(hdr.entityId, &writer, sizeof(hdr.entityId));
     hdr.snHigh = change.sequenceNumber.high;
     hdr.snLow = change.sequenceNumber.low;
     hdr.payloadSize = payload_size;

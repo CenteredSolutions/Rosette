@@ -140,17 +140,24 @@ static uint32_t reader_payload_size_estimate(const DiscoveredReaderData& rd) noe
 // full history always holds at least one disposal.
 static void make_room_for_change(SedpWriter::BuiltinWriter& writer) noexcept
 {
-    if (writer.cache().size() < SedpWriter::kSedpHistoryDepth) return;
+    if (writer.cache().size() < SedpWriter::kSedpHistoryDepth) {
+        return;
+    }
+
     SequenceNumber oldest_disposal = SEQUENCENUMBER_UNKNOWN;
     writer.cache().for_each_change([&](const HistoryChange& c) noexcept {
         if (c.kind == ChangeKind::ALIVE) {
             return;
         }
 
-        if (oldest_disposal == SEQUENCENUMBER_UNKNOWN || c.sequenceNumber < oldest_disposal)
+        if (oldest_disposal == SEQUENCENUMBER_UNKNOWN || c.sequenceNumber < oldest_disposal) {
             oldest_disposal = c.sequenceNumber;
+        }
     });
-    if (oldest_disposal != SEQUENCENUMBER_UNKNOWN) writer.remove_change(oldest_disposal);
+
+    if (oldest_disposal != SEQUENCENUMBER_UNKNOWN) {
+        writer.remove_change(oldest_disposal);
+    }
 }
 
 // Serialises one endpoint and writes it as a live announcement keyed by
@@ -224,8 +231,12 @@ static BufRef serialise_for_send(const EndpointData& endpoint, uint32_t size_est
                                                     const HistoryChange& change) noexcept {
     const SedpWriter& self = *static_cast<const SedpWriter*>(user);
     const Guid endpoint_guid = change.inlineQos.key_hash_guid();
-    DiscoveredWriterData wd{};
-    if (self.endpoints_.writer(self.endpoints_.user, endpoint_guid, wd)) {
+    if (endpoint_guid.entityId.is_writer()) {
+        DiscoveredWriterData wd{};
+        if (!self.endpoints_.writer(self.endpoints_.user, endpoint_guid, wd)) {
+            return BufRef{};
+        }
+
         return serialise_for_send(
             wd, writer_payload_size_estimate(wd), change,
             [&self](const DiscoveredWriterData& d, Octet* buf, uint32_t cap) noexcept {
@@ -249,9 +260,11 @@ static BufRef serialise_for_send(const EndpointData& endpoint, uint32_t size_est
                                                      const HistoryChange& change) noexcept {
     const SedpWriter& self = *static_cast<const SedpWriter*>(user);
     const Guid        endpoint_guid = change.inlineQos.key_hash_guid();
-    DiscoveredWriterData wd{};
-    if (self.endpoints_.writer(self.endpoints_.user, endpoint_guid, wd)) {
-        return writer_payload_size_estimate(wd);
+    if (endpoint_guid.entityId.is_writer()) {
+        DiscoveredWriterData wd{};
+        return self.endpoints_.writer(self.endpoints_.user, endpoint_guid, wd)
+                   ? writer_payload_size_estimate(wd)
+                   : 0u;
     }
 
     DiscoveredReaderData rd{};

@@ -73,13 +73,13 @@ static bool tc_swr_8_4_1_4_001(std::string& err) {
 
     for (uint32_t i = 0; i < 3u; ++i) {
         BufRef payload{};
-        HistoryChange* ch = w.new_change(ChangeKind::ALIVE, payload, 32u);
-        CHECK(ch != nullptr, "new_change should allocate staging change");
+        HistoryChange ch = w.new_change(ChangeKind::ALIVE, payload, 32u);
+        CHECK(ch.payload.valid(), "new_change should allocate the change's payload");
         CHECK(payload.valid(), "new_change should return valid payload");
         payload.data[0] = static_cast<Octet>(0xA0u + i);
         payload.size = 1u;
-        ch->payload.size = 1u;
-        CHECK(w.add_change(static_cast<HistoryChange&&>(*ch)), "add_change should succeed");
+        ch.payload.size = 1u;
+        CHECK(w.add_change(static_cast<HistoryChange&&>(ch)), "add_change should succeed");
     }
 
     const auto min_sn = w.cache().get_seq_num_min().to_int64();
@@ -150,12 +150,12 @@ static bool tc_swr_8_4_1_4_003(std::string& err) {
                            tx);
 
     BufRef payload{};
-    HistoryChange* ch = w.new_change(ChangeKind::ALIVE, payload, 32u);
-    CHECK(ch != nullptr, "new_change should succeed");
+    HistoryChange ch = w.new_change(ChangeKind::ALIVE, payload, 32u);
+    CHECK(ch.payload.valid(), "new_change should succeed");
     payload.data[0] = 0x11u;
     payload.size = 1u;
-    ch->payload.size = 1u;
-    CHECK(w.add_change(static_cast<HistoryChange&&>(*ch)), "add_change should succeed");
+    ch.payload.size = 1u;
+    CHECK(w.add_change(static_cast<HistoryChange&&>(ch)), "add_change should succeed");
     CHECK(tx.unicast_msgs.empty(), "no reader is matched yet, so nothing is sent");
 
     CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false),
