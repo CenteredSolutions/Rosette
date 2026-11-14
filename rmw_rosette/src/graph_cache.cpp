@@ -152,10 +152,15 @@ void GraphCache::changed() const noexcept {
 bool GraphCache::add(const rtps::Guid& guid, const char* topic, const char* type, bool is_writer) {
     const GuidBytes key = key_of(guid);
     const auto      found = endpoints_.find(key);
-    if (found != endpoints_.end() && found->second.is_writer == is_writer
-        && found->second.topic == topic && found->second.type == type) {
+    if (found != endpoints_.end()) {
+        // Confirmed before the copy below, which may throw: an endpoint the
+        // replay announced is never forgotten by end_refresh(), even when
+        // its new names could not be stored.
         found->second.confirmed = true;
-        return false;
+        if (found->second.is_writer == is_writer && found->second.topic == topic
+            && found->second.type == type) {
+            return false;
+        }
     }
 
     Endpoint endpoint;
@@ -243,13 +248,24 @@ NamesAndTypes GraphCache::topic_names_and_types(bool no_demangle) const {
             continue;
         }
 
+        // A type that is not a ROS 2 message type is listed as announced,
+        // as rmw_fastrtps_cpp's _demangle_if_ros_type does.
         const std::string type = demangle_message_type(endpoint.type);
-        if (!type.empty()) {
-            out[endpoint.topic.substr(2)].insert(type);
-        }
+        out[endpoint.topic.substr(2)].insert(type.empty() ? endpoint.type : type);
     }
 
     return out;
+}
+
+size_t GraphCache::count(const char* topic, bool is_writer) const noexcept {
+    size_t n = 0u;
+    for (const auto& entry : endpoints_) {
+        if (entry.second.is_writer == is_writer && entry.second.topic == topic) {
+            ++n;
+        }
+    }
+
+    return n;
 }
 
 NamesAndTypes GraphCache::service_names_and_types() const {

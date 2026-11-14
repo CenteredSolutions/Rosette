@@ -951,18 +951,26 @@ private:
      * withdrawn again (§8.5.4.1: a late joiner receives only live
      * announcements). activate_peer() therefore starts a refresh, in which the
      * graph observer holds the peer's endpoints as unconfirmed. The replay is
-     * done once each of the peer's SEDP announcers has resolved every change
-     * up to the number kept when the peer was parked, with none missing; the
-     * observer then forgets the endpoints the replay did not confirm.
+     * done once each of the peer's SEDP announcers has nothing missing and
+     * either has resolved every change up to the number kept when the peer
+     * was parked or has sent a HEARTBEAT since it was matched again
+     * (SedpReader::heard_from()). The HEARTBEAT case covers an announcer
+     * whose sequence numbers restarted below the kept number, as a peer that
+     * restarts under the same GUID prefix within its lease does. The observer
+     * then forgets the endpoints the replay did not confirm.
      *
      * A refresh is under way while an active peer's parked numbers are not
      * both 0 (PeerEntry::parkedPublicationsSn); completing it clears them.
+     * A participant whose graph observer tracks no refreshes
+     * (EndpointMatchTable::tracks_refreshes()) never starts one, and this
+     * returns at once without visiting the peers.
      *
      * Verification:
      * - Correct means: participant_refreshed() is called once per refresh,
-     *   only after both announcers resolved the kept numbers with nothing
-     *   missing, never earlier.
-     * - Covered by: TC-PART-8.5.3-015, TC-PART-8.5.3-016.
+     *   only after both announcers either resolved the kept numbers or were
+     *   heard from, with nothing missing, never earlier.
+     * - Covered by: TC-PART-8.5.3-015, TC-PART-8.5.3-016, TC-PART-8.5.3-018,
+     *   TC-PART-8.5.3-019.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.4.1 (SEDP builtin endpoints), §8.4.10.4 (WriterProxy)

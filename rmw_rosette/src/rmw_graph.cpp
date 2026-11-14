@@ -6,8 +6,10 @@
  * @brief rmw graph queries: names and types, endpoint counts, per-node lists.
  *
  * The graph an rmw implementation reports has two sources. RTPS discovery
- * (SPDP and SEDP) knows every participant and endpoint; the participant's
- * EndpointMatchTable holds those endpoints and answers per-topic counts
+ * (SPDP and SEDP) knows every participant and endpoint. A hosted build records
+ * every endpoint's names in the GraphCache and answers per-topic counts there
+ * (GraphCache::count()), so they agree with its listings; a build without the
+ * cache counts in the participant's EndpointMatchTable
  * (EndpointMatchTable::count()). Which ROS node owns an endpoint, and which
  * nodes exist at all, is carried only by the rmw_dds_common
  * ParticipantEntitiesInfo messages each participant publishes on
@@ -47,8 +49,10 @@ using ComposeDdsName = bool (*)(char* out, size_t cap, const char* ros_name) noe
  * The shared body of every rmw_count_* query. The ROS name is mangled to the
  * DDS topic its endpoints announce (a topic "/chatter" becomes "rt/chatter";
  * a service "/add" has its replies on "rr/addReply") and counted in the
- * participant's EndpointMatchTable, which holds this participant's own
- * endpoints and every remote one SEDP has announced.
+ * GraphCache on a hosted build, which holds this participant's own endpoints
+ * and every remote one SEDP has announced, a parked peer's included. A build
+ * without the cache counts in the participant's EndpointMatchTable, which
+ * holds those it has room for.
  *
  * @param[in]  node     Node the query is made through; selects the context.
  * @param[in]  ros_name Fully-qualified ROS topic or service name.
@@ -65,7 +69,8 @@ using ComposeDdsName = bool (*)(char* out, size_t cap, const char* ros_name) noe
  * - Correct means: the count equals what a stock rmw reports for the same
  *   name: every matching endpoint, local or remote, whatever its type; a
  *   withdrawn endpoint no longer counts.
- * - Covered by: TC-SEDP-8.5.4-014 (the table's count), and
+ * - Covered by: rmw_rosette/test/test_graph_cache.cpp (CountsMatchListings),
+ *   TC-SEDP-8.5.4-014 (the table's count), and
  *   tests/ros2/run_rmw_graph_loopback.sh (against stock Fast DDS).
  *
  * References:
@@ -101,7 +106,11 @@ rmw_ret_t count_endpoints(const rmw_node_t* node, const char* ros_name, ComposeD
 
     auto& ctx = *static_cast<const rmw_rosette::Node*>(node->data)->context;
     rmw_rosette::ContextLock lock(ctx);
+#if RMW_ROSETTE_GRAPH_CACHE
+    *count = ctx.graph_cache->count(dds_topic, writers);
+#else
     *count = ctx.participant->match_table().count(dds_topic, writers);
+#endif
     return RMW_RET_OK;
 }
 

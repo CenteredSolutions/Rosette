@@ -418,14 +418,6 @@ struct MatchedEndpoint {
 };
 
 /**
- * @brief Endpoints known to a participant, and the pairs among them that match.
- *
- * See the file comment for what is stored and how matching works. The
- * table is filled by SEDP (remote endpoints) and by the participant (its
- * own endpoints); it tells local from remote by the participant's GUID
- * prefix (set_local_prefix()), and matches nothing until that is set.
- */
-/**
  * @brief Receives each endpoint's names as the match table learns them.
  *
  * The table keeps remote endpoints as name keys and forgets the names. An owner
@@ -433,9 +425,12 @@ struct MatchedEndpoint {
  * table itself still allocates nothing. Every callback runs on the thread
  * driving the participant, which holds the participant lock.
  *
- * The observer sees the network's endpoints, not the table's: a peer the
- * participant parks (RTPSParticipant::park_peer()) leaves the table but stays
- * alive, so the observer is not told; its endpoints remain listed.
+ * The observer sees every endpoint SEDP has delivered from a live peer, not
+ * only those the table holds: a peer the participant parks
+ * (RTPSParticipant::park_peer()) leaves the table but stays alive, so the
+ * observer is not told and its endpoints remain listed. A peer still waiting
+ * for an active slot has had no SEDP read from it, so the observer hears of
+ * its endpoints once the peer is first activated.
  *
  * - `on_endpoint` fires for every valid local or remote endpoint, including
  *   one the table has no room for, and again for a repeated announcement.
@@ -462,6 +457,14 @@ struct GraphEndpointObserver {
     void (*on_participant_refreshed)(void* user, const GuidPrefix& prefix) noexcept = nullptr;
 };
 
+/**
+ * @brief Endpoints known to a participant, and the pairs among them that match.
+ *
+ * See the file comment for what is stored and how matching works. The
+ * table is filled by SEDP (remote endpoints) and by the participant (its
+ * own endpoints); it tells local from remote by the participant's GUID
+ * prefix (set_local_prefix()), and matches nothing until that is set.
+ */
 class EndpointMatchTable {
 public:
     /// A writer-reader pair became compatible, or a waiting pair is offered
@@ -690,6 +693,19 @@ public:
      *   does not, and the caller need not watch the replay.
      */
     bool participant_refreshing(const GuidPrefix& prefix) noexcept;
+
+    /**
+     * @brief Whether the graph observer tracks refreshes of reactivated participants.
+     *
+     * A firmware build registers no observer, so no refresh is ever under way
+     * and the participant skips looking for one to finish.
+     *
+     * @return `true` exactly when participant_refreshing() would return `true`.
+     */
+    bool tracks_refreshes() const noexcept {
+        return graph_observer_ != nullptr && graph_observer_->on_participant_refreshing != nullptr
+               && graph_observer_->on_participant_refreshed != nullptr;
+    }
 
     /// @brief Tells the graph observer that a reactivated participant's replay is complete.
     void participant_refreshed(const GuidPrefix& prefix) noexcept;
@@ -1317,6 +1333,8 @@ private:
      */
     void unmatch_if_relocated(RemoteEndpoint* table, uint32_t n, bool is_writer, const Guid& guid,
                               const Locator* locators, uint8_t count) noexcept;
+
+    /// @brief Observer told every endpoint's names, or null; not owned, and outlives the table.
     const GraphEndpointObserver* graph_observer_ = nullptr;
 
     /// @brief Tells the owner the set of known endpoints changed.

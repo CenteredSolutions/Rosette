@@ -37,7 +37,7 @@
  * replay has caught up, so an endpoint withdrawn while the peer was parked
  * leaves the listing too.
  *
- * Verification: TC-PART-8.5.3-011 to -018 (tests/spec), and at network
+ * Verification: TC-PART-8.5.3-011 to -019 (tests/spec), and at network
  * scale tests/ros2/discovery_scale.
  *
  * References:
@@ -228,6 +228,10 @@ void RTPSParticipant::owe_parked_peers() noexcept {
 }
 
 void RTPSParticipant::finish_peer_refreshes() noexcept {
+    if (!match_table_.tracks_refreshes()) {
+        return;
+    }
+
     // A number kept as UINT32_MAX stood for one above 32 bits: any such is reached.
     const auto reaches = [](const SequenceNumber& resolved, uint32_t kept) noexcept {
         return resolved.high != 0 || resolved.low >= kept;
@@ -239,11 +243,16 @@ void RTPSParticipant::finish_peer_refreshes() noexcept {
             return;
         }
 
+        // A caught-up announcer that has sent a HEARTBEAT holds nothing more,
+        // even when its numbers restarted below the kept one.
         SequenceNumber publications;
         SequenceNumber subscriptions;
+        bool           heard_publications = false;
+        bool           heard_subscriptions = false;
+        sedp_reader_.heard_from(peer.guidPrefix, heard_publications, heard_subscriptions);
         if (!sedp_reader_.caught_up_with(peer.guidPrefix, publications, subscriptions)
-            || !reaches(publications, peer.parkedPublicationsSn)
-            || !reaches(subscriptions, peer.parkedSubscriptionsSn)) {
+            || !(heard_publications || reaches(publications, peer.parkedPublicationsSn))
+            || !(heard_subscriptions || reaches(subscriptions, peer.parkedSubscriptionsSn))) {
             return;
         }
 
