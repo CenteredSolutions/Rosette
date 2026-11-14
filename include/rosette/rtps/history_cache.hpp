@@ -3,18 +3,23 @@
 
 /**
  * @file rtps/history_cache.hpp
- * @brief CacheChange and HistoryCache — the RTPS writer history.
+ * @brief CacheChange, HistoryChange and HistoryCache — the RTPS writer history.
  *
  * Maps to the PIM of the DDSI-RTPS 2.5 specification (OMG formal/2022-04-01):
  * CacheChange (§8.2.9) and HistoryCache (§8.3.1).
  *
  * Design
  * ------
+ *  - A change has two shapes. CacheChange is the whole of Table 8.11 and is
+ *    what a reader delivers: it exists only for the length of a callback.
+ *    HistoryChange is what a writer keeps per history slot, for as long as
+ *    the change may need repair, so it holds only what differs from one
+ *    change of that writer to the next.
  *  - HistoryCache is one compiled class (src/rtps/history_cache.cpp) that
- *    operates on slot storage it is given: a pointer to CacheChange slots and
- *    their count. HistoryCacheStorage<N> owns an array of N slots and hands it
- *    to the HistoryCache base, so a cache of any depth is laid out exactly
- *    while every depth shares one copy of the code.
+ *    operates on slot storage it is given: a pointer to HistoryChange slots
+ *    and their count. HistoryCacheStorage<N> owns an array of N slots and
+ *    hands it to the HistoryCache base, so a cache of any depth is laid out
+ *    exactly while every depth shares one copy of the code.
  *  - Fixed capacity, no heap. Payload memory comes from the buffer pool
  *    (BufRef handle); a slot holds only the reference-counted handle, so
  *    payloads are forwarded to the transport without copying.
@@ -47,7 +52,7 @@ namespace rosette::rtps {
 // ============================================================
 
 /**
- * @brief A single change record inside a HistoryCache.
+ * @brief A change as a reader delivers it to its listener.
  *
  * Field names and semantics taken verbatim from §8.2.9, Table 8.11.
  *
@@ -67,6 +72,41 @@ struct CacheChange {
     Timestamp      sourceTimestamp = TIME_ZERO;
     InlineQos      inlineQos      = {};
     BufRef         payload        = {};     ///< Pool-backed serialized data.
+
+    /// @returns true when this slot contains a valid, live change.
+    bool is_valid() const noexcept { return sequenceNumber != SEQUENCENUMBER_UNKNOWN; }
+
+    void clear() noexcept {
+        if (payload.valid()) {
+            payload.release();
+        }
+
+        *this = CacheChange{};
+    }
+};
+
+/**
+ * @brief A change as its writer's HistoryCache holds it.
+ *
+ * The part of a CacheChange that a writer needs to send and repair the
+ * change. The writer GUID is the owning writer's and no source timestamp is
+ * sent, so neither is stored per change. A slot is 68 octets on a 32-bit
+ * target, and a writer of depth N holds N + 1 of them.
+ *
+ * | CacheChange field  | Here                | Notes                          |
+ * |--------------------|---------------------|--------------------------------|
+ * | kind               | kind                | One octet                      |
+ * | writerGuid         | (omitted)           | StatefulWriter::guid()         |
+ * | sequenceNumber     | sequenceNumber      | UNKNOWN marks a free slot      |
+ * | sourceTimestamp    | (omitted)           | No INFO_TS is sent             |
+ * | serializedPayload  | payload, preframed  | Empty for an on-demand change  |
+ * | inlineQos          | inlineQos           | Sent with every DATA of it     |
+ */
+struct HistoryChange {
+    SequenceNumber sequenceNumber = SEQUENCENUMBER_UNKNOWN;
+    BufRef         payload = {};  ///< Pool-backed serialized data.
+    InlineQos      inlineQos = {};
+    ChangeKind     kind = ChangeKind::ALIVE;
     /// True when `payload` is a complete serializedPayload (encapsulation
     /// header included, as SEDP's PL_CDR parameter lists are); false when
     /// it is the CDR body and the sender prepends the CDR_LE header.
@@ -79,9 +119,13 @@ struct CacheChange {
 
     void clear() noexcept {
         if (payload.valid()) payload.release();
-        *this = CacheChange{};
+        *this = HistoryChange{};
     }
 };
+
+// Every unit of history depth on every writer costs one HistoryChange.
+static_assert(sizeof(void*) != 4u || sizeof(HistoryChange) <= 68u,
+              "HistoryChange grew: every writer history slot pays for it");
 
 // ============================================================
 // §8.3.1  HistoryCache
@@ -91,7 +135,7 @@ struct CacheChange {
 // ============================================================
 
 /**
- * @brief Fixed-capacity history of CacheChanges with KEEP_LAST eviction.
+ * @brief Fixed-capacity history of one writer's changes with KEEP_LAST eviction.
  *
  * A StatefulWriter keeps every change it has written here until each matched
  * reliable reader acknowledges it or KEEP_LAST(depth) evicts it; the writer's
@@ -116,9 +160,8 @@ public:
      * @brief Inserts a change, evicting the oldest one when the cache is full.
      *
      * Implements §8.3.1 add_change(). When every slot is occupied, the change
-     * with the lowest sequence number from the same writer is removed and its
-     * payload released (KEEP_LAST, §8.3.3.1); when no slot holds a change from
-     * that writer, the globally oldest change is removed instead.
+     * with the lowest sequence number is removed and its payload released
+     * (KEEP_LAST, §8.3.3.1).
      *
      * @param[in] change Change to insert; the cache takes ownership of
      *   change.payload.
@@ -126,14 +169,14 @@ public:
      *   has a change to evict.
      *
      * Verification:
-     * - Correct means: after capacity() insertions from one writer, the next
-     *   insertion removes exactly the lowest sequence number and keeps the rest.
-     * - Covered by: TC-HC-8.3.1-001, TC-HC-8.3.3.1-001, TC-HC-8.3.3.1-002.
+     * - Correct means: after capacity() insertions, the next insertion
+     *   removes exactly the lowest sequence number and keeps the rest.
+     * - Covered by: TC-HC-8.3.1-001, TC-HC-8.3.3.1-001.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.1 (add_change), §8.3.3.1 (KEEP_LAST)
      */
-    CacheChange* add_change(CacheChange&& change) noexcept;
+    HistoryChange* add_change(HistoryChange&& change) noexcept;
 
     /**
      * @brief Removes the change with `sequenceNumber` and releases its payload.
@@ -166,11 +209,11 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.1 (get_change)
      */
-    const CacheChange* get_change(const SequenceNumber& sequenceNumber) const noexcept;
+    const HistoryChange* get_change(const SequenceNumber& sequenceNumber) const noexcept;
 
     /// @brief Mutable form of get_change(const SequenceNumber&) const.
-    CacheChange* get_change(const SequenceNumber& sequenceNumber) noexcept {
-        return const_cast<CacheChange*>(
+    HistoryChange* get_change(const SequenceNumber& sequenceNumber) noexcept {
+        return const_cast<HistoryChange*>(
             static_cast<const HistoryCache*>(this)->get_change(sequenceNumber));
     }
 
@@ -215,7 +258,7 @@ public:
     void clear_all() noexcept;
 
     /**
-     * @brief Calls `fn(const CacheChange&)` for each change held, in slot order.
+     * @brief Calls `fn(const HistoryChange&)` for each change held, in slot order.
      *
      * Verification:
      * - Covered by: TC-HC-8.3.1-003.
@@ -223,11 +266,13 @@ public:
     template<typename Fn>
     void for_each_change(Fn&& fn) const noexcept {
         for (uint8_t i = 0; i < capacity_; ++i) {
-            if (slots_[i].is_valid()) fn(static_cast<const CacheChange&>(slots_[i]));
+            if (slots_[i].is_valid()) {
+                fn(static_cast<const HistoryChange&>(slots_[i]));
+            }
         }
     }
 
-    /// @brief Calls `fn(CacheChange&)` for each change held, in slot order.
+    /// @brief Calls `fn(HistoryChange&)` for each change held, in slot order.
     template<typename Fn>
     void for_each_change(Fn&& fn) noexcept {
         for (uint8_t i = 0; i < capacity_; ++i) {
@@ -236,7 +281,7 @@ public:
     }
 
     /**
-     * @brief Calls `fn(const CacheChange&)` for each change in ascending
+     * @brief Calls `fn(const HistoryChange&)` for each change in ascending
      *   sequence-number order.
      *
      * A TRANSIENT_LOCAL writer uses this to send its history to a newly
@@ -255,7 +300,7 @@ public:
         SequenceNumber sn = get_seq_num_min();
         const SequenceNumber max = get_seq_num_max();
         while (!(sn == SEQUENCENUMBER_UNKNOWN) && sn <= max) {
-            const CacheChange* c = get_change(sn);
+            const HistoryChange* c = get_change(sn);
             if (c) fn(*c);
             sn += 1;
         }
@@ -272,19 +317,16 @@ protected:
      * @param[in] slots    First of `capacity` default-constructed (empty) slots.
      * @param[in] capacity Number of slots, at least 1.
      */
-    HistoryCache(CacheChange* slots, uint8_t capacity) noexcept
+    HistoryCache(HistoryChange* slots, uint8_t capacity) noexcept
         : slots_(slots), capacity_(capacity) {}
 
     ~HistoryCache() = default;
 
 private:
-    /// @brief The held change with the lowest sequence number from `guid`, or null.
-    CacheChange* find_oldest_for_writer(const Guid& guid) noexcept;
-
     /// @brief The held change with the lowest sequence number, or null.
-    CacheChange* find_globally_oldest() noexcept;
+    HistoryChange* find_oldest() noexcept;
 
-    CacheChange* slots_;
+    HistoryChange* slots_;
     uint8_t capacity_;
 };
 
@@ -293,7 +335,7 @@ namespace detail {
 /// constructed before the HistoryCache base that points into it.
 template<uint8_t N>
 struct HistoryCacheSlots {
-    CacheChange slots[N];
+    HistoryChange slots[N];
 };
 }  // namespace detail
 

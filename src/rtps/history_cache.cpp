@@ -14,20 +14,22 @@
 
 namespace rosette::rtps {
 
-CacheChange* HistoryCache::add_change(CacheChange&& change) noexcept {
+HistoryChange* HistoryCache::add_change(HistoryChange&& change) noexcept {
     for (uint8_t i = 0; i < capacity_; ++i) {
         if (!slots_[i].is_valid()) {
-            slots_[i] = static_cast<CacheChange&&>(change);
+            slots_[i] = static_cast<HistoryChange&&>(change);
             return &slots_[i];
         }
     }
-    // Full: KEEP_LAST evicts this writer's oldest change (§8.3.3.1), or the
-    // globally oldest when no slot holds one of this writer's changes.
-    CacheChange* victim = find_oldest_for_writer(change.writerGuid);
-    if (!victim) victim = find_globally_oldest();
-    if (!victim) return nullptr;
+
+    // Full: KEEP_LAST evicts the oldest change (§8.3.3.1).
+    HistoryChange* victim = find_oldest();
+    if (!victim) {
+        return nullptr;
+    }
+
     victim->clear();
-    *victim = static_cast<CacheChange&&>(change);
+    *victim = static_cast<HistoryChange&&>(change);
     return victim;
 }
 
@@ -41,7 +43,7 @@ bool HistoryCache::remove_change(const SequenceNumber& sequenceNumber) noexcept 
     return false;
 }
 
-const CacheChange* HistoryCache::get_change(const SequenceNumber& sequenceNumber) const noexcept {
+const HistoryChange* HistoryCache::get_change(const SequenceNumber& sequenceNumber) const noexcept {
     for (uint8_t i = 0; i < capacity_; ++i) {
         if (slots_[i].is_valid() && slots_[i].sequenceNumber == sequenceNumber) {
             return &slots_[i];
@@ -86,17 +88,8 @@ void HistoryCache::clear_all() noexcept {
     }
 }
 
-CacheChange* HistoryCache::find_oldest_for_writer(const Guid& guid) noexcept {
-    CacheChange* oldest = nullptr;
-    for (uint8_t i = 0; i < capacity_; ++i) {
-        if (!slots_[i].is_valid() || slots_[i].writerGuid != guid) continue;
-        if (!oldest || slots_[i].sequenceNumber < oldest->sequenceNumber) oldest = &slots_[i];
-    }
-    return oldest;
-}
-
-CacheChange* HistoryCache::find_globally_oldest() noexcept {
-    CacheChange* oldest = nullptr;
+HistoryChange* HistoryCache::find_oldest() noexcept {
+    HistoryChange* oldest = nullptr;
     for (uint8_t i = 0; i < capacity_; ++i) {
         if (!slots_[i].is_valid()) continue;
         if (!oldest || slots_[i].sequenceNumber < oldest->sequenceNumber) oldest = &slots_[i];

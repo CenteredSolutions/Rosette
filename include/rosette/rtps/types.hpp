@@ -350,10 +350,12 @@ namespace status_info {
 }
 
 struct InlineQos {
-    bool           hasRelatedSampleIdentity = false;
-    SampleIdentity relatedSampleIdentity    = {};
-    bool           hasKeyHash               = false;
+    // The one-octet members follow the wide ones, so no padding separates
+    // them: every writer history slot holds an InlineQos.
+    SampleIdentity relatedSampleIdentity = {};
     Octet          keyHash[16]              = {};
+    bool           hasRelatedSampleIdentity = false;
+    bool           hasKeyHash = false;
     bool           hasStatusInfo            = false;
     uint8_t        statusInfo               = 0u;   ///< status_info:: flags.
 
@@ -914,9 +916,11 @@ enum class DurabilityKind : uint32_t {
     PERSISTENT      = 3,
 };
 
-/// §8.2.9, Table 8.11  ChangeKind_t — kind of a CacheChange.
-enum class ChangeKind : uint32_t {
-    ALIVE              = 1,
+/// §8.2.9, Table 8.11  ChangeKind_t — kind of a CacheChange. It never goes on
+/// the wire as a number (the DATA flags and PID_STATUS_INFO carry it), so one
+/// octet holds it in every stored change.
+enum class ChangeKind : uint8_t {
+    ALIVE = 1,
     NOT_ALIVE_DISPOSED = 2,
     NOT_ALIVE_UNREGISTERED = 4,
 };

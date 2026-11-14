@@ -54,8 +54,8 @@ StatefulWriter::~StatefulWriter() noexcept {
     }
 }
 
-CacheChange* StatefulWriter::new_change(ChangeKind kind, BufRef& out_payload,
-                                        size_t payload_size) noexcept {
+HistoryChange* StatefulWriter::new_change(ChangeKind kind, BufRef& out_payload,
+                                          size_t payload_size) noexcept {
     if (staging_.payload.valid())
         staging_.payload.reset();
 
@@ -64,8 +64,8 @@ CacheChange* StatefulWriter::new_change(ChangeKind kind, BufRef& out_payload,
         RTPS_LOG_E("writer", "buf_alloc failed (%zu) for new_change (pool exhausted)", payload_size);
         return nullptr;
     }
-    staging_.kind           = kind;
-    staging_.writerGuid     = guid_;
+
+    staging_.kind = kind;
     staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;  // Assigned in add_change.
     staging_.inlineQos      = {};
     staging_.preframed      = false;
@@ -100,7 +100,7 @@ static FragmentLayout fragment_layout(const ITransport& transport,
     return layout;
 }
 
-bool StatefulWriter::add_change(CacheChange&& change) noexcept {
+bool StatefulWriter::add_change(HistoryChange&& change) noexcept {
     // A reader tracks at most FragmentNumberSet::kMaxBits fragments of a
     // sample, so a larger one could never complete and would stall every
     // reliable reader. Refusing it here, before it takes a sequence number,
@@ -125,7 +125,7 @@ bool StatefulWriter::add_change(CacheChange&& change) noexcept {
         note_eviction();
     }
 
-    CacheChange* inserted = writer_cache_.add_change(static_cast<CacheChange&&>(change));
+    HistoryChange* inserted = writer_cache_.add_change(static_cast<HistoryChange&&>(change));
     if (!inserted) {
         RTPS_LOG_E("writer", "cache add_change failed (SN=%ld:%lu)", change.sequenceNumber.high,
                    static_cast<unsigned long>(change.sequenceNumber.low));
@@ -152,7 +152,7 @@ bool StatefulWriter::write_async(ChangeKind kind, const Octet* payload_data, uin
     if (!payload_data || payload_size == 0) return false;
 
     BufRef payload_buf;
-    CacheChange* ch = new_change(kind, payload_buf, payload_size);
+    HistoryChange* ch = new_change(kind, payload_buf, payload_size);
     if (!ch) {
         RTPS_LOG_E("writer", "write_async: new_change failed");
         return false;
@@ -164,11 +164,15 @@ bool StatefulWriter::write_async(ChangeKind kind, const Octet* payload_data, uin
     ch->payload.size = sz;
     ch->inlineQos    = inline_qos;
 
-    if (!add_change(static_cast<CacheChange&&>(*ch))) {
+    if (!add_change(static_cast<HistoryChange&&>(*ch))) {
         payload_buf.reset();
         return false;
     }
-    if (out_sn) *out_sn = nextSN_ - 1;
+
+    if (out_sn) {
+        *out_sn = nextSN_ - 1;
+    }
+
     send_unsent_changes(heartbeat_due());
     return true;
 }
@@ -184,14 +188,19 @@ bool StatefulWriter::write_async_owned(ChangeKind kind, BufRef&& payload,
         staging_.payload.reset();
     }
 
-    staging_.kind           = kind;
-    staging_.writerGuid     = guid_;
+    staging_.kind = kind;
     staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
     staging_.inlineQos      = inline_qos;
     staging_.preframed      = false;
     staging_.payload        = static_cast<BufRef&&>(payload);
-    if (!add_change(static_cast<CacheChange&&>(staging_))) return false;
-    if (out_sn) *out_sn = nextSN_ - 1;
+    if (!add_change(static_cast<HistoryChange&&>(staging_))) {
+        return false;
+    }
+
+    if (out_sn) {
+        *out_sn = nextSN_ - 1;
+    }
+
     send_unsent_changes(heartbeat_due());
     return true;
 }
@@ -217,8 +226,7 @@ bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* seriali
     memcpy(payload_buf.data, serialized_payload, sz);
     payload_buf.size = sz;
 
-    staging_.kind           = kind;
-    staging_.writerGuid     = guid_;
+    staging_.kind = kind;
     staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
     staging_.inlineQos      = inline_qos;
     staging_.preframed      = true;
@@ -227,11 +235,15 @@ bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* seriali
     staging_.payload.size   = payload_buf.size;
     payload_buf.retain();
 
-    if (!add_change(static_cast<CacheChange&&>(staging_))) {
+    if (!add_change(static_cast<HistoryChange&&>(staging_))) {
         payload_buf.reset();
         return false;
     }
-    if (out_sn) *out_sn = nextSN_ - 1;
+
+    if (out_sn) {
+        *out_sn = nextSN_ - 1;
+    }
+
     send_unsent_changes(heartbeat_due());
     return true;
 }
@@ -252,11 +264,10 @@ bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* seriali
     }
 
     staging_.kind = kind;
-    staging_.writerGuid = guid_;
     staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
     staging_.inlineQos = inline_qos;
     staging_.preframed = true;
-    if (!add_change(static_cast<CacheChange&&>(staging_))) {
+    if (!add_change(static_cast<HistoryChange&&>(staging_))) {
         return false;
     }
 
@@ -346,7 +357,7 @@ void StatefulWriter::drop_replies_to_departed(const GuidPrefix& requester) noexc
         return;
     }
 
-    writer_cache_.for_each_change([&](CacheChange& c) noexcept {
+    writer_cache_.for_each_change([&](HistoryChange& c) noexcept {
         if (c.inlineQos.hasRelatedSampleIdentity
             && c.inlineQos.relatedSampleIdentity.writerGuid.prefix == requester) {
             c.clear();
@@ -562,7 +573,7 @@ uint32_t StatefulWriter::tick(uint32_t now_ms) noexcept {
             const SequenceNumber sn = proxy.next_requested_change();
             if (sn == SEQUENCENUMBER_UNKNOWN) break;
             proxy.mark_underway(sn);
-            const CacheChange* ch = writer_cache_.get_change(sn);
+            const HistoryChange* ch = writer_cache_.get_change(sn);
             if (ch) {
                 const bool fragments_only = fragRepair_.proxy == &proxy && fragRepair_.sn == sn;
                 send_data_to(*ch, proxy, false, fragments_only ? &fragRepair_.fragments : nullptr);
@@ -744,7 +755,7 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
 // send_unsent_changes(), costing about 2.5 KB of flash on a Cortex-M0+ build
 // for no measurable gain on a path bounded by the transport.
 [[gnu::noinline]] bool StatefulWriter::send_data_to(
-    const CacheChange& ch, ReaderProxy& proxy, bool heartbeat,
+    const HistoryChange& ch, ReaderProxy& proxy, bool heartbeat,
     const FragmentRepairSet* only_fragments) noexcept {
     if (!ch.payload.valid() && payloadBuilder_ != nullptr) {
         return send_built_data_to(ch, proxy, heartbeat, only_fragments);
@@ -813,13 +824,11 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
 
 // Cold: on-demand changes are sent on discovery and repair, never per sample.
 [[gnu::cold]] bool StatefulWriter::send_built_data_to(
-    const CacheChange& ch, ReaderProxy& proxy, bool heartbeat,
+    const HistoryChange& ch, ReaderProxy& proxy, bool heartbeat,
     const FragmentRepairSet* only_fragments) noexcept {
-    CacheChange built{};
+    HistoryChange built{};
     built.kind = ch.kind;
-    built.writerGuid = ch.writerGuid;
     built.sequenceNumber = ch.sequenceNumber;
-    built.sourceTimestamp = ch.sourceTimestamp;
     built.inlineQos = ch.inlineQos;
     built.preframed = ch.preframed;
     built.payload = payloadBuilder_(payloadBuilderUser_, ch);
@@ -838,7 +847,8 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
     return send_data_to(built, proxy, heartbeat, only_fragments);
 }
 
-bool StatefulWriter::frame_data_in_place(BufRef& view, const CacheChange& ch, uint32_t payload_size,
+bool StatefulWriter::frame_data_in_place(BufRef& view, const HistoryChange& ch,
+                                         uint32_t        payload_size,
                                          const EntityId& reader_id) const noexcept {
     // Inline QoS sits between the fixed DATA fields and the
     // serializedPayload — §9.4.5.3, Table 9.14.
@@ -874,9 +884,9 @@ bool StatefulWriter::frame_data_in_place(BufRef& view, const CacheChange& ch, ui
     return true;
 }
 
-bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& proxy,
+bool StatefulWriter::send_data_in_place(const HistoryChange& ch, ReaderProxy& proxy,
                                         const Locator& dest, bool heartbeat) noexcept {
-    // Work on a non-owning view; retain the block first so the CacheChange
+    // Work on a non-owning view; retain the block first so the HistoryChange
     // keeps its own reference. The view's prepends and append only write
     // outside [payload.data, payload.data + payload.size), so the stored
     // change is unchanged for the next reader or a repair.
@@ -903,7 +913,7 @@ bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& prox
     return sent;
 }
 
-bool StatefulWriter::send_fragments_to(const CacheChange& ch, ReaderProxy& proxy,
+bool StatefulWriter::send_fragments_to(const HistoryChange& ch, ReaderProxy& proxy,
                                        const Locator& dest, bool heartbeat,
                                        const FragmentRepairSet* only_fragments) noexcept {
     static constexpr Octet kCdrLe[kEncapsulationSize] = {0x00u, 0x01u, 0x00u, 0x00u};
@@ -1052,7 +1062,7 @@ void StatefulWriter::note_eviction() noexcept {
     // The writer's own changes fill its history, so KEEP_LAST evicts the
     // lowest sequence number (HistoryCache::add_change()).
     const SequenceNumber oldest_sn = writer_cache_.get_seq_num_min();
-    const CacheChange*   oldest = writer_cache_.get_change(oldest_sn);
+    const HistoryChange* oldest = writer_cache_.get_change(oldest_sn);
     if (oldest == nullptr) {
         return;
     }
@@ -1105,7 +1115,7 @@ void StatefulWriter::release_finished_changes() noexcept {
         return;
     }
 
-    writer_cache_.for_each_change([&](CacheChange& c) noexcept {
+    writer_cache_.for_each_change([&](HistoryChange& c) noexcept {
         if (releaseRepliesOnDelivery_ && reply_delivered(c)) {
             c.clear();
             return;
@@ -1121,7 +1131,7 @@ void StatefulWriter::release_finished_changes() noexcept {
     });
 }
 
-bool StatefulWriter::reply_delivered(const CacheChange& reply) const noexcept {
+bool StatefulWriter::reply_delivered(const HistoryChange& reply) const noexcept {
     if (!reply.inlineQos.hasRelatedSampleIdentity) {
         return false;
     }

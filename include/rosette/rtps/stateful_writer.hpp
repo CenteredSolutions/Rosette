@@ -212,8 +212,8 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (new_change)
      */
-    CacheChange* new_change(ChangeKind kind, BufRef& out_payload,
-                            size_t payload_size = kPoolMaxBlockSize) noexcept;
+    HistoryChange* new_change(ChangeKind kind, BufRef& out_payload,
+                              size_t payload_size = kPoolMaxBlockSize) noexcept;
 
     /**
      * @brief Assigns the next sequence number and adds the change to the history.
@@ -247,7 +247,7 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (add_change), §8.3.3 (KEEP_LAST)
      */
-    bool add_change(CacheChange&& change) noexcept;
+    bool add_change(HistoryChange&& change) noexcept;
 
     /**
      * @brief Removes a change from the history.
@@ -357,7 +357,7 @@ public:
      *   lets the DATA be framed in place. An invalid BufRef means the payload
      *   cannot be built now; the send is then a lost datagram.
      */
-    using PayloadBuilder = BufRef (*)(void* user, const CacheChange& change) noexcept;
+    using PayloadBuilder = BufRef (*)(void* user, const HistoryChange& change) noexcept;
 
     /**
      * @brief Reports how many octets the PayloadBuilder would build for a change.
@@ -370,7 +370,7 @@ public:
      * @return The serializedPayload size in octets, never less than the
      *   builder produces for the same change; 0 when it cannot be built.
      */
-    using PayloadSizer = uint32_t (*)(void* user, const CacheChange& change) noexcept;
+    using PayloadSizer = uint32_t (*)(void* user, const HistoryChange& change) noexcept;
 
     /**
      * @brief Installs the builder that supplies payloads for write_on_demand_async() changes.
@@ -407,7 +407,7 @@ public:
      * Adds a change with no payload, then sends every UNSENT change, as
      * write_preframed_async() does. The builder must be installed first, and
      * the change's `inline_qos` (for SEDP, its key hash) must identify what
-     * it builds. The history slot costs its CacheChange alone; no pool block
+     * it builds. The history slot costs its HistoryChange alone; no pool block
      * stays allocated for the change.
      *
      * @param[in]  kind       ChangeKind of the change.
@@ -1111,7 +1111,7 @@ private:
      *   §8.4.15.4 (piggybacked HEARTBEAT), §8.3.3 (a message carries any
      *   number of submessages)
      */
-    bool send_data_to(const CacheChange& ch, ReaderProxy& proxy, bool heartbeat = false,
+    bool send_data_to(const HistoryChange& ch, ReaderProxy& proxy, bool heartbeat = false,
                       const FragmentRepairSet* only_fragments = nullptr) noexcept;
 
     /**
@@ -1135,7 +1135,7 @@ private:
      *   stored payload; a failed build leaves the change for repair.
      * - Covered by: TC-SEDP-8.5.4-015, TC-SEDP-8.5.4-016.
      */
-    bool send_built_data_to(const CacheChange& ch, ReaderProxy& proxy, bool heartbeat,
+    bool send_built_data_to(const HistoryChange& ch, ReaderProxy& proxy, bool heartbeat,
                             const FragmentRepairSet* only_fragments) noexcept;
 
     /**
@@ -1165,7 +1165,7 @@ private:
      * References:
      * - OMG DDSI-RTPS 2.5 §9.4.5.3 (DATA), §9.4.5.5 (HEARTBEAT), §8.4.15.4
      */
-    bool send_data_in_place(const CacheChange& ch, ReaderProxy& proxy, const Locator& dest,
+    bool send_data_in_place(const HistoryChange& ch, ReaderProxy& proxy, const Locator& dest,
                             bool heartbeat) noexcept;
 
     /**
@@ -1201,7 +1201,7 @@ private:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.14.1, §9.4.5.4 (DATA_FRAG), §8.4.15.4
      */
-    bool send_fragments_to(const CacheChange& ch, ReaderProxy& proxy, const Locator& dest,
+    bool send_fragments_to(const HistoryChange& ch, ReaderProxy& proxy, const Locator& dest,
                            bool                     heartbeat,
                            const FragmentRepairSet* only_fragments = nullptr) noexcept;
 
@@ -1352,7 +1352,7 @@ private:
     ///   @p reader_id: prepends the inline QoS, the DATA header and the message
     ///   header (§9.4.5.3). Sends nothing; false, leaving the headers partly
     ///   written, when the headroom is short.
-    bool frame_data_in_place(BufRef& view, const CacheChange& ch, uint32_t payload_size,
+    bool frame_data_in_place(BufRef& view, const HistoryChange& ch, uint32_t payload_size,
                              const EntityId& reader_id) const noexcept;
 
     /**
@@ -1385,7 +1385,7 @@ private:
     /// @brief Appends a DATA submessage for @p ch, whose built payload is
     ///   @p payload, after the region of @p datagram; false, changing nothing,
     ///   when it does not fit (the block, or the transport's datagram limit).
-    bool append_built_data(BufRef& datagram, const CacheChange& ch, const BufRef& payload,
+    bool append_built_data(BufRef& datagram, const HistoryChange& ch, const BufRef& payload,
                            const EntityId& reader_id) const noexcept;
 
     /// @brief The range a HEARTBEAT advertises: the history's oldest and
@@ -1500,7 +1500,7 @@ private:
     /// @brief True when `reply` names a requester whose matched readers are
     ///   all done with it (ReaderProxy::is_done_with(), as each is served), at
     ///   least one of them is matched, and none waits to bind.
-    bool reply_delivered(const CacheChange& reply) const noexcept;
+    bool reply_delivered(const HistoryChange& reply) const noexcept;
 
     /// @brief Counts and logs the oldest change, about to be evicted from a
     ///   full history, when a reader still needs it (evicted_unacknowledged()).
@@ -1515,7 +1515,7 @@ private:
     ReaderProxyPool& pool_;
     ProxyList readers_;  ///< Bound proxies, floor and cap.
 
-    CacheChange    staging_{};     ///< Staging area for new_change().
+    HistoryChange  staging_{};  ///< Staging area for new_change().
     int32_t        heartbeatCount_ = 0;
     SequenceNumber nextSN_         = SequenceNumber::from_int64(1);
     uint32_t       nack_delay_ms_;

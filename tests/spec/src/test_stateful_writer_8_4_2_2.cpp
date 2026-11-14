@@ -54,12 +54,12 @@ static bool tc_swr_8_4_2_2_001(std::string& err) {
     // A change the reader has not acknowledged makes it "announcing"
     // (§8.4.9.2 T6), the state in which periodic HEARTBEATs are sent.
     BufRef payload{};
-    CacheChange* ch = w.new_change(ChangeKind::ALIVE, payload, 16u);
+    HistoryChange* ch = w.new_change(ChangeKind::ALIVE, payload, 16u);
     CHECK(ch != nullptr && payload.valid(), "new_change should succeed");
     payload.data[0] = 0x42u;
     payload.size = 1u;
     ch->payload.size = 1u;
-    CHECK(w.add_change(static_cast<CacheChange&&>(*ch)), "add_change should succeed");
+    CHECK(w.add_change(static_cast<HistoryChange&&>(*ch)), "add_change should succeed");
 
     g_stateful_writer_test_now_ms = 0u;
     w.tick(0u);
