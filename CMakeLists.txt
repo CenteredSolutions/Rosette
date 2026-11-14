@@ -11,6 +11,14 @@ project(rosette C CXX ASM)
 set(CMAKE_C_STANDARD   11)
 set(CMAKE_CXX_STANDARD 17)
 
+# The microcontroller toolchains have a single-threaded C++ runtime, where the
+# guard of a function-local static locks nothing. It still reports recursive
+# initialization by throwing, which links libstdc++'s exception runtime and
+# libgcc's unwinder (about 4 KB) into firmware built without exceptions.
+if(CMAKE_CROSSCOMPILING)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-threadsafe-statics>)
+endif()
+
 include(cmake/micro_ros.cmake)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 

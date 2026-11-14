@@ -14,10 +14,13 @@
 #                                 the chip in MACRAW mode (ports/net/wiznet/macraw_device.hpp)
 #                                 as FreeRTOS+TCP's network interface
 #                                 (ROSETTE_NET_STACK=freertos_tcp)
+#   nothrow_operator_new.cpp      `new (std::nothrow)` over malloc, so the socket
+#                                 providers do not link the C++ unwinder
 #
 # Both compositions use the WIZnet driver, named from the repository root
 # ("ports/net/wiznet/device.hpp"), whichever network port the build selected.
 target_include_directories(rosette_bsp PUBLIC ${CMAKE_CURRENT_LIST_DIR} ${ROSETTE_ROOT})
+target_sources(rosette_bsp PRIVATE ${CMAKE_CURRENT_LIST_DIR}/nothrow_operator_new.cpp)
 
 if(ROSETTE_NET_STACK STREQUAL "wiznet")
   target_sources(rosette_bsp PRIVATE ${CMAKE_CURRENT_LIST_DIR}/wiznet_board_network.cpp)
