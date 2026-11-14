@@ -16,11 +16,13 @@
 (*  - Admission (admit_peer()): on a new peer's SPDP announcement, again on *)
 (*    each announcement while it is pending, on a parked peer's SEDP       *)
 (*    traffic above its parked number, and for an owed peer from tick().  *)
-(*    With every slot taken, the settled peer whose last SEDP DATA is      *)
-(*    oldest is parked to make room (park_settled_peer()); with none       *)
-(*    settled, admission fails and is retried by the next trigger.         *)
-(*  - Settled (peer_is_settled()): no match with a local endpoint, this    *)
-(*    side's announcements acknowledged, the peer's announcements         *)
+(*    With every slot taken, an idle peer is parked to make room           *)
+(*    (park_idle_peer()): the settled peer whose last SEDP DATA is oldest, *)
+(*    else the oldest stalled one; with none idle, admission fails and is  *)
+(*    retried by the next trigger.                                         *)
+(*  - Settled (peer_idleness() is settled): no match with a local          *)
+(*    endpoint, this side's announcements acknowledged, the peer's         *)
+(*    announcements                                                        *)
 (*    processed, and the settle timer run out. Activation sets peerNews,  *)
 (*    so a processed peer is also one whose SEDP writers were heard since *)
 (*    activation (SedpReader::heard_from()) and whose reader is caught up *)
@@ -79,8 +81,8 @@ VARIABLES
     owed,      \* Parked and owed this side's announcements.
     shares,    \* Truth: it has an endpoint matching a local endpoint.
     matched,   \* What the match table knows of `shares`, from the last exchange.
-    settled,   \* peer_is_settled() holds.
-    stalled,   \* peer_is_stalled() holds.
+    settled,   \* peer_idleness() is settled.
+    stalled,   \* peer_idleness() is stalled.
     lru,       \* Active peers, oldest SEDP DATA first.
     budget
 
@@ -114,15 +116,19 @@ Init ==
     /\ budget = Budget
 
 (***************************************************************************)
-(* admit_peer(q), as one step: activate q in a free slot, or in the slot  *)
-(* of the settled or stalled peer whose last SEDP DATA is oldest, parked  *)
-(* for it; or leave everything as it is. A stalled peer is parked owed.   *)
+(* admit_peer(q), as one step: activate q in a free slot, or in the slot   *)
+(* of an idle peer parked for it; or leave everything as it is. The idle   *)
+(* peer is the settled one whose last SEDP DATA is oldest, else the oldest *)
+(* stalled one, which is parked owed (park_idle_peer()).                   *)
 (***************************************************************************)
 Parkable(p) == settled[p] \/ stalled[p]
 ParkableActive == {p \in Active : Parkable(p)}
-OldestParkable == lru[CHOOSE i \in 1..Len(lru) :
-                         /\ Parkable(lru[i])
-                         /\ \A j \in 1..(i - 1) : ~Parkable(lru[j])]
+OldestIn(S) == lru[CHOOSE i \in 1..Len(lru) :
+                      /\ lru[i] \in S
+                      /\ \A j \in 1..(i - 1) : lru[j] \notin S]
+OldestParkable == IF \E p \in Active : settled[p]
+                  THEN OldestIn({p \in Active : settled[p]})
+                  ELSE OldestIn(ParkableActive)
 
 \* activate_peer(): a fresh proxy replays the peer's announcements, and this
 \* side's are sent to it again; the match table learns its endpoints anew.
@@ -139,7 +145,7 @@ Admit(q, st) ==
          IN /\ status' = Activated(q, IF full THEN [st EXCEPT ![v] = "parked"] ELSE st)
             /\ peerNews' = [peerNews EXCEPT ![q] = TRUE]
             /\ ourNews' = [ourNews EXCEPT ![q] = TRUE]
-            /\ owed' = [owed EXCEPT ![v] = full /\ stalled[v], ![q] = FALSE]
+            /\ owed' = [owed EXCEPT ![v] = full /\ ~settled[v], ![q] = FALSE]
             /\ matched' = [matched EXCEPT ![q] = FALSE, ![v] = FALSE]
             /\ settled' = [settled EXCEPT ![q] = FALSE, ![v] = FALSE]
             /\ stalled' = [stalled EXCEPT ![q] = FALSE, ![v] = FALSE]
@@ -245,8 +251,8 @@ Exchange(p) ==
     /\ lru' = IF peerNews[p] THEN Append(Without(lru, p), p) ELSE lru
     /\ UNCHANGED <<alive, status, owed, shares, budget>>
 
-\* peer_is_settled(): the settle timer runs out with nothing unprocessed on
-\* either side and no local match.
+\* peer_idleness() settled: the settle timer runs out with nothing
+\* unprocessed on either side and no local match.
 Settle(p) ==
     /\ status[p] = "active"
     /\ ~settled[p]
@@ -255,7 +261,7 @@ Settle(p) ==
     /\ settled' = [settled EXCEPT ![p] = TRUE]
     /\ UNCHANGED <<alive, status, peerNews, ourNews, owed, shares, matched, stalled, lru, budget>>
 
-\* peer_is_stalled(): the exchange deadline runs out on an active peer with
+\* peer_idleness() stalled: the exchange deadline runs out on an active peer with
 \* no local match whose exchange is still pending, reachable or not. One
 \* with nothing pending would have settled first: the deadline is longer
 \* than RTPS_PEER_SETTLE_MS. For a reachable peer, the loss that kept its

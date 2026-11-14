@@ -956,6 +956,34 @@ enum class TopicKind : uint32_t {
 /// smallest value that waits at least 1 ms.
 #  define RTPS_HEARTBEAT_RESPONSE_DELAY_MS 2u
 #endif
+#ifndef RTPS_PREEMPTIVE_ACKNACK_RETRY_MS
+/// §8.4.7.4. How often a reliable reader resends its preemptive ACKNACK to
+/// a matched writer it has not heard from. A writer whose proxy for this
+/// reader holds everything acknowledged sends nothing on its own, so a lost
+/// preemptive ACKNACK, or a lost answer to it, is repaired only by another.
+#  define RTPS_PREEMPTIVE_ACKNACK_RETRY_MS RTPS_HEARTBEAT_PERIOD_MS
+#endif
+#ifndef RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS
+/// §8.4.7.4. How many preemptive ACKNACKs a user reader sends a matched
+/// writer it has not heard from, the first included. Once they are spent
+/// nothing is lost: a writer holding changes this reader has not
+/// acknowledged keeps sending periodic HEARTBEATs, any of which marks it
+/// heard, and a writer holding none has nothing to repair. The limit stops
+/// a writer that never answers (a firewall, a stock writer that ignores the
+/// form) from costing a datagram every retry period for the whole match.
+#  define RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS 3u
+#endif
+#ifndef RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS
+/// As RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS, for the builtin SEDP readers. A
+/// peer settles only once both of its SEDP announcers are heard, and an
+/// announcer with nothing to announce speaks only to answer an ACKNACK, so
+/// these readers keep asking past the peer's exchange deadline
+/// (RTPS_PEER_EXCHANGE_TIMEOUT_MS): the first goes out at the match, so the
+/// last leaves (attempts - 1) retry periods later. A peer still unheard at
+/// the deadline is stalled, and its next activation matches afresh and asks
+/// again.
+#  define RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS 7u
+#endif
 
 /// Most writers one user StatefulReader matches at once (its cap in the
 /// participant's WriterProxy pool); also the default number of fragment

@@ -13,12 +13,35 @@
  * (see "Known and active peers" in rtps/spdp.hpp).
  *
  * Admission. A new or pending peer is activated when a slot is free.
- * Otherwise the active peer that has been settled longest is parked to make
- * room: a settled peer has exchanged everything with this participant and
- * shares no match that counts (peer_is_settled()). A peer that shares a
- * match is never parked, so the slots end up held by the peers this
- * participant really talks to, and the remaining slots rotate through the
- * rest of the network.
+ * Otherwise an idle active peer is parked to make room: the settled one
+ * whose last SEDP DATA (or activation) is oldest, or, when none is settled,
+ * the oldest stalled one. An active peer is idle when it is settled or
+ * stalled (peer_idleness()), and neither ever shares a match that counts
+ * (one other than with the discovery writer), so the slots end up held by
+ * the peers this participant really talks to and the rest rotate through
+ * the network. A settled peer goes first because a stalled peer is parked
+ * owed: parking it while a settled peer could go would only have the next
+ * tick park the settled peer to bring the stalled one straight back.
+ *
+ * | Active peer | No SEDP DATA for              | And also                        | Parked as  |
+ * |-------------|-------------------------------|---------------------------------|------------|
+ * | settled     | RTPS_PEER_SETTLE_MS           | both announcers heard, caught   | not owed   |
+ * |             |                               | up; its readers acknowledged    |            |
+ * |             |                               | every local SEDP and user write |            |
+ * | stalled     | RTPS_PEER_EXCHANGE_TIMEOUT_MS | nothing else                    | owed       |
+ * | neither     |                               |                                 | not parked |
+ *
+ * Settling waits for both of the peer's announcers to be heard, not only
+ * caught up, because of what this participant sends. Its discovery writer
+ * has a proxy for the peer's reader only once the announcers' replay has
+ * announced that reader again, and an acknowledgment check passes for a
+ * reader it has no proxy for. A reactivated peer whose replay never started
+ * (the preemptive ACKNACK lost) would settle without the
+ * `ros_discovery_info` sample it was reactivated to receive. Stalling
+ * bounds a peer whose SPDP arrives but whose SEDP exchange never completes
+ * (an unreachable unicast locator, a firewall): SPDP keeps its lease alive,
+ * and without the deadline it would hold its slot for good. It is parked
+ * owed, so it is tried again when a slot is free.
  *
  * Parking forgets nothing the peer needs. It already holds every
  * announcement and every `ros_discovery_info` sample this participant wrote,
@@ -29,7 +52,10 @@
  * received again in full. When this participant's own announcements
  * change, or its discovery writer writes new contents
  * (discovery_info_changed()), every parked peer is owed them and is
- * reactivated in turn.
+ * reactivated in turn, oldest last SEDP DATA or activation first
+ * (serve_owed_peer()). Every activation restamps a peer, so stalled peers
+ * taking turns in a slot fall behind one that has been waiting; table order
+ * would let two of them starve a reachable peer behind them.
  *
  * Parking is invisible to the graph observer, which lists the network's
  * endpoints rather than the active tier's. Reactivation starts a refresh of
@@ -37,8 +63,9 @@
  * replay has caught up, so an endpoint withdrawn while the peer was parked
  * leaves the listing too.
  *
- * Verification: TC-PART-8.5.3-011 to -018 (tests/spec), and at network
- * scale tests/ros2/discovery_scale.
+ * Verification: TC-PART-8.5.3-011 to -023 (tests/spec), at network scale
+ * tests/ros2/discovery_scale, and as a design by the TLA+ models
+ * RosettePeerTable and RosettePeerOutbound (tests/formal).
  *
  * References:
  * - OMG DDSI-RTPS 2.5 §8.5.3.2 (SPDP lease), §8.5.4.1 (SEDP builtin
@@ -66,7 +93,7 @@ bool RTPSParticipant::admit_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
         return false;
     }
 
-    if (spdp_reader_.active_count() >= RTPS_MAX_PEERS && !park_settled_peer(now_ms)) {
+    if (spdp_reader_.active_count() >= RTPS_MAX_PEERS && !park_idle_peer(now_ms)) {
         return false;
     }
 
@@ -109,30 +136,31 @@ void RTPSParticipant::activate_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
     notify_graph_change();
 }
 
-bool RTPSParticipant::peer_is_settled(const PeerEntry& peer, uint32_t now_ms) noexcept {
-    if (!peer.active() || !peer.rebuildable() || now_ms - peer.lastSedpMs < RTPS_PEER_SETTLE_MS) {
-        return false;
-    }
-
+RTPSParticipant::PeerIdleness RTPSParticipant::peer_idleness(const PeerEntry& peer,
+                                                             uint32_t         now_ms) noexcept {
+    const uint32_t    quiet_ms = now_ms - peer.lastSedpMs;
     const GuidPrefix& prefix = peer.guidPrefix;
-    if (match_table_.has_match_with(prefix, discovery_writer_guid_)) {
-        return false;
+    if (!peer.active() || !peer.rebuildable() || quiet_ms < RTPS_PEER_SETTLE_MS
+        || match_table_.has_match_with(prefix, discovery_writer_guid_)) {
+        return PeerIdleness::busy;
     }
 
     SequenceNumber publications;
     SequenceNumber subscriptions;
-    if (!sedp_reader_.caught_up_with(prefix, publications, subscriptions)
-        || !sedp_writer_.acknowledged_by(prefix)) {
-        return false;
+
+    bool complete = sedp_reader_.heard_from(prefix, peer.availableBuiltinEndpoints)
+                    && sedp_reader_.caught_up_with(prefix, publications, subscriptions)
+                    && sedp_writer_.acknowledged_by(prefix);
+    for (int i = 0; complete && i < RTPS_MAX_USER_WRITERS; ++i) {
+        complete =
+            !writer_alive_[i] || !writers_[i] || writers_[i]->acknowledged_by_participant(prefix);
     }
 
-    for (int i = 0; i < RTPS_MAX_USER_WRITERS; ++i) {
-        if (writer_alive_[i] && writers_[i] && !writers_[i]->acknowledged_by_participant(prefix)) {
-            return false;
-        }
+    if (complete) {
+        return PeerIdleness::settled;
     }
 
-    return true;
+    return quiet_ms >= RTPS_PEER_EXCHANGE_TIMEOUT_MS ? PeerIdleness::stalled : PeerIdleness::busy;
 }
 
 void RTPSParticipant::park_peer(PeerEntry& peer) noexcept {
@@ -169,25 +197,39 @@ void RTPSParticipant::park_peer(PeerEntry& peer) noexcept {
     spdp_reader_.deactivate(peer);
 }
 
-bool RTPSParticipant::park_settled_peer(uint32_t now_ms) noexcept {
-    PeerEntry* oldest = nullptr;
+bool RTPSParticipant::park_idle_peer(uint32_t now_ms) noexcept {
+    const auto older = [now_ms](const PeerEntry& peer, const PeerEntry* than) noexcept {
+        return than == nullptr || now_ms - peer.lastSedpMs > now_ms - than->lastSedpMs;
+    };
+
+    // A stalled peer goes only when none is settled: it is parked owed, so
+    // the next serve_owed_peer() would park a settled peer to bring it back.
+    PeerEntry* settled = nullptr;
+    PeerEntry* stalled = nullptr;
     spdp_reader_.for_each_peer([&](PeerEntry& peer) noexcept {
-        if (!peer.active()) {
+        const bool could_win = older(peer, settled) || (settled == nullptr && older(peer, stalled));
+        if (!peer.active() || !could_win) {
             return;
         }
 
-        const bool older =
-            oldest == nullptr || now_ms - peer.lastSedpMs > now_ms - oldest->lastSedpMs;
-        if (older && peer_is_settled(peer, now_ms)) {
-            oldest = &peer;
+        const PeerIdleness idleness = peer_idleness(peer, now_ms);
+        if (idleness == PeerIdleness::settled && older(peer, settled)) {
+            settled = &peer;
+        } else if (idleness == PeerIdleness::stalled && older(peer, stalled)) {
+            stalled = &peer;
         }
     });
 
-    if (oldest == nullptr) {
+    PeerEntry* parked = settled != nullptr ? settled : stalled;
+    if (parked == nullptr) {
         return false;
     }
 
-    park_peer(*oldest);
+    park_peer(*parked);
+
+    // A stalled peer has not received everything this participant
+    // announced; owing it them brings it back when a slot is free.
+    parked->owed = settled == nullptr;
     return true;
 }
 
@@ -254,9 +296,24 @@ void RTPSParticipant::finish_peer_refreshes() noexcept {
 }
 
 void RTPSParticipant::serve_owed_peer(uint32_t now_ms) noexcept {
+    // Ages are compared as now_ms - lastSedpMs, which wraps after 2^32 ms
+    // (49.7 days) and would make a peer quiet that long look newest. Capping
+    // every age at 2^31 - 1 ms here, a walk tick() makes far more often than
+    // that, keeps each comparison exact below the cap and ties the rest as
+    // equally old.
+    constexpr uint32_t kMaxAgeMs = 0x7FFFFFFFu;
+
+    // Oldest first: every activation stamps lastSedpMs, so peers that take
+    // turns in a slot (stalled peers parked owed again) move behind one that
+    // has waited, and every owed peer is eventually served.
     PeerEntry* owed = nullptr;
-    spdp_reader_.for_each_peer([&owed](PeerEntry& peer) noexcept {
-        if (owed == nullptr && peer.owed) {
+    spdp_reader_.for_each_peer([&](PeerEntry& peer) noexcept {
+        if (now_ms - peer.lastSedpMs > kMaxAgeMs) {
+            peer.lastSedpMs = now_ms - kMaxAgeMs;
+        }
+
+        if (peer.owed
+            && (owed == nullptr || now_ms - peer.lastSedpMs > now_ms - owed->lastSedpMs)) {
             owed = &peer;
         }
     });

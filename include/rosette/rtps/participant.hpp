@@ -846,7 +846,7 @@ private:
     // ── Peer tiers (participant_peer_tiers.cpp) ─────────────
 
     /**
-     * @brief Makes a pending or parked peer active, parking a settled one when the tier is full.
+     * @brief Makes a pending or parked peer active, parking an idle one when the tier is full.
      *
      * SPDP calls this for a new peer and again for every announcement of a
      * pending one; SEDP traffic from a parked or pending peer calls it too
@@ -859,7 +859,7 @@ private:
      *
      * Verification:
      * - Correct means: a peer is admitted while fewer than RTPS_MAX_PEERS
-     *   are active, or when a settled peer can be parked for it, and waits
+     *   are active, or when an idle peer can be parked for it, and waits
      *   otherwise; a peer with a match that counts is never parked for it.
      * - Covered by: TC-PART-8.5.3-011, TC-PART-8.5.3-012,
      *   tests/ros2/run_rmw_peer_lockout_loopback.sh.
@@ -873,36 +873,65 @@ private:
     /// participant's announcements to it and requests all of its own.
     void activate_peer(PeerEntry& peer, uint32_t now_ms) noexcept;
 
-    /**
-     * @brief True when an active peer can be parked without either side missing anything.
-     *
-     * Settled means: no SEDP DATA from the peer for RTPS_PEER_SETTLE_MS;
-     * every announcement it sent has been received; its readers have
-     * acknowledged everything this participant's SEDP and user writers
-     * wrote; and none of its endpoints is in a match other than with the
-     * discovery writer (set_discovery_writer()).
-     *
-     * @param[in] peer   An active peer's record.
-     * @param[in] now_ms rosette::platform::monotonic_ms().
-     * @return `true` when park_peer() may be applied to it.
-     */
-    bool peer_is_settled(const PeerEntry& peer, uint32_t now_ms) noexcept;
+    /// @brief Whether an active peer may give up its slot, and on what terms
+    /// (the table in participant_peer_tiers.cpp).
+    enum class PeerIdleness : uint8_t {
+        busy,     ///< Keeps its slot: matched, exchanging, or not quiet long enough.
+        settled,  ///< May be parked with nothing owed.
+        stalled,  ///< May be parked, owed, so it is tried again when a slot is free.
+    };
 
     /**
-     * @brief Moves a settled peer from the active tier to the parked one.
+     * @brief Classifies an active peer as busy, settled or stalled.
      *
-     * The highest sequence number received from each of its SEDP announcers
-     * is kept in its record, or the target of a refresh still under way
-     * when that is higher, so the next activation resumes the refresh
-     * (finish_peer_refreshes()). Its builtin SEDP proxies and its remote
-     * endpoints are released, which also unmatches its readers of the
-     * discovery writer. The peer itself notices nothing: this participant
-     * keeps announcing itself, and the peer already holds all of it. Nor
-     * does the graph observer: the peer and its endpoints are still on the
-     * network, so a hosted build keeps listing them
-     * (EndpointMatchTable::release_participant()).
+     * park_idle_peer() asks this of each active peer that could be the one
+     * it parks. A peer is idle only once RTPS_PEER_SETTLE_MS has passed
+     * since its last SEDP DATA or activation, its slot can be rebuilt, and it
+     * shares no match that counts (one other than with the discovery
+     * writer). Such a peer is settled when its SEDP exchange is complete in
+     * both directions, and stalled when it is not complete
+     * RTPS_PEER_EXCHANGE_TIMEOUT_MS after its last SEDP DATA.
      *
-     * @param[in,out] peer A settled peer (peer_is_settled()).
+     * Complete means: both of its SEDP announcers heard since activation,
+     * the local SEDP reader caught up with them, and its readers have
+     * acknowledged every local SEDP announcement and every user write.
+     * The shared checks, the match table walk among them, run once per call.
+     *
+     * @param[in] peer   A known peer; any peer that is not active is busy.
+     * @param[in] now_ms rosette::platform::monotonic_ms(); ages are taken
+     *   wrap-safely against peer.lastSedpMs.
+     * @return PeerIdleness::settled when park_peer() may be applied with
+     *   nothing owed; PeerIdleness::stalled when its slot may be given away
+     *   and it parked owed; PeerIdleness::busy otherwise.
+     *
+     * Verification:
+     * - Correct means: a peer is never settled while it lacks this
+     *   participant's latest announcement or discovery sample, and is
+     *   eventually settled once the exchange completes; a peer with a match
+     *   that counts is never idle; an unreachable peer is stalled once the
+     *   deadline passes.
+     * - Covered by: TC-PART-8.5.3-011, TC-PART-8.5.3-012, TC-PART-8.5.3-019,
+     *   TC-PART-8.5.3-020; RosettePeerOutbound (tests/formal),
+     *   NoParkUninformed and EventuallyParkable; RosettePeerTable,
+     *   EveryPeerServed with an unreachable peer and StallRule "deadline".
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4.1 (SEDP builtin endpoints), §8.4.7.5 and
+     *   §8.4.10.4 (reader and writer proxies)
+     * - docs/design/two_tier_peer_table.md
+     */
+    PeerIdleness peer_idleness(const PeerEntry& peer, uint32_t now_ms) noexcept;
+
+    /**
+     * @brief Moves an active peer to the parked tier.
+     *
+     * Side effects: keeps the highest sequence number of each of its SEDP
+     * announcers, or a refresh's target when higher (finish_peer_refreshes());
+     * releases its builtin SEDP proxies and remote endpoint records, which
+     * unmatches its readers of the discovery writer; clears its owed flag.
+     * The graph observer is not told (EndpointMatchTable::release_participant()).
+     *
+     * @param[in,out] peer A settled or stalled peer.
      *
      * Verification:
      * - Correct means: the peer holds no active slot, no proxy and no
@@ -916,8 +945,34 @@ private:
      */
     void park_peer(PeerEntry& peer) noexcept;
 
-    /// @brief Parks the active peer that has been settled longest; `false` when none is settled.
-    bool park_settled_peer(uint32_t now_ms) noexcept;
+    /**
+     * @brief Parks one idle active peer to free a slot: the oldest settled one, else the oldest
+     * stalled one.
+     *
+     * admit_peer() calls this when every slot is taken. A settled peer is
+     * preferred whatever its age: a stalled peer is parked owed, so parking
+     * one while a settled peer could go would have the next
+     * serve_owed_peer() park the settled peer to bring it straight back,
+     * replaying every announcement to a locator that does not answer. Among
+     * peers of the same kind the one whose last SEDP DATA or activation is
+     * oldest goes. Only a peer that could be chosen is classified.
+     *
+     * @param[in] now_ms rosette::platform::monotonic_ms().
+     * @return `true` when a peer was parked and a slot is free; `false`
+     *   when no active peer is idle, and nothing changes.
+     *
+     * Verification:
+     * - Correct means: only an idle peer is parked; a stalled peer only
+     *   when no active peer is settled; the oldest of its kind; owed
+     *   exactly when it was stalled.
+     * - Covered by: TC-PART-8.5.3-011, TC-PART-8.5.3-020, TC-PART-8.5.3-022;
+     *   RosettePeerTable (tests/formal), EveryPeerServed.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (SPDP lease), §8.5.4.1 (SEDP builtin endpoints)
+     * - docs/design/two_tier_peer_table.md
+     */
+    bool park_idle_peer(uint32_t now_ms) noexcept;
 
     /**
      * @brief Notes a DATA or HEARTBEAT from a peer's SEDP announcer before it is routed.
@@ -940,7 +995,36 @@ private:
     /// @brief Marks every parked peer owed this participant's changed announcements.
     void owe_parked_peers() noexcept;
 
-    /// @brief Reactivates one owed parked peer when a slot is free or can be made.
+    /**
+     * @brief Admits the owed parked peer with the oldest lastSedpMs when a slot can be had.
+     *
+     * tick() calls this once per pass, and wakes at least every
+     * RTPS_PEER_SETTLE_MS / 4 while any peer is owed. One peer is admitted
+     * per call; admit_peer() parks an idle peer for it when the tier is full,
+     * and leaves it owed for the next call when none is idle.
+     *
+     * The same walk over the known peers caps each peer's age
+     * (now_ms - lastSedpMs) at 2^31 - 1 ms, about 24.8 days, by moving
+     * lastSedpMs forward. Every age comparison in the peer tiers is then
+     * exact below the cap, and a peer quiet for longer than 2^32 ms never
+     * looks newer than one stamped seconds ago; peers past the cap tie.
+     *
+     * @param[in] now_ms rosette::platform::monotonic_ms(); ages are taken
+     *   wrap-safely against lastSedpMs.
+     *
+     * Verification:
+     * - Correct means: the owed peer with the oldest stamp is the one
+     *   admitted; no owed peer waits forever while slots can be made; no
+     *   peer's age exceeds 2^31 - 1 ms after the call, however long it
+     *   has been quiet.
+     * - Covered by: TC-PART-8.5.3-021; RosettePeerTable (tests/formal),
+     *   EveryPeerServed with two unreachable peers and ServeOrder "oldest";
+     *   TC-PART-8.5.3-023 (age cap).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.4.1 (SEDP builtin endpoints, TRANSIENT_LOCAL replay)
+     * - docs/design/two_tier_peer_table.md
+     */
     void serve_owed_peer(uint32_t now_ms) noexcept;
 
     /**

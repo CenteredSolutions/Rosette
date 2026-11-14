@@ -136,7 +136,7 @@
       "section": "8.5.3.2",
       "page": 160,
       "normativity": "implementation-behavior",
-      "statement": "Every announced participant is recorded, up to RTPS_MAX_KNOWN_PEERS; SEDP is exchanged with at most RTPS_MAX_PEERS of them. A peer finding that active tier full is admitted once a settled peer is parked for it, a parked peer's SPDP renews its lease, and a parked peer announcing a newer SEDP change is reactivated and its announcement processed.",
+      "statement": "Every announced participant is recorded, up to RTPS_MAX_KNOWN_PEERS; SEDP is exchanged with at most RTPS_MAX_PEERS of them. A peer finding that active tier full is admitted once a settled or stalled peer is parked for it, a parked peer's SPDP renews its lease, and a parked peer announcing a newer SEDP change is reactivated and its announcement processed.",
       "status": "implemented",
       "test_ids": ["TC-PART-8.5.3-011"]
     },
@@ -153,9 +153,17 @@
       "id": "REQ-PART-8.5.4.1-PARK-ONLY-SETTLED-PEERS",
       "section": "8.5.4.1",
       "normativity": "implementation-behavior",
-      "statement": "A peer is parked only when settled: its SEDP is fully received and acknowledged, no SEDP DATA from it within RTPS_PEER_SETTLE_MS, and none of its endpoints in a match except with the discovery writer; parking removes its builtin SEDP proxies and its remote endpoints.",
+      "statement": "A peer is parked only when settled: both of its SEDP announcers heard since its activation, its SEDP fully received and acknowledged, no SEDP DATA from it within RTPS_PEER_SETTLE_MS, and none of its endpoints in a match except with the discovery writer; parking removes its builtin SEDP proxies and its remote endpoints. A reactivated peer whose announcers have not answered is therefore not parked without the discovery sample it was owed.",
       "status": "implemented",
-      "test_ids": ["TC-PART-8.5.3-012"]
+      "test_ids": ["TC-PART-8.5.3-012", "TC-PART-8.5.3-019"]
+    },
+    {
+      "id": "REQ-PART-8.5.3.2-STALLED-PEER-YIELDS-SLOT",
+      "section": "8.5.3.2",
+      "normativity": "implementation-behavior",
+      "statement": "An active peer that shares no match and has sent no SEDP DATA for RTPS_PEER_EXCHANGE_TIMEOUT_MS without settling is stalled; it is parked for a waiting peer when no active peer is settled (a settled peer is parked first, whatever its age), stays owed this participant's announcements, and is tried again when a slot can be made. Owed peers are reactivated oldest first, by their last SEDP DATA or activation, so stalled peers taking turns in a slot cannot starve a waiting one; ages are capped at 2^31 - 1 ms so a peer quiet for longer than 2^32 ms still ranks oldest.",
+      "status": "implemented",
+      "test_ids": ["TC-PART-8.5.3-018", "TC-PART-8.5.3-020", "TC-PART-8.5.3-021", "TC-PART-8.5.3-022", "TC-PART-8.5.3-023"]
     },
     {
       "id": "REQ-PART-8.5.4.1-PARKED-PEERS-STAY-LISTED",

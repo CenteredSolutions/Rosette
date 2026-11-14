@@ -238,7 +238,7 @@ record table is the only remaining lockout, and it is logged and counted.
 
 A new peer needs an active slot for its first exchange, since nothing about
 its endpoints is known yet. If a slot is free it gets one at once. If not, a
-settled active peer is parked to make room (see "Making room"). If no active
+settled (else a stalled) active peer is parked to make room (see "Making room"). If no active
 peer can be parked, the new peer waits in the record table, and it is
 admitted on its next SPDP announcement after a slot frees. While it waits,
 its SEDP traffic is dropped as for any unmatched writer, and this side
@@ -251,8 +251,12 @@ An active peer is **settled** when all of these hold:
 * It completes no match with any local application endpoint. The
   `ros_discovery_info` writer is not an application endpoint: every stock
   ROS 2 participant reads it, so counting it would leave no peer settled.
-* Every one of its SEDP announcers that this side reads has been processed,
-  with no gaps, up to the `lastSN` of its latest HEARTBEAT.
+* Every one of its SEDP announcers that this side reads has been heard since
+  its activation (a HEARTBEAT, DATA, GAP or fragment submessage), and has
+  been processed, with no gaps, up to the `lastSN` of its latest HEARTBEAT.
+  The announcers are the ones its SPDP `availableBuiltinEndpoints`
+  advertises: one advertised but never matched is unheard, so the peer
+  stalls rather than settling without its replay.
 * Its SEDP readers have acknowledged everything both of this side's SEDP
   announcers have written.
 * Its `ros_discovery_info` reader, if it has one, has acknowledged the
@@ -261,11 +265,48 @@ An active peer is **settled** when all of these hold:
   middle of creating its endpoints (rclcpp creates them over tens of
   milliseconds) is not parked between two of them.
 
+Hearing the announcers is what keeps the outbound side honest. A reactivated
+peer's writers already hold everything this side acknowledged before parking,
+so they send nothing until this side's preemptive ACKNACK reaches them. If
+that ACKNACK or its answer is lost, the new readers are trivially caught up,
+and the `ros_discovery_info` writer, which has no proxy for the peer's reader
+until the replay announces it again, counts the peer as having acknowledged
+everything. Without the rule, the peer would settle, be parked, and lose the
+sample it was reactivated to receive. The reader resends the preemptive
+ACKNACK every `RTPS_PREEMPTIVE_ACKNACK_RETRY_MS` until the writer is heard, up
+to `RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS` times, which outlasts
+`RTPS_PEER_EXCHANGE_TIMEOUT_MS`. A reachable peer is heard well inside that
+(TLA+ model `RosettePeerOutbound`, in `tests/formal`); a peer still unheard
+when the attempts run out is stalled, and its next activation matches its
+announcers afresh and asks again.
+
+### Stalled
+
+A peer whose SPDP multicast arrives but whose SEDP exchange never completes
+(an unreachable unicast locator, a firewall) is never settled, and its SPDP
+keeps its lease alive. An active peer is **stalled** when it completes no
+match with a local application endpoint and has sent no SEDP DATA for
+`RTPS_PEER_EXCHANGE_TIMEOUT_MS`, which outlasts any exchange that can
+complete. A stalled peer may be parked to make room when no settled one can
+be, and it stays owed this side's announcements, so it is tried again whenever
+a slot can be made. Without this rule such peers hold their slots for good and can
+lock reachable peers out (TLA+ model `RosettePeerTable`, `StallRule`).
+
 ### Making room (parking)
 
 Peers are parked **on demand**, not as soon as they settle. A slot is freed
 only when a new peer or a promotion needs one and none is free. The settled
-peer that has been active the longest without an exchange is parked first.
+peer that has been active the longest without an exchange is parked first;
+only when no peer is settled is the longest-quiet stalled peer parked. A
+stalled peer is usually the oldest, but it is parked owed: parking it while a
+settled peer could go would only have the next tick park the settled peer to
+bring the stalled one straight back, replaying every announcement to a
+locator that does not answer.
+
+Ages are compared as `now - lastSedpMs` in 32-bit milliseconds, which wraps
+after 49.7 days. Each participant tick caps every peer's age at 2^31 - 1 ms
+(about 24.8 days) by moving its stamp forward, so a peer quiet for months
+still ranks oldest; peers past the cap tie.
 
 Parking on demand means a host build, or a board on a small network, never
 parks anyone and behaves exactly as a single-tier table. On a large network,
@@ -408,6 +449,17 @@ it really matches, plus a few for peers in their first exchange.
   give a single-tier table.
 * `RTPS_PEER_SETTLE_MS`: how long a peer must stay settled before it can be
   parked; one SPDP period by default.
+* `RTPS_PEER_EXCHANGE_TIMEOUT_MS`: how long an active peer with no match may
+  go without SEDP DATA, unsettled, before it counts as stalled; 10 s by
+  default, and longer than `RTPS_PEER_SETTLE_MS`.
+* `RTPS_PREEMPTIVE_ACKNACK_RETRY_MS`: how often a reliable reader resends its
+  preemptive ACKNACK to a writer it has not heard; one heartbeat period by
+  default.
+* `RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS`: how many preemptive ACKNACKs a
+  builtin SEDP reader sends an unheard writer; 7 by default. The first leaves
+  at the match, so the last leaves after `RTPS_PEER_EXCHANGE_TIMEOUT_MS` only
+  while (attempts - 1) retry periods exceed it (a `static_assert` checks it). User readers
+  send `RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS`, 3 by default.
 
 ### Graph listing
 
@@ -440,7 +492,10 @@ Spec tests:
 * SPDP (`TC-SPDP-8.5.3-*`): a new peer at a full active tier is admitted by
   parking a settled peer; a peer with a real match is never parked; with no
   settled peer, the new peer waits and is admitted after a slot frees; lease
-  expiry removes a parked peer and its endpoint records.
+  expiry removes a parked peer and its endpoint records. A reactivated peer
+  whose announcers have not been heard is not settled (`TC-PART-8.5.3-019`);
+  a stalled peer is parked owed and tried again (`TC-PART-8.5.3-020`), and
+  only when no settled peer can be parked instead (`TC-PART-8.5.3-022`).
 * SEDP reader (`TC-SEDP-8.5.5.1-*`, `TC-SRR-8.4.7.4-*`): a parked announcer's
   HEARTBEAT without new numbers is answered from the record and promotes
   nothing; one with a higher `lastSN` promotes the peer, and the first
