@@ -345,8 +345,8 @@ private:
     /// @brief newest_ when the cache is empty; above any slot index (capacity <= 255).
     static constexpr uint8_t kNoSlot = 0xFFu;
 
-    /// @brief The held change with the lowest sequence number, or null.
-    HistoryChange* find_oldest() noexcept;
+    /// @brief Slot index of the lowest sequence number; the cache must be full.
+    uint8_t find_oldest() const noexcept;
 
     /// @brief Slot index of the highest sequence number held, or kNoSlot.
     uint8_t find_newest() const noexcept;

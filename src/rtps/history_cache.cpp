@@ -19,29 +19,26 @@
 namespace rosette::rtps {
 
 HistoryChange* HistoryCache::add_change(HistoryChange&& change) noexcept {
-    HistoryChange* slot = nullptr;
-    for (uint8_t i = 0; i < capacity_; ++i) {
-        if (!slots_[i].is_valid()) {
-            slot = &slots_[i];
-            break;
-        }
+    uint8_t index = 0;
+    while (index < capacity_ && slots_[index].is_valid()) {
+        ++index;
     }
 
     // Full: KEEP_LAST evicts the oldest change (§8.3.3.1).
-    if (slot == nullptr) {
-        slot = find_oldest();
-        slot->clear();
+    if (index == capacity_) {
+        index = find_oldest();
+        slots_[index].clear();
     }
 
-    *slot = static_cast<HistoryChange&&>(change);
-    const auto index = static_cast<uint8_t>(slot - slots_);
+    HistoryChange& slot = slots_[index];
+    slot = static_cast<HistoryChange&&>(change);
     if (index == newest_) {
         newest_ = find_newest();
-    } else if (newest_ == kNoSlot || slots_[newest_].sequenceNumber < slot->sequenceNumber) {
+    } else if (newest_ == kNoSlot || slots_[newest_].sequenceNumber < slot.sequenceNumber) {
         newest_ = index;
     }
 
-    return slot;
+    return &slot;
 }
 
 bool HistoryCache::remove_change(const SequenceNumber& sequenceNumber) noexcept {
@@ -95,15 +92,11 @@ void HistoryCache::clear_all() noexcept {
     newest_ = kNoSlot;
 }
 
-HistoryChange* HistoryCache::find_oldest() noexcept {
-    HistoryChange* oldest = nullptr;
-    for (uint8_t i = 0; i < capacity_; ++i) {
-        if (!slots_[i].is_valid()) {
-            continue;
-        }
-
-        if (!oldest || slots_[i].sequenceNumber < oldest->sequenceNumber) {
-            oldest = &slots_[i];
+uint8_t HistoryCache::find_oldest() const noexcept {
+    uint8_t oldest = 0;
+    for (uint8_t i = 1; i < capacity_; ++i) {
+        if (slots_[i].sequenceNumber < slots_[oldest].sequenceNumber) {
+            oldest = i;
         }
     }
 
