@@ -132,6 +132,11 @@ bool is_parked(RTPSParticipant& p, const GuidPrefix& prefix) {
     return e != nullptr && e->parked;
 }
 
+bool is_owed(RTPSParticipant& p, const GuidPrefix& prefix) {
+    const PeerEntry* e = record(p, prefix);
+    return e != nullptr && e->owed;
+}
+
 /// Delivers a GAP from a peer's publications announcer declaring [start, base) irrelevant.
 bool deliver_publications_gap(RTPSParticipant& p, const GuidPrefix& prefix, int64_t start,
                               int64_t base) {
@@ -770,12 +775,12 @@ static bool tc_part_8_5_3_020(std::string& err) {
     CHECK(announce(p, c, 0x13u, 1600u), "the third peer announces again");
     CHECK(is_parked(p, a) && is_active(p, c) && is_active(p, b),
           "past the exchange timeout, the stalled peer is parked for it");
-    CHECK(record(p, a)->owed, "and stays owed this participant's announcements");
+    CHECK(is_owed(p, a), "and stays owed this participant's announcements");
 
     CHECK(hear_announcers(p, c, 1600u), "C's announcers answer");
     g_participant_test_now_ms = 1700u;
     p.tick(1700u);
-    CHECK(is_active(p, a) && !record(p, a)->owed && is_parked(p, b),
+    CHECK(is_active(p, a) && !is_owed(p, a) && is_parked(p, b),
           "the next tick tries the owed peer again in the slot of the settled peer");
     return true;
 }
@@ -806,14 +811,14 @@ static bool tc_part_8_5_3_021(std::string& err) {
     wcfg.typeName.assign("pkg::msg::dds_::T_");
     wcfg.reliability = ReliabilityKind::RELIABLE;
     CHECK(p.create_writer<1>(wcfg) != nullptr, "a local writer is created");
-    CHECK(record(p, a)->owed && record(p, b)->owed, "both parked peers are owed it");
+    CHECK(is_owed(p, a) && is_owed(p, b), "both parked peers are owed it");
     CHECK(acknowledge_sedp(p, c, true, 1) && acknowledge_sedp(p, c, false, 0)
               && acknowledge_sedp(p, d, true, 1) && acknowledge_sedp(p, d, false, 0),
           "the active peers acknowledge it");
 
     g_participant_test_now_ms = 1500u;
     p.tick(1500u);
-    CHECK(is_active(p, b) && is_parked(p, a) && record(p, a)->owed,
+    CHECK(is_active(p, b) && is_parked(p, a) && is_owed(p, a),
           "B, quiet longest, is served first although A comes first in the table");
     return true;
 }
@@ -834,7 +839,7 @@ static bool tc_part_8_5_3_022(std::string& err) {
     CHECK(deliver_announcement(p, b, true, "rt/b", 1, 1150u), "B announces a writer");
 
     CHECK(announce(p, c, 0x13u, 1600u), "a third peer arrives once A is stalled and B settled");
-    CHECK(is_parked(p, b) && !record(p, b)->owed, "the settled peer is parked, owed nothing");
+    CHECK(is_parked(p, b) && !is_owed(p, b), "the settled peer is parked, owed nothing");
     CHECK(is_active(p, a) && is_active(p, c), "the older, stalled peer keeps its slot");
 
     g_participant_test_now_ms = 1700u;
@@ -882,14 +887,16 @@ static bool tc_part_8_5_3_023(std::string& err) {
     CHECK(announce(p, a, 0x11u, end) && announce(p, b, 0x12u, end) && announce(p, c, 0x13u, end)
               && announce(p, d, 0x14u, end),
           "every peer renews its lease again");
-    p.spdp_reader().find_peer(a)->lastSedpMs = end - 100u;
+    PeerEntry* aged = p.spdp_reader().find_peer(a);
+    CHECK(aged != nullptr, "A is recorded");
+    aged->lastSedpMs = end - 100u;
 
     WriterConfig wcfg{};
     wcfg.topicName.assign("rt/local");
     wcfg.typeName.assign("pkg::msg::dds_::T_");
     wcfg.reliability = ReliabilityKind::RELIABLE;
     CHECK(p.create_writer<1>(wcfg) != nullptr, "a local writer is created");
-    CHECK(record(p, a)->owed && record(p, b)->owed, "both parked peers are owed it");
+    CHECK(is_owed(p, a) && is_owed(p, b), "both parked peers are owed it");
     CHECK(acknowledge_sedp(p, c, true, 1) && acknowledge_sedp(p, c, false, 0)
               && acknowledge_sedp(p, d, true, 1) && acknowledge_sedp(p, d, false, 0),
           "the active peers acknowledge it");
