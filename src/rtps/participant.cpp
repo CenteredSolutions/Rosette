@@ -920,6 +920,15 @@ void RTPSParticipant::dispatch_data_frag(const ParseContext&   ctx,
                                          const ParsedDataFrag& msg) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(ctx.user_data);
+
+    // A fragment is SEDP progress as a whole DATA is: a peer whose
+    // announcements arrive in fragments must not age into a stall while
+    // they stream in, and one above a parked peer's kept number promotes it.
+    if (is_sedp_announcer(msg.writerId)) {
+        p->on_announcer_traffic(ctx.senderGuidPrefix, msg.writerId, msg.writerSN, true,
+                                rosette::platform::monotonic_ms());
+    }
+
     p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
         r.on_data_frag(ctx, msg);
     });

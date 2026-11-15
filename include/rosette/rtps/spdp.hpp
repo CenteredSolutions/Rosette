@@ -313,8 +313,9 @@ struct PeerEntry {
     uint32_t leaseExpiryMs = 0;              ///< rosette::platform::monotonic_ms() at expiry.
     uint32_t leaseMs = 0;                    ///< Lease duration the peer announced.
     /// monotonic_ms() of the peer's activation or of the latest SEDP DATA
-    /// from it; a peer is parked only once this is RTPS_PEER_SETTLE_MS old
-    /// (settled), or RTPS_PEER_EXCHANGE_TIMEOUT_MS old (stalled).
+    /// from it, a DATA_FRAG counting as a DATA; a peer is parked only once
+    /// this is RTPS_PEER_SETTLE_MS old (settled), or
+    /// RTPS_PEER_EXCHANGE_TIMEOUT_MS old (stalled).
     uint32_t lastSedpMs = 0;
     /// Low 32 bits of the highest sequence number received from the peer's
     /// publications and subscriptions announcers when it was parked; an

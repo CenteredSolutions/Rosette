@@ -960,6 +960,47 @@ static bool tc_part_8_5_3_024(std::string& err) {
     return true;
 }
 
+// A peer whose announcement arrives in fragments is making progress: each
+// SEDP DATA_FRAG stamps its last SEDP traffic as a DATA does, so it is not
+// stalled and parked while the fragments stream in. The same timeline
+// without the fragment is TC-PART-8.5.3-020, where A is parked.
+static bool tc_part_8_5_3_025(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1000u), "two peers are active");
+    CHECK(hear_announcers(p, b, 1000u), "B's announcers answer");
+    CHECK(deliver_announcement(p, b, true, "rt/b", 1, 1550u), "B announces a writer");
+
+    // The first of three fragments of A's SN 1; the rest are still on their way.
+    const Octet    bytes[4] = {0x00u, 0x03u, 0x00u, 0x00u};
+    MessageBuilder builder{};
+    CHECK(builder.begin(a)
+              && builder.append_data_frag(entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR,
+                                          entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER,
+                                          SequenceNumber::from_int64(1), 1u, 1u, 4u, 12u, bytes,
+                                          sizeof(bytes)),
+          "a DATA_FRAG is built");
+    BufRef                   frag = builder.finish();
+    const std::vector<Octet> datagram(frag.data, frag.data + frag.size);
+    frag.reset();
+    g_participant_test_now_ms = 1550u;
+    CHECK(p.parse_received(datagram.data(), static_cast<uint32_t>(datagram.size()))
+              == ParseResult::OK,
+          "A's announcer sends the first fragment of an announcement");
+    const PeerEntry* entry = record(p, a);
+    CHECK(entry != nullptr && entry->lastSedpMs == 1550u, "the fragment is SEDP traffic");
+
+    CHECK(announce(p, c, 0x13u, 1600u), "a third peer is recorded");
+    CHECK(is_active(p, a) && is_active(p, b) && !is_active(p, c),
+          "A, receiving fragments, is not stalled and keeps its slot");
+    return true;
+}
+
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.3-011",
                      "§8.5.3.2/§8.5.4.1: a peer finding the active tier full waits until a "
@@ -1023,6 +1064,10 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "number kept at parking completes its refresh once a HEARTBEAT shows its "
                      "replay is whole.",
                      tc_part_8_5_3_024});
+    tests.push_back({"TC-PART-8.5.3-025",
+                     "§8.5.3.2/§8.3.7.3: a SEDP DATA_FRAG is SEDP traffic, so a peer whose "
+                     "announcement arrives in fragments is not stalled while they stream in.",
+                     tc_part_8_5_3_025});
 }
 
 }  // namespace spec_test
