@@ -18,8 +18,10 @@
 (*    traffic above its parked number, and for an owed peer from tick().  *)
 (*    With every slot taken, an idle peer is parked to make room           *)
 (*    (park_idle_peer()): the settled peer whose last SEDP DATA is oldest, *)
-(*    else the oldest stalled one; with none idle, admission fails and is  *)
-(*    retried by the next trigger.                                         *)
+(*    else the oldest stalled one; with none idle, admission fails.        *)
+(*    TurnedAway is Rosette's choice for the peer then: "wait" leaves it   *)
+(*    to its next trigger; "owed" marks it owed, so serve_owed_peer()      *)
+(*    retries it from tick() in its turn.                                  *)
 (*  - Settled (peer_idleness() is settled): no match with a local          *)
 (*    endpoint, this side's announcements acknowledged, the peer's         *)
 (*    announcements                                                        *)
@@ -31,12 +33,14 @@
 (*    traffic promotes. The settle timer and rebuildable() are a step    *)
 (*    that eventually fires once the rest holds.                          *)
 (*  - Owed (owe_parked_peers()): every local endpoint created or deleted   *)
-(*    marks each parked peer owed; serve_owed_peer() admits one owed peer  *)
-(*    per tick. ServeOrder is Rosette's choice of which: "table" takes the *)
-(*    first in table order; "oldest" the one whose last SEDP DATA or       *)
-(*    activation is oldest, which every reactivation of another peer moves *)
-(*    toward the front, so each owed peer is eventually first. "oldest" is *)
-(*    modelled as any owed peer, with fairness for each.                   *)
+(*    marks each parked peer owed, as does parking a stalled peer and,     *)
+(*    with TurnedAway "owed", turning a peer away; serve_owed_peer()       *)
+(*    admits one owed peer per tick. ServeOrder is Rosette's choice of     *)
+(*    which: "table" takes the first in table order; "oldest" the one      *)
+(*    whose last SEDP DATA or activation is oldest, which every            *)
+(*    reactivation of another peer moves toward the front, so each owed    *)
+(*    peer is eventually first. "oldest" is modelled as any owed peer,     *)
+(*    with fairness for each.                                              *)
 (*  - Lease expiry or disposal removes a peer from either tier; it may come *)
 (*    back later as a new participant.                                     *)
 (*                                                                         *)
@@ -67,18 +71,20 @@ CONSTANTS
     Unreachable,  \* Peers whose SEDP exchange never completes.
     Budget,       \* Environment events in a behavior.
     StallRule,    \* "none" or "deadline".
-    ServeOrder    \* "table" or "oldest".
+    ServeOrder,   \* "table" or "oldest".
+    TurnedAway    \* "wait" or "owed".
 
 Peers == 1..N
 ASSUME Slots \in 1..N /\ Records \in Slots..N /\ Unreachable \subseteq Peers
 ASSUME StallRule \in {"none", "deadline"} /\ ServeOrder \in {"table", "oldest"}
+ASSUME TurnedAway \in {"wait", "owed"}
 
 VARIABLES
     alive,     \* The participant exists and its lease is current.
     status,    \* "unknown", "pending", "active" or "parked".
     peerNews,  \* It announced something this side has not processed.
     ourNews,   \* This side announced something it has not acknowledged.
-    owed,      \* Parked and owed this side's announcements.
+    owed,      \* Waiting for a turn in a slot from serve_owed_peer().
     shares,    \* Truth: it has an endpoint matching a local endpoint.
     matched,   \* What the match table knows of `shares`, from the last exchange.
     settled,   \* peer_idleness() is settled.
@@ -151,7 +157,8 @@ Admit(q, st) ==
             /\ stalled' = [stalled EXCEPT ![q] = FALSE, ![v] = FALSE]
             /\ lru' = Append(Without(lru, v), q)
     ELSE /\ status' = st
-         /\ UNCHANGED <<peerNews, ourNews, owed, matched, settled, stalled, lru>>
+         /\ owed' = IF TurnedAway = "owed" THEN [owed EXCEPT ![q] = TRUE] ELSE owed
+         /\ UNCHANGED <<peerNews, ourNews, matched, settled, stalled, lru>>
 
 (***************************************************************************)
 (* The environment.                                                         *)
@@ -288,12 +295,15 @@ Next ==
 Spec == Init /\ [][Next]_vars
 
 \* SPDP is periodic, HEARTBEATs repeat, the tick runs, and a reachable peer's
-\* exchange completes once the network stops losing its repairs.
+\* exchange completes once the network stops losing its repairs. A peer's
+\* SPDP and SEDP traffic keep no time with the slots, so they are only weakly
+\* fair: each may always arrive while every slot is busy. The tick is strongly
+\* fair, since it runs on every pass.
 FairSpec ==
     /\ Spec
     /\ \A p \in Peers :
-        /\ SF_vars(SpdpAnnouncement(p))
-        /\ SF_vars(ParkedTraffic(p))
+        /\ WF_vars(SpdpAnnouncement(p))
+        /\ WF_vars(ParkedTraffic(p))
         /\ WF_vars(Exchange(p))
         /\ WF_vars(Settle(p))
         /\ WF_vars(Stall(p))

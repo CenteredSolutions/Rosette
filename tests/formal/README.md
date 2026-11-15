@@ -24,8 +24,8 @@ tests/formal/run_tlc.sh in_order caught_up keep_refresh_target heard_writer Even
 ```
 
 ```sh
-tests/formal/run_table.sh <property> [peers] [slots] [records] [unreachable] [budget] [stall_rule] [serve_order]
-tests/formal/run_table.sh EveryPeerServed 4 2 4 '{1,2}' 5 deadline oldest
+tests/formal/run_table.sh <property> [peers] [slots] [records] [unreachable] [budget] [stall_rule] [serve_order] [turned_away]
+tests/formal/run_table.sh EveryPeerServed 4 2 4 '{1,2}' 5 deadline oldest owed
 ```
 
 ```sh
@@ -118,7 +118,10 @@ Bounds: two endpoints, `MaxSN = 3`, two messages in flight (the
 slots, a record for every peer, and four or five environment events (joins,
 leaves, announcements, local endpoint changes) per behavior. A peer settles only
 once its announcements are processed, which covers being heard since
-activation, as `peer_idleness()` requires.
+activation, as `peer_idleness()` requires. A peer's SPDP announcements and
+SEDP traffic are weakly fair: they keep no time with the slots, so each may
+always arrive while every slot is busy. Only the tick, which runs on every
+pass, is strongly fair.
 
 * **The invariants hold:** at most `RTPS_MAX_PEERS` peers are active, the
   oldest-first order covers exactly the active peers, a parked peer is never
@@ -150,6 +153,18 @@ activation, as `peer_idleness()` requires.
   Serving the owed peer whose last SEDP DATA or activation is oldest
   (`"oldest"`, which the design document specifies) lets every owed peer
   reach the front.
+* **A peer turned away must be owed a turn.** With every slot busy,
+  admission fails. Left to its own next announcement (`TurnedAway =
+  "wait"`), a reachable pending peer can wait forever behind unreachable
+  peers taking turns in the slots: each stalled slot is free for one tick
+  before `serve_owed_peer()` hands it to the next owed peer, and its
+  announcements can always miss that tick. With one slot and two
+  unreachable peers of three, the counterexample has the two swap places
+  forever while the third stays pending. Marking the turned-away peer owed
+  (`"owed"`) puts it in the oldest-first order, where a peer never active
+  ranks first (TC-PART-8.5.3-026).
+
+Two slots unless noted; `TurnedAway` is `"owed"` (the code) unless noted.
 
 | StallRule | ServeOrder | Unreachable | EveryPeerServed | EveryMatchMade |
 |---|---|---|---|---|
@@ -157,12 +172,15 @@ activation, as `peer_idleness()` requires.
 | none | oldest | {1} of 3 | violated | holds |
 | deadline | table | {1} of 3 | holds | holds |
 | deadline | table | {1, 2} of 4 | violated | |
-| deadline | oldest (code) | {} and {1} of 3 | **holds** | **holds** |
-| deadline | oldest (code) | {1, 2} of 4 | **holds** | |
+| deadline | oldest | {1, 2} of 3, one slot, TurnedAway "wait" | violated | |
+| deadline | oldest (code) | {} of 3, one and two slots | **holds** | **holds** |
+| deadline | oldest (code) | {1} of 3 | **holds** | **holds** |
+| deadline | oldest (code) | {1, 2} of 3, one slot | **holds** | **holds** |
+| deadline | oldest (code) | {1, 2} of 4 | **holds** | **holds** |
 
-  The invariants and `NeverParkMatched` hold under every combination. The
-  four-peer `EveryMatchMade` cells are left empty: that check runs for many
-  hours on one core, since TLC's liveness phase is single-threaded.
+  The invariants and `NeverParkMatched` hold under every combination.
+  Liveness at four peers takes minutes; TLC's liveness phase is
+  single-threaded.
 
 ## Phase 3 results
 
