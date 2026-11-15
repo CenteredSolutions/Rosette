@@ -318,6 +318,14 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
         return;
     }
 
+    // The writer holds this change, so it is MISSING until it assembles.
+    // Without this a reader that has heard only fragments reports itself
+    // caught up (SedpReader::caught_up_with()), and a peer can settle with
+    // its announcement half received.
+    if (proxy != nullptr && reliability_ == ReliabilityKind::RELIABLE) {
+        proxy->missing_changes_update(msg.writerSN);
+    }
+
     RTPS_LOG_T("reader", "DATA_FRAG SN=%d:%lu frag=%lu/%lu size=%lu",
                static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
                static_cast<unsigned long>(msg.fragmentStartingNum),
@@ -439,6 +447,12 @@ void StatefulReader::on_heartbeat_frag(const ParseContext&       ctx,
     }
 
     proxy->on_heard();
+
+    // §8.3.7.6: the writer holds writerSN. Marking it MISSING matters most
+    // when no fragment of it arrived (no assembly slot): the next HEARTBEAT
+    // then owes an ACKNACK for the whole sample, and the reader is not
+    // caught up meanwhile.
+    proxy->missing_changes_update(msg.writerSN);
 
     // Ask the assembler for the missing fragment set.
     FragmentNumberSet missing{};

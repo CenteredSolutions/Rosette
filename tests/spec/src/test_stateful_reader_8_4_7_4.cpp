@@ -459,6 +459,89 @@ static bool tc_srr_8_4_7_4_011(std::string& err) {
     return true;
 }
 
+static bool tc_srr_8_4_7_4_012(std::string& err) {
+    CaptureTransport tx{};
+    const Guid       reader_guid = make_guid(0x11u, 0x12u, 0x13u, make_entity(1u, 2u, 3u, 0xC7u));
+    const Guid       writer_guid = make_guid(0x21u, 0x22u, 0x23u, make_entity(4u, 5u, 6u, 0xC2u));
+    const Locator    loc = make_udpv4_locator(0xC0A80114u, 7411u);
+
+    g_stateful_reader_test_now_ms = 1000u;
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u, VENDORID_EPROSIMA),
+          "matched_writer_add should succeed");
+
+    // SN 1 in three 4-octet fragments, sent one at a time.
+    const Octet    bytes[4] = {0x00u, 0x01u, 0x00u, 0x00u};
+    ParsedDataFrag df{};
+    df.readerId = reader_guid.entityId;
+    df.writerId = writer_guid.entityId;
+    df.writerSN = SequenceNumber::from_int64(1);
+    df.fragmentsInSubmessage = 1u;
+    df.fragmentSize = 4u;
+    df.dataSize = 12u;
+    df.fragmentPayload = bytes;
+    df.fragmentPayloadSize = sizeof(bytes);
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+
+    df.fragmentStartingNum = 1u;
+    r.on_data_frag(ctx, df);
+    const WriterProxy* proxy = r.matched_writer_lookup(writer_guid);
+    CHECK(proxy != nullptr && proxy->is_missing(df.writerSN),
+          "a partial sample's change is MISSING, so the reader is not caught up");
+
+    df.fragmentStartingNum = 2u;
+    r.on_data_frag(ctx, df);
+    df.fragmentStartingNum = 3u;
+    r.on_data_frag(ctx, df);
+    CHECK(!proxy->has_missing_changes() && proxy->available_changes_max() == df.writerSN,
+          "once assembled, the change is received and nothing is MISSING");
+    return true;
+}
+
+static bool tc_srr_8_4_7_4_013(std::string& err) {
+    CaptureTransport tx{};
+    const Guid       reader_guid = make_guid(0x11u, 0x12u, 0x13u, make_entity(1u, 2u, 3u, 0xC7u));
+    const Guid       writer_guid = make_guid(0x21u, 0x22u, 0x23u, make_entity(4u, 5u, 6u, 0xC2u));
+    const Locator    loc = make_udpv4_locator(0xC0A80114u, 7411u);
+
+    g_stateful_reader_test_now_ms = 1000u;
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
+    r.heartbeat_response_delay(0u);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u, VENDORID_EPROSIMA),
+          "matched_writer_add should succeed");
+
+    // Every fragment of SN 1 was lost: the HEARTBEAT_FRAG is the first word.
+    ParsedHeartbeatFrag hbf{};
+    hbf.readerId = reader_guid.entityId;
+    hbf.writerId = writer_guid.entityId;
+    hbf.writerSN = SequenceNumber::from_int64(1);
+    hbf.lastFragmentNum = 3u;
+    hbf.count = 1;
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+    r.on_heartbeat_frag(ctx, hbf);
+    const WriterProxy* proxy = r.matched_writer_lookup(writer_guid);
+    CHECK(proxy != nullptr && proxy->heard && proxy->is_missing(hbf.writerSN),
+          "the advertised change is MISSING though no fragment of it arrived");
+
+    ParsedHeartbeat hb{};
+    hb.readerId = reader_guid.entityId;
+    hb.writerId = writer_guid.entityId;
+    hb.firstSN = SequenceNumber::from_int64(1);
+    hb.lastSN = SequenceNumber::from_int64(1);
+    hb.count = 1;
+    hb.finalFlag = true;
+    const size_t before = tx.sent.size();
+    r.on_heartbeat(ctx, hb);
+    ParsedAckNack ack{};
+    CHECK(tx.sent.size() == before + 1u && parse_acknack(tx.sent.back(), ack),
+          "a final HEARTBEAT is answered, since a change is MISSING");
+    CHECK(ack.readerSNState.bitmapBase == hbf.writerSN && ack.readerSNState.test(0u),
+          "and the ACKNACK requests the whole sample");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.7.4-001",
                      "§8.4.7.4: matched_writer_add creates one WriterProxy for a newly matched writer, and matched_writer_remove removes it from the matched set.",
@@ -508,6 +591,15 @@ void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
                      "§8.4.7.4: a DATA the reader cannot keep for want of a buffer still marks "
                      "its writer heard, so the preemptive ACKNACK is not sent again.",
                      tc_srr_8_4_7_4_011});
+    tests.push_back({"TC-SRR-8.4.7.4-012",
+                     "§8.4.10.4: the change of a partial DATA_FRAG sample is MISSING until it "
+                     "assembles, so a reader that has heard only fragments is not caught up.",
+                     tc_srr_8_4_7_4_012});
+    tests.push_back({"TC-SRR-8.4.7.4-013",
+                     "§8.3.7.6/§8.4.10.4: a HEARTBEAT_FRAG for a change none of whose fragments "
+                     "arrived makes it MISSING, and the next final HEARTBEAT is answered with "
+                     "an ACKNACK for it.",
+                     tc_srr_8_4_7_4_013});
 }
 
 } // namespace spec_test

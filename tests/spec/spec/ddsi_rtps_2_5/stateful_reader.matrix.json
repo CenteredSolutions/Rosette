@@ -86,6 +86,14 @@
       "test_ids": ["TC-SRR-8.4.10-001", "TC-SRR-8.4.10-002"]
     },
     {
+      "id": "REQ-SRR-8.4.10.4-FRAGMENT-ANNOUNCES-CHANGE",
+      "section": "8.4.10.4",
+      "normativity": "derived-behavior",
+      "statement": "A DATA_FRAG or HEARTBEAT_FRAG from a reliable writer shows the writer holds its writerSN, so the change is MISSING (missing_changes_update) until the sample assembles or a GAP resolves it; a reader that has received only part of a sample, or none of a sample a HEARTBEAT_FRAG advertises, is not caught up and answers the next HEARTBEAT with an ACKNACK requesting it.",
+      "status": "implemented",
+      "test_ids": ["TC-SRR-8.4.7.4-012", "TC-SRR-8.4.7.4-013"]
+    },
+    {
       "id": "REQ-SRR-8.3.7.2-DATA-WITHOUT-PAYLOAD",
       "section": "8.3.7.2",
       "normativity": "shall",
