@@ -1008,6 +1008,44 @@ static bool tc_part_8_5_3_025(std::string& err) {
     return true;
 }
 
+// A peer turned away because every slot was busy waits its turn with the
+// owed peers, oldest first. Unreachable peers A, B and C take turns in the
+// two slots, each parked owed when it stalls; R, reachable, announced
+// itself once while both slots were busy. Waiting for R's next SPDP
+// announcement would leave R behind the rotation, since a stalled slot is
+// taken back by an owed peer on the tick after it stalls.
+static bool tc_part_8_5_3_026(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+    const GuidPrefix r = make_prefix(0xE1u, 0xE2u, 0xE3u);
+
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1000u),
+          "two unreachable peers are active");
+    CHECK(announce(p, c, 0x13u, 1500u) && is_active(p, c) && is_parked(p, a) && is_owed(p, a),
+          "a third unreachable peer takes a stalled peer's slot, which is parked owed");
+
+    g_participant_test_now_ms = 1500u;
+    p.tick(1500u);
+    CHECK(is_active(p, a) && is_active(p, c) && is_owed(p, b),
+          "the owed peer takes the other stalled slot back");
+
+    CHECK(announce(p, r, 0x14u, 1600u) && !is_active(p, r),
+          "a reachable peer arriving while both slots are busy is turned away");
+
+    for (uint32_t now = 1625u; now <= 2125u && !is_active(p, r); now += 25u) {
+        g_participant_test_now_ms = now;
+        p.tick(now);
+    }
+
+    CHECK(is_active(p, r), "the turned-away peer gets the first slot that stalls");
+    CHECK(hear_announcers(p, r, 2125u), "the reachable peer's announcers answer");
+    return true;
+}
+
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.3-011",
                      "§8.5.3.2/§8.5.4.1: a peer finding the active tier full waits until a "
@@ -1075,6 +1113,11 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "§8.5.3.2/§8.3.7.3: a SEDP DATA_FRAG is SEDP traffic, so a peer whose "
                      "announcement arrives in fragments is not stalled while they stream in.",
                      tc_part_8_5_3_025});
+    tests.push_back({"TC-PART-8.5.3-026",
+                     "§8.5.3.2: a peer turned away while every slot is busy is served with the "
+                     "owed peers, oldest first, so peers taking turns in the slots cannot keep "
+                     "it out between its SPDP announcements.",
+                     tc_part_8_5_3_026});
 }
 
 }  // namespace spec_test

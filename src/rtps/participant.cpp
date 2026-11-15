@@ -640,8 +640,9 @@ void RTPSParticipant::on_spdp_new_peer(const PeerEntry& peer,
                                        void*            self) noexcept
 {
     // SPDP reports a new peer, and every announcement of one still
-    // pending; it is activated when the active tier has room or a settled
-    // peer can be parked for it (participant_peer_tiers.cpp).
+    // pending; it is activated when the active tier has room or an idle
+    // peer can be parked for it, and is otherwise owed a turn that tick()
+    // serves (participant_peer_tiers.cpp).
     auto* p = static_cast<RTPSParticipant*>(self);
     p->timers_stale_ = true;
     PeerEntry* known = p->spdp_reader_.find_peer(peer.guidPrefix);

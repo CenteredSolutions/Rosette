@@ -239,10 +239,15 @@ record table is the only remaining lockout, and it is logged and counted.
 A new peer needs an active slot for its first exchange, since nothing about
 its endpoints is known yet. If a slot is free it gets one at once. If not, a
 settled (else a stalled) active peer is parked to make room (see "Making room"). If no active
-peer can be parked, the new peer waits in the record table, and it is
-admitted on its next SPDP announcement after a slot frees. While it waits,
-its SEDP traffic is dropped as for any unmatched writer, and this side
-sends it no SEDP. It is not locked out, only delayed.
+peer can be parked, the new peer waits in the record table, owed a turn: each
+participant tick serves the owed peer that has waited longest, so it is
+admitted on the first tick after a slot can be made. Its own next SPDP
+announcement is not enough to rely on. Stalled peers taking turns in the
+slots each give theirs up for one tick at most, and an announcement that
+always arrives outside that tick would keep a reachable peer out for good
+(TLA+ model `RosettePeerTable`, `TurnedAway`). While it waits, its SEDP
+traffic is dropped as for any unmatched writer, and this side sends it no
+SEDP. It is not locked out, only delayed.
 
 ### Settled
 
@@ -495,7 +500,9 @@ Spec tests:
   expiry removes a parked peer and its endpoint records. A reactivated peer
   whose announcers have not been heard is not settled (`TC-PART-8.5.3-019`);
   a stalled peer is parked owed and tried again (`TC-PART-8.5.3-020`), and
-  only when no settled peer can be parked instead (`TC-PART-8.5.3-022`).
+  only when no settled peer can be parked instead (`TC-PART-8.5.3-022`); a
+  peer turned away while stalled peers take turns in the slots is served
+  with the owed peers (`TC-PART-8.5.3-026`).
 * SEDP reader (`TC-SEDP-8.5.5.1-*`, `TC-SRR-8.4.7.4-*`): a parked announcer's
   HEARTBEAT without new numbers is answered from the record and promotes
   nothing; one with a higher `lastSN` promotes the peer, and the first

@@ -21,7 +21,9 @@
  * the peers this participant really talks to and the rest rotate through
  * the network. A settled peer goes first because a stalled peer is parked
  * owed: parking it while a settled peer could go would only have the next
- * tick park the settled peer to bring the stalled one straight back.
+ * tick park the settled peer to bring the stalled one straight back. A peer
+ * that finds no idle peer to replace is turned away owed, and waits its turn
+ * with the parked owed peers.
  *
  * | Active peer | No SEDP DATA for              | And also                        | Parked as  |
  * |-------------|-------------------------------|---------------------------------|------------|
@@ -55,7 +57,8 @@
  * reactivated in turn, oldest last SEDP DATA or activation first
  * (serve_owed_peer()). Every activation restamps a peer, so stalled peers
  * taking turns in a slot fall behind one that has been waiting; table order
- * would let two of them starve a reachable peer behind them.
+ * would let two of them starve a reachable peer behind them. A peer that has
+ * never been active carries no stamp and is served before all of them.
  *
  * Parking is invisible to the graph observer, which lists the network's
  * endpoints rather than the active tier's. Reactivation starts a refresh of
@@ -63,7 +66,7 @@
  * replay has caught up, so an endpoint withdrawn while the peer was parked
  * leaves the listing too.
  *
- * Verification: TC-PART-8.5.3-011 to -024 (tests/spec), at network scale
+ * Verification: TC-PART-8.5.3-011 to -026 (tests/spec), at network scale
  * tests/ros2/discovery_scale, and as a design by the TLA+ models
  * RosettePeerTable and RosettePeerOutbound (tests/formal).
  *
@@ -93,7 +96,12 @@ bool RTPSParticipant::admit_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
         return false;
     }
 
+    // A peer turned away waits its turn with the owed peers rather than for
+    // its own next announcement: stalled peers taking turns in the slots
+    // free one for a tick at most, which its announcements could miss every
+    // time (TC-PART-8.5.3-026).
     if (spdp_reader_.active_count() >= RTPS_MAX_PEERS && !park_idle_peer(now_ms)) {
+        peer.owed = true;
         return false;
     }
 

@@ -334,8 +334,9 @@ struct PeerEntry {
     uint8_t activeSlot = kNoActiveSlot;  ///< Index of the peer's active slot.
     bool alive = false;
     bool parked = false;  ///< Parked: see "Known and active peers".
-    /// Parked while this participant's announcements changed: the peer is
-    /// reactivated, when a slot allows, to receive them.
+    /// Owed a turn in a slot: parked while this participant's announcements
+    /// changed, parked stalled, or turned away while every slot was busy.
+    /// RTPSParticipant::serve_owed_peer() admits it when a slot allows.
     bool owed = false;
 
     /// @brief Whether SEDP is exchanged with the peer.

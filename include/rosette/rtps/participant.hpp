@@ -850,19 +850,29 @@ private:
      *
      * SPDP calls this for a new peer and again for every announcement of a
      * pending one; SEDP traffic from a parked or pending peer calls it too
-     * (on_announcer_traffic()). The active tier holds at most RTPS_MAX_PEERS
-     * peers, the capacity of the builtin SEDP endpoints' proxies.
+     * (on_announcer_traffic()), and serve_owed_peer() calls it for an owed
+     * one. The active tier holds at most RTPS_MAX_PEERS peers, the capacity
+     * of the builtin SEDP endpoints' proxies. A peer turned away because no
+     * active peer is idle is marked owed, so the tick retries it in its turn
+     * with the other owed peers instead of leaving it to its own next
+     * announcement.
      *
-     * @param[in,out] peer   The peer's record in the SPDP table.
+     * @param[in,out] peer   The peer's record in the SPDP table; `owed` is
+     *   set when every slot is busy.
      * @param[in]     now_ms rosette::platform::monotonic_ms().
-     * @return `true` when the peer is active on return.
+     * @return `true` when the peer is active on return; `false` when it has
+     *   no metatraffic locator, no proxy can be built for it, or every slot
+     *   is busy (the peer is then owed).
      *
      * Verification:
      * - Correct means: a peer is admitted while fewer than RTPS_MAX_PEERS
-     *   are active, or when an idle peer can be parked for it, and waits
-     *   otherwise; a peer with a match that counts is never parked for it.
-     * - Covered by: TC-PART-8.5.3-011, TC-PART-8.5.3-012,
-     *   tests/ros2/run_rmw_peer_lockout_loopback.sh.
+     *   are active, or when an idle peer can be parked for it, and is owed
+     *   otherwise; a peer with a match that counts is never parked for it;
+     *   a reachable peer turned away is admitted while unreachable peers
+     *   take turns in the slots.
+     * - Covered by: TC-PART-8.5.3-011, TC-PART-8.5.3-012, TC-PART-8.5.3-026,
+     *   tests/ros2/run_rmw_peer_lockout_loopback.sh; RosettePeerTable
+     *   (tests/formal), EveryPeerServed with TurnedAway "owed".
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.3.2 (SPDP), §8.5.4.1 (SEDP builtin endpoints)
@@ -996,7 +1006,7 @@ private:
     void owe_parked_peers() noexcept;
 
     /**
-     * @brief Admits the owed parked peer with the oldest lastSedpMs when a slot can be had.
+     * @brief Admits the owed peer with the oldest lastSedpMs when a slot can be had.
      *
      * tick() calls this once per pass, and wakes at least every
      * RTPS_PEER_SETTLE_MS / 4 while any peer is owed. One peer is admitted
@@ -1017,8 +1027,9 @@ private:
      *   admitted; no owed peer waits forever while slots can be made; no
      *   peer's age exceeds 2^31 - 1 ms after the call, however long it
      *   has been quiet.
-     * - Covered by: TC-PART-8.5.3-021; RosettePeerTable (tests/formal),
-     *   EveryPeerServed with two unreachable peers and ServeOrder "oldest";
+     * - Covered by: TC-PART-8.5.3-021; TC-PART-8.5.3-026 (a never-active
+     *   peer turned away); RosettePeerTable (tests/formal), EveryPeerServed
+     *   with two unreachable peers and ServeOrder "oldest";
      *   TC-PART-8.5.3-023 (age cap).
      *
      * References:
