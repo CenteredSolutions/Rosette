@@ -163,6 +163,13 @@ pass, is strongly fair.
   forever while the third stays pending. Marking the turned-away peer owed
   (`"owed"`) puts it in the oldest-first order, where a peer never active
   ranks first (TC-PART-8.5.3-026).
+* **The stall backoff is outside the model and needs no place in it.**
+  `serve_owed_peer()` passes over a stalled peer until a backoff counted
+  from its last activation has run out, doubling per stall up to
+  `RTPS_PEER_STALL_BACKOFF_MAX_MS`. The model has no clock: a peer whose
+  backoff runs out after a bounded time is one `ServeOwed` reaches later,
+  which its fairness already allows, so every result below holds with it.
+  The bound itself is checked in TC-PART-8.5.3-027.
 
 Two slots unless noted; `TurnedAway` is `"owed"` (the code) unless noted.
 

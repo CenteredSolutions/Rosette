@@ -974,8 +974,10 @@ private:
      * Verification:
      * - Correct means: only an idle peer is parked; a stalled peer only
      *   when no active peer is settled; the oldest of its kind; owed
-     *   exactly when it was stalled.
-     * - Covered by: TC-PART-8.5.3-011, TC-PART-8.5.3-020, TC-PART-8.5.3-022;
+     *   exactly when it was stalled; a stalled peer's stall count rises
+     *   by one (saturating) and a settled peer's is cleared.
+     * - Covered by: TC-PART-8.5.3-011, TC-PART-8.5.3-020, TC-PART-8.5.3-022,
+     *   TC-PART-8.5.3-028;
      *   RosettePeerTable (tests/formal), EveryPeerServed.
      *
      * References:
@@ -987,7 +989,8 @@ private:
     /**
      * @brief Notes a DATA or HEARTBEAT from a peer's SEDP announcer before it is routed.
      *
-     * DATA from an active peer restarts its settle time. A parked peer
+     * DATA from an active peer restarts its settle time, and DATA from any
+     * peer clears its stall backoff (PeerEntry::stalls). A parked peer
      * whose announcer sends a sequence number above the one kept when it
      * was parked has a new or withdrawn endpoint, and a pending peer is
      * still waiting for a slot: both are admitted, when a slot can be made,
@@ -1011,7 +1014,10 @@ private:
      * tick() calls this once per pass, and wakes at least every
      * RTPS_PEER_SETTLE_MS / 4 while any peer is owed. One peer is admitted
      * per call; admit_peer() parks an idle peer for it when the tier is full,
-     * and leaves it owed for the next call when none is idle.
+     * and leaves it owed for the next call when none is idle. A peer that
+     * stalled is passed over until its stall backoff, counted from its last
+     * activation, has run out, so a peer that cannot be reached is
+     * activated at most once per backoff.
      *
      * The same walk over the known peers caps each peer's age
      * (now_ms - lastSedpMs) at 2^31 - 1 ms, about 24.8 days, by moving
@@ -1023,8 +1029,11 @@ private:
      *   wrap-safely against lastSedpMs.
      *
      * Verification:
-     * - Correct means: the owed peer with the oldest stamp is the one
-     *   admitted; no owed peer waits forever while slots can be made; no
+     * - Correct means: the owed peer with the oldest stamp whose backoff
+     *   has run out is the one admitted; no owed peer waits forever while
+     *   slots can be made, nor longer than RTPS_PEER_STALL_BACKOFF_MAX_MS
+     *   plus one exchange timeout among peers that keep stalling
+     *   (TC-PART-8.5.3-027); no
      *   peer's age exceeds 2^31 - 1 ms after the call, however long it
      *   has been quiet.
      * - Covered by: TC-PART-8.5.3-021; TC-PART-8.5.3-026 (a never-active

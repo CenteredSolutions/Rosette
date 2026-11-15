@@ -8,8 +8,9 @@
  *
  * Built into participant_tier_spec_tests with RTPS_MAX_PEERS=2,
  * RTPS_MAX_KNOWN_PEERS=6, RTPS_PEER_SETTLE_MS=100,
- * RTPS_PEER_EXCHANGE_TIMEOUT_MS=500 and RTPS_PREEMPTIVE_ACKNACK_RETRY_MS=200,
- * so a third peer already finds the active tier full.
+ * RTPS_PEER_EXCHANGE_TIMEOUT_MS=500, RTPS_PREEMPTIVE_ACKNACK_RETRY_MS=200 and
+ * RTPS_PEER_STALL_BACKOFF_MAX_MS=2000, so a third peer already finds the
+ * active tier full and a stalled peer's backoff reaches its cap in two stalls.
  *
  * A simulated peer answers nothing unless a test says so. A reachable peer's
  * SEDP announcers answer the preemptive ACKNACK of its activation
@@ -19,6 +20,7 @@
 
 #include "participant_test_support.hpp"
 
+#include <algorithm>
 #include <map>
 
 namespace spec_test {
@@ -39,7 +41,8 @@ namespace {
 
 static_assert(RTPS_MAX_PEERS == 2 && RTPS_PEER_SETTLE_MS == 100u
                   && RTPS_PEER_EXCHANGE_TIMEOUT_MS == 500u
-                  && RTPS_PREEMPTIVE_ACKNACK_RETRY_MS == 200u,
+                  && RTPS_PREEMPTIVE_ACKNACK_RETRY_MS == 200u
+                  && RTPS_PEER_STALL_BACKOFF_MAX_MS == 2000u,
               "these tests assume two active slots and the timings in the file comment");
 
 /// HEARTBEAT count for the helpers: above every one sent before, so no
@@ -49,8 +52,8 @@ int32_t g_heartbeat_count = 0;
 /// Delivers a peer's SPDP announcement at `now_ms`.
 bool announce(RTPSParticipant& p, const GuidPrefix& prefix, Octet host, uint32_t now_ms) {
     std::vector<Octet> payload{};
-    const Locator meta = make_udpv4_locator(0xC0A80100u | host, 7410u);
-    const Locator user = make_udpv4_locator(0xC0A80100u | host, 7411u);
+    const Locator      meta = make_udpv4_locator(0xC0A80100u | host, 7410u);
+    const Locator      user = make_udpv4_locator(0xC0A80100u | host, 7411u);
     if (!build_spdp_payload(prefix, 30u, meta, payload, user)) {
         return false;
     }
@@ -86,10 +89,10 @@ bool deliver_announcement(RTPSParticipant& p, const GuidPrefix& prefix, bool pub
         }
     }
 
-    const EntityId writer = publication ? entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER
-                                        : entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER;
-    const EntityId reader = publication ? entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR
-                                        : entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR;
+    const EntityId     writer = publication ? entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER
+                                            : entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER;
+    const EntityId     reader = publication ? entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR
+                                            : entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR;
     std::vector<Octet> msg{};
     if (!build_data_message(prefix, reader, writer, payload, msg, SequenceNumber::from_int64(sn))) {
         return false;
@@ -105,10 +108,10 @@ bool acknowledge_sedp(RTPSParticipant& p, const GuidPrefix& prefix, bool publica
     SequenceNumberSet state{};
     state.bitmapBase = SequenceNumber::from_int64(acked + 1);
     state.numBits = 0u;
-    const EntityId reader = publications ? entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR
-                                         : entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR;
-    const EntityId writer = publications ? entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER
-                                         : entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER;
+    const EntityId     reader = publications ? entity_id::SEDP_BUILTIN_PUBLICATIONS_DETECTOR
+                                             : entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_DETECTOR;
+    const EntityId     writer = publications ? entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER
+                                             : entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER;
     std::vector<Octet> msg{};
     if (!build_acknack_message(prefix, reader, writer, state, 1, true, msg)) {
         return false;
@@ -135,6 +138,12 @@ bool is_parked(RTPSParticipant& p, const GuidPrefix& prefix) {
 bool is_owed(RTPSParticipant& p, const GuidPrefix& prefix) {
     const PeerEntry* e = record(p, prefix);
     return e != nullptr && e->owed;
+}
+
+/// The peer's stall count, or -1 when it has no record.
+int stalls_of(RTPSParticipant& p, const GuidPrefix& prefix) {
+    const PeerEntry* e = record(p, prefix);
+    return e != nullptr ? e->stalls : -1;
 }
 
 /// Delivers a GAP from a peer's publications announcer declaring [start, base) irrelevant.
@@ -291,7 +300,7 @@ Guid announced_writer(const GuidPrefix& prefix, int64_t sn) {
 // peer, and its announcement reaches the match table.
 static bool tc_part_8_5_3_011(std::string& err) {
     CaptureTransport tx{};
-    RTPSParticipant p(0u, 1u, tx);
+    RTPSParticipant  p(0u, 1u, tx);
     CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
     const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
     const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
@@ -334,7 +343,7 @@ static bool tc_part_8_5_3_011(std::string& err) {
 // it active; parking it unmatches that writer's reader proxy.
 static bool tc_part_8_5_3_012(std::string& err) {
     CaptureTransport tx{};
-    RTPSParticipant p(0u, 1u, tx);
+    RTPSParticipant  p(0u, 1u, tx);
     CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
 
     WriterConfig wcfg{};
@@ -383,7 +392,7 @@ static bool tc_part_8_5_3_012(std::string& err) {
 // matched to the discovery writer again, whose history then reaches it.
 static bool tc_part_8_5_3_013(std::string& err) {
     CaptureTransport tx{};
-    RTPSParticipant p(0u, 1u, tx);
+    RTPSParticipant  p(0u, 1u, tx);
     CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
 
     WriterConfig wcfg{};
@@ -437,7 +446,7 @@ static bool tc_part_8_5_3_013(std::string& err) {
 // cut short, or a payload naming another participant leaves it unchanged.
 static bool tc_part_8_5_3_014(std::string& err) {
     CaptureTransport tx{};
-    RTPSParticipant p(0u, 1u, tx);
+    RTPSParticipant  p(0u, 1u, tx);
     CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
     const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
     const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
@@ -454,7 +463,7 @@ static bool tc_part_8_5_3_014(std::string& err) {
     std::vector<Octet> bad_representation = valid;
     bad_representation[1] = 0x7Fu;
     const std::vector<Octet> truncated(valid.begin(), valid.begin() + 8);
-    std::vector<Octet> foreign{};
+    std::vector<Octet>       foreign{};
     CHECK(build_spdp_payload(make_prefix(0xD1u, 0xD2u, 0xD3u), 30u,
                              make_udpv4_locator(0xC0A80114u, 7410u), foreign),
           "SPDP payload build failed");
@@ -462,7 +471,7 @@ static bool tc_part_8_5_3_014(std::string& err) {
     const PeerEntry* expiring = record(p, a);
     CHECK(expiring != nullptr, "peer A keeps its record");
     const uint32_t expiry = expiring->leaseExpiryMs;
-    SpdpReader& reader = p.spdp_reader();
+    SpdpReader&    reader = p.spdp_reader();
     CHECK(!reader.on_data(a, nullptr, 0u, 1300u), "an empty payload is rejected");
     CHECK(!reader.on_data(a, bad_representation.data(),
                           static_cast<uint32_t>(bad_representation.size()), 1300u),
@@ -754,7 +763,8 @@ static bool tc_part_8_5_3_019(std::string& err) {
 // never settled. Inside the exchange timeout it keeps its slot; once its
 // last SEDP DATA is older than RTPS_PEER_EXCHANGE_TIMEOUT_MS it is stalled,
 // and is parked for a waiting peer as a settled one would be, but owed, so
-// the next tick tries it again in a settled peer's slot.
+// it is tried again in a settled peer's slot once its stall backoff (twice
+// the exchange timeout from its activation) has run out.
 static bool tc_part_8_5_3_020(std::string& err) {
     CaptureTransport tx{};
     RTPSParticipant  p(0u, 1u, tx);
@@ -780,8 +790,13 @@ static bool tc_part_8_5_3_020(std::string& err) {
     CHECK(hear_announcers(p, c, 1600u), "C's announcers answer");
     g_participant_test_now_ms = 1700u;
     p.tick(1700u);
+    CHECK(is_parked(p, a) && is_owed(p, a) && is_active(p, b),
+          "inside its backoff, the stalled peer waits although a settled peer could go");
+
+    g_participant_test_now_ms = 2000u;
+    p.tick(2000u);
     CHECK(is_active(p, a) && !is_owed(p, a) && is_parked(p, b),
-          "the next tick tries the owed peer again in the slot of the settled peer");
+          "once the backoff has run out, it is tried again in the slot of the settled peer");
     return true;
 }
 
@@ -1013,7 +1028,8 @@ static bool tc_part_8_5_3_025(std::string& err) {
 // two slots, each parked owed when it stalls; R, reachable, announced
 // itself once while both slots were busy. Waiting for R's next SPDP
 // announcement would leave R behind the rotation, since a stalled slot is
-// taken back by an owed peer on the tick after it stalls.
+// taken back by an owed peer whose backoff has run out on the tick after it
+// stalls.
 static bool tc_part_8_5_3_026(std::string& err) {
     CaptureTransport tx{};
     RTPSParticipant  p(0u, 1u, tx);
@@ -1028,21 +1044,100 @@ static bool tc_part_8_5_3_026(std::string& err) {
     CHECK(announce(p, c, 0x13u, 1500u) && is_active(p, c) && is_parked(p, a) && is_owed(p, a),
           "a third unreachable peer takes a stalled peer's slot, which is parked owed");
 
-    g_participant_test_now_ms = 1500u;
-    p.tick(1500u);
-    CHECK(is_active(p, a) && is_active(p, c) && is_owed(p, b),
-          "the owed peer takes the other stalled slot back");
+    for (uint32_t now = 1500u; now <= 2050u; now += 25u) {
+        g_participant_test_now_ms = now;
+        p.tick(now);
+    }
 
-    CHECK(announce(p, r, 0x14u, 1600u) && !is_active(p, r),
+    CHECK(is_active(p, a) && is_active(p, b) && is_parked(p, c) && is_owed(p, c),
+          "once their backoffs run out, the stalled peers take turns in the slots");
+
+    CHECK(announce(p, r, 0x14u, 2100u) && !is_active(p, r),
           "a reachable peer arriving while both slots are busy is turned away");
 
-    for (uint32_t now = 1625u; now <= 2125u && !is_active(p, r); now += 25u) {
+    for (uint32_t now = 2125u; now <= 2625u && !is_active(p, r); now += 25u) {
         g_participant_test_now_ms = now;
         p.tick(now);
     }
 
     CHECK(is_active(p, r), "the turned-away peer gets the first slot that stalls");
-    CHECK(hear_announcers(p, r, 2125u), "the reachable peer's announcers answer");
+    CHECK(hear_announcers(p, r, 2625u), "the reachable peer's announcers answer");
+    return true;
+}
+
+// Peers that cannot be reached take turns in the slots no faster than
+// their stall backoff allows, and no slower than its cap. Three
+// unreachable peers share two slots for 20 s: between two activations of
+// the same peer lie at least twice the exchange timeout (the first
+// backoff) and at most the cap plus one exchange timeout (the cap, and the
+// wait for a slot to stall). Without the backoff a slot would change hands
+// every exchange timeout.
+static bool tc_part_8_5_3_027(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    const GuidPrefix peers[3] = {make_prefix(0xA1u, 0xA2u, 0xA3u), make_prefix(0xB1u, 0xB2u, 0xB3u),
+                                 make_prefix(0xC1u, 0xC2u, 0xC3u)};
+    CHECK(announce(p, peers[0], 0x11u, 1000u) && announce(p, peers[1], 0x12u, 1000u)
+              && announce(p, peers[2], 0x13u, 1000u),
+          "three unreachable peers are recorded, two of them active");
+
+    uint32_t last[3] = {0u, 0u, 0u};
+    bool     was_active[3] = {false, false, false};
+    uint32_t min_gap = UINT32_MAX;
+    uint32_t max_gap = 0u;
+    int      activations = 0;
+    for (uint32_t now = 1000u; now <= 21000u; now += 25u) {
+        g_participant_test_now_ms = now;
+        p.tick(now);
+        for (int i = 0; i < 3; ++i) {
+            const bool active = is_active(p, peers[i]);
+            if (active && !was_active[i]) {
+                if (last[i] != 0u && now > 4000u) {
+                    min_gap = std::min(min_gap, now - last[i]);
+                    max_gap = std::max(max_gap, now - last[i]);
+                }
+
+                last[i] = now;
+                ++activations;
+            }
+
+            was_active[i] = active;
+        }
+    }
+
+    CHECK(min_gap >= 2u * RTPS_PEER_EXCHANGE_TIMEOUT_MS,
+          "no peer is activated again before its backoff has run out");
+    CHECK(max_gap <= RTPS_PEER_STALL_BACKOFF_MAX_MS + RTPS_PEER_EXCHANGE_TIMEOUT_MS + 25u,
+          "every peer is activated again within the cap and one exchange timeout");
+    CHECK(activations <= 3 * (20000 / static_cast<int>(RTPS_PEER_STALL_BACKOFF_MAX_MS)) + 6,
+          "the rotation settles at one activation per peer per cap");
+    return true;
+}
+
+// SEDP DATA from a peer clears its stall backoff: the data crossed the
+// network, so the peer is worth a prompt try. A parked stalled peer whose
+// new announcement arrives is reactivated at once, in the slot of a peer
+// that stalled after it, and no longer carries its stalls.
+static bool tc_part_8_5_3_028(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1100u),
+          "two unreachable peers are active");
+    CHECK(announce(p, c, 0x13u, 1550u) && is_parked(p, a) && stalls_of(p, a) == 1,
+          "the first to stall is parked for a third peer, with one stall");
+
+    CHECK(deliver_announcement(p, a, true, "rt/a", 1, 1700u),
+          "the parked peer's new announcement gets through");
+    CHECK(is_active(p, a) && stalls_of(p, a) == 0,
+          "it is reactivated at once, its backoff cleared");
+    CHECK(is_parked(p, b) && stalls_of(p, b) == 1,
+          "the peer that stalled next gives up its slot and starts its own backoff");
     return true;
 }
 
@@ -1118,6 +1213,15 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "owed peers, oldest first, so peers taking turns in the slots cannot keep "
                      "it out between its SPDP announcements.",
                      tc_part_8_5_3_026});
+    tests.push_back({"TC-PART-8.5.3-027",
+                     "§8.5.3.2: peers that keep stalling are activated again no sooner than "
+                     "their doubling backoff and no later than RTPS_PEER_STALL_BACKOFF_MAX_MS "
+                     "plus one exchange timeout.",
+                     tc_part_8_5_3_027});
+    tests.push_back({"TC-PART-8.5.3-028",
+                     "§8.5.3.2/§8.5.4.1: SEDP DATA from a parked stalled peer clears its "
+                     "backoff, and its new announcement reactivates it at once.",
+                     tc_part_8_5_3_028});
 }
 
 }  // namespace spec_test

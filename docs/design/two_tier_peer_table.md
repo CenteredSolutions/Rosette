@@ -297,6 +297,28 @@ be, and it stays owed this side's announcements, so it is tried again whenever
 a slot can be made. Without this rule such peers hold their slots for good and can
 lock reachable peers out (TLA+ model `RosettePeerTable`, `StallRule`).
 
+A stalled peer is tried again no sooner than its **stall backoff**, counted
+from its last activation: twice `RTPS_PEER_EXCHANGE_TIMEOUT_MS` after one
+stall, doubling with each stall in a row, up to
+`RTPS_PEER_STALL_BACKOFF_MAX_MS` (60 s). Each try costs a unicast SPDP
+announcement, a replay of every local endpoint, up to seven preemptive
+ACKNACKs per SEDP reader and the writers' HEARTBEATs, about 25 datagrams
+for a node with four endpoints. Without the backoff, ten peers that cannot
+be reached among 91 take turns in five free slots forever, a new try every
+two seconds and 14 datagrams/s in all, though no one is waiting for those
+slots. With it, the same ten get one try each per minute and cost 8
+datagrams/s, most of them the HEARTBEATs the SEDP writers send every
+heartbeat period to a reader that has not acknowledged them, which a
+stalled peer holding a slot costs whether or not it takes turns (11.7/s with
+a 30 s cap, 6.7/s with 120 s).
+
+SEDP DATA from the peer clears its backoff, since the data has crossed the
+network, as does settling. SPDP does not: a stalled peer's SPDP arrives all
+along, which is what made it stalled, and a parked peer's SPDP is not even
+decoded. A peer that restarts has a new GUID and is a new peer, tried at
+once. One whose path comes back otherwise waits at most the cap for its
+next try.
+
 ### Making room (parking)
 
 Peers are parked **on demand**, not as soon as they settle. A slot is freed
@@ -457,6 +479,11 @@ it really matches, plus a few for peers in their first exchange.
 * `RTPS_PEER_EXCHANGE_TIMEOUT_MS`: how long an active peer with no match may
   go without SEDP DATA, unsettled, before it counts as stalled; 10 s by
   default, and longer than `RTPS_PEER_SETTLE_MS`.
+* `RTPS_PEER_STALL_BACKOFF_MAX_MS`: the longest a peer that keeps stalling
+  waits between tries; 60 s by default, and at least
+  `RTPS_PEER_EXCHANGE_TIMEOUT_MS`. Lower it to retry a peer whose path has
+  come back sooner, at the cost of more traffic to peers that cannot be
+  reached.
 * `RTPS_PREEMPTIVE_ACKNACK_RETRY_MS`: how often a reliable reader resends its
   preemptive ACKNACK to a writer it has not heard; one heartbeat period by
   default.
@@ -502,7 +529,10 @@ Spec tests:
   a stalled peer is parked owed and tried again (`TC-PART-8.5.3-020`), and
   only when no settled peer can be parked instead (`TC-PART-8.5.3-022`); a
   peer turned away while stalled peers take turns in the slots is served
-  with the owed peers (`TC-PART-8.5.3-026`).
+  with the owed peers (`TC-PART-8.5.3-026`). Peers that keep stalling are
+  tried again no sooner than their backoff and no later than its cap
+  (`TC-PART-8.5.3-027`), and SEDP DATA clears a peer's backoff
+  (`TC-PART-8.5.3-028`).
 * SEDP reader (`TC-SEDP-8.5.5.1-*`, `TC-SRR-8.4.7.4-*`): a parked announcer's
   HEARTBEAT without new numbers is answered from the record and promotes
   nothing; one with a higher `lastSN` promotes the peer, and the first

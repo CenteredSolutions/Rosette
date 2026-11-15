@@ -286,8 +286,19 @@ struct DiscoveredParticipant {
 #  define RTPS_PEER_EXCHANGE_TIMEOUT_MS 10000u
 #endif
 
+/// The longest a peer that keeps stalling waits between activations. Each
+/// stall in a row doubles the wait, starting at twice
+/// RTPS_PEER_EXCHANGE_TIMEOUT_MS, so peers that cannot be reached stop
+/// taking turns in the slots every few seconds; the cap bounds how long one
+/// whose path has come back waits for its next try.
+#ifndef RTPS_PEER_STALL_BACKOFF_MAX_MS
+#  define RTPS_PEER_STALL_BACKOFF_MAX_MS 60000u
+#endif
+
 static_assert(RTPS_PEER_EXCHANGE_TIMEOUT_MS > RTPS_PEER_SETTLE_MS,
               "a peer must have the chance to settle before it counts as stalled");
+static_assert(RTPS_PEER_STALL_BACKOFF_MAX_MS >= RTPS_PEER_EXCHANGE_TIMEOUT_MS,
+              "a stalled peer cannot be tried again before its exchange would have stalled");
 // The first preemptive ACKNACK leaves at the match, so N attempts span N - 1
 // retry periods.
 static_assert((RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS - 1u) * RTPS_PREEMPTIVE_ACKNACK_RETRY_MS
@@ -304,6 +315,8 @@ static_assert(RTPS_MAX_PEERS < 255, "RTPS_MAX_PEERS must leave a one-octet slot 
 struct PeerEntry {
     /// activeSlot of a peer without an active slot.
     static constexpr uint8_t kNoActiveSlot = 0xFFu;
+    /// stalls saturates here; TIMEOUT << kMaxStalls is far above any cap.
+    static constexpr uint8_t kMaxStalls = 16u;
 
     GuidPrefix guidPrefix = {};
     /// The most reachable metatraffic unicast locator; RESERVED when the
@@ -338,6 +351,11 @@ struct PeerEntry {
     /// changed, parked stalled, or turned away while every slot was busy.
     /// RTPSParticipant::serve_owed_peer() admits it when a slot allows.
     bool owed = false;
+    /// Times in a row the peer was parked stalled, saturating at
+    /// kMaxStalls; its next turn waits out the backoff it sets
+    /// (stall_backoff_ms() in rtps/participant_peer_tiers.cpp). SEDP DATA
+    /// from the peer, or its settling, clears it.
+    uint8_t    stalls = 0;
 
     /// @brief Whether SEDP is exchanged with the peer.
     bool active() const noexcept { return activeSlot != kNoActiveSlot; }

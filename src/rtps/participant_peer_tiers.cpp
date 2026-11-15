@@ -43,7 +43,14 @@
  * bounds a peer whose SPDP arrives but whose SEDP exchange never completes
  * (an unreachable unicast locator, a firewall): SPDP keeps its lease alive,
  * and without the deadline it would hold its slot for good. It is parked
- * owed, so it is tried again when a slot is free.
+ * owed, so it is tried again when a slot is free, but no sooner than its
+ * stall backoff: twice RTPS_PEER_EXCHANGE_TIMEOUT_MS after its activation,
+ * doubling with each stall in a row, up to RTPS_PEER_STALL_BACKOFF_MAX_MS.
+ * Without it, a few peers that cannot be reached would take turns in every
+ * free slot, each turn replaying this participant's announcements and
+ * sending preemptive ACKNACKs to a locator that does not answer. SEDP DATA
+ * from the peer, or its settling, clears the backoff: SPDP cannot, since a
+ * stalled peer's SPDP arrives all along.
  *
  * Parking forgets nothing the peer needs. It already holds every
  * announcement and every `ros_discovery_info` sample this participant wrote,
@@ -66,7 +73,7 @@
  * replay has caught up, so an endpoint withdrawn while the peer was parked
  * leaves the listing too.
  *
- * Verification: TC-PART-8.5.3-011 to -026 (tests/spec), at network scale
+ * Verification: TC-PART-8.5.3-011 to -028 (tests/spec), at network scale
  * tests/ros2/discovery_scale, and as a design by the TLA+ models
  * RosettePeerTable and RosettePeerOutbound (tests/formal).
  *
@@ -81,6 +88,40 @@
 #include "log.hpp"
 
 namespace rosette::rtps {
+
+namespace {
+
+/**
+ * @brief How long after its last activation a peer that stalled `stalls`
+ *        times in a row may be activated again.
+ *
+ * serve_owed_peer() skips an owed peer younger than this. The wait starts
+ * at twice RTPS_PEER_EXCHANGE_TIMEOUT_MS, so a peer that has just stalled
+ * waits about as long again parked as it spent active, and doubles with
+ * each stall in a row up to RTPS_PEER_STALL_BACKOFF_MAX_MS.
+ *
+ * @param[in] stalls PeerEntry::stalls, 0 to PeerEntry::kMaxStalls.
+ * @return 0 for a peer that has not stalled, else the wait in ms.
+ *
+ * Verification:
+ * - Correct means: 0, then 2x, 4x, ... RTPS_PEER_EXCHANGE_TIMEOUT_MS,
+ *   never above RTPS_PEER_STALL_BACKOFF_MAX_MS and never overflowing.
+ * - Covered by: TC-PART-8.5.3-027.
+ *
+ * References:
+ * - docs/design/two_tier_peer_table.md, "Stalled"
+ */
+uint32_t stall_backoff_ms(uint8_t stalls) noexcept {
+    if (stalls == 0u) {
+        return 0u;
+    }
+
+    const uint64_t wait = static_cast<uint64_t>(RTPS_PEER_EXCHANGE_TIMEOUT_MS) << stalls;
+    return wait < RTPS_PEER_STALL_BACKOFF_MAX_MS ? static_cast<uint32_t>(wait)
+                                                 : RTPS_PEER_STALL_BACKOFF_MAX_MS;
+}
+
+}  // namespace
 
 bool RTPSParticipant::admit_peer(PeerEntry& peer, uint32_t now_ms) noexcept {
     if (peer.active()) {
@@ -173,8 +214,8 @@ RTPSParticipant::PeerIdleness RTPSParticipant::peer_idleness(const PeerEntry& pe
 
 void RTPSParticipant::park_peer(PeerEntry& peer) noexcept {
     const GuidPrefix prefix = peer.guidPrefix;
-    SequenceNumber publications;
-    SequenceNumber subscriptions;
+    SequenceNumber   publications;
+    SequenceNumber   subscriptions;
     (void)sedp_reader_.caught_up_with(prefix, publications, subscriptions);
     RTPS_LOG_I("participant", "peer parked %02x%02x%02x%02x%02x%02x at SEDP %lu/%lu",
                prefix.value[0], prefix.value[1], prefix.value[2], prefix.value[3], prefix.value[4],
@@ -236,8 +277,15 @@ bool RTPSParticipant::park_idle_peer(uint32_t now_ms) noexcept {
     park_peer(*parked);
 
     // A stalled peer has not received everything this participant
-    // announced; owing it them brings it back when a slot is free.
+    // announced; owing it them brings it back when a slot is free and its
+    // backoff has run out. A settled one has proved it can be reached.
     parked->owed = settled == nullptr;
+    if (settled != nullptr) {
+        parked->stalls = 0u;
+    } else if (parked->stalls < PeerEntry::kMaxStalls) {
+        ++parked->stalls;
+    }
+
     return true;
 }
 
@@ -247,6 +295,12 @@ void RTPSParticipant::on_announcer_traffic(const GuidPrefix& prefix, const Entit
     PeerEntry* peer = spdp_reader_.find_peer(prefix);
     if (peer == nullptr) {
         return;
+    }
+
+    // SEDP DATA crossed the network from the peer: whatever stalled its
+    // exchange before, it is worth a prompt try again.
+    if (is_data) {
+        peer->stalls = 0u;
     }
 
     if (peer->active()) {
@@ -322,15 +376,18 @@ void RTPSParticipant::serve_owed_peer(uint32_t now_ms) noexcept {
 
     // Oldest first: every activation stamps lastSedpMs, so peers that take
     // turns in a slot (stalled peers parked owed again) move behind one that
-    // has waited, and every owed peer is eventually served.
+    // has waited, and every owed peer is eventually served. A peer still in
+    // its stall backoff is passed over, so peers that cannot be reached are
+    // activated at most once per backoff instead of every time a slot stalls.
     PeerEntry* owed = nullptr;
     spdp_reader_.for_each_peer([&](PeerEntry& peer) noexcept {
         if (now_ms - peer.lastSedpMs > kMaxAgeMs) {
             peer.lastSedpMs = now_ms - kMaxAgeMs;
         }
 
-        if (peer.owed
-            && (owed == nullptr || now_ms - peer.lastSedpMs > now_ms - owed->lastSedpMs)) {
+        const uint32_t age = now_ms - peer.lastSedpMs;
+        if (peer.owed && age >= stall_backoff_ms(peer.stalls)
+            && (owed == nullptr || age > now_ms - owed->lastSedpMs)) {
             owed = &peer;
         }
     });
