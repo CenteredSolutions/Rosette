@@ -3,7 +3,8 @@
 
 /**
  * @file test_stateful_writer_clock_stub.cpp
- * @brief Test chip layer for StatefulWriter and SEDP tests: a clock the tests set explicitly.
+ * @brief Test chip layer for the StatefulWriter, SEDP, and stateful-endpoint fuzz tests: a clock
+ * the tests set explicitly.
  *
  * Replaces ports/chip/host/chip_host.cpp in this test binary, so
  * platform::monotonic_ms() returns g_stateful_writer_test_now_ms and timer behavior is
