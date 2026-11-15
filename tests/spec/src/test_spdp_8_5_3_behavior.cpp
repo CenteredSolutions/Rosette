@@ -194,8 +194,8 @@ static bool tc_spdp_8_5_3_002(std::string& err) {
     CHECK(obs.new_calls == 1, "refresh should not retrigger new peer callback");
     CHECK(r.peer_count() == 1u, "refresh should keep exactly one live peer");
 
-    CHECK(r.find_peer(gp) != nullptr && r.find_peer(gp)->active(),
-          "the peer should stay active across a refresh");
+    const PeerEntry* peer = r.find_peer(gp);
+    CHECK(peer != nullptr && peer->active(), "the peer should stay active across a refresh");
 
     r.tick(1300u);
     CHECK(obs.removed_calls == 1, "lease expiry should trigger peer removed callback");
@@ -205,7 +205,8 @@ static bool tc_spdp_8_5_3_002(std::string& err) {
           "rediscovery after expiry should be accepted");
     CHECK(obs.new_calls == 2, "rediscovery after removal should trigger new callback again");
 
-    CHECK(r.find_peer(gp) != nullptr && !r.find_peer(gp)->active() && r.active_count() == 0u,
+    peer = r.find_peer(gp);
+    CHECK(peer != nullptr && !peer->active() && r.active_count() == 0u,
           "a rediscovered peer starts pending: expiry freed its active slot");
     return true;
 }

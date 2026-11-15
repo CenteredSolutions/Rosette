@@ -675,9 +675,12 @@ public:
      * @param[in] prefix GUID prefix of the participant being parked.
      *
      * Verification:
-     * - Correct means: as remove_participant() for the table and its pairs; the
-     *   graph observer receives no callback.
-     * - Covered by: TC-PART-8.5.3-015.
+     * - Correct means: as remove_participant() for the table and its pairs:
+     *   each pair with the participant on either side, bound or waiting, is
+     *   reported unmatched once and no other pair is, and on_change fires
+     *   once per forgotten endpoint; the graph observer receives no callback.
+     *   Its cost is one pass over the pairs, whatever the endpoint count.
+     * - Covered by: TC-SEDP-8.5.5.1-017, TC-PART-8.5.3-015.
      *
      * References:
      * - docs/design/two_tier_peer_table.md
@@ -1295,6 +1298,9 @@ private:
      * - OMG DDSI-RTPS 2.5 §8.5.5.1 (endpoint matching)
      */
     void renumber_waiting_tickets() noexcept;
+    /// Forgets one recorded pair and reports it through on_unmatch.
+    void drop_pair(MatchRecord& m) noexcept;
+
     /// Reports every recorded pair involving `guid` as dissolved and forgets it.
     void dissolve(const Guid& guid, bool is_writer) noexcept;
 

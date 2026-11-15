@@ -233,13 +233,27 @@ inline constexpr SequenceNumber SEQUENCENUMBER_ZERO   {  0, 0 };
 // "The GuidPrefix_t is a 12-octet array used as the prefix of a GUID."
 // "The EntityId_t is a 4-octet structure."
 //  — §8.2.4, Table 8.2, p. 27
+//
+// Equality compares four octets at a time instead of calling memcmp. At -Os
+// (the rp2 port's level) GCC keeps memcmp an out-of-line call, and the match
+// and peer tables compare GUIDs once per record on every scan.
 // ============================================================
+
+/// @brief Reads four octets at any alignment as one word, for equality tests only.
+inline uint32_t octets_as_word(const void* p) noexcept {
+    uint32_t word;
+    memcpy(&word, p, sizeof(word));
+    return word;
+}
 
 struct GuidPrefix {
     Octet value[12] = {};
 
     bool operator==(const GuidPrefix& o) const noexcept {
-        return memcmp(value, o.value, 12) == 0;
+        return ((octets_as_word(value) ^ octets_as_word(o.value))
+                | (octets_as_word(value + 4) ^ octets_as_word(o.value + 4))
+                | (octets_as_word(value + 8) ^ octets_as_word(o.value + 8)))
+               == 0u;
     }
     bool operator!=(const GuidPrefix& o) const noexcept {
         return !(*this == o);
@@ -253,12 +267,14 @@ struct EntityId {
     Octet entityKind   = 0;     ///< 1-octet kind.
 
     bool operator==(const EntityId& o) const noexcept {
-        return memcmp(this, &o, sizeof(*this)) == 0;
+        return octets_as_word(this) == octets_as_word(&o);
     }
     bool operator!=(const EntityId& o) const noexcept {
         return !(*this == o);
     }
 };
+
+static_assert(sizeof(EntityId) == 4u, "EntityId equality reads it as one word");
 
 // §8.2.4, Table 8.4 — Pre-defined EntityId values (p. 28-29).
 namespace entity_id {
