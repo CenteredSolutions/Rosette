@@ -564,7 +564,9 @@ add_library(spec_littlefs STATIC
     ${ROSETTE_LITTLEFS_DIR}/lfs.c
     ${ROSETTE_LITTLEFS_DIR}/lfs_util.c
 )
-target_include_directories(spec_littlefs PUBLIC ${ROSETTE_LITTLEFS_DIR})
+# SYSTEM keeps Rosette's warnings out of lfs.h and lfs_util.h, whose inline
+# helpers persistence.hpp pulls into C++.
+target_include_directories(spec_littlefs SYSTEM PUBLIC ${ROSETTE_LITTLEFS_DIR})
 target_compile_options(spec_littlefs PRIVATE -w)
 
 add_executable(persistence_spec_tests
