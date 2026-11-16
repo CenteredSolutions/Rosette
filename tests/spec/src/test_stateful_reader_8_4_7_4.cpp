@@ -542,6 +542,47 @@ static bool tc_srr_8_4_7_4_013(std::string& err) {
     return true;
 }
 
+static bool tc_srr_8_4_7_4_014(std::string& err) {
+    CaptureTransport tx{};
+    const Guid       reader_guid = make_guid(0x11u, 0x12u, 0x13u, make_entity(1u, 2u, 3u, 0x04u));
+    const Guid       writer_guid = make_guid(0x21u, 0x22u, 0x23u, make_entity(4u, 5u, 6u, 0x03u));
+    const Locator    loc = make_udpv4_locator(0xC0A80114u, 7411u);
+
+    g_stateful_reader_test_now_ms = 1000u;
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::BEST_EFFORT, tx);
+    r.heartbeat_response_delay(0u);
+    CHECK(r.matched_writer_add(writer_guid, &loc, 1u, VENDORID_EPROSIMA),
+          "matched_writer_add should succeed");
+
+    ParseContext ctx{};
+    ctx.senderGuidPrefix = writer_guid.prefix;
+    ParsedHeartbeatFrag hbf{};
+    hbf.readerId = entity_id::UNKNOWN;
+    hbf.writerId = writer_guid.entityId;
+    hbf.writerSN = SequenceNumber::from_int64(3);
+    hbf.lastFragmentNum = 3u;
+    hbf.count = 1;
+    r.on_heartbeat_frag(ctx, hbf);
+
+    ParsedHeartbeat hb{};
+    hb.readerId = entity_id::UNKNOWN;
+    hb.writerId = writer_guid.entityId;
+    hb.firstSN = SequenceNumber::from_int64(1);
+    hb.lastSN = SequenceNumber::from_int64(3);
+    hb.count = 1;
+    hb.finalFlag = false;
+    r.on_heartbeat(ctx, hb);
+
+    const WriterProxy* proxy = r.matched_writer_lookup(writer_guid);
+    CHECK(proxy != nullptr && !proxy->has_missing_changes() && !proxy->acknackPending,
+          "a BEST_EFFORT reader marks nothing MISSING and owes no ACKNACK");
+
+    g_stateful_reader_test_now_ms = 60000u;
+    (void)r.tick(g_stateful_reader_test_now_ms);
+    CHECK(tx.sent.empty(), "a BEST_EFFORT reader never sends an ACKNACK or NACK_FRAG");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.7.4-001",
                      "§8.4.7.4: matched_writer_add creates one WriterProxy for a newly matched writer, and matched_writer_remove removes it from the matched set.",
@@ -600,6 +641,10 @@ void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
                      "arrived makes it MISSING, and the next final HEARTBEAT is answered with "
                      "an ACKNACK for it.",
                      tc_srr_8_4_7_4_013});
+    tests.push_back({"TC-SRR-8.4.7.4-014",
+                     "§8.4.11: a BEST_EFFORT reader ignores HEARTBEAT and HEARTBEAT_FRAG: it "
+                     "marks nothing MISSING and sends no ACKNACK or NACK_FRAG.",
+                     tc_srr_8_4_7_4_014});
 }
 
 } // namespace spec_test

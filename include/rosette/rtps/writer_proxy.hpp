@@ -329,8 +329,21 @@ public:
      * @brief Records a preemptive ACKNACK sent, and owes the next one while the writer is
      * unheard and attempts are left.
      *
+     * The retry rides on the HEARTBEAT-response deadline: the next one is owed by setting
+     * acknackPending, which on_acknack_sent() has just cleared, so StatefulReader::tick()
+     * sends it as a preemptive ACKNACK while the writer is unheard. on_heard() cancels it.
+     *
      * @param[in] now_ms   rosette::platform::monotonic_ms() when it was sent.
      * @param[in] retry_ms RTPS_PREEMPTIVE_ACKNACK_RETRY_MS: when the next one is due.
+     *
+     * Verification:
+     * - Correct means: each call advances acknackCount and spends one attempt; while the
+     *   writer is unheard and attempts remain, the next is due retry_ms after now_ms;
+     *   otherwise nothing is owed, so a reader sends at most its attempt budget.
+     * - Covered by: TC-SRR-8.4.7.4-008, TC-SRR-8.4.7.4-010.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.7.4 (preemptive ACKNACK), §8.3.7.1 (ACKNACK count)
      */
     void on_preemptive_acknack_sent(uint32_t now_ms, uint32_t retry_ms) noexcept {
         on_acknack_sent();

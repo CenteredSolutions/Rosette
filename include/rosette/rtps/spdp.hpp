@@ -277,15 +277,6 @@ struct DiscoveredParticipant {
 #define RTPS_PEER_SETTLE_MS 2000u
 #endif
 
-/// How long an active peer that shares no match may go without sending SEDP
-/// DATA, and without settling, before its slot may be given to another peer:
-/// its exchange with this participant is taken to be stalled (an unreachable
-/// unicast locator, a firewall). The peer stays owed this participant's
-/// announcements and is tried again when a slot is free.
-#ifndef RTPS_PEER_EXCHANGE_TIMEOUT_MS
-#  define RTPS_PEER_EXCHANGE_TIMEOUT_MS 10000u
-#endif
-
 /// The longest a peer that keeps stalling waits between activations. Each
 /// stall in a row doubles the wait, starting at twice
 /// RTPS_PEER_EXCHANGE_TIMEOUT_MS, so peers that cannot be reached stop
@@ -305,7 +296,8 @@ static_assert((RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS - 1u) * RTPS_PREEMPTIVE_
                   > RTPS_PEER_EXCHANGE_TIMEOUT_MS,
               "the SEDP readers' preemptive ACKNACKs must outlast the exchange deadline, "
               "or an empty announcer whose answers were lost keeps its peer from settling "
-              "until it stalls");
+              "until it stalls; the default RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS "
+              "always does");
 
 static_assert(RTPS_MAX_KNOWN_PEERS >= RTPS_MAX_PEERS && RTPS_MAX_KNOWN_PEERS < 256,
               "RTPS_MAX_KNOWN_PEERS must hold every active peer and fit a one-octet index");

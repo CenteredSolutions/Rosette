@@ -390,7 +390,11 @@ void StatefulReader::on_heartbeat(const ParseContext&    ctx,
         return;
     }
 
-    if (msg.readerId != entity_id::UNKNOWN && msg.readerId != guid_.entityId) {
+    // §8.4.11: a BEST_EFFORT reader takes no part in the reliable protocol.
+    // Its newness test ignores the proxy's MISSING and LOST sets, so a
+    // HEARTBEAT has nothing to tell it, and it must not owe an ACKNACK.
+    if ((msg.readerId != entity_id::UNKNOWN && msg.readerId != guid_.entityId)
+        || reliability_ != ReliabilityKind::RELIABLE) {
         return;
     }
 
@@ -442,7 +446,9 @@ void StatefulReader::on_heartbeat_frag(const ParseContext&       ctx,
         return;
     }
 
-    if (msg.readerId != entity_id::UNKNOWN && msg.readerId != guid_.entityId) {
+    // §8.4.11: as in on_heartbeat(), a BEST_EFFORT reader repairs nothing.
+    if ((msg.readerId != entity_id::UNKNOWN && msg.readerId != guid_.entityId)
+        || reliability_ != ReliabilityKind::RELIABLE) {
         return;
     }
 

@@ -989,6 +989,14 @@ enum class TopicKind : uint32_t {
 /// form) from costing a datagram every retry period for the whole match.
 #  define RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS 3u
 #endif
+#ifndef RTPS_PEER_EXCHANGE_TIMEOUT_MS
+/// How long an active peer that shares no match may go without sending SEDP
+/// DATA, and without settling, before its slot may be given to another peer:
+/// its exchange with this participant is taken to be stalled (an unreachable
+/// unicast locator, a firewall). The peer stays owed this participant's
+/// announcements and is tried again when a slot is free.
+#  define RTPS_PEER_EXCHANGE_TIMEOUT_MS 10000u
+#endif
 #ifndef RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS
 /// As RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS, for the builtin SEDP readers. A
 /// peer settles only once both of its SEDP announcers are heard, and an
@@ -997,8 +1005,11 @@ enum class TopicKind : uint32_t {
 /// (RTPS_PEER_EXCHANGE_TIMEOUT_MS): the first goes out at the match, so the
 /// last leaves (attempts - 1) retry periods later. A peer still unheard at
 /// the deadline is stalled, and its next activation matches afresh and asks
-/// again.
-#  define RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS 7u
+/// again. The default is the fewest attempts whose last leaves after the
+/// deadline, so it follows RTPS_PREEMPTIVE_ACKNACK_RETRY_MS: 7 at the
+/// default 2 s retry and 10 s deadline.
+#  define RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS \
+      (RTPS_PEER_EXCHANGE_TIMEOUT_MS / RTPS_PREEMPTIVE_ACKNACK_RETRY_MS + 2u)
 #endif
 
 /// Most writers one user StatefulReader matches at once (its cap in the
