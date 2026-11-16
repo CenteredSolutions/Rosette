@@ -94,6 +94,11 @@ public:
     /// (eProsima, RTI) rather than 1 (StatefulReader::send_preemptive_acknack()).
     bool zeroBaseAcknack = false;
 
+    static_assert(RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS <= 255u
+                      && RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS <= 255u,
+                  "preemptive ACKNACK attempts are counted in one octet: raise "
+                  "RTPS_PREEMPTIVE_ACKNACK_RETRY_MS or lower the attempt budgets");
+
     /// Preemptive ACKNACKs still to send while the writer is unheard, the
     /// next included (RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS, or the builtin
     /// readers' RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS, at match).

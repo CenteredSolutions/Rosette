@@ -611,6 +611,11 @@ private:
      */
     void record_change(WriterProxy& proxy, const SequenceNumber& sn) noexcept;
 
+    /// @brief Records that a reliable writer holds `sn`, for a DATA this
+    ///        reader drops (past its window, or no buffer to keep it); no-op
+    ///        for a null proxy.
+    void note_dropped(WriterProxy* proxy, const SequenceNumber& sn) noexcept;
+
     /**
      * @brief Resolves a change that will never be delivered, so it is never requested again.
      *

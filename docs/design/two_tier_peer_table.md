@@ -535,7 +535,9 @@ Spec tests:
   with the owed peers (`TC-PART-8.5.3-026`). Peers that keep stalling are
   tried again no sooner than their backoff and no later than its cap
   (`TC-PART-8.5.3-027`), and SEDP DATA clears a peer's backoff
-  (`TC-PART-8.5.3-028`).
+  (`TC-PART-8.5.3-028`). An owed peer whose record cannot rebuild it, its
+  user traffic at another address than its metatraffic, waits for its own
+  announcement and holds back no owed peer behind it (`TC-PART-8.5.3-029`).
 * SEDP reader (`TC-SEDP-8.5.5.1-*`, `TC-SRR-8.4.7.4-*`): a parked announcer's
   HEARTBEAT without new numbers is answered from the record and promotes
   nothing; one with a higher `lastSN` promotes the peer, and the first

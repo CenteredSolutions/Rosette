@@ -1141,6 +1141,45 @@ static bool tc_part_8_5_3_028(std::string& err) {
     return true;
 }
 
+// A turned-away peer whose record cannot rebuild it (its user traffic at
+// another address than its metatraffic) is activated only from its own
+// announcement. Owed, it must not hold back a reachable owed peer behind it
+// when a slot stalls.
+static bool tc_part_8_5_3_029(std::string& err) {
+    CaptureTransport tx{};
+    RTPSParticipant  p(0u, 1u, tx);
+    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix n = make_prefix(0xD1u, 0xD2u, 0xD3u);
+    const GuidPrefix r = make_prefix(0xE1u, 0xE2u, 0xE3u);
+
+    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1000u),
+          "two unreachable peers are active");
+
+    std::vector<Octet> payload{};
+    CHECK(build_spdp_payload(n, 30u, make_udpv4_locator(0xC0A80115u, 7410u), payload,
+                             make_udpv4_locator(0xC0A80116u, 7411u)),
+          "SPDP payload should build");
+    g_participant_test_now_ms = 1100u;
+    CHECK(p.spdp_reader().on_data(n, payload.data(), static_cast<uint32_t>(payload.size()), 1100u),
+          "the split-address peer's announcement is accepted");
+    const PeerEntry* split = record(p, n);
+    CHECK(split != nullptr && split->owed && !split->rebuildable(),
+          "it is turned away owed, with a record that cannot rebuild it");
+
+    CHECK(announce(p, r, 0x14u, 1200u) && is_owed(p, r) && !is_active(p, r),
+          "a reachable peer is turned away owed behind it");
+
+    for (uint32_t now = 1225u; now <= 1700u && !is_active(p, r); now += 25u) {
+        g_participant_test_now_ms = now;
+        p.tick(now);
+    }
+
+    CHECK(is_active(p, r), "the reachable peer gets the first slot that stalls");
+    return true;
+}
+
 void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
     tests.push_back({"TC-PART-8.5.3-011",
                      "§8.5.3.2/§8.5.4.1: a peer finding the active tier full waits until a "
@@ -1222,6 +1261,10 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "§8.5.3.2/§8.5.4.1: SEDP DATA from a parked stalled peer clears its "
                      "backoff, and its new announcement reactivates it at once.",
                      tc_part_8_5_3_028});
+    tests.push_back({"TC-PART-8.5.3-029",
+                     "§8.5.3: an owed peer whose record cannot rebuild it does not hold back the "
+                     "owed peers behind it.",
+                     tc_part_8_5_3_029});
 }
 
 }  // namespace spec_test

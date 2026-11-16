@@ -1017,7 +1017,9 @@ private:
      * and leaves it owed for the next call when none is idle. A peer that
      * stalled is passed over until its stall backoff, counted from its last
      * activation, has run out, so a peer that cannot be reached is
-     * activated at most once per backoff.
+     * activated at most once per backoff. A peer whose record cannot
+     * rebuild it (SpdpReader::can_activate()) is passed over too: only its
+     * own announcement can activate it.
      *
      * The same walk over the known peers caps each peer's age
      * (now_ms - lastSedpMs) at 2^31 - 1 ms, about 24.8 days, by moving
@@ -1030,7 +1032,8 @@ private:
      *
      * Verification:
      * - Correct means: the owed peer with the oldest stamp whose backoff
-     *   has run out is the one admitted; no owed peer waits forever while
+     *   has run out, among those that can be activated, is the one
+     *   admitted; no owed peer waits forever while
      *   slots can be made, nor longer than RTPS_PEER_STALL_BACKOFF_MAX_MS
      *   plus one exchange timeout among peers that keep stalling
      *   (TC-PART-8.5.3-027); no
@@ -1039,7 +1042,8 @@ private:
      * - Covered by: TC-PART-8.5.3-021; TC-PART-8.5.3-026 (a never-active
      *   peer turned away); RosettePeerTable (tests/formal), EveryPeerServed
      *   with two unreachable peers and ServeOrder "oldest";
-     *   TC-PART-8.5.3-023 (age cap).
+     *   TC-PART-8.5.3-023 (age cap); TC-PART-8.5.3-029 (a peer that
+     *   cannot be activated holds no one back).
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.4.1 (SEDP builtin endpoints, TRANSIENT_LOCAL replay)

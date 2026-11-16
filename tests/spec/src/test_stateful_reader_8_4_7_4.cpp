@@ -453,6 +453,8 @@ static bool tc_srr_8_4_7_4_011(std::string& err) {
 
     const WriterProxy* proxy = r.matched_writer_lookup(writer_guid);
     CHECK(proxy->heard, "a DATA dropped for want of a buffer marks the writer heard");
+    CHECK(proxy->is_missing(data.writerSN),
+          "and its change is MISSING, so the reader is not caught up");
     CHECK(r.ms_until_next_timer(1000u) == UINT32_MAX, "and no preemptive ACKNACK is owed");
     r.tick(1000u + RTPS_PREEMPTIVE_ACKNACK_RETRY_MS);
     CHECK(tx.sent.size() == 1u, "none is sent again");
@@ -583,6 +585,55 @@ static bool tc_srr_8_4_7_4_014(std::string& err) {
     return true;
 }
 
+static bool tc_srr_8_4_7_4_015(std::string& err) {
+    CaptureTransport tx{};
+    const Guid       reader_guid = make_guid(0x11u, 0x12u, 0x13u, make_entity(1u, 2u, 3u, 0xC7u));
+    const Guid       data_writer = make_guid(0x21u, 0x22u, 0x23u, make_entity(4u, 5u, 6u, 0xC2u));
+    const Guid       frag_writer = make_guid(0x31u, 0x32u, 0x33u, make_entity(4u, 5u, 6u, 0xC2u));
+    const Locator    loc = make_udpv4_locator(0xC0A80114u, 7411u);
+
+    g_stateful_reader_test_now_ms = 1000u;
+    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx);
+    CHECK(r.matched_writer_add(data_writer, &loc, 1u, VENDORID_EPROSIMA)
+              && r.matched_writer_add(frag_writer, &loc, 1u, VENDORID_EPROSIMA),
+          "matched_writer_add should succeed");
+
+    // SN 65 lies past a fresh proxy's 64-change window, so neither copy is
+    // kept; each still shows the writer holds it.
+    const Octet  payload[4] = {0x00u, 0x01u, 0x00u, 0x00u};
+    ParseContext ctx{};
+    ParsedData   data{};
+    data.readerId = reader_guid.entityId;
+    data.writerId = data_writer.entityId;
+    data.writerSN = SequenceNumber::from_int64(65);
+    data.dataFlag = true;
+    data.serializedPayload = payload;
+    data.serializedPayloadSize = sizeof(payload);
+    ctx.senderGuidPrefix = data_writer.prefix;
+    r.on_data(ctx, data);
+
+    ParsedDataFrag df{};
+    df.readerId = reader_guid.entityId;
+    df.writerId = frag_writer.entityId;
+    df.writerSN = SequenceNumber::from_int64(65);
+    df.fragmentStartingNum = 1u;
+    df.fragmentsInSubmessage = 1u;
+    df.fragmentSize = 4u;
+    df.dataSize = 8u;
+    df.fragmentPayload = payload;
+    df.fragmentPayloadSize = sizeof(payload);
+    ctx.senderGuidPrefix = frag_writer.prefix;
+    r.on_data_frag(ctx, df);
+
+    const WriterProxy* by_data = r.matched_writer_lookup(data_writer);
+    const WriterProxy* by_frag = r.matched_writer_lookup(frag_writer);
+    CHECK(by_data != nullptr && by_data->heard && by_data->has_missing_changes(),
+          "a DATA past the window leaves the changes below it MISSING");
+    CHECK(by_frag != nullptr && by_frag->heard && by_frag->has_missing_changes(),
+          "a DATA_FRAG past the window leaves the changes below it MISSING");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.7.4-001",
                      "§8.4.7.4: matched_writer_add creates one WriterProxy for a newly matched writer, and matched_writer_remove removes it from the matched set.",
@@ -645,6 +696,11 @@ void append_stateful_reader_tests_8_4_7_4(std::vector<TestCase>& tests) {
                      "§8.4.11: a BEST_EFFORT reader ignores HEARTBEAT and HEARTBEAT_FRAG: it "
                      "marks nothing MISSING and sends no ACKNACK or NACK_FRAG.",
                      tc_srr_8_4_7_4_014});
+    tests.push_back({"TC-SRR-8.4.7.4-015",
+                     "§8.4.10.4: a reliable reader that cannot keep a DATA or DATA_FRAG (past "
+                     "its window) still records that the writer holds it, so it is not caught "
+                     "up until the change is received or resolved.",
+                     tc_srr_8_4_7_4_015});
 }
 
 } // namespace spec_test

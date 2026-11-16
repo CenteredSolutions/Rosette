@@ -178,6 +178,7 @@ void StatefulReader::on_data(const ParseContext& ctx,
     }
 
     if (proxy && !is_new_change(*proxy, msg.writerSN)) {
+        note_dropped(proxy, msg.writerSN);
         RTPS_LOG_T("reader", "DATA SN=%d:%lu from %02x%02x%02x%02x not new, dropped",
                    static_cast<int>(msg.writerSN.high),
                    static_cast<unsigned long>(msg.writerSN.low), ctx.senderGuidPrefix.value[0],
@@ -216,6 +217,7 @@ void StatefulReader::on_data(const ParseContext& ctx,
         if (!payload.valid()) {
             RTPS_LOG_E("reader", "buf_alloc failed for DATA payload size=%lu",
                        static_cast<unsigned long>(msg.serializedPayloadSize));
+            note_dropped(proxy, msg.writerSN);
             return;
         }
         copy_size = (msg.serializedPayloadSize <= payload.capacity())
@@ -286,8 +288,16 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
         return;
     }
 
+    // As in on_data(): the writer holds writerSN, so it is MISSING until it
+    // assembles. Without this a reader that has heard only fragments, or one
+    // past the proxy's window, reports itself caught up
+    // (SedpReader::caught_up_with()), and a peer can settle with its
+    // announcement half received.
     if (proxy) {
         proxy->on_heard();
+        if (reliability_ == ReliabilityKind::RELIABLE) {
+            proxy->missing_changes_update(msg.writerSN);
+        }
     }
 
     // A fragment of a sample already delivered (the writer resends whole
@@ -316,14 +326,6 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
             static_cast<unsigned long>(msg.dataSize), static_cast<unsigned>(msg.fragmentSize));
         if (proxy) account_undelivered(*proxy, msg.writerSN);
         return;
-    }
-
-    // The writer holds this change, so it is MISSING until it assembles.
-    // Without this a reader that has heard only fragments reports itself
-    // caught up (SedpReader::caught_up_with()), and a peer can settle with
-    // its announcement half received.
-    if (proxy != nullptr && reliability_ == ReliabilityKind::RELIABLE) {
-        proxy->missing_changes_update(msg.writerSN);
     }
 
     RTPS_LOG_T("reader", "DATA_FRAG SN=%d:%lu frag=%lu/%lu size=%lu",
@@ -768,6 +770,17 @@ void StatefulReader::record_change(WriterProxy& proxy, const SequenceNumber& sn)
 {
     if (reliability_ != ReliabilityKind::RELIABLE) proxy.lost_changes_update(sn);
     proxy.received_change_set(sn);
+}
+
+void StatefulReader::note_dropped(WriterProxy* proxy, const SequenceNumber& sn) noexcept {
+    // §8.4.10.4: the writer holds sn whatever became of this copy, so it is
+    // MISSING until received or resolved: requested at the next HEARTBEAT,
+    // and the reader is not caught up meanwhile. A change already resolved
+    // stays so. Only a change that is dropped is marked here: on_data()
+    // takes a change MISSING on arrival for a repair.
+    if (proxy != nullptr && reliability_ == ReliabilityKind::RELIABLE) {
+        proxy->missing_changes_update(sn);
+    }
 }
 
 void StatefulReader::account_undelivered(WriterProxy& proxy, const SequenceNumber& sn) noexcept

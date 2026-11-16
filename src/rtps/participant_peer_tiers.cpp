@@ -73,7 +73,7 @@
  * replay has caught up, so an endpoint withdrawn while the peer was parked
  * leaves the listing too.
  *
- * Verification: TC-PART-8.5.3-011 to -028 (tests/spec), at network scale
+ * Verification: TC-PART-8.5.3-011 to -029 (tests/spec), at network scale
  * tests/ros2/discovery_scale, and as a design by the TLA+ models
  * RosettePeerTable and RosettePeerOutbound (tests/formal).
  *
@@ -379,6 +379,10 @@ void RTPSParticipant::serve_owed_peer(uint32_t now_ms) noexcept {
     // has waited, and every owed peer is eventually served. A peer still in
     // its stall backoff is passed over, so peers that cannot be reached are
     // activated at most once per backoff instead of every time a slot stalls.
+    // A record that cannot rebuild its peer (user traffic at another address
+    // than its metatraffic) is activated only from its own announcement, so
+    // it is passed over here: picked, it would fail every tick and hold back
+    // every owed peer behind it.
     PeerEntry* owed = nullptr;
     spdp_reader_.for_each_peer([&](PeerEntry& peer) noexcept {
         if (now_ms - peer.lastSedpMs > kMaxAgeMs) {
@@ -386,7 +390,7 @@ void RTPSParticipant::serve_owed_peer(uint32_t now_ms) noexcept {
         }
 
         const uint32_t age = now_ms - peer.lastSedpMs;
-        if (peer.owed && age >= stall_backoff_ms(peer.stalls)
+        if (peer.owed && age >= stall_backoff_ms(peer.stalls) && spdp_reader_.can_activate(peer)
             && (owed == nullptr || age > now_ms - owed->lastSedpMs)) {
             owed = &peer;
         }
