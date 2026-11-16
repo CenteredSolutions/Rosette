@@ -760,15 +760,18 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
     // A payload allocated with headroom is framed in place (§9.4.5.3); the
     // HEARTBEAT then needs tailroom in the same block and a payload that
     // ends on a 4-octet boundary (§9.4.1), since in-place bytes cannot be
-    // padded. A copied DATA is padded to the boundary instead. Either way the
-    // message must fit the datagram limit; otherwise the HEARTBEAT goes in a
-    // datagram of its own.
+    // padded. A copied DATA is padded to the boundary instead, unless it is
+    // preframed: its encapsulation options are its own and cannot record the
+    // padding (DDS-XTypes 1.3 §7.6.3.1.2). Either way the message must fit
+    // the datagram limit; otherwise the HEARTBEAT goes in a datagram of its
+    // own.
     const bool in_place = ch.payload.valid()
                        && ch.payload.headroom_available() >= kRtpsDataHeadroom + inline_qos_size;
-    const uint32_t pad = in_place ? 0u : (4u - (ch.payload.size & 3u)) & 3u;
-    const bool framable = !in_place
-                       || (ch.payload.capacity() - ch.payload.size >= kRtpsHeartbeatTailroom
-                           && (ch.payload.size & 3u) == 0u);
+    const bool     aligned = (ch.payload.size & 3u) == 0u;
+    const uint32_t pad = in_place || ch.preframed ? 0u : (4u - (ch.payload.size & 3u)) & 3u;
+    const bool     framable =
+        in_place ? aligned && ch.payload.capacity() - ch.payload.size >= kRtpsHeartbeatTailroom
+                     : aligned || !ch.preframed;
     const bool inline_hb = heartbeat && framable
                         && data_datagram + pad + kRtpsHeartbeatTailroom <= limit;
 
@@ -780,14 +783,13 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
         SequenceNumber first{};
         SequenceNumber last{};
         heartbeat_range(first, last);
-        const bool ok = builder_.append_data(proxy.remoteReaderGuid.entityId, guid_.entityId,
-                                             ch.sequenceNumber, ch.payload,
-                                             ch.kind != ChangeKind::ALIVE, ch.inlineQos,
-                                             /*pad_to_boundary=*/inline_hb)
-                     && (!inline_hb
-                         || builder_.append_heartbeat(proxy.remoteReaderGuid.entityId,
-                                                      guid_.entityId, first, last,
-                                                      heartbeatCount_, /*final=*/false));
+        const bool ok =
+            builder_.append_data(proxy.remoteReaderGuid.entityId, guid_.entityId, ch.sequenceNumber,
+                                 ch.payload, ch.kind != ChangeKind::ALIVE, ch.inlineQos,
+                                 /*pad_to_boundary=*/inline_hb, ch.preframed)
+            && (!inline_hb
+                || builder_.append_heartbeat(proxy.remoteReaderGuid.entityId, guid_.entityId, first,
+                                             last, heartbeatCount_, /*final=*/false));
         if (ok) {
             BufRef buf = builder_.finish();
             sent = send_counted(buf, dest);

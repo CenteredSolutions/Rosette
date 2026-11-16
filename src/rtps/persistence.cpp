@@ -135,14 +135,16 @@ bool LittleFsPersistenceBackend::load(const EntityId& writer, HistoryChange& out
     out.clear();
     out.kind = ChangeKind::ALIVE;
     out.sequenceNumber = SequenceNumber{hdr.snHigh, hdr.snLow};
-    out.preframed = (hdr.flags & LittleFsPersistenceHeader::kFlagPreframed) != 0u;
     out.payload = static_cast<BufRef&&>(payload);
     return true;
 }
 
 bool LittleFsPersistenceBackend::store(const EntityId&      writer,
                                        const HistoryChange& change) noexcept {
-    if (!lfs_ || !change.payload.valid()) {
+    // A preframed change is an SEDP announcement, whose GUIDs and locators
+    // belong to this boot; load() yields only ALIVE changes, so a stored
+    // disposal would come back alive.
+    if (!lfs_ || !change.payload.valid() || change.preframed || change.kind != ChangeKind::ALIVE) {
         return false;
     }
 
@@ -163,7 +165,6 @@ bool LittleFsPersistenceBackend::store(const EntityId&      writer,
     LittleFsPersistenceHeader hdr{};
     hdr.magic = LittleFsPersistenceHeader::kMagic;
     hdr.version = LittleFsPersistenceHeader::kVersion;
-    hdr.flags = change.preframed ? LittleFsPersistenceHeader::kFlagPreframed : 0u;
     memcpy(hdr.entityId, &writer, sizeof(hdr.entityId));
     hdr.snHigh = change.sequenceNumber.high;
     hdr.snLow = change.sequenceNumber.low;
