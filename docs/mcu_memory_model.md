@@ -336,7 +336,8 @@ stock `ros2 node list` sees the firmware's node.
 
 ### RTPS core used directly (`rosette_rtps`, as in `rtps_chatter`)
 
-`cmake/rosette_rtps.cmake` takes a smaller set of board inputs:
+`cmake/rosette_rtps.cmake` takes the same model as the rmw inputs, at the RTPS
+level. The network-sized inputs come from the board or the command line:
 
 | Knob | Default | What it sizes |
 | --- | ---: | --- |
@@ -344,11 +345,25 @@ stock `ros2 node list` sees the firmware's node.
 | `ROSETTE_RTPS_MAX_SAMPLE_SIZE` | 4096 | largest pool class |
 | `ROSETTE_RTPS_MAX_SAMPLE_BLOCKS` | 2 | count of the largest class |
 | `ROSETTE_RTPS_MAX_PEERS` | 8 | peer table |
+| `ROSETTE_RTPS_MAX_KNOWN_PEERS` | 8 | known participants, active or parked (68 octets each) |
 | `ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS` | 64 | remote writer and reader records |
+| `ROSETTE_RTPS_MAX_MATCHED_ENDPOINTS` | 8 | per-endpoint match cap |
+| `ROSETTE_RTPS_MATCHED_READERS` / `_WRITERS` | every endpoint at its cap | the shared proxy pools |
+| `ROSETTE_RTPS_MATCH_WAITERS` | 8 | matches waiting for a proxy |
 | `ROSETTE_RTPS_LOG_LEVEL` | 2 | log verbosity (flash, not RAM) |
 
-The endpoint slot counts are fixed at four writers and four readers in that
-file; a firmware with a different shape edits them there.
+The inputs the code decides are set by the firmware before the include, as
+normal variables, since every slot is RAM whether it is used or not
+(`examples/rtps_chatter/CMakeLists.txt` sets one writer, one reader, depth 4,
+and 128 octets of names, which takes its participant from 26,864 octets to
+13,664):
+
+| Knob | Default | What it sizes |
+| --- | ---: | --- |
+| `ROSETTE_RTPS_MAX_WRITERS` | 4 | writer slots and local writer records |
+| `ROSETTE_RTPS_MAX_READERS` | 4 | reader slots and local reader records |
+| `ROSETTE_RTPS_MAX_WRITER_DEPTH` | 8 | every writer slot (the deepest `create_writer<D>()`) |
+| `ROSETTE_RTPS_LOCAL_NAME_BYTES` | 128 per endpoint | the local name arena |
 
 ### WIZnet socket receive buffers
 
@@ -377,7 +392,7 @@ stream history × MTU). Transmit memory stays split evenly: a socket holds one
 outgoing datagram at a time.
 
 Set `ROSETTE_WIZNET_RX_LAYOUT_KIB` (for example `8;4;1;1;1;1;0;0`) to override
-the layout; `boards/common/rp2_wiznet/wiznet_board_types.hpp` rejects at
+the layout; `boards/common/wiznet/wiznet_board_types.hpp` rejects at
 compile time a size that is not 0 or a power of two, or a layout that exceeds
 the chip's memory, and a socket given 0 KiB is never handed out. When the user
 socket's buffer is smaller than a sample's fragments (the W5100S's 4 KiB against
@@ -502,7 +517,26 @@ extern const unsigned s_reader      = sizeof(rosette::rtps::DefaultStatefulReade
 grep -A1 '^s_' probe.s
 ```
 
-**Heap**: print `mallinfo().uordblks` periodically, as `rclc_chatter` does.
+**Reservations at run time**: `rosette::platform::format_memory_report()`
+(`rosette/platform/memory_report.hpp`) writes each reservation's peak against
+its size, from the platform contract's `main_stack_use()` (painted at boot),
+`c_heap_use()`, `rtos_heap_use()`, and `visit_task_stacks()`; a region the
+platform does not track is left out. `net::board_network_buffer_use()` adds an
+on-chip IP stack's network buffers. Run a representative workload, read the
+peaks, and size each reservation from them with margin. `examples/udp_echo`
+prints the report every five seconds and answers it on UDP port 8:
+
+```text
+netbuf=10/10
+mem main-stack=1568/4096 c-heap=3168/8192 rtos-heap=16120/32768
+tasks main=3460/8188 IDLE=92/1020 enet0_rx=348/2044 IP-task=768/2044 Tmr Svc=176/1020
+```
+
+On an i.MX RT link the linker also prints each region's fill
+(`--print-memory-usage`).
+
+**Heap in use now**: print `mallinfo().uordblks` periodically, as
+`rclc_chatter` does.
 
 **Pool pressure**: configure with `-DROSETTE_RTPS_POOL_STATS=ON` and call
 `rosette::rtps::buf_pool_stats_log(true)` from a periodic status report

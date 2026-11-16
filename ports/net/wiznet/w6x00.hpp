@@ -125,6 +125,9 @@ struct W6x00 : ChipBase {
         return reg(0x4190u, common_block());
     }
 
+    /// SLCR ARP4 resolves a next hop without a socket, so the board can run an ARP cache.
+    static constexpr bool has_socketless_arp() { return true; }
+
     /// SLCR_ARP4 and SLIR_ARP4 (the host answered).
     static constexpr uint8_t socketless_command_arp4() { return 0x40u; }
 

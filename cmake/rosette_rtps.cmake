@@ -32,10 +32,42 @@
 #                                   rclpy/rclcpp node announces about 9 each).
 #                                   When full, an endpoint that matches a
 #                                   local one displaces one that matches none.
+#   ROSETTE_RTPS_MAX_WRITERS        writers the application creates, each a
+#                                   writer slot and a local endpoint record
+#                                   (default 4)
+#   ROSETTE_RTPS_MAX_READERS        readers the application creates (default 4)
+#   ROSETTE_RTPS_MAX_WRITER_DEPTH   deepest history a writer keeps, 1 to 255:
+#                                   the D of the deepest create_writer<D>(),
+#                                   which every writer slot is sized for
+#                                   (default 8)
+#   ROSETTE_RTPS_MAX_MATCHED_ENDPOINTS remote readers one writer, or remote
+#                                   writers one reader, matches at once
+#                                   (default 8)
+#   ROSETTE_RTPS_MATCHED_READERS    ReaderProxy pool shared by every writer:
+#                                   remote readers matched across all of them
+#                                   at once (default: every writer at
+#                                   ROSETTE_RTPS_MAX_MATCHED_ENDPOINTS)
+#   ROSETTE_RTPS_MATCHED_WRITERS    WriterProxy pool shared by every reader
+#                                   (default: every reader at
+#                                   ROSETTE_RTPS_MAX_MATCHED_ENDPOINTS)
+#   ROSETTE_RTPS_MATCH_WAITERS      matches waiting at once for a proxy their
+#                                   pool or cap refused; each costs one match
+#                                   record (default 8)
+#   ROSETTE_RTPS_LOCAL_NAME_BYTES   octets for the topic and type names of
+#                                   every local endpoint (strlen + 1 for each
+#                                   distinct name); creating an endpoint whose
+#                                   names do not fit fails and logs
+#                                   RTPS_LOCAL_NAME_BYTES (default: 128 per
+#                                   endpoint)
 #   ROSETTE_RTPS_LOG_LEVEL          0-5 (default 2, warnings)
 #   ROSETTE_RTPS_POOL_STATS         ON to count buffer pool use per class
 #                                   (rtps/buf_pool_stats.hpp) and warn when a
 #                                   request gets no block (default OFF)
+#
+# A firmware that knows what it creates sets the endpoint inputs exactly:
+# every writer, reader, and proxy is RAM in the participant whether it is
+# used or not (examples/rtps_chatter/CMakeLists.txt). rmw_rosette's
+# RMW_ROSETTE_* capacity inputs are the same model one layer up.
 #
 # Output: STATIC library `rosette_rtps`, linked PUBLIC to rosette_platform and
 # rosette_net, with ROSETTE_RTPS_MAX_DATAGRAM_SIZE as a compile definition
@@ -45,12 +77,30 @@ if(TARGET rosette_rtps)
   return()
 endif()
 
+# A firmware's normal variable (set before this include) wins over the cache
+# default below. Without CMP0126, set(CACHE) would drop that variable the first
+# time it creates the entry. include() scopes the policy to this file.
+if(POLICY CMP0126)
+  cmake_policy(SET CMP0126 NEW)
+endif()
+
 set(ROSETTE_RTPS_MAX_DATAGRAM_SIZE 1472 CACHE STRING "Largest UDP payload the link carries")
 set(ROSETTE_RTPS_MAX_SAMPLE_SIZE 4096 CACHE STRING "Largest serialized sample sent or received")
 set(ROSETTE_RTPS_MAX_SAMPLE_BLOCKS 2 CACHE STRING "Samples larger than one datagram held at once")
 set(ROSETTE_RTPS_MAX_PEERS 8 CACHE STRING "Remote participants exchanging endpoint discovery at once")
 set(ROSETTE_RTPS_MAX_KNOWN_PEERS 8 CACHE STRING "Remote participants known, active or parked")
 set(ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS 64 CACHE STRING "Remote writers (and readers) known from SEDP; when full, only those matching a local endpoint are admitted")
+set(ROSETTE_RTPS_MAX_WRITERS 4 CACHE STRING "Writers the application creates")
+set(ROSETTE_RTPS_MAX_READERS 4 CACHE STRING "Readers the application creates")
+set(ROSETTE_RTPS_MAX_WRITER_DEPTH 8 CACHE STRING "Deepest history a writer keeps, 1 to 255")
+set(ROSETTE_RTPS_MAX_MATCHED_ENDPOINTS 8 CACHE STRING "Remote matches per local writer or reader")
+set(ROSETTE_RTPS_MATCHED_READERS "" CACHE STRING
+    "ReaderProxy pool shared by every writer; empty: every writer at ROSETTE_RTPS_MAX_MATCHED_ENDPOINTS")
+set(ROSETTE_RTPS_MATCHED_WRITERS "" CACHE STRING
+    "WriterProxy pool shared by every reader; empty: every reader at ROSETTE_RTPS_MAX_MATCHED_ENDPOINTS")
+set(ROSETTE_RTPS_MATCH_WAITERS 8 CACHE STRING "Matches waiting at once for a proxy")
+set(ROSETTE_RTPS_LOCAL_NAME_BYTES "" CACHE STRING
+    "Octets for every local endpoint's topic and type names; empty: 128 per endpoint")
 set(ROSETTE_RTPS_LOG_LEVEL 2 CACHE STRING "rosette::rtps log level (0-5)")
 option(ROSETTE_RTPS_POOL_STATS "Count buffer pool use per class and warn on refusals" OFF)
 
@@ -66,12 +116,71 @@ target_include_directories(rosette_rtps PUBLIC
 )
 target_link_libraries(rosette_rtps PUBLIC rosette_platform rosette_net)
 
-# Local endpoints: a handful of topics per board.
-set(_rtps_local_endpoints 8)
-# Match records: one per proxy in the participant's two pools (four writers
-# and four readers, eight matches each) plus the matches that wait for one.
-set(_rtps_match_waiters 8)
-math(EXPR _rtps_match_records "4 * 8 + 4 * 8 + ${_rtps_match_waiters}")
+# Endpoints. SEDP announces each local writer and reader from a table as deep
+# as the larger of the two; the match table keeps one record per writer and
+# per reader.
+foreach(_rtps_input IN ITEMS ROSETTE_RTPS_MAX_WRITERS ROSETTE_RTPS_MAX_READERS
+                             ROSETTE_RTPS_MAX_MATCHED_ENDPOINTS)
+  if(NOT ${_rtps_input} MATCHES "^[0-9]+$" OR ${_rtps_input} LESS 1)
+    message(FATAL_ERROR "${_rtps_input} (${${_rtps_input}}) must be at least 1")
+  endif()
+endforeach()
+
+if(ROSETTE_RTPS_MAX_WRITERS GREATER ROSETTE_RTPS_MAX_READERS)
+  set(_rtps_local_endpoints ${ROSETTE_RTPS_MAX_WRITERS})
+else()
+  set(_rtps_local_endpoints ${ROSETTE_RTPS_MAX_READERS})
+endif()
+
+if(_rtps_local_endpoints GREATER 253)
+  message(FATAL_ERROR "${_rtps_local_endpoints} local endpoints exceed the SEDP history limit of 253")
+endif()
+
+if(ROSETTE_RTPS_MAX_WRITER_DEPTH LESS 1 OR ROSETTE_RTPS_MAX_WRITER_DEPTH GREATER 255)
+  message(FATAL_ERROR "ROSETTE_RTPS_MAX_WRITER_DEPTH (${ROSETTE_RTPS_MAX_WRITER_DEPTH}) must be 1 to 255")
+endif()
+
+# Proxies. Each pool is shared by its endpoints, so a board on a small
+# network sizes it for the matches it expects at once rather than every
+# endpoint at its cap; every endpoint keeps a floor of one proxy.
+if(ROSETTE_RTPS_MATCHED_READERS STREQUAL "")
+  math(EXPR _rtps_reader_proxies "${ROSETTE_RTPS_MAX_WRITERS} * ${ROSETTE_RTPS_MAX_MATCHED_ENDPOINTS}")
+else()
+  set(_rtps_reader_proxies ${ROSETTE_RTPS_MATCHED_READERS})
+endif()
+
+if(ROSETTE_RTPS_MATCHED_WRITERS STREQUAL "")
+  math(EXPR _rtps_writer_proxies "${ROSETTE_RTPS_MAX_READERS} * ${ROSETTE_RTPS_MAX_MATCHED_ENDPOINTS}")
+else()
+  set(_rtps_writer_proxies ${ROSETTE_RTPS_MATCHED_WRITERS})
+endif()
+
+if(_rtps_reader_proxies LESS ROSETTE_RTPS_MAX_WRITERS OR _rtps_reader_proxies GREATER 65534)
+  message(FATAL_ERROR "ROSETTE_RTPS_MATCHED_READERS (${_rtps_reader_proxies}) must be "
+                      "${ROSETTE_RTPS_MAX_WRITERS} to 65534: one proxy per writer at least")
+endif()
+
+if(_rtps_writer_proxies LESS ROSETTE_RTPS_MAX_READERS OR _rtps_writer_proxies GREATER 65534)
+  message(FATAL_ERROR "ROSETTE_RTPS_MATCHED_WRITERS (${_rtps_writer_proxies}) must be "
+                      "${ROSETTE_RTPS_MAX_READERS} to 65534: one proxy per reader at least")
+endif()
+
+# Match records: one per proxy in the two pools plus the matches that wait for one.
+if(ROSETTE_RTPS_MATCH_WAITERS LESS 0)
+  message(FATAL_ERROR "ROSETTE_RTPS_MATCH_WAITERS must not be negative")
+endif()
+
+math(EXPR _rtps_match_records
+     "${_rtps_reader_proxies} + ${_rtps_writer_proxies} + ${ROSETTE_RTPS_MATCH_WAITERS}")
+
+set(_rtps_local_name_definition "")
+if(NOT ROSETTE_RTPS_LOCAL_NAME_BYTES STREQUAL "")
+  if(ROSETTE_RTPS_LOCAL_NAME_BYTES LESS 4 OR ROSETTE_RTPS_LOCAL_NAME_BYTES GREATER 65534)
+    message(FATAL_ERROR "ROSETTE_RTPS_LOCAL_NAME_BYTES (${ROSETTE_RTPS_LOCAL_NAME_BYTES}) must be 4 to 65534")
+  endif()
+
+  set(_rtps_local_name_definition RTPS_LOCAL_NAME_BYTES=${ROSETTE_RTPS_LOCAL_NAME_BYTES})
+endif()
 
 # Buffer pool. A sample is stored whole in one block (fragmented only on the
 # wire), and alloc() takes the smallest class that fits, so each class is
@@ -109,18 +218,24 @@ endif()
 target_compile_definitions(rosette_rtps PUBLIC
   ROSETTE_RTPS_MAX_DATAGRAM_SIZE=${ROSETTE_RTPS_MAX_DATAGRAM_SIZE}
   RTPS_LOG_LEVEL=${ROSETTE_RTPS_LOG_LEVEL}
-  RTPS_MAX_USER_WRITERS=4
-  RTPS_MAX_USER_READERS=4
+  RTPS_MAX_USER_WRITERS=${ROSETTE_RTPS_MAX_WRITERS}
+  RTPS_MAX_USER_READERS=${ROSETTE_RTPS_MAX_READERS}
+  RTPS_DEEP_WRITER_DEPTH=${ROSETTE_RTPS_MAX_WRITER_DEPTH}
   RTPS_MAX_LOCAL_ENDPOINTS=${_rtps_local_endpoints}
+  RTPS_MAX_LOCAL_WRITERS=${ROSETTE_RTPS_MAX_WRITERS}
+  RTPS_MAX_LOCAL_READERS=${ROSETTE_RTPS_MAX_READERS}
+  ${_rtps_local_name_definition}
   RTPS_SEDP_REBUILD_ANNOUNCEMENTS=${RTPS_SEDP_REBUILD_ANNOUNCEMENTS}
   RTPS_MAX_PEERS=${ROSETTE_RTPS_MAX_PEERS}
   RTPS_MAX_KNOWN_PEERS=${ROSETTE_RTPS_MAX_KNOWN_PEERS}
-  RTPS_MAX_MATCHED_READERS=8
-  RTPS_MAX_MATCHED_WRITERS=8
+  RTPS_MAX_MATCHED_READERS=${ROSETTE_RTPS_MAX_MATCHED_ENDPOINTS}
+  RTPS_MAX_MATCHED_WRITERS=${ROSETTE_RTPS_MAX_MATCHED_ENDPOINTS}
+  RTPS_READER_PROXY_POOL=${_rtps_reader_proxies}
+  RTPS_WRITER_PROXY_POOL=${_rtps_writer_proxies}
   RTPS_MAX_DISCOVERED_WRITERS=${ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS}
   RTPS_MAX_DISCOVERED_READERS=${ROSETTE_RTPS_MAX_REMOTE_ENDPOINTS}
   RTPS_MAX_MATCH_RECORDS=${_rtps_match_records}
-  RTPS_MAX_WAITING_MATCHES=${_rtps_match_waiters}
+  RTPS_MAX_WAITING_MATCHES=${ROSETTE_RTPS_MATCH_WAITERS}
   RTPS_POOL_CLASS0_SIZE=256u
   RTPS_POOL_CLASS0_COUNT=16u
   RTPS_POOL_CLASS1_SIZE=512u

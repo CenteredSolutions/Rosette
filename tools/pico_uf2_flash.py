@@ -14,7 +14,7 @@ Architecture:
     (dialout), not root or a picotool udev rule.
 
     When the USB CDC link is unreliable (a VM's USB passthrough), firmware
-    that serves a status port (examples/wiznet_udp_echo) can be asked over
+    that serves a status port (examples/udp_echo) can be asked over
     the network instead: --bootsel-udp HOST sends it "bootsel", and it calls
     the RP2 ROM's reset_usb_boot().
 
@@ -170,7 +170,7 @@ def main() -> int:
     parser.add_argument("--expect", default=None, help="text that ends monitoring successfully")
     parser.add_argument("--bootsel-udp", default=None, metavar="HOST[:PORT]",
                         help="enter BOOTSEL by sending 'bootsel' to a firmware status port "
-                             "(examples/wiznet_udp_echo, port 8) instead of the 1200-baud touch")
+                             "(examples/udp_echo, port 8) instead of the 1200-baud touch")
     args = parser.parse_args()
 
     drive = find_drive() or mount_bootsel_drive()

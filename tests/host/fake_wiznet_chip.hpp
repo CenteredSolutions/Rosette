@@ -10,11 +10,12 @@
  * `FakeWiznetChip<Chip>` decodes each SPI frame the driver sends (the address
  * phase `Chip::make_header()` builds), stores register and buffer bytes, and
  * acts on the writes that have side effects on a real part: socket commands
- * (OPEN in UDP or IPRAW6 mode, CLOSE, SEND, SEND6, SEND_MAC, RECV), the interrupt-clear registers,
- * and the socket-less command register (ARP on every part; NS and RS on the
- * W6100/W6300). Received-size (Sn_RX_RSR) and RX write-pointer (Sn_RX_WR)
- * reads are computed from what the test delivered, so `WiznetDevice` runs its
- * real receive and send paths, ring arithmetic included, against it.
+ * (OPEN in UDP or IPRAW6 mode, CLOSE, SEND, SEND6, SEND_MAC, RECV), the
+ * interrupt-clear registers, and the socket-less command register (ARP on on
+ * chips with the feature; NS and RS on the W6100/W6300). Received-size
+ * (Sn_RX_RSR) and RX write-pointer (Sn_RX_WR) reads are computed from what the
+ * test delivered, so `WiznetDevice` runs its real receive and send paths, ring
+ * arithmetic included, against it.
  *
  * Tests inject datagrams with `deliver()` (the exact octets the chip would
  * store in the socket's RX ring, packet-info header first), inspect datagrams
@@ -35,6 +36,7 @@
 #include <vector>
 
 #include "ports/net/wiznet/w5100s.hpp"
+#include "ports/net/wiznet/w5500.hpp"
 #include "ports/net/wiznet/w6x00.hpp"
 
 namespace fake {
@@ -105,11 +107,13 @@ public:
 
     void read_registers(const uint8_t* prefix, std::size_t, uint8_t* data, std::size_t len) {
         const address_type base = decode(prefix);
-        if (len == 1u && base == Chip::common_socketless_status() && arp_pending_) {
-            if (arp_reads_left_ == 0u) {
-                finish_arp();
-            } else {
-                --arp_reads_left_;
+        if constexpr (Chip::has_socketless_arp()) {
+            if (len == 1u && base == Chip::common_socketless_status() && arp_pending_) {
+                if (arp_reads_left_ == 0u) {
+                    finish_arp();
+                } else {
+                    --arp_reads_left_;
+                }
             }
         }
 
@@ -279,14 +283,16 @@ private:
             }
         }
 
-        if (a == Chip::common_socketless_status_clear()) {
-            mem[Chip::common_socketless_status()] &= static_cast<uint8_t>(~v);
-            return true;
-        }
+        if constexpr (Chip::has_socketless_arp()) {
+            if (a == Chip::common_socketless_status_clear()) {
+                mem[Chip::common_socketless_status()] &= static_cast<uint8_t>(~v);
+                return true;
+            }
 
-        if (a == Chip::common_socketless_command()) {
-            on_socketless_command(v);
-            return true;
+            if (a == Chip::common_socketless_command()) {
+                on_socketless_command(v);
+                return true;
+            }
         }
 
         return false;

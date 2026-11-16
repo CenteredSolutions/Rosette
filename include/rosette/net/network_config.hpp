@@ -133,6 +133,8 @@ enum class ConfigError : uint8_t {
     unsupported_method,      ///< The backend cannot run a listed method.
     missing_static_address,  ///< v4 lists `static_ipv4` but `static_v4.address` is all zero.
     no_ready_predicate,      ///< `ready_when` is null.
+    unsupported_order,       ///< The backend runs every listed method, but not in this order or
+                             ///< combination.
 };
 
 /// How `bring_up_*` ended.

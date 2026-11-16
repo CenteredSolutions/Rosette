@@ -14,11 +14,13 @@
  * Exit status is 0 only when every check passes.
  */
 
+#include "rosette/platform/memory_report.hpp"
 #include "rosette/platform/platform.hpp"
 #include "rosette/platform/wall_clock.hpp"
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 #if defined(ROSETTE_OS_POSIX)
 #  include <thread>
@@ -26,6 +28,13 @@
 #if defined(ROSETTE_CHIP_RP2)
 #  include "pico/multicore.h"
 #  include "pico/stdlib.h"
+#endif
+#if defined(ROSETTE_CHIP_IMXRT)
+#  include "board.h"
+#endif
+#if defined(ROSETTE_OS_FREERTOS)
+#  include "FreeRTOS.h"
+#  include "task.h"
 #endif
 
 namespace pf = rosette::platform;
@@ -122,7 +131,29 @@ void test_event_cross_thread() {
 }
 #endif
 
-#if defined(ROSETTE_OS_BAREMETAL)
+#if defined(ROSETTE_OS_FREERTOS)
+/// Event: a signal from another task wakes a blocked wait promptly.
+void test_event_cross_task() {
+    static pf::Event e;
+    const uint64_t   t0 = pf::monotonic_us();
+    TaskHandle_t     signaler = nullptr;
+    const BaseType_t created = xTaskCreate(
+        [](void*) {
+            pf::sleep_ms(20);
+            e.signal();
+            vTaskDelete(nullptr);
+        },
+        "signaler", configMINIMAL_STACK_SIZE, nullptr, tskIDLE_PRIORITY + 1, &signaler);
+    const bool     woke = (created == pdPASS) && e.wait_for(1000u);
+    const uint64_t waited = pf::monotonic_us() - t0;
+    check(woke && waited >= 19000u && waited < 500000u, "EventCrossTask",
+          "another task's signal ends a blocking wait after its 20 ms sleep");
+}
+#endif
+
+// The bare-metal OS layer's cross-core guarantees, on the dual-core RP2040 /
+// RP2350; a single-core chip has no second core to test against.
+#if defined(ROSETTE_OS_BAREMETAL) && defined(ROSETTE_CHIP_RP2)
 pf::Event* g_core1_event = nullptr;
 
 void core1_signal_after_delay() {
@@ -199,6 +230,72 @@ void test_wall_clock() {
     pf::WallClock::set_offset_us(before);
 }
 
+/// Checks one region report: a tracked region's peak is used and within its reservation.
+void check_region(const char* what, const pf::RegionUse& use) {
+    if (use.reserved == 0u) {
+        std::printf("[SKIP] MemoryReports: %s is not tracked here\n", what);
+        return;
+    }
+
+    char text[96];
+    std::snprintf(text, sizeof(text), "%s peak %lu is within its %lu octets", what,
+                  static_cast<unsigned long>(use.peak), static_cast<unsigned long>(use.reserved));
+    check(use.peak <= use.reserved, "MemoryReports", text);
+}
+
+/// Memory reports: peaks within their reservations, never falling, and the text bounded.
+void test_memory_reports() {
+    const pf::RegionUse stack = pf::main_stack_use();
+    check_region("main stack", stack);
+    if (stack.reserved > 0u) {
+        check(stack.peak > 0u, "MemoryReports", "the main stack has been used");
+        check(pf::main_stack_use().peak >= stack.peak, "MemoryReports",
+              "the main stack's peak never falls");
+    }
+
+    const pf::RegionUse before = pf::c_heap_use();
+    check_region("C heap", before);
+    if (before.reserved > 0u) {
+        void* const         block = std::malloc(256u);
+        const pf::RegionUse after = pf::c_heap_use();
+        check(block != nullptr && after.peak >= before.peak && after.peak >= 256u, "MemoryReports",
+              "a malloc() of 256 octets shows in the C heap's peak");
+        std::free(block);
+    }
+
+    check_region("RTOS heap", pf::rtos_heap_use());
+
+    struct Visit {
+        std::size_t calls = 0u;
+        bool        sane = true;
+    } visit;
+    const std::size_t tasks = pf::visit_task_stacks(
+        [](void* context, const char* name, const pf::RegionUse& use) {
+            auto& v = *static_cast<Visit*>(context);
+            ++v.calls;
+            v.sane = v.sane && name != nullptr && use.peak > 0u && use.peak <= use.reserved;
+        },
+        &visit);
+    check(visit.calls == tasks && visit.sane, "MemoryReports",
+          "each task is visited once, with 0 < peak <= its stack");
+#if defined(ROSETTE_OS_FREERTOS) && (configUSE_TRACE_FACILITY == 1) \
+    && (configRECORD_STACK_HIGH_ADDRESS == 1)
+    check(tasks >= 2u, "MemoryReports", "the contract task and the idle task are reported");
+#endif
+
+    char       text[384];
+    const auto n = pf::format_memory_report(text, sizeof(text));
+    check(n < sizeof(text) && text[n] == '\0', "MemoryReports",
+          "the report is terminated and fits");
+    char       tiny[8];
+    const auto cut = pf::format_memory_report(tiny, sizeof(tiny));
+    check(cut < sizeof(tiny) && std::strlen(tiny) == cut, "MemoryReports",
+          "a report cut short by a small buffer stays terminated");
+    if (n > 0u) {
+        std::printf("%s", text);
+    }
+}
+
 int run_contract() {
     g_failures = 0;
     test_monotonic_advances();
@@ -209,11 +306,15 @@ int run_contract() {
 #if defined(ROSETTE_OS_POSIX)
     test_event_cross_thread();
 #endif
-#if defined(ROSETTE_OS_BAREMETAL)
+#if defined(ROSETTE_OS_FREERTOS)
+    test_event_cross_task();
+#endif
+#if defined(ROSETTE_OS_BAREMETAL) && defined(ROSETTE_CHIP_RP2)
     test_event_cross_core();
     test_mutex_cross_core();
 #endif
     test_wall_clock();
+    test_memory_reports();
     std::printf("platform contract: %s (%d failure%s)\n", g_failures ? "FAIL" : "PASS",
                 g_failures, g_failures == 1 ? "" : "s");
     return g_failures;
@@ -232,8 +333,31 @@ int main() {
         sleep_ms(5000);
     }
 }
+#elif defined(ROSETTE_OS_FREERTOS)
+/// Under FreeRTOS the contract runs in a task, since sleep_ms() and Event
+/// waits block in the scheduler; the run repeats every few seconds so a
+/// terminal that opens the console late still sees a result.
+int main() {
+#  if defined(ROSETTE_CHIP_IMXRT)
+    board_init();
+#  endif
+    xTaskCreate(
+        [](void*) {
+            for (;;) {
+                run_contract();
+                pf::sleep_ms(5000);
+            }
+        },
+        "contract", 1024u, nullptr, tskIDLE_PRIORITY + 2, nullptr);
+    vTaskStartScheduler();
+    std::printf("platform contract: the scheduler did not start\n");
+    return EXIT_FAILURE;
+}
 #else
 int main() {
+#  if defined(ROSETTE_CHIP_IMXRT)
+    board_init();
+#  endif
     return run_contract() ? EXIT_FAILURE : EXIT_SUCCESS;
 }
 #endif

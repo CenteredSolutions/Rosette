@@ -79,6 +79,8 @@ _FAMILIES = {
         r"^(sys|arpa|netinet|net)/"
         r"|^(unistd|pthread|fcntl|poll|netdb|ifaddrs|dlfcn|signal|sched|termios|syslog)\.h$"),
     "board": re.compile(r"^(board_config|board)\.h$"),
+    "mcux_sdk": re.compile(
+        r"^fsl_\w+\.h$|^(MIMXRT|MCX|LPC|MK)\w*\.h$|^(clock_config|pin_mux|core_cm\d+)\.h$"),
 }
 _ALL = frozenset(_FAMILIES)
 
@@ -92,6 +94,7 @@ _BANNED = frozenset({"wiznet_iolib"})
 # path that matches no zone is portable and may include no family.
 _ZONES = (
     ("ports/chip/rp2/", {"pico_sdk", "board"}, "ports/chip/rp2/"),
+    ("ports/chip/imxrt/", {"mcux_sdk", "board"}, "ports/chip/imxrt/"),
     ("ports/chip/host/", {"posix"}, "ports/chip/host/"),
     ("ports/chip/stub/", set(), "ports/chip/stub/"),
     ("ports/os/baremetal/", set(), "ports/os/baremetal/"),

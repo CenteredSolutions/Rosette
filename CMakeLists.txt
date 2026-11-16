@@ -82,7 +82,8 @@ endif()
 # ------------------------------------------------------------
 # rosette_bsp — a real board: its board_init.c, and the composition it shares
 # with other boards (boards/common/${ROSETTE_BOARD_COMMON}/bsp.cmake), which
-# for a WIZnet board instantiates the driver and implements the board network.
+# for a WIZnet board instantiates the driver and implements the board network,
+# and any composition of its own (${ROSETTE_BOARD_DIR}/bsp.cmake).
 # A host board has neither; its board network is in rosette_net
 # (ports/net/posix).
 # ------------------------------------------------------------
@@ -97,6 +98,10 @@ if(EXISTS ${ROSETTE_BOARD_DIR}/board_init.c)
     target_link_libraries(rosette_bsp PUBLIC rosette_net)
     if(ROSETTE_BOARD_COMMON)
         include(boards/common/${ROSETTE_BOARD_COMMON}/bsp.cmake)
+    endif()
+    # A board's own composition, beside its board_init.c.
+    if(EXISTS ${ROSETTE_BOARD_DIR}/bsp.cmake)
+        include(${ROSETTE_BOARD_DIR}/bsp.cmake)
     endif()
 endif()
 
@@ -172,7 +177,7 @@ add_subdirectory(examples/storage_demo)
 add_subdirectory(examples/led_files)
 add_subdirectory(examples/rtps_chatter)
 add_subdirectory(examples/rclc_chatter)
-add_subdirectory(examples/wiznet_udp_echo)
+add_subdirectory(examples/udp_echo)
 
 message(STATUS "")
 message(STATUS "Rosette build configuration")
@@ -183,7 +188,7 @@ if(PICO_BOARD)
     message(STATUS "  PICO_BOARD  : ${PICO_BOARD}")
 endif()
 message(STATUS "  Processor   : ${ROSETTE_PROCESSOR}")
-if(ROSETTE_BOARD_COMMON STREQUAL "rp2_wiznet")
+if(ROSETTE_BOARD_COMMON STREQUAL "wiznet")
     message(STATUS "  SPI pins    : SCK=${ROSETTE_SPI_SCK} TX=${ROSETTE_SPI_TX} RX=${ROSETTE_SPI_RX} CS=${ROSETTE_SPI_CS}")
     message(STATUS "  WIZnet RST  : ${ROSETTE_WIZNET_RST}")
     message(STATUS "  WIZnet INT  : ${ROSETTE_WIZNET_INT}")

@@ -26,11 +26,22 @@
  *      Event        auto-reset wakeup; signal() is safe from any thread, core,
  *                   and (via signal_from_isr()) interrupt handler
  *      sleep_ms()   yields the caller for a duration
+ *      run_main_task(entry)
+ *                   runs the application's main loop where the OS needs
+ *                   it: under FreeRTOS a task, with the scheduler started
+ *                   (never returns); elsewhere a plain call on the calling
+ *                   thread. An application's main() calls board_init() and
+ *                   then this, so the same main() serves every OS port.
+ *      rtos_heap_use()      the kernel heap's size and peak use
+ *      visit_task_stacks(visitor, context)
+ *                   each task's stack size and peak use
  *  - from the chip layer (ports/chip/<name>/):
  *      monotonic_us()        the single time base; never steps
  *      device_unique_id()    8 octets unique per running Rosette instance
  *      boot_nonce()          32 bits that change at every boot or process start
  *      realtime_hint_us()    wall-clock time when the platform knows it
+ *      main_stack_use()      the main stack's size and peak use
+ *      c_heap_use()          the C library heap's size and peak use
  *    and, in their own headers, flash (flash.hpp), GPIO interrupts
  *    (gpio_interrupt.hpp), and the critical section and event wait the
  *    bare-metal OS layer is built on (chip_sync.hpp).
@@ -48,12 +59,31 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace rosette::platform {
 
 /// Timeout value meaning "wait until signaled".
 inline constexpr uint32_t kWaitForever = UINT32_MAX;
+
+/**
+ * @brief How much of one RAM reservation a running image has used.
+ *
+ * The memory reports (main_stack_use(), c_heap_use(), rtos_heap_use(),
+ * visit_task_stacks()) measure what an image actually needs, so a board can
+ * size each reservation from use instead of guesswork
+ * (docs/mcu_memory_model.md, "Measuring").
+ */
+struct RegionUse {
+    /// Octets set aside for the region; 0 when the platform does not track it.
+    std::size_t reserved = 0u;
+    /// Most octets in use at once since boot; at most @c reserved when tracked.
+    std::size_t peak = 0u;
+};
+
+/// Called once per task by visit_task_stacks(), with the context it was given.
+using TaskStackVisitor = void (*)(void* context, const char* name, const RegionUse& stack);
 
 // ------------------------------------------------------------------
 // Chip layer
@@ -146,13 +176,50 @@ uint32_t boot_nonce() noexcept;
  */
 bool realtime_hint_us(int64_t& unix_us) noexcept;
 
+/**
+ * @brief The main stack's reservation and the deepest it has been since boot.
+ *
+ * On a Cortex-M this is the MSP: main() before an RTOS starts, then every
+ * interrupt. The chip paints the unused part of the stack with a pattern at
+ * boot and finds the lowest word the pattern no longer holds, so the result is
+ * the true peak, including interrupts that nested deepest.
+ *
+ * @return The stack's size and peak; {0, 0} where the platform does not track
+ *   it (a host, whose threads' stacks belong to the OS).
+ *
+ * Verification:
+ * - Correct means: when tracked, 0 < peak <= reserved, and peak never
+ *   decreases between calls.
+ * - Covered by: tests/platform/platform_contract_test.cpp (MemoryReports).
+ */
+RegionUse main_stack_use() noexcept;
+
+/**
+ * @brief The C library heap's reservation and the most it has handed out.
+ *
+ * malloc() serves the C client stack and C library internals; Rosette itself
+ * allocates nothing at run time. The peak is the heap's high-water mark
+ * (newlib's mallinfo().arena, which only grows), not what is allocated now.
+ *
+ * @return The heap's size and peak; {0, 0} where the platform does not track
+ *   it.
+ *
+ * Verification:
+ * - Correct means: when tracked, peak covers every allocation made so far:
+ *   after a malloc() of N octets succeeds, peak >= N.
+ * - Covered by: tests/platform/platform_contract_test.cpp (MemoryReports).
+ */
+RegionUse c_heap_use() noexcept;
+
 }  // namespace rosette::platform
 
 // ------------------------------------------------------------------
-// OS layer: Mutex, Event, sleep_ms()
+// OS layer: Mutex, Event, sleep_ms(), run_main_task(), rtos_heap_use(),
+// visit_task_stacks()
 //
 // The selected OS port supplies them under this fixed name; its port.cmake
 // puts ports/os/<name>/ on the include path, and no other OS port is on it.
+// An OS without a kernel heap or tasks reports {0, 0} and visits nothing.
 // ------------------------------------------------------------------
 #include "rosette_os_port.hpp"
 

@@ -168,7 +168,7 @@ public:
      *   without a refresh.
      * - Covered by: tests/host/wiznet_slaac_provider_test.cpp
      *   (TC-NET-SLAAC-002 through -010); on hardware,
-     *   examples/wiznet_udp_echo with tools/wiznet_udp_echo_probe.py.
+     *   examples/udp_echo with tools/udp_echo_probe.py.
      *
      * References: RFC 4862 §5.4 (DAD), §5.5.3 (prefix processing), §5.5.4
      * (deprecation); RFC 7217 §5 and §6 (next candidate after a conflict);
