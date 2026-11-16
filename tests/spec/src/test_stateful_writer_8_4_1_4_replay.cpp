@@ -345,11 +345,9 @@ static bool tc_swr_8_4_1_4_014(std::string& err) {
     CHECK(!w.replay_pending(), "a VOLATILE writer has nothing to replay");
 
     // add_change() alone sends nothing: the change stays UNSENT with no send due.
-    BufRef       buf{};
-    HistoryChange change = w.new_change(ChangeKind::ALIVE, buf, 4u);
+    HistoryChange change = w.new_change(ChangeKind::ALIVE, 4u);
     CHECK(change.payload.valid(), "stage a change");
-    memset(buf.data, 0x11, 4u);
-    buf.size = 4u;
+    memset(change.payload.data, 0x11, 4u);
     change.payload.size = 4u;
     CHECK(w.add_change(static_cast<HistoryChange&&>(change)), "add the change without sending it");
     CHECK(tx.sent.empty(), "add_change() sends nothing");

@@ -54,20 +54,14 @@ StatefulWriter::~StatefulWriter() noexcept {
     }
 }
 
-HistoryChange StatefulWriter::new_change(ChangeKind kind, BufRef& out_payload,
-                                         size_t payload_size) noexcept {
+HistoryChange StatefulWriter::new_change(ChangeKind kind, size_t payload_size) noexcept {
     HistoryChange change{};
     change.kind = kind;
-    out_payload = buf_alloc(static_cast<uint32_t>(payload_size));
-    if (!out_payload.valid()) {
+    change.payload = buf_alloc(static_cast<uint32_t>(payload_size));
+    if (!change.payload.valid()) {
         RTPS_LOG_E("writer", "buf_alloc failed (%zu) for new_change (pool exhausted)", payload_size);
-        return change;
     }
 
-    change.payload.block = out_payload.block;
-    change.payload.data = out_payload.data;
-    change.payload.size = out_payload.size;
-    out_payload.retain();
     return change;
 }
 
@@ -148,16 +142,15 @@ bool StatefulWriter::write_async(ChangeKind kind, const Octet* payload_data, uin
         return false;
     }
 
-    BufRef        payload_buf;
-    HistoryChange change = new_change(kind, payload_buf, payload_size);
+    HistoryChange change = new_change(kind, payload_size);
     if (!change.payload.valid()) {
         RTPS_LOG_E("writer", "write_async: new_change failed");
         return false;
     }
 
-    const uint32_t sz = (payload_size < payload_buf.capacity()) ? payload_size : payload_buf.capacity();
-    memcpy(payload_buf.data, payload_data, sz);
-    payload_buf.size = sz;
+    const uint32_t capacity = change.payload.capacity();
+    const uint32_t sz = payload_size < capacity ? payload_size : capacity;
+    memcpy(change.payload.data, payload_data, sz);
     change.payload.size = sz;
     change.inlineQos = inline_qos;
     if (!add_change(static_cast<HistoryChange&&>(change))) {

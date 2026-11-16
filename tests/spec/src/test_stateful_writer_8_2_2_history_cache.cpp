@@ -41,14 +41,12 @@ Guid make_guid(Octet p0, Octet p1, Octet p2, const EntityId& eid) {
 }
 
 bool add_one_change(StatefulWriterStorage<2, 1>& w, Octet byte) {
-    BufRef payload{};
-    HistoryChange ch = w.new_change(ChangeKind::ALIVE, payload, 16u);
-    if (!ch.payload.valid() || !payload.valid()) {
+    HistoryChange ch = w.new_change(ChangeKind::ALIVE, 16u);
+    if (!ch.payload.valid()) {
         return false;
     }
 
-    payload.data[0] = byte;
-    payload.size = 1u;
+    ch.payload.data[0] = byte;
     ch.payload.size = 1u;
     return w.add_change(static_cast<HistoryChange&&>(ch));
 }

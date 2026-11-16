@@ -199,31 +199,29 @@ public:
      * @brief Creates a change of `kind` with a fresh pool buffer for its payload.
      *
      * The first half of the §8.4.1.4 write: the caller writes the serialized
-     * payload into `out_payload`, sets the change's payload size, and moves
-     * the change into add_change(), which numbers it and stores it. The
-     * change lives in the caller until then, so the writer keeps no slot for
-     * it; a change that is never added releases its buffer when it goes out
-     * of scope.
+     * payload through `change.payload.data`, sets `change.payload.size`, and
+     * moves the change into add_change(), which numbers it and stores it.
+     * The change lives in the caller until then, so the writer keeps no slot
+     * for it; a change that is never added releases its buffer when it goes
+     * out of scope.
      *
-     * @param[in]  kind         ChangeKind of the change (ALIVE, NOT_ALIVE_*).
-     * @param[out] out_payload  The allocated buffer (a second reference to
-     *   the change's payload) on success; invalid on failure.
-     * @param[in]  payload_size Octets the caller will write; the pool may
+     * @param[in] kind         ChangeKind of the change (ALIVE, NOT_ALIVE_*).
+     * @param[in] payload_size Octets the caller will write; the pool may
      *   return a larger block.
-     * @return The change, with no sequence number yet and no inline QoS.
-     *   Its payload is invalid when the pool has no block that size.
+     * @return The change, with no sequence number yet and no inline QoS, and
+     *   the only reference to its payload block. Its payload is invalid when
+     *   the pool has no block that size.
      *
      * Verification:
-     * - Correct means: the returned change and `out_payload` share one pool
-     *   block; adding the change numbers it nextSN; dropping it unadded
-     *   returns the block to the pool.
-     * - Covered by: TC-SWR-8.4.1.4-001, TC-SWR-8.2.2-001.
+     * - Correct means: adding the change numbers it nextSN; changes held
+     *   unadded own separate blocks, and dropping them returns every block
+     *   to the pool and takes no sequence number.
+     * - Covered by: TC-SWR-8.4.1.4-001, TC-SWR-8.4.1.4-016, TC-SWR-8.2.2-001.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (new_change)
      */
-    HistoryChange new_change(ChangeKind kind, BufRef& out_payload,
-                             size_t payload_size = kPoolMaxBlockSize) noexcept;
+    HistoryChange new_change(ChangeKind kind, size_t payload_size = kPoolMaxBlockSize) noexcept;
 
     /**
      * @brief Assigns the next sequence number and adds the change to the history.

@@ -251,14 +251,12 @@ static bool tc_swr_8_4_7_014(std::string& err) {
 
 /// Adds one change to @p w's history without a send pass.
 static bool add_unsent(StatefulWriter& w) {
-    BufRef       payload{};
-    HistoryChange change = w.new_change(ChangeKind::ALIVE, payload, 4u);
+    HistoryChange change = w.new_change(ChangeKind::ALIVE, 4u);
     if (!change.payload.valid()) {
         return false;
     }
 
-    memcpy(payload.data, kPayload, 4u);
-    payload.size = 4u;
+    memcpy(change.payload.data, kPayload, 4u);
     change.payload.size = 4u;
     return w.add_change(static_cast<HistoryChange&&>(change));
 }
