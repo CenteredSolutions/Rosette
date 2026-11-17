@@ -225,6 +225,49 @@ static bool tc_srr_8_4_12_024(std::string& err) {
     return true;
 }
 
+// §8.4.12.2: a gap the writer closes without data, by a GAP or by a
+// HEARTBEAT's firstSN, ends its repair rounds and backoff, so the next gap
+// is requested one undoubled delay after it shows, not at once.
+static bool tc_srr_8_4_12_025(std::string& err) {
+    constexpr uint32_t d = RTPS_GAP_REPAIR_DELAY_MS;
+    constexpr uint32_t later = 1000u;  // well past the old, doubled deadline
+
+    Fixture by_gap{};
+    by_gap.data(1, 0u);
+    by_gap.data(3, 0u);
+    CHECK(by_gap.run(0u, 3u * d) == (std::vector<uint32_t>{d, 3u * d}),
+          "two unanswered requests double the wait");
+    g_stateful_reader_test_now_ms = 1000u + 3u * d + 1u;
+    ParsedGap gap{};
+    gap.readerId = by_gap.reader_guid.entityId;
+    gap.writerId = by_gap.writer_guid.entityId;
+    gap.gapStart = SequenceNumber::from_int64(2);
+    gap.gapList.bitmapBase = SequenceNumber::from_int64(3);
+    by_gap.r.on_gap(by_gap.ctx(), gap);
+    by_gap.data(5, later);
+    CHECK(by_gap.run(later, later + d) == std::vector<uint32_t>{later + d},
+          "after a GAP, the next gap waits one delay");
+
+    Fixture by_hb{};
+    by_hb.data(1, 0u);
+    by_hb.data(3, 0u);
+    CHECK(by_hb.run(0u, 3u * d) == (std::vector<uint32_t>{d, 3u * d}),
+          "two unanswered requests double the wait");
+    g_stateful_reader_test_now_ms = 1000u + 3u * d + 1u;
+    ParsedHeartbeat hb{};
+    hb.readerId = by_hb.reader_guid.entityId;
+    hb.writerId = by_hb.writer_guid.entityId;
+    hb.firstSN = SequenceNumber::from_int64(3);
+    hb.lastSN = SequenceNumber::from_int64(3);
+    hb.count = 1;
+    hb.finalFlag = true;
+    by_hb.r.on_heartbeat(by_hb.ctx(), hb);
+    by_hb.data(5, later);
+    CHECK(by_hb.run(later, later + d) == std::vector<uint32_t>{later + d},
+          "after a final HEARTBEAT whose firstSN closes the gap, the next gap waits one delay");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_12_gap_nack_on_quiet(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.12-020",
                      "§8.4.12.2: a change missing behind a later one is requested one delay later, "
@@ -245,6 +288,10 @@ void append_stateful_reader_tests_8_4_12_gap_nack_on_quiet(std::vector<TestCase>
                      "§8.4.12.2: the tail of a burst a HEARTBEAT shows MISSING is requested again "
                      "after the doubled wait, not at the next HEARTBEAT.",
                      tc_srr_8_4_12_024});
+    tests.push_back({"TC-SRR-8.4.12-025",
+                     "§8.4.12.2: a gap closed by a GAP or a HEARTBEAT's firstSN ends its repair "
+                     "rounds; the next gap waits one undoubled delay.",
+                     tc_srr_8_4_12_025});
 }
 
 }  // namespace spec_test

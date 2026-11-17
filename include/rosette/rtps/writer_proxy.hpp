@@ -285,7 +285,9 @@ public:
      * - Correct means: every change named by the GAP is resolved, no other
      *   change changes state, and later DATA for a named change is not
      *   delivered.
-     * - Covered by: TC-SRR-8.4.9-003, TC-SRR-8.4.9-004, TC-SRR-8.4.7-003.
+     *   A GAP that leaves nothing MISSING ends the gap-repair rounds.
+     * - Covered by: TC-SRR-8.4.9-003, TC-SRR-8.4.9-004, TC-SRR-8.4.7-003,
+     *   TC-SRR-8.4.12-025.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.7.4.5, §8.4.10.4 (irrelevant_change_set)
@@ -380,9 +382,10 @@ public:
      * - Correct means: duplicates change nothing; F=0 always owes an
      *   ACKNACK; F=1 owes one only while something is MISSING; an owed
      *   ACKNACK keeps the deadline of the HEARTBEAT that first owed it; the
-     *   first HEARTBEAT heard marks the writer heard and cancels the retry.
+     *   first HEARTBEAT heard marks the writer heard and cancels the retry;
+     *   one whose firstSN leaves nothing MISSING ends the gap-repair rounds.
      * - Covered by: TC-SRR-8.4.9-001, TC-SRR-8.4.7-001, TC-SRR-8.4.7.4-007,
-     *   TC-SRR-8.4.7.4-008.
+     *   TC-SRR-8.4.7.4-008, TC-SRR-8.4.12-025.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.7.5, §8.4.12.2
@@ -506,6 +509,21 @@ private:
     uint32_t gap_repair_wait() const noexcept {
         return static_cast<uint32_t>(RTPS_GAP_REPAIR_DELAY_MS) << gapRepairDoublings;
     }
+
+    /**
+     * @brief Ends the gap-repair rounds and backoff once no change is MISSING.
+     *
+     * A gap the writer closes without data, by a GAP or by a HEARTBEAT's
+     * firstSN, must not leave its spent rounds, doubled wait, or passed
+     * deadline behind: the next gap would then be requested at once, at the
+     * doubled wait, instead of one RTPS_GAP_REPAIR_DELAY_MS after it shows.
+     *
+     * Verification:
+     * - Correct means: with nothing MISSING afterwards, gapRepairsLeft and
+     *   gapRepairDoublings are 0; otherwise nothing changes.
+     * - Covered by: TC-SRR-8.4.12-025.
+     */
+    void settle_gap_repair() noexcept;
 
     uint32_t gapRepairDueMs = 0;      ///< When the next unprompted request is due.
     uint8_t  gapRepairsLeft = 0;      ///< Unprompted requests left until a new change arrives.

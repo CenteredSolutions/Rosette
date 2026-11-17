@@ -48,12 +48,19 @@ void WriterProxy::irrelevant_change_set(const SequenceNumber&    gap_start,
         (void)changes_.resolve(sn);
         missing_changes_update(sn);
     });
+    settle_gap_repair();
 }
 
-void WriterProxy::schedule_gap_repair(uint32_t now_ms) noexcept {
+void WriterProxy::settle_gap_repair() noexcept {
     if (!has_missing_changes()) {
         gapRepairsLeft = 0;
         gapRepairDoublings = 0;
+    }
+}
+
+void WriterProxy::schedule_gap_repair(uint32_t now_ms) noexcept {
+    settle_gap_repair();
+    if (!has_missing_changes()) {
         return;
     }
 
@@ -103,6 +110,7 @@ bool WriterProxy::on_heartbeat(const SequenceNumber& first_sn,
     on_heard();
     lost_changes_update(first_sn);
     missing_changes_update(last_sn);
+    settle_gap_repair();
 
     const bool must_reply = !final_flag || has_missing_changes();
     if (must_reply && !acknackPending) {
