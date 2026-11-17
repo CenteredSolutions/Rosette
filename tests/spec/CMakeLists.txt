@@ -327,6 +327,7 @@ set(STATEFUL_READER_SPEC_TEST_SOURCES
     src/test_stateful_reader_8_4_9_gap_ranges.cpp
     src/test_stateful_reader_8_4_10_4_changes_from_writer.cpp
     src/test_stateful_reader_8_4_10_4_in_order.cpp
+    src/test_stateful_reader_8_4_10_4_fragment_blocks.cpp
     src/test_stateful_reader_8_4_10_4_shared_hold_pool.cpp
     src/test_stateful_reader_8_4_10_4_simulated_writers.cpp
     src/test_stateful_reader_8_4_12_gap_nack_on_quiet.cpp

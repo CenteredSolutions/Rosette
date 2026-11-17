@@ -245,18 +245,22 @@ void StatefulReader::on_data(const ParseContext& ctx,
     accept_change(proxy, change);
 }
 
-bool StatefulReader::copy_payload(WriterProxy* proxy, const ParsedData& msg, BufRef& out) noexcept {
-    out = buf_alloc(msg.serializedPayloadSize);
+StatefulReader::BlockGrant StatefulReader::take_sample_block(WriterProxy*          proxy,
+                                                             const SequenceNumber& sn,
+                                                             uint32_t              size,
+                                                             bool                  received,
+                                                             BufRef&               out) noexcept {
+    out = received ? buf_alloc_received(size) : buf_alloc(size);
 
     // An exhausted pool must not wedge a writer: held changes pin blocks,
     // and the change that closes its gap would otherwise be dropped on every
     // resend. Only that change takes a held change's block; any other waits
     // for its repair.
-    const bool closes_gap = proxy != nullptr && msg.writerSN == proxy->available_changes_max() + 1;
+    const bool   closes_gap = proxy != nullptr && sn == proxy->available_changes_max() + 1;
     HeldEviction evicted{};
     while (!out.valid() && closes_gap && held_.evict_for_block(proxy->remoteWriterGuid, evicted)) {
         withdraw_evicted(evicted);
-        out = buf_alloc(msg.serializedPayloadSize);
+        out = received ? buf_alloc_received(size) : buf_alloc(size);
     }
 
     // A change that will only be held must leave a block for the ACKNACK
@@ -265,16 +269,24 @@ bool StatefulReader::copy_payload(WriterProxy* proxy, const ParsedData& msg, Buf
     if (out.valid() && proxy != nullptr && !closes_gap && reliability_ == ReliabilityKind::RELIABLE
         && !g_buf_pool.can_alloc(MessageBuilder::kControlMessageCapacity)) {
         RTPS_LOG_D("reader", "SN=%d:%lu not held: the pool keeps a block for the ACKNACK",
-                   static_cast<int>(msg.writerSN.high),
-                   static_cast<unsigned long>(msg.writerSN.low));
+                   static_cast<int>(sn.high), static_cast<unsigned long>(sn.low));
         out = BufRef{};
-        note_dropped(proxy, msg.writerSN);
-        return false;
+        return BlockGrant::kRefused;
     }
 
     if (!out.valid()) {
-        RTPS_LOG_E("reader", "buf_alloc failed for DATA payload size=%lu",
-                   static_cast<unsigned long>(msg.serializedPayloadSize));
+        RTPS_LOG_E("reader", "no pool block for SN=%d:%lu of %lu octets",
+                   static_cast<int>(sn.high), static_cast<unsigned long>(sn.low),
+                   static_cast<unsigned long>(size));
+        return BlockGrant::kNone;
+    }
+
+    return BlockGrant::kTaken;
+}
+
+bool StatefulReader::copy_payload(WriterProxy* proxy, const ParsedData& msg, BufRef& out) noexcept {
+    if (take_sample_block(proxy, msg.writerSN, msg.serializedPayloadSize, /*received=*/false, out)
+        != BlockGrant::kTaken) {
         note_dropped(proxy, msg.writerSN);
         return false;
     }
@@ -286,6 +298,33 @@ bool StatefulReader::copy_payload(WriterProxy* proxy, const ParsedData& msg, Buf
     }
 
     out.size = copy_size;
+    return true;
+}
+
+bool StatefulReader::refuse_unassemblable(WriterProxy* proxy, const ParsedDataFrag& msg) noexcept {
+    // Every fragment carries the sample's size and fragment size, so a sample
+    // this reader could never reassemble is recognized on the first fragment
+    // that arrives: one above the build's limit, or one split into more
+    // fragments than a FragmentNumberSet names, as a peer capped at a small
+    // datagram sends a large sample. Left MISSING, it would be requested
+    // forever and hold back every later change.
+    const bool too_many_fragments =
+        msg.fragmentSize != 0u
+        && (uint64_t{msg.dataSize} + msg.fragmentSize - 1u) / msg.fragmentSize
+               > static_cast<uint64_t>(FragmentNumberSet::kMaxBits);
+    if (msg.dataSize <= kMaxSampleOctets && !too_many_fragments) {
+        return false;
+    }
+
+    RTPS_LOG_W("reader",
+               "DATA_FRAG SN=%d:%lu of %lu octets in %u-octet fragments cannot be "
+               "reassembled, lost",
+               static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
+               static_cast<unsigned long>(msg.dataSize), static_cast<unsigned>(msg.fragmentSize));
+    if (proxy != nullptr) {
+        account_undelivered(*proxy, msg.writerSN);
+    }
+
     return true;
 }
 
@@ -338,24 +377,7 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
         return;
     }
 
-    // Every fragment carries the sample's size and fragment size, so a sample
-    // this reader could never reassemble is recognized on the first fragment
-    // that arrives: one above the build's limit, or one split into more
-    // fragments than a FragmentNumberSet names, as a peer capped at a small
-    // datagram sends a large sample. Left MISSING, it would be requested
-    // forever and hold back every later change.
-    const bool too_many_fragments =
-        msg.fragmentSize != 0u
-        && (uint64_t{msg.dataSize} + msg.fragmentSize - 1u) / msg.fragmentSize
-               > static_cast<uint64_t>(FragmentNumberSet::kMaxBits);
-    if (msg.dataSize > kMaxSampleOctets || too_many_fragments) {
-        RTPS_LOG_W(
-            "reader",
-            "DATA_FRAG SN=%d:%lu of %lu octets in %u-octet fragments cannot be "
-            "reassembled, lost",
-            static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
-            static_cast<unsigned long>(msg.dataSize), static_cast<unsigned>(msg.fragmentSize));
-        if (proxy) account_undelivered(*proxy, msg.writerSN);
+    if (refuse_unassemblable(proxy, msg)) {
         return;
     }
 
@@ -371,16 +393,28 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
                static_cast<unsigned long>(msg.fragmentsInSubmessage),
                static_cast<unsigned long>(msg.dataSize));
 
-    // Attempt to deliver this fragment to the assembler.
-    // §8.4.14, p. 156: on_data_frag() returns true when the sample
-    // is complete; out_change is populated with the assembled payload.
+    // The fragment that starts an assembly takes the sample's block, so the
+    // pool rules a whole DATA follows (take_sample_block()) apply here: the
+    // change that closes the gap may take a held change's block, and one
+    // that would only be held leaves the ACKNACK's block; refused, it stays
+    // MISSING. With no block at all, the assembler may still lend itself the
+    // buffer of the writer's older partial sample.
+    BufRef block{};
+    if (proxy != nullptr && !assembler_.assembling(writer_guid, msg.writerSN)
+        && take_sample_block(proxy, msg.writerSN, msg.dataSize, /*received=*/true, block)
+               == BlockGrant::kRefused) {
+        return;
+    }
+
+    // §8.4.14, p. 156: the assembler returns true when the sample is
+    // complete, with out_change holding the assembled payload.
     CacheChange out_change{};
     bool        stored_new = false;
     const bool  complete = assembler_.on_data_frag(
         writer_guid, msg.writerSN, msg.fragmentStartingNum, msg.fragmentsInSubmessage,
         msg.fragmentSize, msg.dataSize, msg.fragmentPayload, msg.fragmentPayloadSize,
         ctx.sourceTimestamp, out_change, msg.inlineQosPresent ? &msg.inlineQos : nullptr,
-        &stored_new);
+        &stored_new, block.valid() ? &block : nullptr);
 
     // An incomplete sample of a reliable writer is asked for again once new
     // fragments stop arriving (fragment_assembler.hpp, quiet-period repair).

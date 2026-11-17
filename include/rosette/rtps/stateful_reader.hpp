@@ -785,8 +785,58 @@ private:
      */
     void release_held(WriterProxy& proxy) noexcept;
 
+    /// @brief How take_sample_block() answered a request for a sample's block.
+    enum class BlockGrant : uint8_t {
+        kTaken,    ///< The block is the caller's.
+        kNone,     ///< The pool had no block, even after any eviction R2 allows.
+        kRefused,  ///< A block was free, but R5 keeps it for the ACKNACK.
+    };
+
     /**
-     * @brief Copies a DATA's serialized payload into a pool block, applying rows R2 and R5.
+     * @brief Takes the pool block a change's payload goes into, applying rows R2 and R5.
+     *
+     * Every received change, whole or fragmented, takes its block here: a
+     * DATA in copy_payload(), and a DATA_FRAG when its first fragment starts
+     * the assembly (on_data_frag()). Held changes pin blocks, so the pool
+     * rules that keep in-order delivery live are applied in this one place.
+     *
+     * The block is allocated first. When the pool has none and the change
+     * closes the writer's gap (its SN is one past available_changes_max()),
+     * held changes give up their blocks one at a time (R2,
+     * HeldChanges::evict_for_block()) until the allocation succeeds or none
+     * is left; each evicted change is withdrawn and requested again. A
+     * reliable writer's change that does not close the gap, and so will
+     * only be held, is refused when taking the block left no block for an
+     * ACKNACK (R5).
+     *
+     * @param[in]  proxy    The writer's proxy; null for an unmatched best-effort writer,
+     *   for which only the allocation applies.
+     * @param[in]  sn       Sequence number of the change.
+     * @param[in]  size     Octets the block must hold.
+     * @param[in]  received true to allocate as buf_alloc_received() does, for a size a peer
+     *   announced (fragment reassembly); false to allocate as buf_alloc().
+     * @param[out] out      The block on kTaken; invalid otherwise.
+     * @return kTaken when `out` holds the block; kNone when the pool had no
+     *   block; kRefused when R5 refused the change. On kNone and kRefused
+     *   the caller drops the change, which a reliable reader records MISSING.
+     *
+     * Verification:
+     * - Correct means: a pool shortage never leaves a writer's next change
+     *   undeliverable while any reader of the same hold pool holds a change,
+     *   and a change that is only held never takes the last block an
+     *   ACKNACK fits in, whether it arrives whole or in fragments
+     *   (RosetteReaderDelivery.tla, BlockRule "evict_any", AckReserve).
+     * - Covered by: TC-SRR-8.4.10.4-016, TC-SRR-8.4.10.4-019,
+     *   TC-SRR-8.4.10.4-022, TC-SRR-8.4.10.4-024, TC-SRR-8.4.10.4-025.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4, §8.4.14
+     */
+    BlockGrant take_sample_block(WriterProxy* proxy, const SequenceNumber& sn, uint32_t size,
+                                 bool received, BufRef& out) noexcept;
+
+    /**
+     * @brief Copies a DATA's serialized payload into a pool block taken by take_sample_block().
      *
      * @param[in]  proxy The writer's proxy; null for an unmatched best-effort writer.
      * @param[in]  msg   The DATA, with a payload or key.
@@ -797,11 +847,8 @@ private:
      *   reader does not report itself caught up meanwhile.
      *
      * Verification:
-     * - Correct means: a pool shortage never leaves a writer's next change
-     *   undeliverable while any reader of the same hold pool holds a change,
-     *   and a change that is only held never takes the last block an
-     *   ACKNACK fits in (RosetteReaderDelivery.tla, BlockRule "evict_any",
-     *   AckReserve).
+     * - Correct means: the copied payload equals the DATA's, and a change
+     *   with no block is MISSING rather than lost.
      * - Covered by: TC-SRR-8.4.10.4-016, TC-SRR-8.4.10.4-019,
      *   TC-SRR-8.4.10.4-022.
      *
@@ -809,6 +856,31 @@ private:
      * - OMG DDSI-RTPS 2.5 §8.4.10.4
      */
     bool copy_payload(WriterProxy* proxy, const ParsedData& msg, BufRef& out) noexcept;
+
+    /**
+     * @brief Drops a DATA_FRAG whose sample this reader can never reassemble.
+     *
+     * Every fragment carries the sample's size and fragment size, so a
+     * sample above kMaxSampleOctets, or split into more fragments than a
+     * FragmentNumberSet names, is recognized on the first fragment that
+     * arrives. Such a change is accounted undelivered (account_undelivered())
+     * rather than left MISSING, where it would be requested forever and hold
+     * back every later change of its writer.
+     *
+     * @param[in] proxy The writer's proxy; null for an unmatched best-effort writer.
+     * @param[in] msg   The DATA_FRAG.
+     * @return true when the sample cannot be reassembled and the fragment is
+     *   dropped; false when the caller goes on to assemble it.
+     *
+     * Verification:
+     * - Correct means: an unassemblable sample is resolved on its first
+     *   fragment and later changes of the writer are delivered.
+     * - Covered by: TC-SRR-8.4.10-005.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.5.13, §8.4.12.2, §8.4.14
+     */
+    bool refuse_unassemblable(WriterProxy* proxy, const ParsedDataFrag& msg) noexcept;
 
     /**
      * @brief Hands a complete, accepted change to the consumer callback.
