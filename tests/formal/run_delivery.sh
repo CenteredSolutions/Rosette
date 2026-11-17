@@ -99,7 +99,15 @@ $check
 CHECK_DEADLOCK FALSE
 CFG
 
+# A resumed run reads its checkpoint; a fresh one clears earlier state
+# directories. Exactly one of the two is passed.
+if [[ -n ${TLC_RECOVER:-} ]]; then
+    start_args=(-recover "states/$TLC_RECOVER")
+else
+    start_args=(-cleanup)
+fi
+
 docker run --rm -v "$work":/model -v "$jar_dir":/tla -w /model eclipse-temurin:21-jre \
     java -XX:+UseParallelGC -Xmx"${TLC_HEAP:-6g}" -cp /tla/tla2tools.jar tlc2.TLC \
     -workers auto -config Delivery.cfg -checkpoint 30 \
-    ${TLC_RECOVER:+-recover states/$TLC_RECOVER} ${TLC_RECOVER:--cleanup} RosetteReaderDelivery.tla
+    "${start_args[@]}" RosetteReaderDelivery.tla
