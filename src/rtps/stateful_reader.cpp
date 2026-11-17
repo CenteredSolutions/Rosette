@@ -180,7 +180,15 @@ void StatefulReader::on_data(const ParseContext& ctx,
         proxy->on_heard();
     }
 
+    // A change too far past the lowest hole to record is not new to the
+    // proxy's window, yet it is no duplicate: it shows the gap, and is
+    // refused as beyond the hold window so its repair starts. A duplicate is
+    // never beyond the hold window.
     if (proxy && !is_new_change(*proxy, msg.writerSN)) {
+        if (refuse_beyond_window(proxy, msg.writerSN)) {
+            return;
+        }
+
         note_dropped(proxy, msg.writerSN);
         RTPS_LOG_T("reader", "DATA SN=%d:%lu from %02x%02x%02x%02x not new, dropped",
                    static_cast<int>(msg.writerSN.high),
@@ -247,9 +255,8 @@ void StatefulReader::on_data(const ParseContext& ctx,
 
 StatefulReader::BlockGrant StatefulReader::take_sample_block(WriterProxy*          proxy,
                                                              const SequenceNumber& sn,
-                                                             uint32_t              size,
-                                                             bool                  received,
-                                                             BufRef&               out) noexcept {
+                                                             uint32_t size, bool received,
+                                                             BufRef& out) noexcept {
     out = received ? buf_alloc_received(size) : buf_alloc(size);
 
     // An exhausted pool must not wedge a writer: held changes pin blocks,
@@ -275,9 +282,8 @@ StatefulReader::BlockGrant StatefulReader::take_sample_block(WriterProxy*       
     }
 
     if (!out.valid()) {
-        RTPS_LOG_E("reader", "no pool block for SN=%d:%lu of %lu octets",
-                   static_cast<int>(sn.high), static_cast<unsigned long>(sn.low),
-                   static_cast<unsigned long>(size));
+        RTPS_LOG_E("reader", "no pool block for SN=%d:%lu of %lu octets", static_cast<int>(sn.high),
+                   static_cast<unsigned long>(sn.low), static_cast<unsigned long>(size));
         return BlockGrant::kNone;
     }
 
@@ -287,7 +293,7 @@ StatefulReader::BlockGrant StatefulReader::take_sample_block(WriterProxy*       
 bool StatefulReader::copy_payload(WriterProxy* proxy, const ParsedData& msg, BufRef& out) noexcept {
     if (take_sample_block(proxy, msg.writerSN, msg.serializedPayloadSize, /*received=*/false, out)
         != BlockGrant::kTaken) {
-        note_dropped(proxy, msg.writerSN);
+        note_refused(proxy, msg.writerSN);
         return false;
     }
 
@@ -371,9 +377,13 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     }
 
     // A fragment of a sample already delivered (the writer resends whole
-    // samples on NACK_FRAG) must not assemble and deliver it again.
+    // samples on NACK_FRAG) must not assemble and deliver it again. As in
+    // on_data(), one too far ahead to record starts the gap repair instead.
     if (proxy && !is_new_change(*proxy, msg.writerSN)) {
-        assembler_.discard(writer_guid, msg.writerSN);
+        if (!refuse_beyond_window(proxy, msg.writerSN)) {
+            assembler_.discard(writer_guid, msg.writerSN);
+        }
+
         return;
     }
 
@@ -403,6 +413,7 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     if (proxy != nullptr && !assembler_.assembling(writer_guid, msg.writerSN)
         && take_sample_block(proxy, msg.writerSN, msg.dataSize, /*received=*/true, block)
                == BlockGrant::kRefused) {
+        note_refused(proxy, msg.writerSN);
         return;
     }
 
@@ -880,6 +891,16 @@ void StatefulReader::note_dropped(WriterProxy* proxy, const SequenceNumber& sn) 
     // takes a change MISSING on arrival for a repair.
     if (proxy != nullptr && reliability_ == ReliabilityKind::RELIABLE) {
         proxy->missing_changes_update(sn);
+    }
+}
+
+void StatefulReader::note_refused(WriterProxy* proxy, const SequenceNumber& sn) noexcept {
+    note_dropped(proxy, sn);
+
+    // The refused change is new, so it is evidence of a live writer and of a
+    // gap: the repair starts now rather than at the writer's next HEARTBEAT.
+    if (proxy != nullptr && reliability_ == ReliabilityKind::RELIABLE) {
+        proxy->schedule_gap_repair(rosette::platform::monotonic_ms());
     }
 }
 

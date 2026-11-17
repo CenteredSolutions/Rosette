@@ -421,7 +421,8 @@ static bool tc_srr_8_4_7_4_010(std::string& err) {
 
 // TC-SRR-8.4.7.4-011: a DATA the reader cannot keep, for want of a buffer,
 // still comes from the writer, so it marks the writer heard and the
-// preemptive ACKNACK stops, as a DATA_FRAG does (TC-SRR-8.4.7.4-009).
+// preemptive ACKNACK stops, as a DATA_FRAG does (TC-SRR-8.4.7.4-009). The
+// timer that remains is the dropped change's gap repair (TC-SRR-8.4.12-027).
 static bool tc_srr_8_4_7_4_011(std::string& err) {
     CaptureTransport tx{};
     const Guid       reader_guid = make_guid(0x11u, 0x12u, 0x13u, make_entity(1u, 2u, 3u, 0xC7u));
@@ -456,9 +457,15 @@ static bool tc_srr_8_4_7_4_011(std::string& err) {
     CHECK(proxy->heard, "a DATA dropped for want of a buffer marks the writer heard");
     CHECK(proxy->is_missing(data.writerSN),
           "and its change is MISSING, so the reader is not caught up");
-    CHECK(r.ms_until_next_timer(1000u) == UINT32_MAX, "and no preemptive ACKNACK is owed");
-    r.tick(1000u + RTPS_PREEMPTIVE_ACKNACK_RETRY_MS);
-    CHECK(tx.sent.size() == 1u, "none is sent again");
+    CHECK(!proxy->acknackPending, "and no preemptive ACKNACK is owed");
+    CHECK(r.ms_until_next_timer(1000u) == RTPS_GAP_REPAIR_DELAY_MS,
+          "the only timer is the dropped change's gap repair");
+    r.tick(1000u + RTPS_GAP_REPAIR_DELAY_MS);
+    ParsedAckNack ack{};
+    CHECK(tx.sent.size() == 2u && parse_acknack(tx.sent.back(), ack)
+              && ack.readerSNState.bitmapBase == SequenceNumber::from_int64(1)
+              && ack.readerSNState.test(0u),
+          "what it sends is a request for SN 1, not a preemptive ACKNACK");
     return true;
 }
 

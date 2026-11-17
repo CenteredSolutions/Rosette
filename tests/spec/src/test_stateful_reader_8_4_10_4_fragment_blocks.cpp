@@ -92,7 +92,8 @@ struct Fixture {
         r.on_data(ctx(), d);
     }
 
-    /// Fragments `first` .. `first + count - 1` of a `data_size`-octet sample in 512-octet fragments.
+    /// Fragments `first` .. `first + count - 1` of a `data_size`-octet sample in 512-octet
+    /// fragments.
     void frags(int64_t sn, uint32_t data_size, uint32_t first, uint16_t count) {
         constexpr uint16_t frag_size = 512u;
         std::vector<Octet> payload(static_cast<size_t>(count) * frag_size, 0x42u);
@@ -156,7 +157,8 @@ struct Fixture {
 static bool tc_srr_8_4_10_4_024(std::string& err) {
     Fixture        f{};
     const uint8_t  below_largest = static_cast<uint8_t>(g_buf_pool.class_count() - 2u);
-    const uint32_t size = static_cast<uint32_t>(g_buf_pool.class_info(below_largest).block_size) + 1u;
+    const uint32_t size =
+        static_cast<uint32_t>(g_buf_pool.class_info(below_largest).block_size) + 1u;
     f.data(1);
 
     std::vector<BufRef> hog{};
@@ -172,7 +174,8 @@ static bool tc_srr_8_4_10_4_024(std::string& err) {
     CHECK(f.delivered_exactly({1}), "SN 3 and SN 4 are held, pinning the last two large blocks");
 
     f.sample(2, size);
-    CHECK(f.delivered_exactly({1, 2, 3}), "the fragmented SN 2 took SN 4's block and released SN 3");
+    CHECK(f.delivered_exactly({1, 2, 3}),
+          "the fragmented SN 2 took SN 4's block and released SN 3");
     hog.clear();
     ParsedAckNack ack{};
     CHECK(f.acknack_for(4, ack) && ack.readerSNState.bitmapBase == SequenceNumber::from_int64(4)

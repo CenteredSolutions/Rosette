@@ -1333,6 +1333,11 @@ private:
     static_assert(RTPS_HELD_CHANGES_PER_READER >= 1u
                       && RTPS_HELD_CHANGES_PER_READER <= RTPS_HELD_CHANGES,
                   "RTPS_HELD_CHANGES_PER_READER must be 1 to RTPS_HELD_CHANGES");
+    // A change past a writer proxy's sequence-number window is then also
+    // past the hold window, so StatefulReader::refuse_beyond_window() sees
+    // every change too far ahead to record and starts its gap repair.
+    static_assert(RTPS_HELD_CHANGES_PER_READER < SequenceNumberWindow::kCapacity,
+                  "RTPS_HELD_CHANGES_PER_READER must be below the writer proxy's SN window");
     HeldChangePoolStorage<RTPS_HELD_CHANGES> held_slots_;
 
     // Writer storage: opaque byte arrays, each holding one

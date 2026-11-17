@@ -18,6 +18,7 @@
 
 #include "spec_test_common.hpp"
 
+#include "rosette/rtps/buf_pool.hpp"
 #include "rosette/rtps/stateful_reader.hpp"
 #include "rosette/rtps/transport.hpp"
 
@@ -88,6 +89,23 @@ struct Fixture {
         d.serializedPayload = payload;
         d.serializedPayloadSize = sizeof(payload);
         r.on_data(ctx(), d);
+    }
+
+    /// The first 512-octet fragment of a 2048-octet sample `sn` arrives `at` ms after the start.
+    void frag(int64_t sn, uint32_t at) {
+        static const Octet payload[512] = {};
+        g_stateful_reader_test_now_ms = 1000u + at;
+        ParsedDataFrag d{};
+        d.readerId = reader_guid.entityId;
+        d.writerId = writer_guid.entityId;
+        d.writerSN = SequenceNumber::from_int64(sn);
+        d.fragmentStartingNum = 1u;
+        d.fragmentsInSubmessage = 1u;
+        d.fragmentSize = 512u;
+        d.dataSize = 2048u;
+        d.fragmentPayload = payload;
+        d.fragmentPayloadSize = sizeof(payload);
+        r.on_data_frag(ctx(), d);
     }
 
     /// Runs the timer pass `at` ms after the start; returns the messages it sent.
@@ -268,6 +286,62 @@ static bool tc_srr_8_4_12_025(std::string& err) {
     return true;
 }
 
+// §8.4.12.2: a change too far past the lowest hole to record in the
+// reader's window (more than 64 numbers on) still shows the gap, so the hole
+// is requested one delay later, whether the change came whole or in
+// fragments. A duplicate is no such evidence: it restores no spent rounds.
+static bool tc_srr_8_4_12_026(std::string& err) {
+    constexpr uint32_t d = RTPS_GAP_REPAIR_DELAY_MS;
+    for (const bool fragmented : {false, true}) {
+        Fixture f{};
+        f.data(1, 0u);
+        if (fragmented) {
+            f.frag(70, 0u);
+        } else {
+            f.data(70, 0u);
+        }
+
+        CHECK(f.run(0u, d) == std::vector<uint32_t>{d},
+              fragmented ? "a fragment of SN 70 starts the gap repair"
+                         : "a DATA of SN 70 starts the gap repair");
+        ParsedAckNack ack{};
+        CHECK(f.last_acknack(ack) && ack.readerSNState.bitmapBase == SequenceNumber::from_int64(2)
+                  && ack.readerSNState.test(0u),
+              "the request names SN 2 onward");
+    }
+
+    Fixture f{};
+    f.data(1, 0u);
+    f.data(3, 0u);
+    CHECK(f.run(0u, 15u * d).size() == RTPS_GAP_REPAIR_ROUNDS, "the rounds are spent");
+    f.data(1, 15u * d + 1u);
+    CHECK(f.run(15u * d + 1u, 40u * d).empty(), "a duplicate restores no round");
+    return true;
+}
+
+// §8.4.12.2: a DATA the reader cannot store for want of a pool block is
+// MISSING, and is requested one delay later rather than at the writer's
+// next HEARTBEAT.
+static bool tc_srr_8_4_12_027(std::string& err) {
+    constexpr uint32_t d = RTPS_GAP_REPAIR_DELAY_MS;
+    Fixture            f{};
+    f.data(1, 0u);
+
+    std::vector<BufRef> hog{};
+    for (BufRef b = buf_alloc(5u); b.valid(); b = buf_alloc(5u)) {
+        hog.push_back(static_cast<BufRef&&>(b));
+    }
+
+    f.data(3, 0u);
+    hog.clear();
+    CHECK(f.run(0u, d) == std::vector<uint32_t>{d}, "the dropped SN 3 starts the gap repair");
+    ParsedAckNack ack{};
+    CHECK(f.last_acknack(ack) && ack.readerSNState.bitmapBase == SequenceNumber::from_int64(2)
+              && ack.readerSNState.test(0u) && ack.readerSNState.test(1u),
+          "the request names SN 2 and SN 3");
+    return true;
+}
+
 void append_stateful_reader_tests_8_4_12_gap_nack_on_quiet(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SRR-8.4.12-020",
                      "§8.4.12.2: a change missing behind a later one is requested one delay later, "
@@ -292,6 +366,13 @@ void append_stateful_reader_tests_8_4_12_gap_nack_on_quiet(std::vector<TestCase>
                      "§8.4.12.2: a gap closed by a GAP or a HEARTBEAT's firstSN ends its repair "
                      "rounds; the next gap waits one undoubled delay.",
                      tc_srr_8_4_12_025});
+    tests.push_back({"TC-SRR-8.4.12-026",
+                     "§8.4.12.2: a change past the reader's window starts the gap repair, whole or "
+                     "fragmented; a duplicate restores no round.",
+                     tc_srr_8_4_12_026});
+    tests.push_back({"TC-SRR-8.4.12-027",
+                     "§8.4.12.2: a DATA dropped for want of a pool block starts the gap repair.",
+                     tc_srr_8_4_12_027});
 }
 
 }  // namespace spec_test

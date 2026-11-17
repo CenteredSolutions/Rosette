@@ -635,10 +635,36 @@ private:
      */
     void record_change(WriterProxy& proxy, const SequenceNumber& sn) noexcept;
 
-    /// @brief Records that a reliable writer holds `sn`, for a DATA this
-    ///        reader drops (past its window, or no buffer to keep it); no-op
-    ///        for a null proxy.
+    /// @brief Records that a reliable writer holds `sn`, for a change this
+    ///        reader drops without storing it; no-op for a null proxy.
+    ///
+    /// The change becomes MISSING unless already resolved. No repair is
+    /// started: a duplicate passes through here, and restoring the gap
+    /// repair's rounds on every duplicate would lift their limit.
     void note_dropped(WriterProxy* proxy, const SequenceNumber& sn) noexcept;
+
+    /**
+     * @brief Records a new change the reader could not store, and starts its gap repair.
+     *
+     * Called when take_sample_block() gives no block, for want of one or
+     * under R5. The change passed the duplicate check, so it shows a live
+     * writer and a gap the reader must ask for: it is made MISSING
+     * (note_dropped()) and the writer proxy's gap timer is started
+     * (WriterProxy::schedule_gap_repair()), so the request goes out one
+     * RTPS_GAP_REPAIR_DELAY_MS later instead of at the next HEARTBEAT.
+     *
+     * @param[in,out] proxy The writer's proxy; null for an unmatched best-effort writer.
+     * @param[in]     sn    The refused change's sequence number.
+     *
+     * Verification:
+     * - Correct means: after a refusal, a reliable reader sends an ACKNACK
+     *   naming the change one gap-repair delay later without any HEARTBEAT.
+     * - Covered by: TC-SRR-8.4.12-027.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4, §8.4.12.2
+     */
+    void note_refused(WriterProxy* proxy, const SequenceNumber& sn) noexcept;
 
     /**
      * @brief Resolves a change that will never be delivered, so it is never requested again.
@@ -733,6 +759,14 @@ private:
     /**
      * @brief Refuses a change beyond the hold window before its payload is copied (R6).
      *
+     * on_data() and on_data_frag() also call this for a change their
+     * duplicate check finds not new. The hold window is narrower than the
+     * writer proxy's sequence-number window (participant.hpp asserts it), so
+     * a change too far past the lowest hole to record is refused here and
+     * starts the gap repair, instead of being dropped as a duplicate. A
+     * duplicate is never beyond the hold window, since the window only
+     * moves forward.
+     *
      * @param[in,out] proxy The writer's proxy; null for an unmatched best-effort writer.
      * @param[in]     sn    The arriving change's sequence number.
      * @return `true` when the change was refused and the caller drops it.
@@ -740,8 +774,9 @@ private:
      * Verification:
      * - Correct means: a refused change is MISSING, as a HEARTBEAT announcing
      *   it would leave it, is not acknowledged, takes no buffer block or
-     *   assembly slot, and is requested by the next ACKNACK.
-     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-014, TC-SRR-8.4.10.4-018.
+     *   assembly slot, and is requested one gap-repair delay later.
+     * - Covered by: TC-SRR-8.4.10.4-013, TC-SRR-8.4.10.4-014, TC-SRR-8.4.10.4-018,
+     *   TC-SRR-8.4.12-026.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.10.4 (missing_changes_update), §8.4.12.2
@@ -843,14 +878,15 @@ private:
      * @param[out] out   The block, with size set to the copied length.
      * @return `true` when copied; `false` when no block could be had or the
      *   change was refused under R5. On `false` a reliable reader records
-     *   the change MISSING (note_dropped()), so it is requested again and the
-     *   reader does not report itself caught up meanwhile.
+     *   the change MISSING and starts its gap repair (note_refused()), so it
+     *   is requested again and the reader does not report itself caught up
+     *   meanwhile.
      *
      * Verification:
      * - Correct means: the copied payload equals the DATA's, and a change
-     *   with no block is MISSING rather than lost.
+     *   with no block is MISSING rather than lost, and requested.
      * - Covered by: TC-SRR-8.4.10.4-016, TC-SRR-8.4.10.4-019,
-     *   TC-SRR-8.4.10.4-022.
+     *   TC-SRR-8.4.10.4-022, TC-SRR-8.4.12-027.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.10.4
