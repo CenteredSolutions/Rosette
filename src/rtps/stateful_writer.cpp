@@ -471,10 +471,16 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
     // that has acknowledged before is only behind a stream in flight: the
     // next piggybacked HEARTBEAT covers it, and answering every such ACK
     // would turn each HEARTBEAT into a HEARTBEAT/ACKNACK exchange per round
-    // trip for as long as the writer keeps writing.
-    if (msg.readerSNState.numBits == 0u && acked_nothing_before
-        && msg.readerSNState.bitmapBase < nextSN_) {
-        send_heartbeat(false, sg);
+    // trip for as long as the writer keeps writing. A writer that has
+    // written nothing still answers a non-final announcement (§8.3.7.1: the
+    // reader expects a response), with a final HEARTBEAT, so the reader
+    // learns the writer is there and need not answer it.
+    if (msg.readerSNState.numBits == 0u && acked_nothing_before) {
+        if (msg.readerSNState.bitmapBase < nextSN_) {
+            send_heartbeat(false, sg);
+        } else if (!msg.finalFlag && nextSN_ == SequenceNumber::from_int64(1)) {
+            send_heartbeat(true, sg);
+        }
     }
 
     release_finished_changes();

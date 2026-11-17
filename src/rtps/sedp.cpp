@@ -767,8 +767,30 @@ bool SedpReader::caught_up_with(const GuidPrefix& peer_prefix, SequenceNumber& p
     return pubs && subs;
 }
 
-void SedpReader::heard_from(const GuidPrefix& peer_prefix, bool& publications,
-                            bool& subscriptions) noexcept {
+bool SedpReader::heard_from(const GuidPrefix& peer_prefix, uint32_t advertised) noexcept {
+    // An advertised announcer with no proxy has not been heard: absence
+    // must not pass for success, or a peer whose proxy was never made
+    // settles without the replay it was activated for.
+    const auto heard = [&](StatefulReader& reader, uint32_t bit,
+                           const EntityId& announcer) noexcept {
+        if ((advertised & bit) == 0u) {
+            return true;
+        }
+
+        const WriterProxy* proxy = reader.matched_writer_lookup(Guid{peer_prefix, announcer});
+        return proxy != nullptr && proxy->heard;
+    };
+
+    return heard(publications_reader_,
+                 builtin_endpoint::DISC_BUILTIN_ENDPOINT_PUBLICATIONS_ANNOUNCER,
+                 entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER)
+           && heard(subscriptions_reader_,
+                    builtin_endpoint::DISC_BUILTIN_ENDPOINT_SUBSCRIPTIONS_ANNOUNCER,
+                    entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER);
+}
+
+void SedpReader::heard_heartbeat_from(const GuidPrefix& peer_prefix, bool& publications,
+                                      bool& subscriptions) noexcept {
     // HEARTBEAT counts start at 1 (§8.3.7.5), so a proxy's lastHBCount of 0
     // means none has arrived since the announcer was matched.
     const auto heard = [](StatefulReader& reader, const Guid& announcer) noexcept {

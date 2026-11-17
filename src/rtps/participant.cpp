@@ -640,8 +640,9 @@ void RTPSParticipant::on_spdp_new_peer(const PeerEntry& peer,
                                        void*            self) noexcept
 {
     // SPDP reports a new peer, and every announcement of one still
-    // pending; it is activated when the active tier has room or a settled
-    // peer can be parked for it (participant_peer_tiers.cpp).
+    // pending; it is activated when the active tier has room or an idle
+    // peer can be parked for it, and is otherwise owed a turn that tick()
+    // serves (participant_peer_tiers.cpp).
     auto* p = static_cast<RTPSParticipant*>(self);
     p->timers_stale_ = true;
     PeerEntry* known = p->spdp_reader_.find_peer(peer.guidPrefix);
@@ -920,6 +921,15 @@ void RTPSParticipant::dispatch_data_frag(const ParseContext&   ctx,
                                          const ParsedDataFrag& msg) noexcept
 {
     auto* p = static_cast<RTPSParticipant*>(ctx.user_data);
+
+    // A fragment is SEDP progress as a whole DATA is: a peer whose
+    // announcements arrive in fragments must not age into a stall while
+    // they stream in, and one above a parked peer's kept number promotes it.
+    if (is_sedp_announcer(msg.writerId)) {
+        p->on_announcer_traffic(ctx.senderGuidPrefix, msg.writerId, msg.writerSN, true,
+                                rosette::platform::monotonic_ms());
+    }
+
     p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
         r.on_data_frag(ctx, msg);
     });

@@ -149,9 +149,9 @@
       "id": "REQ-SWR-8.4.3-ANNOUNCING-READER-HEARTBEAT",
       "section": "8.4.3",
       "normativity": "should",
-      "statement": "An ACKNACK requesting nothing from a reader that has acknowledged nothing yet, while the writer has written more, is answered with a HEARTBEAT directed at that reader; a plain ACK from a reader that has acknowledged before is not answered, so HEARTBEATs never pair with ACKNACKs into a per-round-trip exchange while the writer streams.",
+      "statement": "An ACKNACK requesting nothing from a reader that has acknowledged nothing yet, while the writer has written more, is answered with a HEARTBEAT directed at that reader; a plain ACK from a reader that has acknowledged before is not answered, so HEARTBEATs never pair with ACKNACKs into a per-round-trip exchange while the writer streams. A writer that has written nothing answers a non-final announcement with a directed final HEARTBEAT. A reader's first ACKNACK is accepted whatever its count (Cyclone DDS starts at 0).",
       "status": "implemented",
-      "test_ids": ["TC-SWR-8.4.3-002", "TC-SWR-8.4.3-003"]
+      "test_ids": ["TC-SWR-8.4.3-002", "TC-SWR-8.4.3-003", "TC-SWR-8.4.3-004", "TC-SWR-8.4.3-005"]
     },
     {
       "id": "REQ-SWR-8.4.4-NACK-FRAG-DEFERRED-RESPONSE",
