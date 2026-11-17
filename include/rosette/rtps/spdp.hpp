@@ -277,6 +277,28 @@ struct DiscoveredParticipant {
 #define RTPS_PEER_SETTLE_MS 2000u
 #endif
 
+/// The longest a peer that keeps stalling waits between activations. Each
+/// stall in a row doubles the wait, starting at twice
+/// RTPS_PEER_EXCHANGE_TIMEOUT_MS, so peers that cannot be reached stop
+/// taking turns in the slots every few seconds; the cap bounds how long one
+/// whose path has come back waits for its next try.
+#ifndef RTPS_PEER_STALL_BACKOFF_MAX_MS
+#  define RTPS_PEER_STALL_BACKOFF_MAX_MS 60000u
+#endif
+
+static_assert(RTPS_PEER_EXCHANGE_TIMEOUT_MS > RTPS_PEER_SETTLE_MS,
+              "a peer must have the chance to settle before it counts as stalled");
+static_assert(RTPS_PEER_STALL_BACKOFF_MAX_MS >= RTPS_PEER_EXCHANGE_TIMEOUT_MS,
+              "a stalled peer cannot be tried again before its exchange would have stalled");
+// The first preemptive ACKNACK leaves at the match, so N attempts span N - 1
+// retry periods.
+static_assert((RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS - 1u) * RTPS_PREEMPTIVE_ACKNACK_RETRY_MS
+                  > RTPS_PEER_EXCHANGE_TIMEOUT_MS,
+              "the SEDP readers' preemptive ACKNACKs must outlast the exchange deadline, "
+              "or an empty announcer whose answers were lost keeps its peer from settling "
+              "until it stalls; the default RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS "
+              "always does");
+
 static_assert(RTPS_MAX_KNOWN_PEERS >= RTPS_MAX_PEERS && RTPS_MAX_KNOWN_PEERS < 256,
               "RTPS_MAX_KNOWN_PEERS must hold every active peer and fit a one-octet index");
 static_assert(RTPS_MAX_PEERS < 255, "RTPS_MAX_PEERS must leave a one-octet slot index free");
@@ -285,6 +307,8 @@ static_assert(RTPS_MAX_PEERS < 255, "RTPS_MAX_PEERS must leave a one-octet slot 
 struct PeerEntry {
     /// activeSlot of a peer without an active slot.
     static constexpr uint8_t kNoActiveSlot = 0xFFu;
+    /// stalls saturates here; TIMEOUT << kMaxStalls is far above any cap.
+    static constexpr uint8_t kMaxStalls = 16u;
 
     GuidPrefix guidPrefix = {};
     /// The most reachable metatraffic unicast locator; RESERVED when the
@@ -294,7 +318,9 @@ struct PeerEntry {
     uint32_t leaseExpiryMs = 0;              ///< rosette::platform::monotonic_ms() at expiry.
     uint32_t leaseMs = 0;                    ///< Lease duration the peer announced.
     /// monotonic_ms() of the peer's activation or of the latest SEDP DATA
-    /// from it; a peer is parked only once this is RTPS_PEER_SETTLE_MS old.
+    /// from it, a DATA_FRAG counting as a DATA; a peer is parked only once
+    /// this is RTPS_PEER_SETTLE_MS old (settled), or
+    /// RTPS_PEER_EXCHANGE_TIMEOUT_MS old (stalled).
     uint32_t lastSedpMs = 0;
     /// Low 32 bits of the highest sequence number received from the peer's
     /// publications and subscriptions announcers when it was parked; an
@@ -313,9 +339,15 @@ struct PeerEntry {
     uint8_t activeSlot = kNoActiveSlot;  ///< Index of the peer's active slot.
     bool alive = false;
     bool parked = false;  ///< Parked: see "Known and active peers".
-    /// Parked while this participant's announcements changed: the peer is
-    /// reactivated, when a slot allows, to receive them.
+    /// Owed a turn in a slot: parked while this participant's announcements
+    /// changed, parked stalled, or turned away while every slot was busy.
+    /// RTPSParticipant::serve_owed_peer() admits it when a slot allows.
     bool owed = false;
+    /// Times in a row the peer was parked stalled, saturating at
+    /// kMaxStalls; its next turn waits out the backoff it sets
+    /// (stall_backoff_ms() in rtps/participant_peer_tiers.cpp). SEDP DATA
+    /// from the peer, or its settling, clears it.
+    uint8_t    stalls = 0;
 
     /// @brief Whether SEDP is exchanged with the peer.
     bool active() const noexcept { return activeSlot != kNoActiveSlot; }
@@ -510,13 +542,17 @@ public:
     // first tick announces and the next announce waits one period.
     //
     // @param now_ms  Current rosette::platform::monotonic_ms().
+    // @return Milliseconds until the next announcement, as
+    //   ms_until_next_announce() then reports it.
     // ----------------------------------------------------------
-    void tick(uint32_t now_ms) noexcept {
+    uint32_t tick(uint32_t now_ms) noexcept {
         if (!announced_once_ || (now_ms - last_sent_ms_) >= resend_ms_) {
             announce();
             last_sent_ms_ = now_ms;
             announced_once_ = true;
         }
+
+        return ms_until_next_announce(now_ms);
     }
 
     // Milliseconds until tick() next announces; 0 when due (including before
@@ -610,9 +646,12 @@ public:
      *   representation header; borrowed for the call only.
      * @param[in] payload_len   Payload length in octets.
      * @param[in] now_ms        Current rosette::platform::monotonic_ms().
-     * @return `true` when the announcement was accepted (a lease renewed or a
-     *   record written); `false` when the payload does not decode or the
-     *   known-peer table is full, in which case no record or lease changes.
+     * @return The peer's record when the announcement was accepted (a lease
+     *   renewed or a record written), so the caller can read the lease it
+     *   now runs on; null when the payload does not decode or the known-peer
+     *   table is full, in which case no record or lease changes. The record
+     *   lives in the reader's table and stays valid until the peer is
+     *   forgotten.
      *
      * Verification:
      * - Correct means: a parked peer's lease is renewed only by a well-formed
@@ -625,10 +664,8 @@ public:
      * - OMG DDSI-RTPS 2.5 §8.5.3.2 (lease), §8.5.3.3 (SPDP reader),
      *   §9.6.2 (PL_CDR parameter list), §9.6.3.1 (Table 9.14)
      */
-    bool on_data(const GuidPrefix& sender_prefix,
-                 const Octet*      payload,
-                 uint32_t          payload_len,
-                 uint32_t          now_ms) noexcept;
+    const PeerEntry* on_data(const GuidPrefix& sender_prefix, const Octet* payload,
+                             uint32_t payload_len, uint32_t now_ms) noexcept;
 
     // ----------------------------------------------------------
     // tick()
@@ -639,9 +676,16 @@ public:
     //   "If a participant does not receive a refresh within
     //    leaseDuration, it removes the remote participant entry."
     //
+    // The same pass finds the soonest lease left, so the participant need
+    // not walk the peers a second time to know when to look again.
+    //
     // @param now_ms  Current rosette::platform::monotonic_ms().
+    // @return What ms_until_next_expiry(now_ms) returns once the call is
+    //   done: the time to the soonest surviving lease expiry, UINT32_MAX
+    //   when no peer is left.
+    // Verification: TC-SPDP-8.5.3-002 (expiry), TC-PART-8.5.1-016 (return).
     // ----------------------------------------------------------
-    void tick(uint32_t now_ms) noexcept;
+    uint32_t tick(uint32_t now_ms) noexcept;
 
     // ----------------------------------------------------------
     // remove_peer()

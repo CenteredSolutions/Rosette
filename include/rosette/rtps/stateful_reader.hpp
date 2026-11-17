@@ -131,7 +131,10 @@ public:
      * (send_preemptive_acknack()): nothing acknowledged, nothing requested,
      * F-flag clear. The writer answers with a HEARTBEAT, the HEARTBEAT shows
      * the dropped changes as MISSING, and the ordinary ACKNACK requests them,
-     * so the loss costs a few round trips instead of a HEARTBEAT period. A
+     * so the loss costs a few round trips instead of a HEARTBEAT period. The
+     * preemptive ACKNACK is resent until the writer is heard (tick()), at
+     * most RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS times in all, or
+     * RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS for a builtin reader. A
      * BEST_EFFORT reader sends nothing.
      *
      * @param[in] writer_guid      GUID of the remote writer.
@@ -149,7 +152,7 @@ public:
      *
      * Verification:
      * - Correct means: one proxy per matched writer; a RELIABLE reader sends
-     *   exactly one non-final, empty ACKNACK on a new match, in the form the
+     *   one non-final, empty ACKNACK on a new match, in the form the
      *   writer's vendor recognizes, with a count above every ACKNACK this
      *   reader sent before (1 on its first match), so a writer that
      *   remembers this reader from an earlier match accepts it; a
@@ -324,16 +327,35 @@ public:
      */
     bool send_acknack(WriterProxy& proxy, bool final_flag = false) noexcept;
 
-    // ----------------------------------------------------------
-    // tick()
-    //
-    // Periodic maintenance: sends the ACKNACKs whose heartbeatResponseDelay
-    // has elapsed, the ACKNACKs naming the MISSING changes of writers that
-    // have gone quiet (WriterProxy::schedule_gap_repair()), and the
-    // NACK_FRAGs of partial samples whose fragments have stopped arriving.
-    // Call at least as often as ms_until_next_timer() asks.
-    // ----------------------------------------------------------
-    void tick(uint32_t now_ms) noexcept;
+    /**
+     * @brief Sends the reader's due ACKNACKs and NACK_FRAGs, and says when it
+     *   next has one due.
+     *
+     * Sends the ACKNACK of each writer whose heartbeatResponseDelay has
+     * elapsed, the preemptive ACKNACK again to each writer not heard from
+     * since matching, the ACKNACK naming the MISSING changes of each writer
+     * that has gone quiet (WriterProxy::schedule_gap_repair()), and the
+     * NACK_FRAGs of partial samples whose fragments have stopped arriving.
+     * The pass over the matched writers also finds the soonest ACKNACK or
+     * gap repair still waiting, so the participant learns when to tick this
+     * reader again without a second pass (RTPSParticipant::tick()).
+     *
+     * @param[in] now_ms Current rosette::platform::monotonic_ms().
+     * @return What ms_until_next_timer(now_ms) returns once the call is done:
+     *   milliseconds until the next ACKNACK, gap repair, or fragment repair,
+     *   UINT32_MAX when none is pending.
+     *
+     * Verification:
+     * - Correct means: every ACKNACK whose deadline has passed is sent once,
+     *   and the return equals ms_until_next_timer(now_ms) called right after.
+     * - Covered by: TC-PART-8.5.1-016, TC-SRR-8.4.7-002, TC-SRR-8.4.12-001,
+     *   TC-SRR-8.4.12-020 to -024.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.12.2 (heartbeatResponseDelay; an ACKNACK
+     *   without a HEARTBEAT), §8.4.7.3
+     */
+    uint32_t tick(uint32_t now_ms) noexcept;
 
     // ----------------------------------------------------------
     // Accessors
@@ -543,7 +565,7 @@ private:
 
     /**
      * @brief Sends the preemptive ACKNACK of a new match, in the form the writer's vendor
-     * recognizes.
+     * recognizes, and owes the next one until the writer is heard.
      *
      * The ACKNACK acknowledges nothing, requests nothing and has the F-flag
      * clear. DDSI-RTPS requires a writer to answer any non-final ACKNACK with
@@ -554,23 +576,29 @@ private:
      * Cyclone in turn rejects bitmapBase 0 as malformed unless the sender is
      * eProsima or RTI. So the form follows the writer's vendor: bitmapBase 0
      * for eProsima and RTI (which sends the same form), bitmapBase 1 for
-     * everyone else.
+     * everyone else (WriterProxy::zeroBaseAcknack).
      *
-     * @param[in,out] proxy         The writer just matched; its count is
-     *   advanced (on_acknack_sent()).
-     * @param[in]     writer_vendor Vendor of the writer's participant.
+     * @param[in,out] proxy The matched writer; its count is advanced, one of
+     *   its attempts is spent, and, while it is unheard and attempts are
+     *   left, the next is owed RTPS_PREEMPTIVE_ACKNACK_RETRY_MS later,
+     *   whether or not this one left.
      *
      * Verification:
      * - Correct means: one ACKNACK to the writer's unicast locator, empty
-     *   set, F-flag clear, count 1, bitmapBase 0 exactly for eProsima and RTI.
-     * - Covered by: TC-SRR-8.4.7.4-002, TC-SRR-8.4.7.4-004.
+     *   set, F-flag clear, a count above every earlier one, bitmapBase 0
+     *   exactly for eProsima and RTI; repeated every retry period until the
+     *   writer is heard, and never after; never more than the reader's
+     *   attempts (RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS for a user reader,
+     *   RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS for a builtin one).
+     * - Covered by: TC-SRR-8.4.7.4-002, TC-SRR-8.4.7.4-004, TC-SRR-8.4.7.4-008,
+     *   TC-SRR-8.4.7.4-009, TC-SRR-8.4.7.4-010.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.7.1 (ACKNACK), §8.3.5.5 (SequenceNumberSet)
      * - Fast DDS 2.6 StatefulWriter::process_acknack, WriterProxy::perform_initial_ack_nack
      * - Cyclone DDS 0.10 q_receive.c validate_AckNack, handle_AckNack
      */
-    void send_preemptive_acknack(WriterProxy& proxy, const VendorId& writer_vendor) noexcept;
+    void send_preemptive_acknack(WriterProxy& proxy, uint32_t now_ms) noexcept;
 
     /**
      * @brief True when the change `sn` from `proxy`'s writer should be delivered.
@@ -607,26 +635,31 @@ private:
      */
     void record_change(WriterProxy& proxy, const SequenceNumber& sn) noexcept;
 
+    /// @brief Records that a reliable writer holds `sn`, for a DATA this
+    ///        reader drops (past its window, or no buffer to keep it); no-op
+    ///        for a null proxy.
+    void note_dropped(WriterProxy* proxy, const SequenceNumber& sn) noexcept;
+
     /**
      * @brief Resolves a change that will never be delivered, so it is never requested again.
      *
-     * Two kinds of change end here. A DATA with neither payload nor key
-     * that withdraws nothing has nothing to deliver. A sample larger than
-     * the largest pool block (kPoolMaxBlockSize) can never be stored: its
-     * writer would resend it on every request, and a reliable reader that
-     * kept waiting for it could record no change more than
-     * SequenceNumberWindow::kCapacity past it, so every later change on the
-     * topic would stall. Such a sample is resolved as LOST, which the next
-     * ACKNACK acknowledges. A transient pool shortage is not handled here:
-     * that change stays MISSING and is repaired later.
+     * Three kinds of change end here: a DATA with neither payload nor key
+     * that withdraws nothing, a sample above the build's limit
+     * (kMaxSampleOctets), and a sample split into more fragments than a
+     * FragmentNumberSet names. The last two can never be stored, and a
+     * reliable reader that kept requesting them would stall every later
+     * change on the topic. They are resolved as LOST, which the next ACKNACK
+     * acknowledges. A transient pool shortage is not handled here: that
+     * change stays MISSING and is repaired later.
      *
      * @param[in,out] proxy Matched writer the change came from.
      * @param[in]     sn    Sequence number of the change.
      *
      * Verification:
-     * - Correct means: the change is resolved and never delivered; on a
-     *   narrow link, resolving a MISSING change requests the next one.
-     * - Covered by: TC-SRR-8.4.8-004, TC-SRR-8.4.10-003.
+     * - Correct means: the change is resolved and never delivered, and the
+     *   next ACKNACK's bitmapBase is above it; on a narrow link, resolving a
+     *   MISSING change requests the next one.
+     * - Covered by: TC-SRR-8.4.8-004, TC-SRR-8.4.10-003, TC-SRR-8.4.10-005.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.10.4 (received_change_set), §8.4.12.2
@@ -759,8 +792,9 @@ private:
      * @param[in]  msg   The DATA, with a payload or key.
      * @param[out] out   The block, with size set to the copied length.
      * @return `true` when copied; `false` when no block could be had or the
-     *   change was refused under R5 (the change stays MISSING and is
-     *   requested again).
+     *   change was refused under R5. On `false` a reliable reader records
+     *   the change MISSING (note_dropped()), so it is requested again and the
+     *   reader does not report itself caught up meanwhile.
      *
      * Verification:
      * - Correct means: a pool shortage never leaves a writer's next change

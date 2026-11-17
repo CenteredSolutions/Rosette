@@ -10,8 +10,9 @@
  */
 
 #include "message_parser.hpp"
+#include <stdint.h>
+#include <string.h>  // memcpy
 #include "log.hpp"
-#include <string.h>     // memcpy
 
 namespace rosette::rtps {
 
@@ -113,6 +114,14 @@ static bool read_sn_set(Reader& r, SequenceNumberSet& out,
                         bool need_swap) noexcept {
     out.clear();
     if (!read_sequence_number(r, out.bitmapBase, need_swap)) return false;
+
+    // §8.3.5.5 requires bitmapBase >= 1. Base 0 is accepted because Fast DDS
+    // announces a reader with an ACKNACK of base 0. The upper bound keeps
+    // bitmapBase + numBits representable for the endpoints that walk the set.
+    const int64_t base = out.bitmapBase.to_int64();
+    if (base < 0 || base > INT64_MAX - SequenceNumberSet::kMaxBits) {
+        return false;
+    }
 
     if (!r.read(out.numBits)) return false;
     fixup_u32(out.numBits, need_swap);

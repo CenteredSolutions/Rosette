@@ -26,7 +26,7 @@ namespace {
 // back to back, plus an eighth for each fragment's RTPS headers and the
 // socket backend's per-datagram record (about 160 octets per 1.3 KB fragment).
 #ifndef RTPS_USER_SOCKET_RECEIVE_BUFFER
-#  define RTPS_USER_SOCKET_RECEIVE_BUFFER (kPoolMaxBlockSize + kPoolMaxBlockSize / 8u)
+#  define RTPS_USER_SOCKET_RECEIVE_BUFFER (kMaxSampleOctets + kMaxSampleOctets / 8u)
 #endif
 
 // Receive buffering the metatraffic socket asks for: a burst of SEDP

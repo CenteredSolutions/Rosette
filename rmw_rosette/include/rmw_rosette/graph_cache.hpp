@@ -15,10 +15,15 @@
  * which CMake sets on POSIX. A firmware build has no cache, allocates nothing
  * for graph queries, and reports them as RMW_RET_UNSUPPORTED.
  *
- * The cache, not the match table, tells the context's graph guard condition
- * that the listings changed: the table reports only the endpoints it has room
- * for, while the cache lists every endpoint, so only the cache knows when what
- * a query returns has changed.
+ * The cache answers every graph query of a hosted build, the topic and
+ * service listings and the endpoint counts alike: the match table holds only
+ * the endpoints it has room for and drops a parked peer's, while the cache
+ * lists every endpoint, so only the cache knows when what a query returns has
+ * changed. It triggers the context's graph guard condition on each such
+ * change. The participant triggers the guard too, because a match can form
+ * without any listing changing: a parked server's endpoints match again when
+ * the peer is reactivated, which turns rmw_service_server_is_available() true
+ * and must wake a client blocked in `wait_for_service()`.
  *
  * Concurrency: every method requires the context lock. The observer runs on
  * the thread driving the participant, which holds that lock, and queries take
@@ -34,6 +39,7 @@
 #if RMW_ROSETTE_GRAPH_CACHE
 
 #  include <array>
+#  include <cstddef>
 #  include <cstdint>
 #  include <map>
 #  include <set>
@@ -104,10 +110,15 @@ public:
      * @param[in] topic     DDS topic name, NUL-terminated; copied.
      * @param[in] type      DDS type name, NUL-terminated; copied.
      * @param[in] is_writer `true` for a writer; `false` for a reader.
+     * An endpoint already recorded is confirmed (see begin_refresh()) before
+     * its new names are copied, so a refresh never forgets an endpoint its
+     * replay announced, even when the copy fails.
+     *
      * @return `true`, after the change callback ran, when the endpoint is new or
      *   its names or kind differ from the recorded ones; `false` for a repeated
      *   identical announcement.
-     * @throws std::bad_alloc when the heap is exhausted; nothing is recorded.
+     * @throws std::bad_alloc when the heap is exhausted; a new endpoint is not
+     *   recorded, and one already recorded keeps its previous names, confirmed.
      */
     bool add(const rosette::rtps::Guid& guid, const char* topic, const char* type, bool is_writer);
 
@@ -152,8 +163,9 @@ public:
      * @brief Lists topics and their types, as rmw_get_topic_names_and_types() reports them.
      *
      * With demangling, only ROS topics (`rt/`) are listed, as `/chatter` with
-     * type `std_msgs/msg/String`. Without it, every DDS topic is listed
-     * verbatim.
+     * type `std_msgs/msg/String`; a type that is not a mangled ROS 2 message
+     * type is listed as announced. Without demangling, every DDS topic is
+     * listed verbatim.
      *
      * @param[in] no_demangle `true` to list raw DDS names.
      * @return Names with their types.
@@ -161,7 +173,8 @@ public:
      *
      * Verification:
      * - Correct means: names and types equal what rmw_fastrtps_cpp reports.
-     * - Covered by: rmw_rosette/test/test_graph_cache.cpp (DemanglesRosTopics).
+     * - Covered by: rmw_rosette/test/test_graph_cache.cpp (DemanglesRosTopics,
+     *   KeepsForeignTypesOnRosTopics).
      *
      * References:
      * - ROS 2 design, "Topic and Service name mapping to DDS"
@@ -187,6 +200,27 @@ public:
      * - rmw_fastrtps_shared_cpp/demangle.cpp (Humble), `_demangle_service_from_topic`
      */
     NamesAndTypes service_names_and_types() const;
+
+    /**
+     * @brief Counts the writers or readers recorded on one DDS topic.
+     *
+     * rmw_count_publishers() and its siblings mangle the ROS name to its DDS
+     * topic and count here, so a count agrees with the listings: a parked
+     * participant's endpoints and those the match table had no room for count.
+     *
+     * @param[in] topic     DDS topic name, such as `rt/chatter`; NUL-terminated.
+     * @param[in] is_writer `true` to count writers; `false` for readers.
+     * @return Recorded endpoints of that kind on `topic`, whatever their type.
+     *
+     * Verification:
+     * - Correct means: equals what rmw_fastrtps_cpp's `__rmw_count_publishers`
+     *   (`__rmw_count_subscribers`) reports for the same graph.
+     * - Covered by: rmw_rosette/test/test_graph_cache.cpp (CountsMatchListings).
+     *
+     * References:
+     * - rmw_dds_common/graph_cache.hpp (Humble), `get_writer_count`, `get_reader_count`
+     */
+    size_t count(const char* topic, bool is_writer) const noexcept;
 
 private:
     using GuidBytes = std::array<uint8_t, 16>;

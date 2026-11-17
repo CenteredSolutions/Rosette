@@ -53,11 +53,15 @@
 /// Largest UDP datagram sent or received. Writers fragment (DATA_FRAG) any
 /// sample that would exceed it, and the receive buffer holds exactly one.
 /// Peers must cap their datagrams to it as well (Fast DDS: maxMessageSize),
-/// or their larger datagrams are truncated (counted in TransportStats).
-#  define RMW_ROSETTE_MAX_DATAGRAM_SIZE 65507
+/// or their larger datagrams are truncated (counted in TransportStats). The
+/// default is the largest message a stock Fast DDS receiver accepts.
+#  define RMW_ROSETTE_MAX_DATAGRAM_SIZE 65500
 #endif
 #ifndef RMW_ROSETTE_MAX_SAMPLE_SIZE
-/// Largest serialized message; the largest buffer-pool class.
+/// Largest serialized message. Up to 65532 it is also the largest static
+/// buffer-pool class; above that, a hosted build stores it on heap blocks.
+/// rmw_rosette_capacity.cmake always sets it (1 MiB on a host); this value
+/// serves code compiled without the capacity model.
 #  define RMW_ROSETTE_MAX_SAMPLE_SIZE 65532
 #endif
 
@@ -133,8 +137,8 @@ constexpr uint32_t kRtpsReaderCapacity =
 // The participant tables are sized by the build (rmw_rosette_capacity.cmake);
 // these checks run wherever an RTPS header has been included first.
 #ifdef RTPS_POOL_CLASS4_SIZE
-static_assert(RTPS_POOL_CLASS4_SIZE >= RMW_ROSETTE_MAX_SAMPLE_SIZE,
-              "the largest buffer-pool class must hold RMW_ROSETTE_MAX_SAMPLE_SIZE");
+static_assert(RTPS_HEAP_BLOCKS || RTPS_POOL_CLASS4_SIZE >= RMW_ROSETTE_MAX_SAMPLE_SIZE,
+              "without heap blocks, the largest pool class must hold RMW_ROSETTE_MAX_SAMPLE_SIZE");
 #endif
 #ifdef RTPS_MAX_USER_WRITERS
 static_assert(RTPS_DEEP_WRITER_DEPTH >= RMW_ROSETTE_MAX_WRITER_DEPTH,

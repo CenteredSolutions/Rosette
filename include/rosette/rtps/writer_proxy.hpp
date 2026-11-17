@@ -141,13 +141,32 @@ public:
     /// Count of the last ACKNACK or NACK_FRAG sent to this writer (§8.3.7.1).
     int32_t acknackCount = 0;
 
-    /// Liveliness of the remote writer.
-    bool isAlive = false;
+    /// The writer has been heard since matching: a HEARTBEAT, DATA, GAP or
+    /// fragment submessage arrived from it. Until then the reader keeps announcing itself with
+    /// a preemptive ACKNACK (StatefulReader::tick()), since a writer that
+    /// believes this reader up to date has no reason to send anything.
+    bool heard = false;
 
-    /// True while an ACKNACK answering a HEARTBEAT is owed.
+    /// The writer's vendor reads a preemptive ACKNACK with bitmapBase 0
+    /// (eProsima, RTI) rather than 1 (StatefulReader::send_preemptive_acknack()).
+    bool zeroBaseAcknack = false;
+
+    static_assert(RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS <= 255u
+                      && RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS <= 255u,
+                  "preemptive ACKNACK attempts are counted in one octet: raise "
+                  "RTPS_PREEMPTIVE_ACKNACK_RETRY_MS or lower the attempt budgets");
+
+    /// Preemptive ACKNACKs still to send while the writer is unheard, the
+    /// next included (RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS, or the builtin
+    /// readers' RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS, at match).
+    uint8_t preemptiveAcknacksLeft = 0;
+
+    /// True while an ACKNACK is owed: one answering a HEARTBEAT, or, before
+    /// the writer is heard, the next preemptive ACKNACK.
     bool acknackPending = false;
 
-    /// monotonic_ms() at which the owed ACKNACK is due (heartbeatResponseDelay).
+    /// monotonic_ms() at which the owed ACKNACK is due (heartbeatResponseDelay,
+    /// or the preemptive ACKNACK's retry period).
     uint32_t heartbeatResponseDeadlineMs = 0;
 
     WriterProxy() noexcept = default;
@@ -343,7 +362,10 @@ public:
      * when the F-flag is clear or something is MISSING (§8.3.7.5). An owed
      * ACKNACK is due `response_delay_ms` after the HEARTBEAT that first owed
      * it; later HEARTBEATs before it is sent do not push that deadline back,
-     * so a steady stream of them is still answered once per delay.
+     * so a steady stream of them is still answered once per delay. The
+     * first HEARTBEAT heard from the writer replaces a pending preemptive
+     * ACKNACK: it is answered after `response_delay_ms`, or not at all when
+     * it owes nothing.
      *
      * @param[in] first_sn          HEARTBEAT firstSN.
      * @param[in] last_sn           HEARTBEAT lastSN.
@@ -357,8 +379,10 @@ public:
      * Verification:
      * - Correct means: duplicates change nothing; F=0 always owes an
      *   ACKNACK; F=1 owes one only while something is MISSING; an owed
-     *   ACKNACK keeps the deadline of the HEARTBEAT that first owed it.
-     * - Covered by: TC-SRR-8.4.9-001, TC-SRR-8.4.7-001, TC-SRR-8.4.7.4-007.
+     *   ACKNACK keeps the deadline of the HEARTBEAT that first owed it; the
+     *   first HEARTBEAT heard marks the writer heard and cancels the retry.
+     * - Covered by: TC-SRR-8.4.9-001, TC-SRR-8.4.7-001, TC-SRR-8.4.7.4-007,
+     *   TC-SRR-8.4.7.4-008.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.7.5, §8.4.12.2
@@ -437,6 +461,41 @@ public:
     void gap_repair_postpone(uint32_t now_ms) noexcept {
         gapRepairDueMs = now_ms + gap_repair_wait();
     }
+
+    /**
+     * @brief Records a preemptive ACKNACK sent, and owes the next one while the writer is
+     * unheard and attempts are left.
+     *
+     * The retry rides on the HEARTBEAT-response deadline: the next one is owed by setting
+     * acknackPending, which on_acknack_sent() has just cleared, so StatefulReader::tick()
+     * sends it as a preemptive ACKNACK while the writer is unheard. on_heard() cancels it.
+     *
+     * @param[in] now_ms   rosette::platform::monotonic_ms() when it was sent.
+     * @param[in] retry_ms RTPS_PREEMPTIVE_ACKNACK_RETRY_MS: when the next one is due.
+     *
+     * Verification:
+     * - Correct means: each call advances acknackCount and spends one attempt; while the
+     *   writer is unheard and attempts remain, the next is due retry_ms after now_ms;
+     *   otherwise nothing is owed, so a reader sends at most its attempt budget.
+     * - Covered by: TC-SRR-8.4.7.4-008, TC-SRR-8.4.7.4-010.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.7.4 (preemptive ACKNACK), §8.3.7.1 (ACKNACK count)
+     */
+    void on_preemptive_acknack_sent(uint32_t now_ms, uint32_t retry_ms) noexcept {
+        on_acknack_sent();
+        if (preemptiveAcknacksLeft > 0u) {
+            --preemptiveAcknacksLeft;
+        }
+
+        if (!heard && preemptiveAcknacksLeft > 0u) {
+            acknackPending = true;
+            heartbeatResponseDeadlineMs = now_ms + retry_ms;
+        }
+    }
+
+    /// @brief Marks the writer heard, cancelling a pending preemptive ACKNACK; idempotent.
+    void on_heard() noexcept;
 
     /// @brief Locator for ACKNACKs: the referenced locator's current value, or
     /// LOCATOR_INVALID when there is none (referenced_locator()).

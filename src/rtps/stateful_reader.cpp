@@ -12,6 +12,8 @@
 #include "log.hpp"
 #include <string.h>
 
+#include <algorithm>
+
 namespace rosette::rtps {
 
 namespace {
@@ -99,6 +101,12 @@ bool StatefulReader::matched_writer_add(const Guid& writer_guid, const Locator* 
 
     slot->init(writer_guid, unicast_locators, locator_count);
     slot->acknackCount = acknack_count_floor_;
+    slot->zeroBaseAcknack =
+        writer_vendor == VENDORID_EPROSIMA || writer_vendor == VENDORID_RTI_CONNEXT;
+    // §9.3.1.2: an entityKind with both top bits set is a builtin entity.
+    const bool builtin = (guid_.entityId.entityKind & 0xC0u) == 0xC0u;
+    slot->preemptiveAcknacksLeft =
+        builtin ? RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS : RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS;
     RTPS_LOG_I("reader", "writer matched %02x%02x%02x%02x entity=%02x%02x%02x%02x",
                writer_guid.prefix.value[0], writer_guid.prefix.value[1],
                writer_guid.prefix.value[2], writer_guid.prefix.value[3],
@@ -106,7 +114,7 @@ bool StatefulReader::matched_writer_add(const Guid& writer_guid, const Locator* 
                writer_guid.entityId.entityKey[2], writer_guid.entityId.entityKind);
 
     if (reliability_ == ReliabilityKind::RELIABLE) {
-        send_preemptive_acknack(*slot, writer_vendor);
+        send_preemptive_acknack(*slot, rosette::platform::monotonic_ms());
     }
 
     return true;
@@ -166,7 +174,14 @@ void StatefulReader::on_data(const ParseContext& ctx,
         return;
     }
 
+    // Heard even when the sample cannot be kept (no buffer), as in
+    // on_data_frag(): the writer is talking, so the preemptive ACKNACK stops.
+    if (proxy) {
+        proxy->on_heard();
+    }
+
     if (proxy && !is_new_change(*proxy, msg.writerSN)) {
+        note_dropped(proxy, msg.writerSN);
         RTPS_LOG_T("reader", "DATA SN=%d:%lu from %02x%02x%02x%02x not new, dropped",
                    static_cast<int>(msg.writerSN.high),
                    static_cast<unsigned long>(msg.writerSN.low), ctx.senderGuidPrefix.value[0],
@@ -185,10 +200,10 @@ void StatefulReader::on_data(const ParseContext& ctx,
         return;
     }
 
-    // A payload no pool block can hold is never deliverable; see
+    // A payload above the build's sample limit is never deliverable; see
     // account_undelivered().
-    if (msg.serializedPayloadSize > kPoolMaxBlockSize) {
-        RTPS_LOG_W("reader", "DATA SN=%d:%lu of %lu octets exceeds the largest pool block, lost",
+    if (msg.serializedPayloadSize > kMaxSampleOctets) {
+        RTPS_LOG_W("reader", "DATA SN=%d:%lu of %lu octets exceeds the largest sample, lost",
                    static_cast<int>(msg.writerSN.high),
                    static_cast<unsigned long>(msg.writerSN.low),
                    static_cast<unsigned long>(msg.serializedPayloadSize));
@@ -253,12 +268,14 @@ bool StatefulReader::copy_payload(WriterProxy* proxy, const ParsedData& msg, Buf
                    static_cast<int>(msg.writerSN.high),
                    static_cast<unsigned long>(msg.writerSN.low));
         out = BufRef{};
+        note_dropped(proxy, msg.writerSN);
         return false;
     }
 
     if (!out.valid()) {
         RTPS_LOG_E("reader", "buf_alloc failed for DATA payload size=%lu",
                    static_cast<unsigned long>(msg.serializedPayloadSize));
+        note_dropped(proxy, msg.writerSN);
         return false;
     }
 
@@ -302,6 +319,18 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
         return;
     }
 
+    // As in on_data(): the writer holds writerSN, so it is MISSING until it
+    // assembles. Without this a reader that has heard only fragments, or one
+    // past the proxy's window, reports itself caught up
+    // (SedpReader::caught_up_with()), and a peer can settle with its
+    // announcement half received.
+    if (proxy) {
+        proxy->on_heard();
+        if (reliability_ == ReliabilityKind::RELIABLE) {
+            proxy->missing_changes_update(msg.writerSN);
+        }
+    }
+
     // A fragment of a sample already delivered (the writer resends whole
     // samples on NACK_FRAG) must not assemble and deliver it again.
     if (proxy && !is_new_change(*proxy, msg.writerSN)) {
@@ -309,13 +338,23 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
         return;
     }
 
-    // Every fragment carries the sample's total size, so a sample no pool
-    // block can hold is recognized on the first fragment that arrives.
-    if (msg.dataSize > kPoolMaxBlockSize) {
+    // Every fragment carries the sample's size and fragment size, so a sample
+    // this reader could never reassemble is recognized on the first fragment
+    // that arrives: one above the build's limit, or one split into more
+    // fragments than a FragmentNumberSet names, as a peer capped at a small
+    // datagram sends a large sample. Left MISSING, it would be requested
+    // forever and hold back every later change.
+    const bool too_many_fragments =
+        msg.fragmentSize != 0u
+        && (uint64_t{msg.dataSize} + msg.fragmentSize - 1u) / msg.fragmentSize
+               > static_cast<uint64_t>(FragmentNumberSet::kMaxBits);
+    if (msg.dataSize > kMaxSampleOctets || too_many_fragments) {
         RTPS_LOG_W(
-            "reader", "DATA_FRAG SN=%d:%lu of %lu octets exceeds the largest pool block, lost",
+            "reader",
+            "DATA_FRAG SN=%d:%lu of %lu octets in %u-octet fragments cannot be "
+            "reassembled, lost",
             static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
-            static_cast<unsigned long>(msg.dataSize));
+            static_cast<unsigned long>(msg.dataSize), static_cast<unsigned>(msg.fragmentSize));
         if (proxy) account_undelivered(*proxy, msg.writerSN);
         return;
     }
@@ -383,7 +422,11 @@ void StatefulReader::on_heartbeat(const ParseContext&    ctx,
         return;
     }
 
-    if (msg.readerId != entity_id::UNKNOWN && msg.readerId != guid_.entityId) {
+    // §8.4.11: a BEST_EFFORT reader takes no part in the reliable protocol.
+    // Its newness test ignores the proxy's MISSING and LOST sets, so a
+    // HEARTBEAT has nothing to tell it, and it must not owe an ACKNACK.
+    if ((msg.readerId != entity_id::UNKNOWN && msg.readerId != guid_.entityId)
+        || reliability_ != ReliabilityKind::RELIABLE) {
         return;
     }
 
@@ -447,9 +490,19 @@ void StatefulReader::on_heartbeat_frag(const ParseContext&       ctx,
         return;
     }
 
-    if (msg.readerId != entity_id::UNKNOWN && msg.readerId != guid_.entityId) {
+    // §8.4.11: as in on_heartbeat(), a BEST_EFFORT reader repairs nothing.
+    if ((msg.readerId != entity_id::UNKNOWN && msg.readerId != guid_.entityId)
+        || reliability_ != ReliabilityKind::RELIABLE) {
         return;
     }
+
+    proxy->on_heard();
+
+    // §8.3.7.6: the writer holds writerSN. Marking it MISSING matters most
+    // when no fragment of it arrived (no assembly slot): the next HEARTBEAT
+    // then owes an ACKNACK for the whole sample, and the reader is not
+    // caught up meanwhile.
+    proxy->missing_changes_update(msg.writerSN);
 
     // Ask the assembler for the missing fragment set.
     FragmentNumberSet missing{};
@@ -654,30 +707,33 @@ bool StatefulReader::narrow_repairs() const noexcept
     return repairs_must_fit_datagram(transport_);
 }
 
-void StatefulReader::send_preemptive_acknack(WriterProxy& proxy,
-                                             const VendorId& writer_vendor) noexcept {
+void StatefulReader::send_preemptive_acknack(WriterProxy& proxy, uint32_t now_ms) noexcept {
+    // The next attempt is owed whether or not this one leaves: a locator
+    // the peer's record does not have yet, or an exhausted buffer pool, is
+    // retried with the rest.
     const Locator& dest = proxy.best_locator();
     if (dest == LOCATOR_INVALID || !builder_.begin(guid_.prefix)) {
+        proxy.on_preemptive_acknack_sent(now_ms, RTPS_PREEMPTIVE_ACKNACK_RETRY_MS);
         return;
     }
 
-    const bool zero_base =
-        writer_vendor == VENDORID_EPROSIMA || writer_vendor == VENDORID_RTI_CONNEXT;
     SequenceNumberSet sn_state{};
-    sn_state.bitmapBase = zero_base ? SEQUENCENUMBER_ZERO : SequenceNumber::from_int64(1);
+    sn_state.bitmapBase =
+        proxy.zeroBaseAcknack ? SEQUENCENUMBER_ZERO : SequenceNumber::from_int64(1);
 
     builder_.append_info_dst(proxy.remoteWriterGuid.prefix);
     if (!builder_.append_acknack(guid_.entityId, proxy.remoteWriterGuid.entityId, sn_state,
                                  proxy.acknackCount + 1, /*final_flag=*/false)) {
         RTPS_LOG_W("reader", "preemptive ACKNACK builder failed (pool exhausted?)");
         builder_.abort();
+        proxy.on_preemptive_acknack_sent(now_ms, RTPS_PREEMPTIVE_ACKNACK_RETRY_MS);
         return;
     }
 
     BufRef buf = builder_.finish();
     transport_.send_unicast(buf, dest);
     buf.reset();
-    proxy.on_acknack_sent();
+    proxy.on_preemptive_acknack_sent(now_ms, RTPS_PREEMPTIVE_ACKNACK_RETRY_MS);
 }
 
 void StatefulReader::request_next_repair(WriterProxy& proxy) noexcept
@@ -691,11 +747,16 @@ void StatefulReader::request_next_repair(WriterProxy& proxy) noexcept
 // tick()
 // ============================================================
 
-void StatefulReader::tick(uint32_t now_ms) noexcept {
+uint32_t StatefulReader::tick(uint32_t now_ms) noexcept {
+    uint32_t next = UINT32_MAX;
     for (WriterProxy& proxy : matched()) {
         if (proxy.acknack_response_due(now_ms)) {
-            send_acknack(proxy, !proxy.has_missing_changes());
-            proxy.on_acknack_sent();
+            if (proxy.heard) {
+                send_acknack(proxy, !proxy.has_missing_changes());
+                proxy.on_acknack_sent();
+            } else {
+                send_preemptive_acknack(proxy, now_ms);
+            }
         } else if (proxy.gap_repair_due(now_ms)) {
             // The writer went quiet with changes MISSING: ask now rather
             // than at its next HEARTBEAT. One that could not go out is
@@ -706,9 +767,18 @@ void StatefulReader::tick(uint32_t now_ms) noexcept {
                 proxy.gap_repair_postpone(now_ms);
             }
         }
+
+        // A preemptive ACKNACK re-arms its own retry, and a gap repair sets
+        // its next round, so both deadlines are read after the sends rather
+        // than only for writers that were not yet due.
+        next = std::min(next, proxy.ms_until_gap_repair(now_ms));
+        if (proxy.acknackPending) {
+            next = std::min(next, proxy.heartbeatResponseDeadlineMs - now_ms);
+        }
     }
 
     send_due_fragment_repairs(now_ms);
+    return std::min(next, assembler_.ms_until_repair_due(now_ms));
 }
 
 // ============================================================
@@ -766,6 +836,17 @@ void StatefulReader::record_change(WriterProxy& proxy, const SequenceNumber& sn)
 {
     if (reliability_ != ReliabilityKind::RELIABLE) proxy.lost_changes_update(sn);
     proxy.received_change_set(sn);
+}
+
+void StatefulReader::note_dropped(WriterProxy* proxy, const SequenceNumber& sn) noexcept {
+    // §8.4.10.4: the writer holds sn whatever became of this copy, so it is
+    // MISSING until received or resolved: requested at the next HEARTBEAT,
+    // and the reader is not caught up meanwhile. A change already resolved
+    // stays so. Only a change that is dropped is marked here: on_data()
+    // takes a change MISSING on arrival for a repair.
+    if (proxy != nullptr && reliability_ == ReliabilityKind::RELIABLE) {
+        proxy->missing_changes_update(sn);
+    }
 }
 
 void StatefulReader::account_undelivered(WriterProxy& proxy, const SequenceNumber& sn) noexcept

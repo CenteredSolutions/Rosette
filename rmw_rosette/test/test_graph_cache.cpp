@@ -20,6 +20,7 @@
 #include <std_msgs/msg/string.h>
 
 #include <cstring>
+#include <set>
 #include <string>
 
 #include "rcl_default_init_options.hpp"
@@ -67,6 +68,42 @@ TEST(GraphCache, DemanglesServices) {
     ASSERT_EQ(services.size(), 1u);
     ASSERT_EQ(services.at("/ns/add").size(), 1u);
     EXPECT_EQ(*services.at("/ns/add").begin(), "pkg/srv/Add");
+}
+
+// A plain DDS application on a ROS topic name is listed with the type it
+// announced, as rmw_fastrtps_cpp's _demangle_if_ros_type leaves it.
+TEST(GraphCache, KeepsForeignTypesOnRosTopics) {
+    rmw_rosette::GraphCache cache;
+    cache.add(make_guid(1, 1), "rt/foo", "MyModule::MyType", true);
+    cache.add(make_guid(2, 1), "rt/foo", kStringType, false);
+
+    const auto topics = cache.topic_names_and_types(false);
+    ASSERT_EQ(topics.count("/foo"), 1u);
+    const std::set<std::string> expected{"MyModule::MyType", "std_msgs/msg/String"};
+    EXPECT_EQ(topics.at("/foo"), expected);
+}
+
+// Counts are taken from the same records as the listings: by DDS topic and
+// kind, whatever the type, and a refreshed participant's endpoints count
+// until its replay completes without them.
+TEST(GraphCache, CountsMatchListings) {
+    rmw_rosette::GraphCache cache;
+    cache.add(make_guid(1, 1), "rt/chatter", kStringType, true);
+    cache.add(make_guid(2, 1), "rt/chatter", "MyModule::MyType", true);
+    cache.add(make_guid(2, 2), "rt/chatter", kStringType, false);
+    cache.add(make_guid(2, 3), "rr/addReply", "pkg::srv::dds_::Add_Response_", true);
+
+    EXPECT_EQ(cache.count("rt/chatter", true), 2u);
+    EXPECT_EQ(cache.count("rt/chatter", false), 1u);
+    EXPECT_EQ(cache.count("rr/addReply", true), 1u);
+    EXPECT_EQ(cache.count("rt/absent", true), 0u);
+
+    const rtps::GuidPrefix refreshed = make_guid(2, 0).prefix;
+    cache.begin_refresh(refreshed);
+    EXPECT_EQ(cache.count("rt/chatter", true), 2u);
+    cache.end_refresh(refreshed);
+    EXPECT_EQ(cache.count("rt/chatter", true), 1u);
+    EXPECT_EQ(cache.count("rt/chatter", false), 0u);
 }
 
 TEST(GraphCache, RepeatedAnnouncementIsIdempotentAndRemovalForgets) {

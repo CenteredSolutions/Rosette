@@ -96,6 +96,57 @@
 
 namespace rosette::rtps {
 
+#ifndef RTPS_FRAGMENT_REPAIR_WORDS
+#  define RTPS_FRAGMENT_REPAIR_WORDS 2
+#endif
+
+static_assert(RTPS_FRAGMENT_REPAIR_WORDS >= 2 && RTPS_FRAGMENT_REPAIR_WORDS <= 8,
+              "a repair set covers 64 to 256 fragments");
+
+/**
+ * @brief The fragments of one change a reader asked to have resent.
+ *
+ * Firmware keeps two words because its samples span a handful of fragments. A
+ * hosted build keeps eight, which covers every fragment a FragmentNumberSet
+ * can name, so a repair of a large sample never degrades to a whole resend.
+ *
+ * Verification:
+ * - Correct means: contains(k) holds exactly for the fragments added, and
+ *   add() refuses a number outside 1..kMaxFragment.
+ * - Covered by: tests/host/buf_pool_heap_block_test.cpp.
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §8.3.7.5 (NACK_FRAG), §8.4.14.1
+ */
+struct FragmentRepairSet {
+    static constexpr uint32_t kMaxFragment = RTPS_FRAGMENT_REPAIR_WORDS * 32u;
+
+    uint32_t words[RTPS_FRAGMENT_REPAIR_WORDS] = {};
+
+    /// @brief Adds fragment `k`; false when the set cannot name it.
+    bool add(uint32_t k) noexcept {
+        if (k < 1u || k > kMaxFragment) {
+            return false;
+        }
+
+        words[(k - 1u) / 32u] |= 1u << ((k - 1u) % 32u);
+        return true;
+    }
+
+    /// @brief True when fragment `k` was added.
+    bool contains(uint32_t k) const noexcept {
+        return k >= 1u && k <= kMaxFragment
+               && (words[(k - 1u) / 32u] >> ((k - 1u) % 32u) & 1u) != 0u;
+    }
+
+    /// @brief Adds every fragment of `other`.
+    void merge(const FragmentRepairSet& other) noexcept {
+        for (uint32_t i = 0u; i < RTPS_FRAGMENT_REPAIR_WORDS; ++i) {
+            words[i] |= other.words[i];
+        }
+    }
+};
+
 // ============================================================
 // Configuration defaults
 // ============================================================
@@ -173,15 +224,25 @@ public:
      * add_change() itself sends nothing. A RELIABLE writer also counts the
      * change toward its next piggybacked HEARTBEAT (see heartbeat_due()).
      *
+     * A change whose payload would need more DATA_FRAGs over this writer's
+     * transport than a reader can track (FragmentNumberSet::kMaxBits) is
+     * refused: no reader could ever complete it, and a reliable one would
+     * stall behind it.
+     *
      * @param[in] change Change from new_change() (or built by the caller);
      *   the history takes ownership of its payload.
-     * @return `true` on success.
+     * @return `true` when added; `false` when the change needs too many
+     *   fragments, which takes no sequence number, or the history cannot
+     *   take it.
      *
      * Verification:
-     * - Correct means: sequence numbers increase by one per change, and the
+     * - Correct means: sequence numbers increase by one per added change; the
      *   new change is the next UNSENT change of every matched proxy that has
-     *   been sent everything before it.
-     * - Covered by: TC-SWR-8.4.1.4-001, TC-SWR-8.2.2-001, TC-SWR-8.2.2-002.
+     *   been sent everything before it; a change of more than kMaxBits
+     *   fragments is refused and the next change takes the number it would
+     *   have had.
+     * - Covered by: TC-SWR-8.4.1.4-001, TC-SWR-8.2.2-001, TC-SWR-8.2.2-002,
+     *   rmw_rosette test_publish_fragment_limit.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (add_change), §8.3.3 (KEEP_LAST)
@@ -500,7 +561,9 @@ public:
      * (repaired by tick() after nackResponseDelay), GAPs the other NACKed
      * numbers the writer has assigned, and answers a preemptive ACKNACK (no
      * NACK bits, base below the next number, from a reader that has
-     * acknowledged nothing yet) with a directed HEARTBEAT. A plain ACK from
+     * acknowledged nothing yet) with a directed HEARTBEAT; a writer that has
+     * written nothing answers a non-final one with a directed final
+     * HEARTBEAT, so a reader waiting to hear from it does. A plain ACK from
      * a reader that has acknowledged before gets no answer, even while the
      * writer has written past it: the piggybacked HEARTBEATs keep such a
      * reader current, and answering would pair every HEARTBEAT with another
@@ -524,8 +587,10 @@ public:
      * - Correct means: no ACKNACK from a reader that has acknowledged before
      *   elicits a HEARTBEAT unless it NACKs, so a streaming writer sends about
      *   one datagram per sample to such a reader; and a reader that matched
-     *   this writer again receives what a newly matched reader would.
-     * - Covered by: TC-SWR-8.4.3-001, TC-SWR-8.4.3-002, TC-SWR-8.4.3-003,
+     *   this writer again receives what a newly matched reader would; a
+     *   non-final announcement is always answered, by a final HEARTBEAT
+     *   when the writer has written nothing.
+     * - Covered by: TC-SWR-8.4.3-001, TC-SWR-8.4.3-002, TC-SWR-8.4.3-003, TC-SWR-8.4.3-004,
      *   TC-SWR-8.4.9-001, TC-SWR-8.2.2-003, TC-SWR-8.4.1.4-004,
      *   TC-SWR-8.4.1.4-005, TC-SWR-8.4.1.4-006, TC-SWR-8.4.9.1-001.
      *
@@ -655,10 +720,19 @@ public:
      * piggybacked HEARTBEAT. A reader served best-effort requests nothing and
      * is never announcing, so tick() sends it nothing.
      *
+     * The repair pass over the matched readers also finds the next timer, so
+     * the participant learns when to tick this writer again without a second
+     * pass (RTPSParticipant::tick()).
+     *
      * @param[in] now_ms Current rosette::platform::monotonic_ms().
+     * @return What ms_until_next_timer(now_ms) returns once the call is done:
+     *   0 while a replay still has datagrams to send, UINT32_MAX when no
+     *   timer runs.
      *
      * Verification:
-     * - Covered by: TC-SWR-8.4.2.2-001, TC-SWR-8.4.9-004, TC-SWR-8.4.9-002,
+     * - Correct means: the return equals ms_until_next_timer(now_ms) called
+     *   right after; the sends follow the order above.
+     * - Covered by: TC-PART-8.5.1-016, TC-SWR-8.4.2.2-001, TC-SWR-8.4.9-004, TC-SWR-8.4.9-002,
      *   TC-SWR-8.2.2-003, TC-SWR-8.4.4-001, TC-SWR-8.4.9.1-001,
      *   TC-SWR-8.4.1.4-003, TC-SWR-8.4.1.4-010.
      *
@@ -666,7 +740,7 @@ public:
      * - OMG DDSI-RTPS 2.5 §8.4.1.1 (nackResponseDelay, heartbeatPeriod), §8.4.9.2,
      *   §8.4.9.1
      */
-    void tick(uint32_t now_ms) noexcept;
+    uint32_t tick(uint32_t now_ms) noexcept;
 
     const Guid&     guid()        const noexcept { return guid_; }
     ReliabilityKind reliability() const noexcept { return reliability_; }
@@ -674,12 +748,46 @@ public:
     const HistoryCache& cache()   const noexcept { return writer_cache_; }
 
     /// nack_response_delay() — §8.4.1.1, p. 104.
-    uint32_t nack_response_delay()            const noexcept { return nack_delay_ms_; }
-    void     nack_response_delay(uint32_t ms)       noexcept { nack_delay_ms_ = ms; }
+    uint32_t nack_response_delay() const noexcept { return nack_delay_ms_; }
+
+    void nack_response_delay(uint32_t ms) noexcept {
+        nack_delay_ms_ = ms;
+        mark_timers_stale();
+    }
 
     /// heartbeat_period() — §8.4.1.1, p. 104.
-    uint32_t heartbeat_period()               const noexcept { return hb_period_ms_; }
-    void     heartbeat_period(uint32_t ms)          noexcept { hb_period_ms_ = ms; }
+    uint32_t heartbeat_period() const noexcept { return hb_period_ms_; }
+
+    void heartbeat_period(uint32_t ms) noexcept {
+        hb_period_ms_ = ms;
+        mark_timers_stale();
+    }
+
+    /**
+     * @brief Names the participant's stale-timers flag, which this writer
+     *   sets when the application brings one of its timers nearer.
+     *
+     * A participant walks its endpoints only when its soonest timer is due
+     * or its timers are stale (RTPSParticipant::tick()). Datagrams, matches
+     * and endpoint changes pass through the participant, which marks the
+     * flag itself; the application calls the writer directly, so the writer
+     * marks it for those calls: a write starts the heartbeat period for
+     * readers that were fully acknowledged, and a changed heartbeat period
+     * or NACK response delay moves a running timer.
+     *
+     * @param[in] stale Set to true on each such call, never cleared here;
+     *   null for a writer no participant caches the timers of. Must outlive
+     *   the writer.
+     *
+     * Verification:
+     * - Correct means: after any application call that can make
+     *   ms_until_next_timer() return less than before, `*stale` is true.
+     * - Covered by: TC-PART-8.5.1-015, TC-PART-8.5.1-016 (tests/spec).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.9.2 (heartbeat and repair timers)
+     */
+    void set_timers_stale_flag(bool* stale) noexcept { timersStale_ = stale; }
 
     /**
      * @brief Makes this a service reply writer that drops each reply once its requester has it.
@@ -991,7 +1099,7 @@ private:
      * @param[in] heartbeat Also send a HEARTBEAT advertising the history's
      *   current range; heartbeatCount_ must already be advanced for it.
      * @param[in] only_fragments For a fragmented change, the fragments to
-     *   send (bit k-1 for fragment k, see send_fragments_to()); null for all.
+     *   send; null for all.
      *   Ignored for a change sent as one DATA.
      * @return `true` when every DATA or DATA_FRAG datagram was handed to the
      *   transport.
@@ -1008,7 +1116,7 @@ private:
      *   number of submessages)
      */
     bool send_data_to(const CacheChange& ch, ReaderProxy& proxy, bool heartbeat = false,
-                      const uint64_t* only_fragments = nullptr) noexcept;
+                      const FragmentRepairSet* only_fragments = nullptr) noexcept;
 
     /**
      * @brief Sends a change stored without a payload, building the payload for this send.
@@ -1032,7 +1140,7 @@ private:
      * - Covered by: TC-SEDP-8.5.4-015, TC-SEDP-8.5.4-016.
      */
     bool send_built_data_to(const CacheChange& ch, ReaderProxy& proxy, bool heartbeat,
-                            const uint64_t* only_fragments) noexcept;
+                            const FragmentRepairSet* only_fragments) noexcept;
 
     /**
      * @brief Frames a change as DATA inside its own payload block and sends it.
@@ -1084,8 +1192,7 @@ private:
      * @param[in] proxy     Reader to send to.
      * @param[in] dest      The reader's locator.
      * @param[in] heartbeat Also send a HEARTBEAT, as for send_data_to().
-     * @param[in] only_fragments Bit k-1 set for each fragment k to send
-     *   (fragments above 64 are never selected); null sends every fragment.
+     * @param[in] only_fragments The fragments to send; null sends every fragment.
      * @return `true` when every fragment was handed to the transport.
      *
      * Verification:
@@ -1099,18 +1206,20 @@ private:
      * - OMG DDSI-RTPS 2.5 §8.4.14.1, §9.4.5.4 (DATA_FRAG), §8.4.15.4
      */
     bool send_fragments_to(const CacheChange& ch, ReaderProxy& proxy, const Locator& dest,
-                           bool heartbeat, const uint64_t* only_fragments = nullptr) noexcept;
+                           bool                     heartbeat,
+                           const FragmentRepairSet* only_fragments = nullptr) noexcept;
 
     /**
      * @brief Records which fragments of change `sn` a NACK_FRAG from `proxy` asked for.
      *
      * The writer holds one pending fragment repair: a board rarely has more
      * than one reader repairing a fragmented change at once, and the record
-     * costs a pointer, a sequence number and a 64-bit mask rather than a
-     * FragmentNumberSet per reader proxy. A second NACK_FRAG from the same
+     * costs a pointer, a sequence number and a FragmentRepairSet rather than
+     * a FragmentNumberSet per reader proxy. A second NACK_FRAG from the same
      * reader for the same change adds its fragments; one from another
      * reader, or for another change, while the record is taken, leaves its
-     * change to be resent whole, as is one naming a fragment above 64. tick()
+     * change to be resent whole, as is one naming a fragment the set cannot
+     * hold (above FragmentRepairSet::kMaxFragment). tick()
      * consumes the record when it repairs that reader.
      *
      * @param[in] proxy     Reader that sent the NACK_FRAG.
@@ -1127,7 +1236,7 @@ private:
     struct FragmentRepair {
         const ReaderProxy* proxy     = nullptr;  ///< Requesting reader; null when free.
         SequenceNumber     sn        = {};
-        uint64_t           fragments = 0u;       ///< Bit k-1 for fragment k.
+        FragmentRepairSet  fragments = {};
     };
 
     /**
@@ -1435,6 +1544,16 @@ private:
         WaitingReaderQuery fn = nullptr;
         void* context = nullptr;
     } waitingReaderQuery_;
+
+    bool* timersStale_ = nullptr;  ///< See set_timers_stale_flag().
+
+    /// @brief Marks the participant's timers stale (set_timers_stale_flag()).
+    void mark_timers_stale() noexcept {
+        if (timersStale_ != nullptr) {
+            *timersStale_ = true;
+        }
+    }
+
     PayloadBuilder payloadBuilder_ = nullptr;  ///< Builds payloads of on-demand changes.
     void* payloadBuilderUser_ = nullptr;
     PayloadSizer   payloadSizer_ = nullptr;  ///< Sizes them, for replay packing.

@@ -605,6 +605,9 @@ target_compile_definitions(participant_tier_spec_tests PRIVATE
     RTPS_MAX_PEERS=2
     RTPS_MAX_KNOWN_PEERS=6
     RTPS_PEER_SETTLE_MS=100u
+    RTPS_PEER_EXCHANGE_TIMEOUT_MS=500u
+    RTPS_PREEMPTIVE_ACKNACK_RETRY_MS=200u
+    RTPS_PEER_STALL_BACKOFF_MAX_MS=2000u
 )
 add_test(
     NAME participant_tier_spec_conformance
@@ -712,7 +715,7 @@ if (Python3_Interpreter_FOUND)
     )
 endif()
 
-option(ROSETTE_SPEC_ENABLE_FUZZ "Build fuzz targets (corpus replay always; libFuzzer with Clang) for the parser, fragment assembler, SPDP, SEDP, and endpoint matching" OFF)
+option(ROSETTE_SPEC_ENABLE_FUZZ "Build fuzz targets (corpus replay always; libFuzzer with Clang) for the parser, fragment assembler, SPDP, SEDP, endpoint matching, and the stateful reader and writer" OFF)
 
 if (ROSETTE_SPEC_ENABLE_FUZZ)
     # Each fuzz target has one harness, fuzz/fuzz_<name>.cpp, defining
@@ -721,8 +724,15 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
     # so the replay and the libFuzzer build run the same code. <name>_fuzz is
     # the libFuzzer build, available with Clang.
     function(rosette_spec_add_fuzz name harness)
-        set(_sources ${ARGN})
-        list(TRANSFORM _sources PREPEND ../../src/rtps/)
+        # A bare file name is in src/rtps; a path such as src/<file> is relative to tests/spec.
+        set(_sources)
+        foreach (_source IN LISTS ARGN)
+            if (_source MATCHES "/")
+                list(APPEND _sources ${_source})
+            else()
+                list(APPEND _sources ../../src/rtps/${_source})
+            endif()
+        endforeach()
 
         add_executable(${name}_fuzz_replay ${harness} fuzz/replay_driver.cpp ${_sources})
         target_include_directories(${name}_fuzz_replay PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../.. ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -769,6 +779,12 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
         message_parser.cpp buf_pool.cpp)
     rosette_spec_add_fuzz(endpoint_match fuzz/fuzz_endpoint_match_table.cpp
         endpoint_match_table.cpp locator_ranking.cpp)
+    rosette_spec_add_fuzz(stateful_endpoints fuzz/fuzz_stateful_endpoints.cpp
+        src/test_stateful_writer_clock_stub.cpp
+        stateful_reader.cpp stateful_writer.cpp stateful_writer_replay.cpp fragment_assembler.cpp
+        sn_window.cpp
+        history_cache.cpp reader_proxy.cpp writer_proxy.cpp proxy_pool.cpp message_parser.cpp
+        buf_pool.cpp)
 
 endif()
 

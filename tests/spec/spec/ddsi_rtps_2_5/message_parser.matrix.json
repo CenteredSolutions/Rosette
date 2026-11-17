@@ -196,7 +196,7 @@
       "normativity": "shall",
       "statement": "Invalid SequenceNumberSet bounds in ACKNACK are rejected.",
       "status": "implemented",
-      "test_ids": ["TC-9.4.5.7-001"]
+      "test_ids": ["TC-9.4.5.7-001", "TC-9.4.5.7-003", "TC-9.4.5.7-004"]
     },
     {
       "id": "REQ-9.4.5.7-ACKNACK-FLAG-F",

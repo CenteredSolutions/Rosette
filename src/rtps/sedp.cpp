@@ -584,10 +584,10 @@ StatefulWriter* SedpWriter::find_writer(const EntityId& writer_id) noexcept
     return nullptr;
 }
 
-void SedpWriter::tick(uint32_t now_ms) noexcept
-{
-    publications_writer_.tick(now_ms);
-    subscriptions_writer_.tick(now_ms);
+uint32_t SedpWriter::tick(uint32_t now_ms) noexcept {
+    const uint32_t a = publications_writer_.tick(now_ms);
+    const uint32_t b = subscriptions_writer_.tick(now_ms);
+    return a < b ? a : b;
 }
 
 // ============================================================
@@ -765,6 +765,43 @@ bool SedpReader::caught_up_with(const GuidPrefix& peer_prefix, SequenceNumber& p
         subscriptions_reader_, Guid{peer_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER},
         subscriptions);
     return pubs && subs;
+}
+
+bool SedpReader::heard_from(const GuidPrefix& peer_prefix, uint32_t advertised) noexcept {
+    // An advertised announcer with no proxy has not been heard: absence
+    // must not pass for success, or a peer whose proxy was never made
+    // settles without the replay it was activated for.
+    const auto heard = [&](StatefulReader& reader, uint32_t bit,
+                           const EntityId& announcer) noexcept {
+        if ((advertised & bit) == 0u) {
+            return true;
+        }
+
+        const WriterProxy* proxy = reader.matched_writer_lookup(Guid{peer_prefix, announcer});
+        return proxy != nullptr && proxy->heard;
+    };
+
+    return heard(publications_reader_,
+                 builtin_endpoint::DISC_BUILTIN_ENDPOINT_PUBLICATIONS_ANNOUNCER,
+                 entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER)
+           && heard(subscriptions_reader_,
+                    builtin_endpoint::DISC_BUILTIN_ENDPOINT_SUBSCRIPTIONS_ANNOUNCER,
+                    entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER);
+}
+
+void SedpReader::heard_heartbeat_from(const GuidPrefix& peer_prefix, bool& publications,
+                                      bool& subscriptions) noexcept {
+    // HEARTBEAT counts start at 1 (§8.3.7.5), so a proxy's lastHBCount of 0
+    // means none has arrived since the announcer was matched.
+    const auto heard = [](StatefulReader& reader, const Guid& announcer) noexcept {
+        const WriterProxy* proxy = reader.matched_writer_lookup(announcer);
+        return proxy != nullptr && proxy->lastHBCount != 0;
+    };
+
+    publications = heard(publications_reader_,
+                         Guid{peer_prefix, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER});
+    subscriptions = heard(subscriptions_reader_,
+                          Guid{peer_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER});
 }
 
 StatefulReader* SedpReader::reader_for_writer(const EntityId& writer_id) noexcept
