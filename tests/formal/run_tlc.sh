@@ -47,6 +47,6 @@ $check
 CHECK_DEADLOCK FALSE
 CFG
 
-docker run --rm -v "$work":/model -v "$jar_dir":/tla -w /model eclipse-temurin:21-jre \
+docker run --rm --user "$(id -u):$(id -g)" -v "$work":/model -v "$jar_dir":/tla -w /model eclipse-temurin:21-jre \
     java -XX:+UseParallelGC -Xmx6g -cp /tla/tla2tools.jar tlc2.TLC \
     -workers auto -config MC.cfg -cleanup MCRosettePeerTiers.tla
