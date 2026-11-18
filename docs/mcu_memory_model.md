@@ -332,7 +332,7 @@ counts, which is why a publisher costs more than a subscription there.
 | `RMW_ROSETTE_MAX_WRITER_DEPTH` | 8 | deepest KEEP_LAST history a publisher keeps (1 to 255); deeper requests and KEEP_ALL run at this depth; sizes the deep writer slots | 100 B per history slot per deep writer |
 | `RMW_ROSETTE_REPLY_DEPTH` | 4 | replies each service holds until acknowledged (1 to `RMW_ROSETTE_MAX_WRITER_DEPTH`); a reply written while this many are unacknowledged displaces the oldest; sizes the shallow writer slots | 100 B per reply per service |
 | `RMW_ROSETTE_HELD_CHANGES` | 8 | changes the reliable subscriptions, services, and clients together hold behind a lost one, so each writer's changes are delivered in order | 104 B per slot, plus the block each held change pins |
-| `RMW_ROSETTE_READER_HELD_CHANGES` | 4 | most of those one reader holds, and how far past its next expected change it holds one | none |
+| `RMW_ROSETTE_READER_HELD_CHANGES` | 4 (host: `MAX_PENDING_CHANGES`) | most of those one reader holds, and how far past its next expected change it holds one; a reader hearing a KEEP_LAST writer that outpaces one change per round trip needs at least that writer's depth, or it refuses changes the writer evicts before repairing them | none |
 | `RMW_ROSETTE_MAX_PENDING_CHANGES` | 10 | `ChangeRing` depth ceiling per subscription, service, and client | 72 B per entry per entity, plus the blocks unread entries pin |
 | `RMW_ROSETTE_MAX_DATAGRAM_SIZE` | 1472 | receive buffer, datagram pool class, DATA_FRAG threshold | the datagram class × 4 blocks |
 | `RMW_ROSETTE_MAX_SAMPLE_SIZE` | 4096 | largest pool class: the biggest message sent or received | × `RMW_ROSETTE_LARGE_BUFFERS` |
