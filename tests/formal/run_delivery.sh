@@ -8,44 +8,56 @@
 #   property  InOrder | NoAckPastUndelivered | WithinCap | HoldsInWindow | SkipOnlyKeepLast
 #             | TypeOK (invariants) | EveryChangeDone (liveness)
 #             | NeverHoldsCap | NeverPoolFull | NeverRefusedPastWindow | NeverRefusedForPool
-#             | NeverEvictedAcrossReaders (witnesses: each must be reported violated)
+#             | NeverEvictedAcrossReaders | NeverRefusedForAck (witnesses)
 #   keys (default):
-#     readers (2)  changes (2)  cap (1)  slots (1)  blocks (1)  depth (0 = KEEP_ALL)
-#     budget (2)   deliver (in_order | on_arrival)  admit (window | any)
+#     readers (2)  changes (3)  cap (1)  slots (1)  sample_blocks (1)  control_blocks (1)
+#     depth (0 = KEEP_ALL)  budget (1)  deliver (in_order | on_arrival)  admit (window | any)
 #     block_rule (evict_any | evict_own | drop_new)  silent (FALSE | TRUE)
 #     ack_reserve (TRUE | FALSE)
 #   The defaults are the code (window admission, cross-reader block
-#   eviction, a block kept for the ACKNACK) at the smallest size whose
-#   witnesses are all reported violated, so every rule is exercised.
+#   eviction, a block kept for the ACKNACK) at the smallest size where
+#   held changes can pin every sample block while an ACKNACK still finds a
+#   control block, so the change that closes a gap must evict.
 #
-# Expected:
-#   - Each Never* witness is reported violated for the defaults and for
-#     changes=4 cap=2 slots=2 blocks=3; a witness that holds means that
-#     configuration never reaches its rule.
-#   - Every invariant holds for those two configurations; InOrder fails
-#     with deliver=on_arrival.
-#   - EveryChangeDone holds for the defaults, with admit=any, and with
-#     silent=TRUE: the change that closes a gap needs no slot, takes a
-#     block from whichever reader holds one, and can always be requested.
-#   - With ack_reserve=FALSE it fails: held changes take every block, the
-#     reader cannot answer a HEARTBEAT, and its gap is never requested.
-#   - With ack_reserve=FALSE block_rule=drop_new it fails as well: the
-#     change that closes a gap finds no block and every resend is dropped.
-#   - With block_rule=evict_own and silent=TRUE it fails: writer 1 stops
-#     with reader 1 holding blocks, and reader 2's gap never closes.
-#     It holds with silent=FALSE.
-#   - At budget=1, safety takes hours and liveness longer than a day on
-#     four cores; changes=2 runs in minutes but never reaches the window
-#     rule (its witnesses hold).
+# Configurations:
+#   A  the defaults.
+#   B  slots=2 sample_blocks=2 control_blocks=0: the small classes are
+#      drained, so the ACKNACK reserve keeps a sample block free.
+#   C  changes=4 cap=2 slots=2 sample_blocks=2 control_blocks=1.
+#
+# Expected (witnesses stop at their first violation, in seconds):
+#   - Every Never* witness except NeverRefusedForAck is reported violated
+#     for A and C: the pool fills and the closing change evicts another
+#     reader's held change.
+#   - For A and C, NeverRefusedForAck holds: a free control block always
+#     satisfies the reserve. For B, it is reported violated, and
+#     NeverPoolFull, NeverRefusedForPool and NeverEvictedAcrossReaders
+#     hold: the reserve keeps held changes below sample_blocks.
+#   - InOrder fails with deliver=on_arrival.
+#   - EveryChangeDone fails for B with ack_reserve=FALSE: held changes take
+#     every block, the reader cannot answer a HEARTBEAT, and its gap is
+#     never requested.
+#   - It fails for A with block_rule=drop_new: one reader's held change pins
+#     the only sample block, and every change that would close a gap is
+#     dropped.
+#   - It fails for A with block_rule=evict_own silent=TRUE: writer 1 stops
+#     with reader 1 holding the sample block, and reader 2's gap never
+#     closes.
+#   - Every invariant holds for A, B and C; EveryChangeDone holds for A,
+#     with admit=any, with silent=TRUE, with block_rule=evict_own, and
+#     for B. These checks explore every state: even at budget=0 they pass
+#     30 million distinct states and 3 GB of TLC state files, so run them
+#     on a host with tens of GB free, with TLC_WORK on that disk.
 set -euo pipefail
 
 property=$1
 shift
-readers=2 changes=3 cap=1 slots=1 blocks=2 depth=0 budget=1
+readers=2 changes=3 cap=1 slots=1 sample_blocks=1 control_blocks=1 depth=0 budget=1
 deliver=in_order admit=window block_rule=evict_any silent=FALSE ack_reserve=TRUE
 for arg in "$@"; do
     case $arg in
-        readers=* | changes=* | cap=* | slots=* | blocks=* | depth=* | budget=* \
+        readers=* | changes=* | cap=* | slots=* | sample_blocks=* | control_blocks=* \
+            | depth=* | budget=* \
             | deliver=* | admit=* | block_rule=* | silent=* | ack_reserve=*)
             declare "$arg"
             ;;
@@ -86,7 +98,8 @@ CONSTANTS
     N = $changes
     Cap = $cap
     Slots = $slots
-    Blocks = $blocks
+    SampleBlocks = $sample_blocks
+    ControlBlocks = $control_blocks
     Depth = $depth
     Budget = $budget
     DeliverRule = "$deliver"
@@ -107,7 +120,7 @@ else
     start_args=(-cleanup)
 fi
 
-docker run --rm -v "$work":/model -v "$jar_dir":/tla -w /model eclipse-temurin:21-jre \
+docker run --rm --user "$(id -u):$(id -g)" -v "$work":/model -v "$jar_dir":/tla -w /model eclipse-temurin:21-jre \
     java -XX:+UseParallelGC -Xmx"${TLC_HEAP:-6g}" -cp /tla/tla2tools.jar tlc2.TLC \
     -workers auto -config Delivery.cfg -checkpoint 30 \
     "${start_args[@]}" RosetteReaderDelivery.tla

@@ -20,11 +20,16 @@
 (*    slot of the participant's hold pool (Slots in all, at most Cap per  *)
 (*    reader) until the gap below it closes. The change that closes a gap *)
 (*    is delivered at once and needs no slot.                              *)
-(*  - Buffer blocks. Every held change pins a block of the participant's  *)
-(*    pool, and an arriving change needs a block before it can be         *)
-(*    delivered or held. So does an ACKNACK: a reader whose held changes  *)
-(*    take every block cannot answer a HEARTBEAT. Blocks counts the       *)
-(*    blocks held changes and ACKNACKs share.                             *)
+(*  - Buffer blocks, in two classes as the pool sizes them. A sample      *)
+(*    block (SampleBlocks in all) is large enough for a whole sample;     *)
+(*    every held change pins one, and an arriving change needs one before *)
+(*    it can be delivered or held. A fragmented sample reassembles into   *)
+(*    one such block, so the model's changes are samples of that size. A  *)
+(*    control block (ControlBlocks in all) is too small for a sample but  *)
+(*    fits an ACKNACK, which takes a block of either class: a reader      *)
+(*    finds none only when held changes pin every sample block and no     *)
+(*    control block is free. ControlBlocks = 0 stands for small classes   *)
+(*    drained by other traffic.                                            *)
 (*                                                                         *)
 (* Rosette's choices, as constants:                                        *)
 (*  - DeliverRule = "on_arrival" delivers each new change at once;        *)
@@ -44,9 +49,10 @@
 (*  - SilentWriter lets writer 1 stop for good mid-stream, as a writer    *)
 (*    does before its lease expires; its reader's held changes then pin   *)
 (*    their slots and blocks. The other readers must still finish.        *)
-(*  - AckReserve holds a change only if a block stays free for the       *)
-(*    reader's ACKNACK; without it, held changes can take every block and *)
-(*    leave the reader unable to request the change that releases them.   *)
+(*  - AckReserve holds a change only if a block of either class stays    *)
+(*    free for the reader's ACKNACK; without it, held changes can take     *)
+(*    every block and leave the reader unable to request the change that  *)
+(*    releases them.                                                       *)
 (*  - Depth = 0 is KEEP_ALL. Depth = k > 0 is KEEP_LAST k: once k changes *)
 (*    are held behind a gap, the application could never see the missing *)
 (*    changes below them, so the reader gives up the gap.                 *)
@@ -58,7 +64,8 @@ CONSTANTS
     N,            \* Changes each writer writes.
     Cap,          \* Hold slots one reader may occupy.
     Slots,        \* Hold slots in the participant's pool.
-    Blocks,       \* Buffer blocks held changes may pin, over all readers.
+    SampleBlocks, \* Sample-sized blocks held changes may pin, over all readers.
+    ControlBlocks,\* Blocks too small for a sample that an ACKNACK may take.
     Depth,        \* 0 = KEEP_ALL; k > 0 = KEEP_LAST k.
     Budget,       \* Messages the network may lose in a behavior.
     DeliverRule,  \* "on_arrival" or "in_order".
@@ -68,7 +75,8 @@ CONSTANTS
     AckReserve    \* TRUE: a change is held only if a block stays free for an ACKNACK.
 
 ASSUME /\ Readers \in Nat \ {0} /\ N \in Nat \ {0}
-       /\ Cap \in Nat \ {0} /\ Slots \in Nat \ {0} /\ Blocks \in Nat \ {0}
+       /\ Cap \in Nat \ {0} /\ Slots \in Nat \ {0}
+       /\ SampleBlocks \in Nat \ {0} /\ ControlBlocks \in Nat
        /\ Depth \in Nat /\ Budget \in Nat
        /\ DeliverRule \in {"on_arrival", "in_order"}
        /\ AdmitRule \in {"window", "any"}
@@ -158,11 +166,19 @@ Evict(h, q) == [h EXCEPT ![q] = @ \ {Max(@)}]
 
 Drop == UNCHANGED <<held, dlv, skipped, lastDlv, disordered>>
 
-BlockFree == Cardinality(HeldPairs(held)) < Blocks
+HeldCount == Cardinality(HeldPairs(held))
 
-\* A block a change may take to be held: under AckReserve, one that leaves
-\* another free for the reader's ACKNACK.
-HoldBlockFree == Cardinality(HeldPairs(held)) + (IF AckReserve THEN 1 ELSE 0) < Blocks
+\* A sample block is free for an arriving change.
+SampleFree == HeldCount < SampleBlocks
+
+\* A block of either class is free for an ACKNACK.
+AckBlockFree == SampleFree \/ ControlBlocks > 0
+
+\* A sample block a change may take to be held: under AckReserve, one
+\* that leaves a block of either class free for the reader's ACKNACK.
+HoldBlockFree ==
+    /\ SampleFree
+    /\ (~AckReserve \/ HeldCount + 1 < SampleBlocks \/ ControlBlocks > 0)
 
 \* A slot reader r may take for change s.
 SlotFor(r, s) ==
@@ -173,7 +189,7 @@ SlotFor(r, s) ==
 \* A new change s reaches reader r.
 Admit(r, s) ==
     IF DeliverRule = "on_arrival" \/ s = NextOf(r)
-    THEN IF BlockFree THEN Deliver(r, s, held)
+    THEN IF SampleFree THEN Deliver(r, s, held)
          ELSE IF BlockRule = "evict_own" /\ held[r] # {} THEN Deliver(r, s, Evict(held, r))
          ELSE IF BlockRule = "evict_any"
               THEN \E q \in {x \in R : held[x] # {}} : Deliver(r, s, Evict(held, q))
@@ -202,7 +218,7 @@ RecvHeartbeat(r, f, l) ==
        IN /\ known' = [known EXCEPT ![r] = k]
           /\ Commit(r, sk, res, held)
           /\ net' = (net \ {Heartbeat(r, f, l)})
-                    \cup (IF BlockFree THEN {AckNack(r, base, {s \in base..k : s \notin have})}
+                    \cup (IF AckBlockFree THEN {AckNack(r, base, {s \in base..k : s \notin have})}
                           ELSE {})
     /\ UNCHANGED <<written, acked, alive, budget>>
 
@@ -273,7 +289,7 @@ NoAckPastUndelivered == \A r \in R : acked[r] <= NextOf(r) - 1
 WithinCap ==
     /\ \A r \in R : Cardinality(held[r]) <= Cap
     /\ Cardinality(HeldPairs(held)) <= Slots
-    /\ Cardinality(HeldPairs(held)) <= Blocks
+    /\ HeldCount <= SampleBlocks
 
 \* Under the window rule a reader holds only the Cap changes after its next.
 HoldsInWindow == AdmitRule = "window" => \A r \in R : \A s \in held[r] : s <= NextOf(r) + Cap
@@ -312,6 +328,13 @@ RefusedForPool ==
         /\ Arrives(r, s) /\ NextOf(r) < s /\ s <= NextOf(r) + Cap
         /\ Cardinality(held[r]) < Cap /\ Cardinality(HeldPairs(held)) = Slots
 NeverRefusedForPool == [][~RefusedForPool]_vars
+
+\* A change inside a reader's window, with a slot and a sample block free,
+\* is refused to keep a block for the reader's ACKNACK.
+RefusedForAck ==
+    \E r \in R, s \in SN :
+        /\ Arrives(r, s) /\ NextOf(r) < s /\ SlotFor(r, s) /\ SampleFree /\ ~HoldBlockFree
+NeverRefusedForAck == [][~RefusedForAck]_vars
 
 \* A change that closes one reader's gap takes another reader's block.
 EvictedAcrossReaders ==
