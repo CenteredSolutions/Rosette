@@ -22,6 +22,7 @@
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/qos.hpp"
 #include "rmw_rosette/ros_features.h"
+#include "rmw_rosette/serialize_for_write.hpp"
 #include "rmw_rosette/service_endpoints.hpp"
 #include "rmw_rosette/types.hpp"
 
@@ -196,14 +197,15 @@ rmw_ret_t rmw_send_request(const rmw_client_t* client, const void* ros_request,
         return checked;
     }
 
-    auto* impl = static_cast<rmw_rosette::Client*>(client->data);
-    rmw_rosette::ContextUpdateLock lock(*impl->node->context);
-
-    rtps::BufRef payload = rmw_rosette::serialize_to_pool(impl->request_codec, ros_request);
+    auto*        impl = static_cast<rmw_rosette::Client*>(client->data);
+    rtps::BufRef payload = rmw_rosette::serialize_for_write(
+        *impl->node->context, impl->request_codec, ros_request, impl->qos.reliability);
     if (!payload.valid()) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_send_request: serialization failed");
         return RMW_RET_ERROR;
     }
+
+    rmw_rosette::ContextUpdateLock lock(*impl->node->context);
 
     // Name this client's reply reader, as rmw_fastrtps_cpp clients do; the
     // sequence number is unknown until the writer assigns it.

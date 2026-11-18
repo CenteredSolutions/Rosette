@@ -172,25 +172,29 @@ uint32_t serialize_message(const MessageCodec& codec, const void* ros_message,
 /**
  * @brief Encodes a ROS message into a pool buffer sized to fit it.
  *
- * rmw_publish(), rmw_send_request() and rmw_send_response() call this and
- * hand the buffer to StatefulWriter::write_async_owned(), so a sample is
- * serialized once and never copied again, and no stack buffer bounds its
- * size. The smallest pool class is tried first, doubling until the message
- * fits, so small messages hold small blocks.
+ * rmw_publish(), rmw_send_request() and rmw_send_response() call this
+ * through serialize_for_write() and hand the buffer to
+ * StatefulWriter::write_async_owned(), so a sample is serialized once and
+ * never copied again, and no stack buffer bounds its size. The smallest pool
+ * class is tried first, doubling until the message fits, so small messages
+ * hold small blocks.
  *
- * @param[in] codec       Resolved codec for the message's type.
- * @param[in] ros_message Message instance to encode.
+ * @param[in]  codec        Resolved codec for the message's type.
+ * @param[in]  ros_message  Message instance to encode.
+ * @param[out] refused_size When not null, set to the block size the pool
+ *   refused when it had none left, and to 0 otherwise.
  * @return A buffer holding the CDR body (payload.size set), or an invalid
  *   buffer when the message does not fit the largest pool block
- *   (RMW_ROSETTE_MAX_SAMPLE_SIZE) or the pool is exhausted.
+ *   (RMW_ROSETTE_MAX_SAMPLE_SIZE, `*refused_size` 0) or the pool is
+ *   exhausted (`*refused_size` nonzero; serialize_for_write() waits for it).
  *
  * Verification:
  * - Correct means: equals serialize_message() into a large enough buffer.
  * - Covered by: rmw_rosette/test/test_introspection_c_codec.cpp
  *   (SerializeToPoolFitsLargeMessages).
  */
-rosette::rtps::BufRef serialize_to_pool(const MessageCodec& codec,
-                                        const void*         ros_message) noexcept;
+rosette::rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* ros_message,
+                                        uint32_t* refused_size = nullptr) noexcept;
 
 /**
  * @brief Decodes an RTPS serialized payload into a ROS message.

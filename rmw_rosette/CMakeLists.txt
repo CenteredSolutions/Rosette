@@ -53,6 +53,7 @@ set(ROSETTE_RTPS_SOURCES
 add_library(rmw_rosette SHARED
   src/introspection_c_codec.cpp
   src/message_codec.cpp
+  src/serialize_for_write.cpp
   src/rmw_init.cpp
   src/argument_checks.cpp
   src/rmw_node.cpp
@@ -202,7 +203,8 @@ if(BUILD_TESTING)
   set(_rmw_rosette_tests test_introspection_c_codec test_guard_condition test_pub_sub_loopback
                          test_change_ring test_local_node_entities test_service_departed_client
                          test_service_reply_depth test_init_options test_argument_checks
-                         test_live_context_refusals test_publish_fragment_limit)
+                         test_live_context_refusals test_publish_fragment_limit
+                         test_write_waits_for_pool)
   if(RMW_ROSETTE_CXX_TYPESUPPORT)
     list(APPEND _rmw_rosette_tests test_introspection_cpp_codec)
   endif()
