@@ -23,7 +23,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Skip the build jobs when a pull request changes documentation only
+  # (tools/ci/classify_changed_paths.py). Pushes to main always build.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - id: classify
+        run: python3 tools/ci/classify_changed_paths.py "${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+
   host-tests:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -41,6 +57,8 @@ jobs:
         run: ctest --test-dir build/tests-${{ matrix.suite }} --output-on-failure
 
   sanitizers:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -61,6 +79,8 @@ jobs:
         run: ctest --test-dir build/tests-${{ matrix.suite }}-san --output-on-failure
 
   warnings:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -82,3 +102,15 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build/tests-${{ matrix.suite }}-warn --output-on-failure
+
+  # The check branch protection requires: every job passed, or was skipped
+  # because the change is documentation only.
+  result:
+    name: host-tests result
+    if: always()
+    needs: [changes, host-tests, sanitizers, warnings]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every job to pass or be skipped
+        run: >
+          test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = false
