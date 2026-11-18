@@ -325,6 +325,8 @@ public:
     // The payload is preceded by a 4-byte CDR EncapsulationHeader
     // (representation identifier CDR_LE=0x0001, options=0x0000).
     //  — §10.2, p. 244
+    // A `preframed` payload already begins with its own encapsulation
+    // header (PL_CDR_LE for SEDP) and is copied as it is.
     //
     // With `pad_to_boundary`, zero octets follow the payload up to the
     // next 4-octet boundary, so another submessage can follow the DATA
@@ -332,24 +334,26 @@ public:
     // submessageLength and its length is recorded in the low two bits
     // of the encapsulation options, so a reader can tell it from data.
     //  — DDS-XTypes 1.3 §7.6.3.1.2
+    // A preframed payload's options are its own and cannot record padding,
+    // so padding one that does not end on a 4-octet boundary fails.
     //
     // Flags:
     //   D (bit 2) — dataFlag: serializedPayload contains data.
     //   K (bit 3) — keyFlag:  serializedPayload contains key hash.
     // ----------------------------------------------------------
-    bool append_data(const EntityId&       reader_id,
-                     const EntityId&       writer_id,
-                     const SequenceNumber& writer_sn,
-                     const BufRef&         payload,
-                     bool                  key_flag = false,
-                     const InlineQos&      inline_qos = {},
-                     bool                  pad_to_boundary = false) noexcept
-    {
+    bool append_data(const EntityId& reader_id, const EntityId& writer_id,
+                     const SequenceNumber& writer_sn, const BufRef& payload, bool key_flag = false,
+                     const InlineQos& inline_qos = {}, bool pad_to_boundary = false,
+                     bool preframed = false) noexcept {
         const uint16_t payload_bytes =
             payload.valid() ? static_cast<uint16_t>(payload.size) : static_cast<uint16_t>(0u);
-        const uint16_t encap_size    = 4u;
+        const uint16_t encap_size = preframed ? 0u : 4u;
         const uint16_t pad_bytes =
             pad_to_boundary ? static_cast<uint16_t>((4u - (payload_bytes & 3u)) & 3u) : 0u;
+        if (preframed && pad_bytes != 0u) {
+            return false;
+        }
+
         const uint16_t inline_qos_bytes = inline_qos_serialized_size(inline_qos);
         const uint16_t body_len = static_cast<uint16_t>(
             sizeof(DataSubmessageFixed) + inline_qos_bytes + encap_size + payload_bytes
@@ -381,7 +385,9 @@ public:
         // CDR_LE = {0x00, 0x01}, followed by the big-endian options,
         // whose low two bits hold the padding length.
         const Octet encapsulation[4] = {0x00u, 0x01u, 0x00u, static_cast<Octet>(pad_bytes)};
-        if (!write_bytes(encapsulation, sizeof(encapsulation))) return false;
+        if (!preframed && !write_bytes(encapsulation, sizeof(encapsulation))) {
+            return false;
+        }
 
         if (payload_bytes > 0) {
             if (!write_bytes(payload.data, payload_bytes)) return false;

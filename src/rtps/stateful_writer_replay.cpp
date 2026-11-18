@@ -82,7 +82,7 @@ void StatefulWriter::drain_replays() noexcept {
 
 bool StatefulWriter::send_replay_datagram(ReaderProxy& proxy) noexcept {
     const SequenceNumber sn = proxy.next_unsent_change(writer_cache_);
-    const CacheChange*   ch = sn == SEQUENCENUMBER_UNKNOWN ? nullptr : writer_cache_.get_change(sn);
+    const HistoryChange* ch = sn == SEQUENCENUMBER_UNKNOWN ? nullptr : writer_cache_.get_change(sn);
     if (ch == nullptr) {
         return false;
     }
@@ -128,11 +128,9 @@ bool StatefulWriter::send_replay_datagram(ReaderProxy& proxy) noexcept {
             return true;
         }
 
-        CacheChange built{};
+        HistoryChange built{};
         built.kind = ch->kind;
-        built.writerGuid = ch->writerGuid;
         built.sequenceNumber = ch->sequenceNumber;
-        built.sourceTimestamp = ch->sourceTimestamp;
         built.inlineQos = ch->inlineQos;
         built.preframed = ch->preframed;
         built.payload = static_cast<BufRef&&>(datagram);
@@ -191,7 +189,7 @@ bool StatefulWriter::pack_following_changes(ReaderProxy& proxy, BufRef& datagram
                               : transport_.max_datagram_size();
     while (aligned && payloadSizer_ != nullptr) {
         const SequenceNumber next = proxy.next_unsent_change(writer_cache_);
-        const CacheChange*   next_ch =
+        const HistoryChange* next_ch =
             next == SEQUENCENUMBER_UNKNOWN ? nullptr : writer_cache_.get_change(next);
         if (next_ch == nullptr || next_ch->payload.valid()) {
             break;
@@ -219,7 +217,7 @@ bool StatefulWriter::pack_following_changes(ReaderProxy& proxy, BufRef& datagram
     return aligned;
 }
 
-bool StatefulWriter::append_built_data(BufRef& datagram, const CacheChange& ch,
+bool StatefulWriter::append_built_data(BufRef& datagram, const HistoryChange& ch,
                                        const BufRef&   payload,
                                        const EntityId& reader_id) const noexcept {
     const uint16_t inline_qos_size = inline_qos_serialized_size(ch.inlineQos);

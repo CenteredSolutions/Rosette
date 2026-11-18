@@ -140,14 +140,24 @@ static uint32_t reader_payload_size_estimate(const DiscoveredReaderData& rd) noe
 // full history always holds at least one disposal.
 static void make_room_for_change(SedpWriter::BuiltinWriter& writer) noexcept
 {
-    if (writer.cache().size() < SedpWriter::kSedpHistoryDepth) return;
+    if (writer.cache().size() < SedpWriter::kSedpHistoryDepth) {
+        return;
+    }
+
     SequenceNumber oldest_disposal = SEQUENCENUMBER_UNKNOWN;
-    writer.cache().for_each_change([&](const CacheChange& c) noexcept {
-        if (c.kind == ChangeKind::ALIVE) return;
-        if (oldest_disposal == SEQUENCENUMBER_UNKNOWN || c.sequenceNumber < oldest_disposal)
+    writer.cache().for_each_change([&](const HistoryChange& c) noexcept {
+        if (c.kind == ChangeKind::ALIVE) {
+            return;
+        }
+
+        if (oldest_disposal == SEQUENCENUMBER_UNKNOWN || c.sequenceNumber < oldest_disposal) {
             oldest_disposal = c.sequenceNumber;
+        }
     });
-    if (oldest_disposal != SEQUENCENUMBER_UNKNOWN) writer.remove_change(oldest_disposal);
+
+    if (oldest_disposal != SEQUENCENUMBER_UNKNOWN) {
+        writer.remove_change(oldest_disposal);
+    }
 }
 
 // Serialises one endpoint and writes it as a live announcement keyed by
@@ -199,7 +209,7 @@ static SequenceNumber write_rebuilt_announcement(SedpWriter::BuiltinWriter& writ
 // data does not fit.
 template <typename EndpointData, typename SerialiseFn>
 static BufRef serialise_for_send(const EndpointData& endpoint, uint32_t size_estimate,
-                                 const CacheChange& change, SerialiseFn serialise) noexcept {
+                                 const HistoryChange& change, SerialiseFn serialise) noexcept {
     BufRef payload =
         buf_alloc_with_headroom(size_estimate + kRtpsHeartbeatTailroom,
                                 kRtpsDataHeadroom + inline_qos_serialized_size(change.inlineQos));
@@ -217,11 +227,11 @@ static BufRef serialise_for_send(const EndpointData& endpoint, uint32_t size_est
 
 // Cold: it runs on discovery and repair, never per sample, so it is
 // optimized for size rather than inlined into a hot path.
-[[gnu::cold]] BufRef SedpWriter::build_announcement(void* user,
-                                                    const CacheChange& change) noexcept {
+[[gnu::cold]] BufRef SedpWriter::build_announcement(void*                user,
+                                                    const HistoryChange& change) noexcept {
     const SedpWriter& self = *static_cast<const SedpWriter*>(user);
     const Guid endpoint_guid = change.inlineQos.key_hash_guid();
-    if (change.writerGuid.entityId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
+    if (endpoint_guid.entityId.is_writer()) {
         DiscoveredWriterData wd{};
         if (!self.endpoints_.writer(self.endpoints_.user, endpoint_guid, wd)) {
             return BufRef{};
@@ -246,11 +256,11 @@ static BufRef serialise_for_send(const EndpointData& endpoint, uint32_t size_est
         });
 }
 
-[[gnu::cold]] uint32_t SedpWriter::announcement_size(void*              user,
-                                                     const CacheChange& change) noexcept {
+[[gnu::cold]] uint32_t SedpWriter::announcement_size(void*                user,
+                                                     const HistoryChange& change) noexcept {
     const SedpWriter& self = *static_cast<const SedpWriter*>(user);
     const Guid        endpoint_guid = change.inlineQos.key_hash_guid();
-    if (change.writerGuid.entityId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
+    if (endpoint_guid.entityId.is_writer()) {
         DiscoveredWriterData wd{};
         return self.endpoints_.writer(self.endpoints_.user, endpoint_guid, wd)
                    ? writer_payload_size_estimate(wd)
