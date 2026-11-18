@@ -783,7 +783,7 @@ if (ROSETTE_SPEC_ENABLE_FUZZ)
     rosette_spec_add_fuzz(stateful_endpoints fuzz/fuzz_stateful_endpoints.cpp
         src/test_stateful_writer_clock_stub.cpp
         stateful_reader.cpp stateful_writer.cpp stateful_writer_replay.cpp fragment_assembler.cpp
-        sn_window.cpp
+        sn_window.cpp held_changes.cpp
         history_cache.cpp reader_proxy.cpp writer_proxy.cpp proxy_pool.cpp message_parser.cpp
         buf_pool.cpp)
 
