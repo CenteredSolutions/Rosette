@@ -87,6 +87,24 @@ Guid make_guid(Octet p0, const EntityId& eid) {
 
 const Locator kLoc = make_udpv4_locator(0xC0A80190u, 7411u);
 
+/// Serialized payload that copy_out_payload() returns, encapsulation header included.
+struct PreframedSource {
+    const Octet* bytes = nullptr;
+    uint32_t     size = 0;
+};
+
+/// @brief Builds the payload without headroom, so the DATA is copied, not framed in place.
+BufRef copy_out_payload(void* user, const HistoryChange&) noexcept {
+    const auto* src = static_cast<const PreframedSource*>(user);
+    BufRef      out = buf_alloc(src->size);
+    if (out.valid()) {
+        memcpy(out.data, src->bytes, src->size);
+        out.size = src->size;
+    }
+
+    return out;
+}
+
 }  // namespace
 
 // §8.4.15.4, §9.4.1: with KEEP_LAST(4), writes 2 and 4 each go out as one
@@ -278,6 +296,48 @@ static bool tc_swr_8_4_15_004(std::string& err) {
     return true;
 }
 
+// §9.4.5.3, §10.2: a preframed payload in a block without headroom is
+// copied into the DATA with no second encapsulation header. An aligned one
+// carries the HEARTBEAT in its datagram; an unaligned one cannot record
+// padding in its own options (DDS-XTypes 1.3 §7.6.3.1.2), so its HEARTBEAT
+// follows in a datagram of its own.
+static bool tc_swr_8_4_15_005(std::string& err) {
+    const Guid  writer = make_guid(0x99u, make_entity(1u, 2u, 3u, 0x02u));
+    const Guid  reader = make_guid(0xAAu, make_entity(4u, 5u, 6u, 0x07u));
+    const Octet aligned[8] = {0x00u, 0x03u, 0x00u, 0x00u, 1u, 2u, 3u, 4u};
+    const Octet unaligned[7] = {0x00u, 0x03u, 0x00u, 0x00u, 1u, 2u, 3u};
+
+    PreframedSource             src{aligned, 8u};
+    CaptureTransport            tx{};
+    StatefulWriterStorage<2, 1> w(writer, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx,
+                                  5u, 1000u);
+    w.set_payload_builder(&copy_out_payload, &src);
+    CHECK(w.matched_reader_add(reader, &kLoc, 1u, false), "match");
+    CHECK(w.write_on_demand_async(ChangeKind::ALIVE, InlineQos{}, nullptr), "write aligned");
+    CHECK(tx.unicast_msgs.size() == 1u, "one datagram");
+    Datagram d = inspect(tx.unicast_msgs[0]);
+    CHECK(d.parsed && d.data == 1 && d.heartbeats == 1 && d.heartbeat_after_data,
+          "an aligned copied DATA carries the HEARTBEAT in its datagram");
+    CHECK(d.payload == std::vector<Octet>(aligned, aligned + 8u),
+          "the serializedPayload is the preframed bytes, with no second header");
+
+    src = PreframedSource{unaligned, 7u};
+    CaptureTransport            tx2{};
+    StatefulWriterStorage<2, 1> w2(writer, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx2,
+                                   5u, 1000u);
+    w2.set_payload_builder(&copy_out_payload, &src);
+    CHECK(w2.matched_reader_add(reader, &kLoc, 1u, false), "match second writer");
+    CHECK(w2.write_on_demand_async(ChangeKind::ALIVE, InlineQos{}, nullptr), "write unaligned");
+    CHECK(tx2.unicast_msgs.size() == 2u, "the HEARTBEAT goes in a second datagram");
+    d = inspect(tx2.unicast_msgs[0]);
+    CHECK(d.parsed && d.data == 1 && d.heartbeats == 0
+              && d.payload == std::vector<Octet>(unaligned, unaligned + 7u),
+          "the DATA carries the unpadded preframed bytes alone");
+    d = inspect(tx2.unicast_msgs[1]);
+    CHECK(d.parsed && d.data == 0 && d.heartbeats == 1, "the second datagram is the HEARTBEAT");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_15_piggyback_heartbeat(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.15-001",
                      "§8.4.15.4/§9.4.1: every depth/2-th write carries a non-final HEARTBEAT after its padded DATA in one datagram.",
@@ -291,6 +351,10 @@ void append_stateful_writer_tests_8_4_15_piggyback_heartbeat(std::vector<TestCas
     tests.push_back({"TC-SWR-8.4.15-004",
                      "§8.4.14.1/§8.4.15.4: fragmented and limit-filling DATA each send exactly one HEARTBEAT within the datagram limit.",
                      tc_swr_8_4_15_004});
+    tests.push_back({"TC-SWR-8.4.15-005",
+                     "§9.4.5.3/§10.2: a preframed payload without headroom is copied with no "
+                     "second encapsulation; unaligned ones send the HEARTBEAT apart.",
+                     tc_swr_8_4_15_005});
 }
 
 }  // namespace spec_test

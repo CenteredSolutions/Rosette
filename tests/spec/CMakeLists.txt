@@ -555,6 +555,37 @@ add_test(
     COMMAND buf_pool_stats_spec_tests
 )
 
+# The LittleFS persistence backend on a RAM block device. LittleFS is
+# third-party C, so it builds in a library of its own without Rosette's
+# warning flags.
+enable_language(C)
+include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/littlefs.cmake)
+add_library(spec_littlefs STATIC
+    ${ROSETTE_LITTLEFS_DIR}/lfs.c
+    ${ROSETTE_LITTLEFS_DIR}/lfs_util.c
+)
+# SYSTEM keeps Rosette's warnings out of lfs.h and lfs_util.h, whose inline
+# helpers persistence.hpp pulls into C++.
+target_include_directories(spec_littlefs SYSTEM PUBLIC ${ROSETTE_LITTLEFS_DIR})
+target_compile_options(spec_littlefs PRIVATE -w)
+
+add_executable(persistence_spec_tests
+    src/test_persistence_8_7_2_2.cpp
+    src/spec_test_common.cpp
+    ../../src/rtps/persistence.cpp
+    ../../src/rtps/buf_pool.cpp
+)
+target_include_directories(persistence_spec_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+)
+target_compile_definitions(persistence_spec_tests PRIVATE RTPS_LOG_LEVEL=0)
+target_link_libraries(persistence_spec_tests PRIVATE spec_littlefs)
+add_test(
+    NAME persistence_spec_conformance
+    COMMAND persistence_spec_tests
+)
+
 # The peer-tier tests need an active tier smaller than the network: two
 # active slots among six known peers, and a short settle time.
 set(PARTICIPANT_TIER_SPEC_TEST_SOURCES ${PARTICIPANT_SPEC_TEST_SOURCES})

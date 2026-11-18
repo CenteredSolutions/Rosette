@@ -72,14 +72,11 @@ static bool tc_swr_8_4_1_4_001(std::string& err) {
                            tx);
 
     for (uint32_t i = 0; i < 3u; ++i) {
-        BufRef payload{};
-        CacheChange* ch = w.new_change(ChangeKind::ALIVE, payload, 32u);
-        CHECK(ch != nullptr, "new_change should allocate staging change");
-        CHECK(payload.valid(), "new_change should return valid payload");
-        payload.data[0] = static_cast<Octet>(0xA0u + i);
-        payload.size = 1u;
-        ch->payload.size = 1u;
-        CHECK(w.add_change(static_cast<CacheChange&&>(*ch)), "add_change should succeed");
+        HistoryChange ch = w.new_change(ChangeKind::ALIVE, 32u);
+        CHECK(ch.payload.valid(), "new_change should allocate the change's payload");
+        ch.payload.data[0] = static_cast<Octet>(0xA0u + i);
+        ch.payload.size = 1u;
+        CHECK(w.add_change(static_cast<HistoryChange&&>(ch)), "add_change should succeed");
     }
 
     const auto min_sn = w.cache().get_seq_num_min().to_int64();
@@ -149,13 +146,11 @@ static bool tc_swr_8_4_1_4_003(std::string& err) {
                            DurabilityKind::TRANSIENT_LOCAL,
                            tx);
 
-    BufRef payload{};
-    CacheChange* ch = w.new_change(ChangeKind::ALIVE, payload, 32u);
-    CHECK(ch != nullptr, "new_change should succeed");
-    payload.data[0] = 0x11u;
-    payload.size = 1u;
-    ch->payload.size = 1u;
-    CHECK(w.add_change(static_cast<CacheChange&&>(*ch)), "add_change should succeed");
+    HistoryChange ch = w.new_change(ChangeKind::ALIVE, 32u);
+    CHECK(ch.payload.valid(), "new_change should succeed");
+    ch.payload.data[0] = 0x11u;
+    ch.payload.size = 1u;
+    CHECK(w.add_change(static_cast<HistoryChange&&>(ch)), "add_change should succeed");
     CHECK(tx.unicast_msgs.empty(), "no reader is matched yet, so nothing is sent");
 
     CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false),
@@ -275,6 +270,54 @@ bool tc_swr_8_4_1_4_009(std::string& err) {
     return true;
 }
 
+/// @brief Free blocks across every pool class.
+static uint32_t free_pool_blocks() {
+    uint32_t n = 0u;
+    for (uint8_t c = 0u; c < g_buf_pool.class_count(); ++c) {
+        n += g_buf_pool.class_info(c).available;
+    }
+
+    return n;
+}
+
+// §8.4.1.4: a change from new_change() is the caller's until add_change().
+// Two held unadded own separate blocks; dropping one returns its block at
+// once and takes no sequence number, so the other, added next, is SN 1;
+// dropping the rest returns the pool to where it started.
+static bool tc_swr_8_4_1_4_016(std::string& err) {
+    NullTransport  tx{};
+    const Guid     writer_guid = make_guid(0x70u, 0x71u, 0x72u, make_entity(1u, 1u, 1u, 0xC2u));
+    const uint32_t before = free_pool_blocks();
+    {
+        StatefulWriterStorage<2, 1> w(writer_guid, ReliabilityKind::BEST_EFFORT,
+                                      DurabilityKind::VOLATILE, tx);
+        HistoryChange               kept = w.new_change(ChangeKind::ALIVE, 16u);
+        {
+            HistoryChange dropped = w.new_change(ChangeKind::ALIVE, 16u);
+            CHECK(kept.payload.valid() && dropped.payload.valid(), "both changes get a block");
+            CHECK(kept.payload.block != dropped.payload.block, "each change owns its own block");
+            kept.payload.data[0] = 0x11u;
+            dropped.payload.data[0] = 0x22u;
+            CHECK(kept.payload.data[0] == 0x11u, "writing one change leaves the other alone");
+            CHECK(free_pool_blocks() == before - 2u, "two unadded changes hold two blocks");
+        }
+
+        CHECK(free_pool_blocks() == before - 1u, "the dropped change returned its block");
+        kept.payload.size = 1u;
+        CHECK(w.add_change(static_cast<HistoryChange&&>(kept)), "add the kept change");
+        CHECK(w.cache().get_seq_num_max().to_int64() == 1,
+              "the dropped change took no sequence number");
+        CHECK(w.cache().get_change(SequenceNumber::from_int64(1))->payload.data[0] == 0x11u,
+              "the added change keeps its payload");
+
+        HistoryChange abandoned = w.new_change(ChangeKind::ALIVE, 16u);
+        CHECK(abandoned.payload.valid(), "a third change gets a block");
+    }
+
+    CHECK(free_pool_blocks() == before, "every block is back once the changes and writer are gone");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_1_4(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.1.4-001",
                      "§8.4.1.4/§8.3.3: add_change assigns monotonically increasing sequence numbers and respects KEEP_LAST cache eviction.",
@@ -297,6 +340,11 @@ void append_stateful_writer_tests_8_4_1_4(std::vector<TestCase>& tests) {
          "unmatch or a destroyed writer returns proxies to it, and a write reaches exactly the "
          "bound readers.",
          tc_swr_8_4_1_4_009});
+    tests.push_back(
+        {"TC-SWR-8.4.1.4-016",
+         "§8.4.1.4: changes held unadded own separate blocks; dropping them returns every block "
+         "and takes no sequence number.",
+         tc_swr_8_4_1_4_016});
 }
 
 } // namespace spec_test
