@@ -48,13 +48,6 @@ ServiceSlot* slot_from(rmw_service_t* service) noexcept {
     return reinterpret_cast<ServiceSlot*>(service);
 }
 
-/// @brief True while `request_writer` is matched to the service's request reader,
-/// so its client is still there to take a reply.
-bool client_present(const rmw_rosette::Service& service, const rtps::Guid& request_writer) {
-    rmw_rosette::ContextLock lock(*service.node->context);
-    return service.request_reader->matched_writer_lookup(request_writer) != nullptr;
-}
-
 /// Request-reader callback: buffers the request with its writer GUID and SN.
 void on_request(const rtps::CacheChange& change, void* user_data) noexcept {
     static_cast<rmw_rosette::Service*>(user_data)->requests.push(change);
@@ -228,7 +221,7 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
  * in `request_header` tells the two apart: it stays matched to this
  * service's request reader for as long as the client exists, and a new
  * client has a writer of its own, so the test is exact per client. The
- * response is then dropped before it is encoded, and the call succeeds, as
+ * response is then dropped instead of written, and the call succeeds, as
  * rmw_fastrtps_cpp does for a client it reports gone.
  *
  * Unacknowledged replies pin their pool blocks, so a service answering
@@ -236,7 +229,8 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
  * the client's ACKNACK for the previous ones arrives. The reply writer is
  * reliable, so the call then waits up to RMW_ROSETTE_MAX_BLOCKING_TIME_MS
  * for a block (serialize_for_write()), running the participant meanwhile,
- * rather than drop the reply.
+ * rather than drop the reply. The client is looked up after that wait, so
+ * one that leaves during it gets no reply either.
  *
  * @param[in] service        Service replying.
  * @param[in] request_header The `request_id` rmw_take_request() reported.
@@ -251,9 +245,10 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
  *   `request_header`, so the stock client that sent the request accepts it;
  *   a reply whose request writer is no longer matched leaves nothing in the
  *   reply writer's history; a reply that finds the pool exhausted is sent
- *   once a block is released within RMW_ROSETTE_MAX_BLOCKING_TIME_MS.
+ *   once a block is released within RMW_ROSETTE_MAX_BLOCKING_TIME_MS, and
+ *   leaves nothing in the history when its client unmatches during the wait.
  * - Covered by: rmw_rosette/test/test_service_departed_client.cpp,
- *   test_write_waits_for_pool.cpp (TC-RMW-WRITE-001).
+ *   test_write_waits_for_pool.cpp (TC-RMW-WRITE-001, TC-RMW-WRITE-004).
  *
  * References:
  * - rmw/rmw.h (Humble), `rmw_send_response`
@@ -274,20 +269,23 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
     rmw_rosette::Context& ctx = *impl->node->context;
     const rtps::Guid request_writer =
         rmw_rosette::guid_from_request_writer(request_header->writer_guid);
-    if (!client_present(*impl, request_writer)) {
+    rtps::BufRef payload = rmw_rosette::serialize_for_write(ctx, impl->response_codec, ros_response,
+                                                            impl->qos.reliability);
+
+    // The participant runs while the reply is encoded, and the client can
+    // leave meanwhile, so it is looked up under the lock that the write
+    // holds; a reply written after its client is gone stays in the history.
+    rmw_rosette::ContextUpdateLock lock(ctx);
+    if (impl->request_reader->matched_writer_lookup(request_writer) == nullptr) {
         return RMW_RET_OK;
     }
 
-    rtps::BufRef payload = rmw_rosette::serialize_for_write(ctx, impl->response_codec, ros_response,
-                                                            impl->qos.reliability);
     if (!payload.valid()) {
         RMW_SET_ERROR_MSG(
             "rmw_rosette: rmw_send_response: serialization failed (response "
             "larger than RMW_ROSETTE_MAX_SAMPLE_SIZE, or buffer pool exhausted)");
         return RMW_RET_ERROR;
     }
-
-    rmw_rosette::ContextUpdateLock lock(ctx);
 
     rtps::InlineQos qos{};
     qos.hasRelatedSampleIdentity = true;

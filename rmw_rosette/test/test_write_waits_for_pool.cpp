@@ -15,11 +15,14 @@
  * | 001  | reply (RELIABLE)       | after kHoldMs          | OK before the deadline   |
  * | 002  | reply (RELIABLE)       | never during the call  | ERROR after the deadline |
  * | 003  | request (BEST_EFFORT)  | never during the call  | ERROR at once            |
+ * | 004  | reply, client leaves   | after the client left  | OK, nothing written      |
  *
  * Verification:
  * - Correct means: as serialize_for_write(); case 001 also delivers the
  *   reply to the client, so the request that found the pool exhausted is
- *   answered.
+ *   answered; in case 004 the client unmatches while the reply waits, and
+ *   the reply writer's history stays empty, as rmw_send_response() does for
+ *   a client that left before the call.
  *
  * References:
  * - OMG DDS 1.4 §2.2.2.4.2.11, §2.2.3.14 (RELIABILITY `max_blocking_time`)
@@ -158,6 +161,21 @@ protected:
         ASSERT_TRUE(taken) << "the request never arrived";
     }
 
+    /// Request writers matched to the service, read under the participant
+    /// lock because the participant removes a departed one concurrently.
+    size_t matched_request_writers() const {
+        const auto* impl = static_cast<const rmw_rosette::Service*>(service_->data);
+        rosette::platform::LockGuard guard(impl->node->context->driver->mutex());
+        return impl->request_reader->matched_writer_count();
+    }
+
+    /// Whether the service's reply writer holds no reply.
+    bool reply_history_empty() const {
+        const auto* impl = static_cast<const rmw_rosette::Service*>(service_->data);
+        rosette::platform::LockGuard guard(impl->node->context->driver->mutex());
+        return impl->reply_writer->cache().is_empty();
+    }
+
     rmw_context_t                   context_ = rmw_get_zero_initialized_context();
     rmw_node_t*                     node_ = nullptr;
     rmw_service_t*                  service_ = nullptr;
@@ -238,4 +256,38 @@ TEST_F(WriteWaitsForPool, BestEffortWriteFailsAtOnce) {
 
     EXPECT_EQ(ret, RMW_RET_ERROR);
     EXPECT_LT(waited_ms, static_cast<int64_t>(RMW_ROSETTE_MAX_BLOCKING_TIME_MS) / 2);
+}
+
+// TC-RMW-WRITE-004: a client that unmatches while its reply waits for a block
+// gets no reply, and the reply leaves nothing in the history.
+TEST_F(WriteWaitsForPool, ReplyToClientThatLeavesDuringWaitIsDropped) {
+    create_matched("/write_waits_departed");
+    rmw_service_info_t header{};
+    take_one_request(header);
+
+    hoard_.take_all();
+    bool            unmatched = false;
+    std::thread     departer([this, &unmatched] {
+        // Leaves once the reply has found the pool exhausted and is waiting.
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        EXPECT_EQ(rmw_destroy_client(node_, client_), RMW_RET_OK);
+        client_ = nullptr;
+        // The waiting reply runs the participant, which unmatches the
+        // client; the blocks come back only once it has, or near the deadline.
+        const auto start = std::chrono::steady_clock::now();
+        while (matched_request_writers() > 0u
+               && elapsed_ms(start) < static_cast<int64_t>(RMW_ROSETTE_MAX_BLOCKING_TIME_MS) - 20) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        unmatched = matched_request_writers() == 0u;
+        hoard_.release();
+        context_.impl->rosette_context.driver->wake();
+    });
+    const rmw_ret_t ret = rmw_send_response(service_, &header.request_id, &response_);
+    departer.join();
+
+    ASSERT_TRUE(unmatched) << "the client never unmatched while the reply waited";
+    EXPECT_EQ(ret, RMW_RET_OK) << rmw_get_error_string().str;
+    EXPECT_TRUE(reply_history_empty()) << "a reply to a client that left is held";
 }
