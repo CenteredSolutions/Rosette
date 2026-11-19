@@ -66,32 +66,35 @@ void on_request(const rtps::CacheChange& change, void* user_data) noexcept {
  *
  * A DDS-RPC client names its request writer by GUID, a Cyclone client by
  * request_writer_key(); naming no matched writer either way, the client has
- * gone. Fills the reply's related sample identity for a DDS-RPC client, or
- * the header to echo for a Cyclone one. The caller holds the context lock.
+ * gone. Fills the reply's related sample identity, and for a Cyclone client
+ * the header to echo too. A Cyclone client ignores the identity
+ * (DDSI-RTPS §9.6.2.2.1); the reply writer needs it to tell when the
+ * requester has the reply and its pool block can go
+ * (StatefulWriter::release_replies_on_delivery()). The caller holds the
+ * context lock.
  *
  * @return false when the client has gone.
  */
 bool find_requester(const rmw_rosette::Service& impl, const rmw_request_id_t& request_header,
                     rtps::InlineQos& qos, rmw_rosette::CycloneRequestHeader& cyclone,
                     uint32_t& header_size) noexcept {
-    const rtps::Guid request_writer =
-        rmw_rosette::guid_from_request_writer(request_header.writer_guid);
-    qos = rtps::InlineQos{};
+    rtps::Guid request_writer = rmw_rosette::guid_from_request_writer(request_header.writer_guid);
     header_size = 0u;
-    if (impl.request_reader->matched_writer_lookup(request_writer) != nullptr) {
-        qos.hasRelatedSampleIdentity = true;
-        qos.relatedSampleIdentity.writerGuid = request_writer;
-        qos.relatedSampleIdentity.sequenceNumber =
-            rtps::SequenceNumber::from_int64(request_header.sequence_number);
-        return true;
-    }
+    if (impl.request_reader->matched_writer_lookup(request_writer) == nullptr) {
+        if (!rmw_rosette::find_cyclone_requester(*impl.request_reader, request_header, cyclone,
+                                                 request_writer)) {
+            return false;
+        }
 
-    if (rmw_rosette::find_cyclone_requester(*impl.request_reader, request_header, cyclone)) {
         header_size = rmw_rosette::kCycloneRequestHeaderSize;
-        return true;
     }
 
-    return false;
+    qos = rtps::InlineQos{};
+    qos.hasRelatedSampleIdentity = true;
+    qos.relatedSampleIdentity.writerGuid = request_writer;
+    qos.relatedSampleIdentity.sequenceNumber =
+        rtps::SequenceNumber::from_int64(request_header.sequence_number);
+    return true;
 }
 
 }  // namespace

@@ -83,13 +83,19 @@ void cyclone_request_to_request_id(const CycloneRequestHeader& header,
 }
 
 bool find_cyclone_requester(const rtps::StatefulReader& request_reader,
-                            const rmw_request_id_t&     request_id,
-                            CycloneRequestHeader&       header) noexcept {
+                            const rmw_request_id_t& request_id, CycloneRequestHeader& header,
+                            rtps::Guid& request_writer) noexcept {
     uint64_t writer_key = 0;
     std::memcpy(&writer_key, request_id.writer_guid + 8, 8);
-    const bool matched = request_reader.any_matched_writer([writer_key](const rtps::Guid& writer) {
-        return request_writer_key(writer) == writer_key;
-    });
+    const bool matched =
+        request_reader.any_matched_writer([writer_key, &request_writer](const rtps::Guid& writer) {
+            if (request_writer_key(writer) != writer_key) {
+                return false;
+            }
+
+            request_writer = writer;
+            return true;
+        });
     if (!matched) {
         return false;
     }

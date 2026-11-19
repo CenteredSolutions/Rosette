@@ -180,13 +180,15 @@ TEST_F(CycloneRequester, NamesItsWriterOnlyWhileMatched) {
 
     rosette::platform::LockGuard      guard(impl().node->context->driver->mutex());
     rmw_rosette::CycloneRequestHeader header{};
-    EXPECT_FALSE(rmw_rosette::find_cyclone_requester(*impl().request_reader, id, header));
+    rtps::Guid                        found{};
+    EXPECT_FALSE(rmw_rosette::find_cyclone_requester(*impl().request_reader, id, header, found));
 
     const rtps::Locator locator = rtps::make_udpv4_locator(0x7f000001u, 7411);
     ASSERT_TRUE(impl().request_reader->matched_writer_add(writer, &locator, 1u));
-    ASSERT_TRUE(rmw_rosette::find_cyclone_requester(*impl().request_reader, id, header));
+    ASSERT_TRUE(rmw_rosette::find_cyclone_requester(*impl().request_reader, id, header, found));
     EXPECT_EQ(header.client_id, 0x5566778899aabbccull);
     EXPECT_EQ(header.sequence, 42);
+    EXPECT_EQ(found, writer);
 
     // A DDS-RPC lookup by GUID must not mistake the packed identity for a writer.
     EXPECT_EQ(impl().request_reader->matched_writer_lookup(
@@ -194,7 +196,7 @@ TEST_F(CycloneRequester, NamesItsWriterOnlyWhileMatched) {
               nullptr);
 
     impl().request_reader->matched_writer_remove(writer);
-    EXPECT_FALSE(rmw_rosette::find_cyclone_requester(*impl().request_reader, id, header));
+    EXPECT_FALSE(rmw_rosette::find_cyclone_requester(*impl().request_reader, id, header, found));
 }
 
 // A service announces one `serviceid=` string, naming its own participant, on
