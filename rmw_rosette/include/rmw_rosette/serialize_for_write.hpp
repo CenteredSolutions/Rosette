@@ -49,6 +49,8 @@ namespace rmw_rosette {
  * @param[in] ros_message Message instance to encode.
  * @param[in] reliability Writer's reliability: RELIABLE waits up to
  *   RMW_ROSETTE_MAX_BLOCKING_TIME_MS; BEST_EFFORT never waits.
+ * @param[in] header_size Octets left unwritten at the front of the body for
+ *   the caller to fill, as serialize_to_pool() takes them.
  * @return The encoded sample, or an invalid buffer when the message is
  *   larger than RMW_ROSETTE_MAX_SAMPLE_SIZE, or the pool stayed exhausted
  *   for the whole wait.
@@ -66,6 +68,7 @@ namespace rmw_rosette {
  */
 rosette::rtps::BufRef serialize_for_write(Context& ctx, const MessageCodec& codec,
                                           const void*                  ros_message,
-                                          rmw_qos_reliability_policy_e reliability) noexcept;
+                                          rmw_qos_reliability_policy_e reliability,
+                                          uint32_t                     header_size = 0) noexcept;
 
 }  // namespace rmw_rosette

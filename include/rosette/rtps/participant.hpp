@@ -604,6 +604,22 @@ public:
     void clear_addresses() noexcept;
     bool has_addresses() const noexcept;
 
+    /**
+     * @brief The vendor a remote participant announced in SPDP.
+     *
+     * Layers above RTPS use it to speak a peer's vendor dialect where its
+     * middleware departs from the standard, such as rmw_cyclonedds_cpp's
+     * service request header. Call it under the participant lock.
+     *
+     * @param[in] remote_prefix GUID prefix of the participant.
+     * @return Its PID_VENDOR_ID; VENDORID_UNKNOWN for this participant and for
+     *   a prefix with no peer record.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.5.3.2 (vendorId), §9.3.1.5 (vendor ID registry)
+     */
+    VendorId peer_vendor_id(const GuidPrefix& remote_prefix) const noexcept;
+
     /// Called when the discovered graph changed; see set_on_graph_change().
     using OnGraphChange = void (*)(void* user_data) noexcept;
 
@@ -1252,14 +1268,6 @@ private:
     bool peer_default_locators(const GuidPrefix& prefix, const Locator*& locators,
                                uint8_t& count) const noexcept;
 
-    /**
-     * @brief The vendor a remote participant announced in SPDP.
-     *
-     * @param[in] remote_prefix GUID prefix of the participant.
-     * @return Its PID_VENDOR_ID; VENDORID_UNKNOWN for this participant and for
-     *   a prefix with no peer record.
-     */
-    VendorId peer_vendor_id(const GuidPrefix& remote_prefix) const noexcept;
     template <typename Deliver>
     void for_each_addressed_reader(const EntityId& writer_id, const EntityId& reader_id,
                                    Deliver&& deliver) noexcept;

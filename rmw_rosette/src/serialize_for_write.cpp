@@ -13,9 +13,10 @@ namespace rtps = rosette::rtps;
 namespace rmw_rosette {
 
 rtps::BufRef serialize_for_write(Context& ctx, const MessageCodec& codec, const void* ros_message,
-                                 rmw_qos_reliability_policy_e reliability) noexcept {
+                                 rmw_qos_reliability_policy_e reliability,
+                                 uint32_t                     header_size) noexcept {
     uint32_t     refused_size = 0u;
-    rtps::BufRef payload = serialize_to_pool(codec, ros_message, &refused_size);
+    rtps::BufRef payload = serialize_to_pool(codec, ros_message, header_size, &refused_size);
     if (payload.valid() || refused_size == 0u
         || reliability == RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT) {
         return payload;
@@ -38,7 +39,7 @@ rtps::BufRef serialize_for_write(Context& ctx, const MessageCodec& codec, const 
             return {};
         }
 
-        payload = serialize_to_pool(codec, ros_message, &refused_size);
+        payload = serialize_to_pool(codec, ros_message, header_size, &refused_size);
         if (payload.valid() || refused_size == 0u) {
             return payload;
         }
