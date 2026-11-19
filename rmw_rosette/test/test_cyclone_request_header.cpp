@@ -3,18 +3,22 @@
 
 /**
  * @file test_cyclone_request_header.cpp
- * @brief The rmw_cyclonedds_cpp service request header: wire form and request identity.
+ * @brief The rmw_cyclonedds_cpp service dialect: request header, request identity, and
+ *   the endpoint USER_DATA that pairs a service's endpoints.
  *
  * Verification:
  * - Correct means: a request payload laid out as rmw_cyclonedds_cpp's
  *   serialize_top_level() writes it yields its header and message; a body
  *   encoded with a reserved header carries the message exactly as without
  *   one; a packed Cyclone request identity names its request writer while
- *   that writer is matched and nothing once it is removed.
+ *   that writer is matched and nothing once it is removed; a service's two
+ *   endpoints announce one `serviceid=` USER_DATA string in the form
+ *   csid_to_string() writes.
  *
  * References:
  * - rmw_cyclonedds_cpp 1.3.5 serdata.hpp (cdds_request_header_t),
- *   Serialization.cpp (serialize_top_level), rmw_node.cpp (rmw_send_response)
+ *   Serialization.cpp (serialize_top_level), rmw_node.cpp (rmw_send_response,
+ *   get_unique_csid, csid_to_string, rmw_init_cs)
  */
 
 #include <gtest/gtest.h>
@@ -27,6 +31,7 @@
 #include <std_srvs/srv/set_bool.h>
 
 #include "rmw_rosette/compat/cyclone_request_header.hpp"
+#include "rmw_rosette/compat/cyclone_service_user_data.hpp"
 #include "rmw_rosette/message_codec.hpp"
 #include "rmw_rosette/types.hpp"
 
@@ -109,6 +114,26 @@ TEST(CycloneRequestHeader, ReservedHeaderLeavesTheMessageEncodingUnchanged) {
     std_srvs__srv__SetBool_Response__fini(&res);
 }
 
+// The id is the GUID prefix and a big-endian counter in lowercase hex, dot
+// separated, without leading zeros; the first octet is padded to two
+// characters with a space, as std::setw(2) pads it.
+TEST(CycloneServiceUserData, MatchesCycloneForm) {
+    rtps::GuidPrefix prefix{};
+    const uint8_t    octets[12] = {0x01, 0x0f, 0x10, 0xab, 0, 0, 0, 0, 0, 0, 0, 0xff};
+    std::memcpy(prefix.value, octets, sizeof(octets));
+    char out[rmw_rosette::kCycloneServiceUserDataSize];
+
+    rmw_rosette::compose_cyclone_service_user_data(rmw_rosette::ServiceRole::Client, prefix,
+                                                   0x00010203u, out);
+    EXPECT_STREQ(out, "clientid= 1.f.10.ab.0.0.0.0.0.0.0.ff.0.1.2.3;");
+
+    std::memset(prefix.value, 0xff, sizeof(prefix.value));
+    rmw_rosette::compose_cyclone_service_user_data(rmw_rosette::ServiceRole::Server, prefix,
+                                                   0xffffffffu, out);
+    EXPECT_STREQ(out, "serviceid=ff.ff.ff.ff.ff.ff.ff.ff.ff.ff.ff.ff.ff.ff.ff.ff;");
+    EXPECT_EQ(std::strlen(out) + 1u, sizeof(out));
+}
+
 /// A SetBool service in its own context, whose request reader the test matches by hand.
 class CycloneRequester : public ::testing::Test {
 protected:
@@ -170,6 +195,25 @@ TEST_F(CycloneRequester, NamesItsWriterOnlyWhileMatched) {
 
     impl().request_reader->matched_writer_remove(writer);
     EXPECT_FALSE(rmw_rosette::find_cyclone_requester(*impl().request_reader, id, header));
+}
+
+// A service announces one `serviceid=` string, naming its own participant, on
+// its request reader and its reply writer.
+TEST_F(CycloneRequester, AnnouncesOneServiceIdOnBothEndpoints) {
+    rtps::RTPSParticipant&     participant = *impl().node->context->participant;
+    rtps::DiscoveredReaderData reader{};
+    rtps::DiscoveredWriterData writer{};
+    ASSERT_TRUE(participant.match_table().local_reader_data(impl().request_reader->guid(), reader));
+    ASSERT_TRUE(participant.match_table().local_writer_data(impl().reply_writer->guid(), writer));
+    ASSERT_NE(reader.userData, nullptr);
+    ASSERT_NE(writer.userData, nullptr);
+    EXPECT_STREQ(reader.userData, writer.userData);
+
+    char expected[rmw_rosette::kCycloneServiceUserDataSize];
+    rmw_rosette::compose_cyclone_service_user_data(
+        rmw_rosette::ServiceRole::Server, participant.guid_prefix(),
+        impl().node->context->service_ids_issued, expected);
+    EXPECT_STREQ(reader.userData, expected);
 }
 
 }  // namespace

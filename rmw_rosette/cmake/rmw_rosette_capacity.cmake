@@ -90,7 +90,7 @@ set(RMW_ROSETTE_LARGE_BUFFERS 48 CACHE STRING
 set(RMW_ROSETTE_ASSEMBLY_SLOTS "" CACHE STRING
     "Fragmented samples in reassembly at once across all subscriptions, services, and clients; empty: one per block of the two largest buffer-pool classes, the blocks a reassembled sample can occupy")
 set(RMW_ROSETTE_LOCAL_NAME_BYTES "" CACHE STRING
-    "Octets for the topic and type names of every local RTPS endpoint at once (strlen + 1 for each distinct name, a name endpoints share counted once; a service is two endpoints); empty: RTPS_LOCAL_NAME_BYTES_PER_ENDPOINT (128) octets per endpoint, above the 40-110 a ROS 2 endpoint takes. Creating an endpoint whose names do not fit fails and logs RTPS_LOCAL_NAME_BYTES")
+    "Octets for the topic and type names of every local RTPS endpoint at once, plus the USER_DATA of every service and client (strlen + 1 for each distinct string, a string endpoints share counted once; a service is two endpoints sharing one 59-octet USER_DATA); empty: RTPS_LOCAL_NAME_BYTES_PER_ENDPOINT (128) octets per endpoint, above the 40-110 a ROS 2 endpoint's names take, plus 59 per service and client. Creating an endpoint whose strings do not fit fails and logs RTPS_LOCAL_NAME_BYTES")
 
 math(EXPR _rr_publishers
      "${RMW_ROSETTE_MAX_PUBLISHERS} + ${RMW_ROSETTE_MAX_NODES} * ${RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE}")
@@ -308,11 +308,15 @@ if(_rr_assembly_slots LESS 1 OR _rr_assembly_slots GREATER 65535)
 endif()
 
 # Local endpoint names (rosette/rtps/string_arena.hpp): the match table
-# keeps every local endpoint's names packed in one arena, each distinct name
-# once. Left empty,
-# the RTPS header allows 128 octets per endpoint, above the 40-110 a ROS 2
-# endpoint takes; a firmware that knows its endpoints sets their total.
-set(_rr_local_name_definition "")
+# keeps every local endpoint's names and USER_DATA packed in one arena, each
+# distinct string once. Left empty, it allows the RTPS header's 128 octets
+# per endpoint, above the 40-110 a ROS 2 endpoint's names take, plus one
+# Cyclone USER_DATA string per service and client
+# (compat/cyclone_service_user_data.hpp: kCycloneServiceUserDataSize, 59);
+# a firmware that knows its endpoints sets their total.
+math(EXPR _rr_service_user_data_bytes "(${_rr_services} + ${RMW_ROSETTE_MAX_CLIENTS}) * 59")
+set(_rr_local_name_definition
+    "RTPS_LOCAL_NAME_BYTES=((RTPS_MAX_LOCAL_WRITERS+RTPS_MAX_LOCAL_READERS)*RTPS_LOCAL_NAME_BYTES_PER_ENDPOINT+${_rr_service_user_data_bytes})")
 if(NOT RMW_ROSETTE_LOCAL_NAME_BYTES STREQUAL "")
   if(RMW_ROSETTE_LOCAL_NAME_BYTES LESS 4 OR RMW_ROSETTE_LOCAL_NAME_BYTES GREATER 65534)
     message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_LOCAL_NAME_BYTES (${RMW_ROSETTE_LOCAL_NAME_BYTES}) "

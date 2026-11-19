@@ -279,6 +279,11 @@ struct WriterConfig {
     TopicKind       topicKind   = TopicKind::NO_KEY;
     uint32_t        nackDelayMs = RTPS_NACK_RESPONSE_DELAY_MS;
     uint32_t        hbPeriodMs  = RTPS_HEARTBEAT_PERIOD_MS;
+    /// USER_DATA QoS (DDS 1.4 §2.2.3.1) announced in SEDP as PID_USER_DATA, or
+    /// null for none. Copied when the endpoint is created; it takes room in
+    /// the match table's name arena (RTPS_LOCAL_NAME_BYTES), shared with any
+    /// endpoint announcing the same string.
+    const char*     userData = nullptr;
     /// A service reply writer: drop each reply once its requester has it
     /// (StatefulWriter::release_replies_on_delivery()).
     bool            releaseRepliesOnDelivery = false;
@@ -303,6 +308,11 @@ struct ReaderConfig {
     DurabilityKind  durability  = DurabilityKind::VOLATILE;
     TopicKind       topicKind   = TopicKind::NO_KEY;
     uint32_t        hbResponseMs= RTPS_HEARTBEAT_RESPONSE_DELAY_MS;
+    /// USER_DATA QoS (DDS 1.4 §2.2.3.1) announced in SEDP as PID_USER_DATA, or
+    /// null for none. Copied when the endpoint is created; it takes room in
+    /// the match table's name arena (RTPS_LOCAL_NAME_BYTES), shared with any
+    /// endpoint announcing the same string.
+    const char*     userData = nullptr;
     /// Writers always granted a proxy (the floor), as WriterConfig::minMatchedReaders.
     uint8_t minMatchedWriters = RTPS_MIN_MATCHES_PER_ENDPOINT;
     /// Most writers matched at once (the cap); raised to the floor when lower.
@@ -384,7 +394,7 @@ public:
             alignof(W) <= alignof(SharedPoolStatefulWriter<RTPS_DEEP_WRITER_DEPTH>),
             "writer storage is aligned for SharedPoolStatefulWriter<RTPS_DEEP_WRITER_DEPTH>");
 
-        if (!local_endpoint_fits(cfg.topicName, cfg.typeName, /*is_writer=*/true)) {
+        if (!local_endpoint_fits(cfg.topicName, cfg.typeName, cfg.userData, /*is_writer=*/true)) {
             return nullptr;
         }
 
@@ -1183,9 +1193,10 @@ private:
      *
      * @param[in] topic     The endpoint's topic name.
      * @param[in] type      The endpoint's type name.
+     * @param[in] user_data The endpoint's USER_DATA string, or null for none.
      * @param[in] is_writer `true` for a writer, `false` for a reader.
      * @return `false` when either name did not fit a TopicName, or the match
-     *   table has no record or name room for it
+     *   table has no record or arena room for it
      *   (EndpointMatchTable::has_room_for_local()).
      *
      * Verification:
@@ -1193,7 +1204,7 @@ private:
      *   match table could not record, is created.
      * - Covered by: TC-PART-8.5.1-008, TC-PART-8.5.1-012.
      */
-    bool local_endpoint_fits(const TopicName& topic, const TopicName& type,
+    bool local_endpoint_fits(const TopicName& topic, const TopicName& type, const char* user_data,
                              bool is_writer) const noexcept;
 
     /// @brief The local writer (SEDP builtin or user) with entity ID `eid`, or null.

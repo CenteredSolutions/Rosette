@@ -133,6 +133,10 @@ struct Context {
     rmw_guard_condition_t graph_guard_handle{};
     uint8_t domain_id = 0;
     bool constructed = false;
+    /// Ids handed to services and clients so far, the counter of their
+    /// Cyclone USER_DATA (compat/cyclone_service_user_data.hpp). Guarded by
+    /// the context lock.
+    uint32_t                          service_ids_issued = 0;
     /// Set by rmw_shutdown(): no entity may be created in the context any
     /// more, and rmw_context_fini() is allowed. Atomic because the creation
     /// checks read it before taking the participant lock.

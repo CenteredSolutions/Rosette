@@ -103,6 +103,7 @@ namespace pid {
     inline constexpr uint16_t DURABILITY                     = 0x001Du;
     inline constexpr uint16_t ENDPOINT_GUID                  = 0x005Au;
     inline constexpr uint16_t UNICAST_LOCATOR                = 0x002Fu;   // SEDP endpoint locator.
+    inline constexpr uint16_t USER_DATA = 0x002Cu;                        // sequence<octet>.
 }
 
 // ============================================================

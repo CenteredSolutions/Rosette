@@ -257,7 +257,7 @@ StatefulReader* RTPSParticipant::create_reader(
         void*                             user_data) noexcept
 {
     timers_stale_ = true;
-    if (!local_endpoint_fits(cfg.topicName, cfg.typeName, /*is_writer=*/false)) {
+    if (!local_endpoint_fits(cfg.topicName, cfg.typeName, cfg.userData, /*is_writer=*/false)) {
         return nullptr;
     }
 
@@ -292,6 +292,7 @@ StatefulReader* RTPSParticipant::create_reader(
     rd.reliabilityKind = cfg.reliability;
     rd.durabilityKind  = cfg.durability;
     rd.topicKind       = cfg.topicKind;
+    rd.userData = cfg.userData;
     rd.unicastLocatorCount =
         append_default_unicast_locators(rd.unicastLocatorList,
                                         RTPS_MAX_LOCATORS_PER_PARTICIPANT);
@@ -398,6 +399,7 @@ void RTPSParticipant::register_writer_endpoint(const Guid&         writer_guid,
     wd.reliabilityKind = cfg.reliability;
     wd.durabilityKind  = cfg.durability;
     wd.topicKind       = cfg.topicKind;
+    wd.userData = cfg.userData;
     wd.unicastLocatorCount =
         append_default_unicast_locators(wd.unicastLocatorList,
                                         RTPS_MAX_LOCATORS_PER_PARTICIPANT);
@@ -1005,14 +1007,14 @@ void RTPSParticipant::dispatch_gap(const ParseContext& ctx,
 // ============================================================
 
 bool RTPSParticipant::local_endpoint_fits(const TopicName& topic, const TopicName& type,
-                                          bool is_writer) const noexcept {
+                                          const char* user_data, bool is_writer) const noexcept {
     if (!topic.fits() || !type.fits()) {
         RTPS_LOG_E("participant", "endpoint name longer than %d octets refused: topic=%s type=%s",
                    RTPS_MAX_TOPIC_NAME_LEN - 1, topic.str, type.str);
         return false;
     }
 
-    if (!match_table_.has_room_for_local(topic, type, is_writer)) {
+    if (!match_table_.has_room_for_local(topic, type, user_data, is_writer)) {
         RTPS_LOG_E("participant",
                    "%s topic=%s refused: no %s record (RTPS_MAX_LOCAL_%s) or name room "
                    "(RTPS_LOCAL_NAME_BYTES=%lu, %lu used) in the match table",

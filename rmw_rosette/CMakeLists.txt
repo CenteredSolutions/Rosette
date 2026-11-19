@@ -73,6 +73,7 @@ add_library(rmw_rosette SHARED
   src/rmw_serialize.cpp
   src/service_endpoints.cpp
   src/compat/cyclone_request_header.cpp
+  src/compat/cyclone_service_user_data.cpp
   src/network_port.cpp
   src/participant_pump.cpp
   ${ROSETTE_RTPS_SOURCES}
