@@ -68,7 +68,7 @@
       "section": "9.4.5.1",
       "page": 227,
       "normativity": "shall",
-      "statement": "Submessage length 0 extends to end of message for last submessage.",
+      "statement": "Submessage length 0 extends to end of message for the last submessage, other than PAD and INFO_TS.",
       "status": "implemented",
       "test_ids": ["TC-9.4.5.1-002"]
     },
@@ -98,6 +98,32 @@
       "statement": "Truncated submessage headers are malformed.",
       "status": "implemented",
       "test_ids": ["TC-9.4.5.1-005"]
+    },
+    {
+      "id": "REQ-9.4.5.1-SUBMSG-LEN0-EMPTY-BODY",
+      "section": "9.4.5.1.3",
+      "page": 227,
+      "normativity": "shall",
+      "statement": "A PAD or INFO_TS with submessageLength 0 has an empty body; the next submessage header follows it.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.1-006", "TC-9.4.5.1-007", "TC-9.4.5.1-008"]
+    },
+    {
+      "id": "REQ-9.4.5.5-HEARTBEAT-DECODE",
+      "section": "9.4.5.5",
+      "page": 244,
+      "normativity": "shall",
+      "statement": "HEARTBEAT fields are decoded and dispatched.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.5-001"]
+    },
+    {
+      "id": "REQ-8.3.7.5.3-HEARTBEAT-VALIDITY",
+      "section": "8.3.7.5.3",
+      "normativity": "shall",
+      "statement": "A HEARTBEAT with firstSN < 1 or lastSN < firstSN - 1 is invalid and invalidates the rest of the message; lastSN = firstSN - 1 is valid.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.5-002", "TC-9.4.5.5-003", "TC-9.4.5.5-004"]
     },
     {
       "id": "REQ-9.4.5.9-INFO-TS-INVALIDATE",
@@ -224,6 +250,14 @@
       "statement": "GAP scalar fields follow submessage endianness.",
       "status": "implemented",
       "test_ids": ["TC-9.4.5.11-002"]
+    },
+    {
+      "id": "REQ-8.3.7.4.3-GAP-VALIDITY",
+      "section": "8.3.7.4.3",
+      "normativity": "shall",
+      "statement": "A GAP with gapStart < 1 is invalid and invalidates the rest of the message.",
+      "status": "implemented",
+      "test_ids": ["TC-9.4.5.11-003", "TC-9.4.5.11-004"]
     },
     {
       "id": "REQ-9.6.2-INLINEQOS-RELATED-SAMPLE-ID",

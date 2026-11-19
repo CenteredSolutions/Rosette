@@ -58,6 +58,7 @@ add_executable(message_parser_spec_tests
     src/test_9_4_5_1_submessage.cpp
     src/test_9_4_5_3_data.cpp
     src/test_9_4_5_4_data_frag.cpp
+    src/test_9_4_5_5_heartbeat.cpp
     src/test_9_4_5_7_acknack.cpp
     src/test_9_4_5_9_info_ts.cpp
     src/test_9_4_5_11_gap.cpp

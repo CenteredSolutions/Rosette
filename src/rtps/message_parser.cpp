@@ -427,6 +427,14 @@ static bool parse_heartbeat(Reader& r, Octet flags, bool need_swap,
     if (!r.read(out.count))                            return false;
     fixup_i32(out.count, need_swap);
 
+    // §8.3.7.5.3: firstSN >= 1 and lastSN >= firstSN - 1 (equal means the
+    // writer holds nothing). Together they imply lastSN >= 0. Accepting a
+    // larger firstSN would mark every outstanding change from the writer lost.
+    const int64_t first = out.firstSN.to_int64();
+    if (first <= 0 || out.lastSN.to_int64() < first - 1) {
+        return false;
+    }
+
     if (ops.on_heartbeat) ops.on_heartbeat(ctx, out);
     return true;
 }
@@ -536,23 +544,37 @@ static bool parse_gap(Reader& r, bool need_swap,
     if (!read_sequence_number(r, out.gapStart, need_swap)) return false;
     if (!read_sn_set(r, out.gapList, need_swap))        return false;
 
+    // §8.3.7.4.3: gapStart >= 1. read_sn_set() has already bounded gapList.
+    if (out.gapStart.to_int64() <= 0) {
+        return false;
+    }
+
     if (ops.on_gap) ops.on_gap(ctx, out);
     return true;
 }
 
+/**
+ * @brief Octets of a submessage's body after its header, from its octetsToNextHeader (§9.4.5.1.3).
+ *
+ * A length of 0 runs to the end of the message, except for PAD and INFO_TS, whose body is
+ * then empty: an INFO_TS with the invalidate flag is sent that way ahead of the DATA it
+ * applies to.
+ *
+ * @param[in] kind      Submessage kind.
+ * @param[in] length    octetsToNextHeader, in host order.
+ * @param[in] remaining Octets of the message after the submessage header.
+ */
+static uint32_t submessage_extent(SubmessageKind kind, uint16_t length,
+                                  uint32_t remaining) noexcept {
+    if (length == 0u && kind != SubmessageKind::PAD && kind != SubmessageKind::INFO_TS) {
+        return remaining;
+    }
+
+    return length;
+}
+
 // ============================================================
-// parse_message() — public entry point
-//
-// §9.4.1, p. 221:
-//   "An RTPS Message consists of a fixed-size Header followed by
-//    a variable number of Submessages."
-//
-// Submessage iteration rule — §9.4.5.1, p. 227:
-//   "The submessageLength field contains the number of octets from
-//    the start of the contents of the Submessage to the end of the
-//    Submessage.  A submessageLength of 0 is used for the last
-//    Submessage in the Message, and indicates that the Submessage
-//    extends to the end of the Message."
+// parse_message() — public entry point; contract in message_parser.hpp.
 // ============================================================
 
 ParseResult parse_message(const Octet*      buf,
@@ -626,14 +648,7 @@ ParseResult parse_message(const Octet*      buf,
         uint16_t smlen = smh.submessageLength;
         if (need_swap) smlen = bswap16(smlen);
 
-        // Determine submessage byte extent — §9.4.5.1, p. 227.
-        uint32_t extent;
-        if (smlen == 0u) {
-            // Last submessage: extends to end of message.
-            extent = (cursor <= len) ? (len - cursor) : 0u;
-        } else {
-            extent = smlen;
-        }
+        const uint32_t extent = submessage_extent(smh.submessageId, smlen, len - cursor);
 
         if (cursor + extent > len) {
             RTPS_LOG_W("parser", "submsg 0x%02x extent %lu overflows message",
