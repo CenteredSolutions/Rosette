@@ -226,39 +226,44 @@ struct ParseOps {
                        uint16_t     raw_len) noexcept             = nullptr;
 };
 
-// ============================================================
-// parse_message()
-//
-// Top-level entry point — call once per received UDP datagram.
-//
-// "An RTPS Message consists of a fixed-size Header followed by a
-//  variable number of Submessages."  — §9.4.1, p. 221
-//
-// Processing steps:
-//   1. Validate 20-byte RTPS Header (§9.4.2):
-//      magic == "RTPS", version.major == 2.
-//   2. Populate ParseContext from header.
-//   3. Loop over remaining bytes:
-//      a. Read 4-byte SubmessageHeader — §9.4.5.1.
-//      b. Determine submessage byte extent:
-//         - If submessageLength > 0: extent = submessageLength.
-//         - If submessageLength == 0: extent = remaining bytes
-//           (last submessage — §9.4.5.1, p. 227).
-//      c. Check E-flag; byte-swap scalars on mismatch with host order.
-//      d. Dispatch to the appropriate ParseOps slot.
-//      e. Advance cursor by (4 + extent), aligned to 4 bytes.
-//
-// @param buf          Raw receive buffer (must outlive dispatch callbacks).
-// @param len          Total valid bytes in buf.
-// @param local_prefix This participant's GuidPrefix; used to seed
-//                     ParseContext::destGuidPrefix and to accept
-//                     submessages directed to ENTITYID_UNKNOWN.
-// @param ops          Dispatch table.
-// @param user_data    Forwarded via ParseContext::user_data.
-// @returns            ParseResult indicating outcome.
-//
-// Thread safety: intended for single-threaded RX dispatch only.
-// ============================================================
+/**
+ * @brief Parses one received RTPS message and dispatches each submessage to @p ops.
+ *
+ * Call once per received UDP datagram. The header is checked first (magic "RTPS", major
+ * version 2); then each submessage is decoded in its own byte order (E flag) and handed to
+ * its ParseOps slot, with INFO_TS and INFO_DST updating the ParseContext seen by the
+ * submessages that follow them. A submessage whose kind is unknown is skipped.
+ *
+ * A submessageLength of 0 extends the submessage to the end of the message, except for PAD
+ * and INFO_TS, whose body is then empty and whose next header follows at once.
+ *
+ * A known submessage that is truncated or invalid ends the parse: callbacks for the
+ * submessages before it have run, and none run for it or after it. Invalid includes a
+ * HEARTBEAT with firstSN < 1 or lastSN < firstSN - 1, a GAP with gapStart < 1, and a
+ * SequenceNumberSet whose base is negative.
+ *
+ * @param[in] buf          Received datagram; must outlive the dispatch callbacks.
+ * @param[in] len          Octets of @p buf that hold the datagram.
+ * @param[in] local_prefix This participant's GuidPrefix; seeds ParseContext::destGuidPrefix.
+ * @param[in] ops          Dispatch table; a null slot discards that submessage kind.
+ * @param[in] user_data    Forwarded to every callback as ParseContext::user_data.
+ * @return OK when every submessage was dispatched or skipped; BAD_HEADER or VERSION_MISMATCH
+ *         when the header is rejected and nothing is dispatched; MALFORMED when a submessage
+ *         was truncated or invalid, after dispatching those before it.
+ *
+ * Verification:
+ * - Correct means: a DATA after a zero-length INFO_TS (invalidate) or PAD is dispatched with
+ *   the INFO_TS context; a HEARTBEAT or GAP outside the ranges above yields MALFORMED with no
+ *   callback for it or anything after it; the empty-history HEARTBEAT (lastSN = firstSN - 1)
+ *   is dispatched.
+ * - Covered by: TC-9.4.5.1-001..008, TC-9.4.5.5-001..004, TC-9.4.5.11-001..004.
+ *
+ * References:
+ * - OMG DDSI-RTPS 2.5 §8.3.4.1 (receiver rules), §8.3.7.4.3 (GAP validity),
+ *   §8.3.7.5.3 (HEARTBEAT validity), §9.4.5.1.3 (octetsToNextHeader).
+ *
+ * Thread safety: intended for single-threaded RX dispatch only.
+ */
 ParseResult parse_message(const Octet*      buf,
                           uint32_t          len,
                           const GuidPrefix& local_prefix,

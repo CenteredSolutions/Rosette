@@ -29,6 +29,12 @@ static void on_gap_cb(const ParseContext& ctx, const ParsedGap& g) noexcept {
     cap->gap = g;
 }
 
+static void on_heartbeat_cb(const ParseContext& ctx, const ParsedHeartbeat& hb) noexcept {
+    auto* cap = static_cast<TestCapture*>(ctx.user_data);
+    cap->heartbeat_calls++;
+    cap->heartbeat = hb;
+}
+
 static void on_unknown_cb(const ParseContext& ctx,
                           const SubmessageHeader&,
                           const Octet*,
@@ -181,6 +187,7 @@ ParseOps make_ops_all(TestCapture& cap) {
     ops.on_data = on_data_cb;
     ops.on_data_frag = on_data_frag_cb;
     ops.on_gap = on_gap_cb;
+    ops.on_heartbeat = on_heartbeat_cb;
     ops.on_unknown = on_unknown_cb;
     (void)cap;
     return ops;
