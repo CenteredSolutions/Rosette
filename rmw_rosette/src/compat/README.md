@@ -8,3 +8,6 @@ from them gets its dialect here, one module per departure, selected by the peer'
 |------------------------------|------------------------------|----------------------------------------------------|
 | `cyclone_request_header.cpp` | Eclipse Cyclone DDS (0x0110) | Service request identity in a 16-octet CDR header, |
 |                              |                              | not PID_RELATED_SAMPLE_IDENTITY                    |
+| `cyclone_service_user_data.cpp` | Eclipse Cyclone DDS (0x0110) | Service and client endpoints paired by SEDP     |
+|                              |                              | USER_DATA `serviceid=` / `clientid=`; announced to |
+|                              |                              | every peer, ignored by the others                  |

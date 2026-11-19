@@ -78,12 +78,12 @@ static bool tc_sedp_8_5_5_1_015(std::string& err) {
     CHECK(t.local_name_bytes_used() == 100u,
           "a 97-octet topic and its type take 100 of 160 octets");
     CHECK(
-        t.has_room_for_local(name(topic_of_size(60u, 'y')), type, true)
-            && !t.has_room_for_local(name(topic_of_size(61u, 'y')), type, true)
-            && !t.has_room_for_local(name(topic_of_size(61u, 'y')), type, false),
+        t.has_room_for_local(name(topic_of_size(60u, 'y')), type, nullptr, true)
+            && !t.has_room_for_local(name(topic_of_size(61u, 'y')), type, nullptr, true)
+            && !t.has_room_for_local(name(topic_of_size(61u, 'y')), type, nullptr, false),
         "with the type stored, a topic of up to the 60 free octets fits, for a writer or a reader");
-    CHECK(t.has_room_for_local(name(topic_of_size(57u, 'y')), name("U_"), true)
-              && !t.has_room_for_local(name(topic_of_size(58u, 'y')), name("U_"), true),
+    CHECK(t.has_room_for_local(name(topic_of_size(57u, 'y')), name("U_"), nullptr, true)
+              && !t.has_room_for_local(name(topic_of_size(58u, 'y')), name("U_"), nullptr, true),
           "a type not yet stored counts against the free octets too");
 
     const DiscoveredWriterData w2 = local_writer(local, 2u, topic_of_size(67u, 'y'));
@@ -109,8 +109,8 @@ static bool tc_sedp_8_5_5_1_015(std::string& err) {
         records.add_writer(local_writer(local, key, "rt/n"));
     }
 
-    CHECK(!records.has_room_for_local(name("rt/n"), type, true)
-              && records.has_room_for_local(name("rt/n"), type, false),
+    CHECK(!records.has_room_for_local(name("rt/n"), type, nullptr, true)
+              && records.has_room_for_local(name("rt/n"), type, nullptr, false),
           "with every writer record taken there is no room for a writer, but still for a reader");
     return true;
 }

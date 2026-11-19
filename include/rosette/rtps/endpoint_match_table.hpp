@@ -19,8 +19,9 @@
  *
  *   Local endpoints   32 octets: the GUID, QoS, the 32-bit keys of the
  *                     topic and type names, and the offsets of the full names
- *                     in a StringArena of RTPS_LOCAL_NAME_BYTES, which packs
- *                     them end to end and keeps a name endpoints share once.
+ *                     and of any USER_DATA string in a StringArena of
+ *                     RTPS_LOCAL_NAME_BYTES, which packs them end to end and
+ *                     keeps a string endpoints share once.
  *                     At most RTPS_MAX_LOCAL_WRITERS writers and
  *                     RTPS_MAX_LOCAL_READERS readers.
  *   Remote endpoints  16 octets: EntityId, QoS, a 32-bit key of the topic
@@ -230,6 +231,11 @@ struct DiscoveredWriterData {
     ReliabilityKind reliabilityKind    = ReliabilityKind::BEST_EFFORT;
     DurabilityKind  durabilityKind     = DurabilityKind::VOLATILE;
     TopicKind       topicKind          = TopicKind::NO_KEY;
+    /// USER_DATA QoS (DDS 1.4 §2.2.3.1), announced as PID_USER_DATA when
+    /// non-null: a NUL-terminated string sent without its NUL. Set for a local
+    /// endpoint only; the data borrows it, and SEDP does not decode it from
+    /// remote announcements.
+    const char*     userData = nullptr;
 
     // Locators at which the writer can be reached for data.
     // §8.5.4.2, Table 8.78: unicastLocatorList.
@@ -251,6 +257,11 @@ struct DiscoveredReaderData {
     DurabilityKind  durabilityKind     = DurabilityKind::VOLATILE;
     TopicKind       topicKind          = TopicKind::NO_KEY;
     bool            expectsInlineQos   = false;
+    /// USER_DATA QoS (DDS 1.4 §2.2.3.1), announced as PID_USER_DATA when
+    /// non-null: a NUL-terminated string sent without its NUL. Set for a local
+    /// endpoint only; the data borrows it, and SEDP does not decode it from
+    /// remote announcements.
+    const char*     userData = nullptr;
 
     // Locators at which ACKNACK / NACK_FRAG are sent to the reader.
     Locator  unicastLocatorList[RTPS_MAX_LOCATORS_PER_PARTICIPANT] = {};
@@ -594,23 +605,24 @@ public:
      * The participant asks before it creates a local writer or reader, so an
      * endpoint the table could not record (and SEDP could therefore not
      * announce) is never created. A record is needed in the writer or reader
-     * table, and the names the arena does not hold yet must fit its free
+     * table, and the strings the arena does not hold yet must fit its free
      * octets.
      *
      * @param[in] topic     The endpoint's topic name.
      * @param[in] type      The endpoint's type name.
+     * @param[in] user_data The endpoint's USER_DATA string, or null for none.
      * @param[in] is_writer `true` for a writer, `false` for a reader.
      * @return `true` when add_writer() (add_reader()) would record it.
      *
      * Verification:
      * - Correct means: true exactly when a free record exists and
-     *   StringArena::cost() of the topic, plus that of the type when it
-     *   differs from the topic, is at most the free octets; the
+     *   StringArena::cost() of each distinct string among the topic, the
+     *   type and the USER_DATA is at most the free octets; the
      *   participant's create_writer() and create_reader() return null
      *   otherwise.
      * - Covered by: TC-SEDP-8.5.5.1-015, TC-PART-8.5.1-012.
      */
-    bool has_room_for_local(const TopicName& topic, const TopicName& type,
+    bool has_room_for_local(const TopicName& topic, const TopicName& type, const char* user_data,
                             bool is_writer) const noexcept;
 
     /// @brief Octets the local endpoints' names take in the arena (RTPS_LOCAL_NAME_BYTES).
@@ -836,14 +848,16 @@ public:
      * `out` carries none; the caller adds the participant's.
      *
      * @param[in]  guid A local writer's GUID.
-     * @param[out] out  Its GUID, topic and type names, reliability, and
-     *   durability; written only when the writer is found.
+     * @param[out] out  Its GUID, topic and type names, reliability,
+     *   durability, and USER_DATA; written only when the writer is found.
+     *   `out.userData` points into the table and is valid until the next
+     *   local endpoint is added or removed.
      * @return `false` when the table holds no local writer with that GUID.
      *
      * Verification:
      * - Correct means: the fields equal those of the DiscoveredWriterData
      *   add_writer() recorded.
-     * - Covered by: TC-SEDP-8.5.4-017.
+     * - Covered by: TC-SEDP-8.5.4-017, TC-SEDP-9.6.3.2-005.
      */
     bool local_writer_data(const Guid& guid, DiscoveredWriterData& out) const noexcept;
 
@@ -859,9 +873,18 @@ private:
         uint32_t typeKey = 0;           ///< name_key() of the type name.
         uint16_t topic = Names::kNone;  ///< Topic name in names_.
         uint16_t type = Names::kNone;   ///< Type name in names_.
+        uint16_t userData = Names::kNone;  ///< USER_DATA string in names_, or kNone.
         uint8_t  reliability = 1u;      ///< ReliabilityKind.
-        uint8_t  durability = 0u;       ///< DurabilityKind.
-        bool     expectsInlineQos = false;
+        /// DurabilityKind in the low bits, kExpectsInlineQos above them: one
+        /// octet, so the record stays 32 octets with userData.
+        uint8_t  flags = 0u;
+
+        static constexpr uint8_t kExpectsInlineQos = 0x80u;
+
+        static uint8_t make_flags(DurabilityKind durability, bool expects_inline_qos) noexcept {
+            return static_cast<uint8_t>(static_cast<uint8_t>(durability)
+                                        | (expects_inline_qos ? kExpectsInlineQos : 0u));
+        }
 
         bool valid() const noexcept { return guid != GUID_UNKNOWN; }
 
@@ -870,15 +893,24 @@ private:
         }
 
         DurabilityKind durability_kind() const noexcept {
-            return static_cast<DurabilityKind>(durability);
+            return static_cast<DurabilityKind>(flags & ~kExpectsInlineQos);
         }
+
+        bool expects_inline_qos() const noexcept { return (flags & kExpectsInlineQos) != 0u; }
     };
+
+    static_assert(sizeof(LocalEndpoint) == 32u, "a local endpoint record is 32 octets");
 
     /// @brief The topic name of a stored local endpoint.
     const char* topic_of(const LocalEndpoint& l) const noexcept { return names_.str(l.topic); }
 
     /// @brief The type name of a stored local endpoint.
     const char* type_of(const LocalEndpoint& l) const noexcept { return names_.str(l.type); }
+
+    /// @brief The USER_DATA string of a stored local endpoint, or null when it has none.
+    const char* user_data_of(const LocalEndpoint& l) const noexcept {
+        return l.userData == Names::kNone ? nullptr : names_.str(l.userData);
+    }
 
     /// @brief True when stored local endpoint @p l has exactly these names; keys are compared
     /// first, so the names are read only for an endpoint that very likely matches.
@@ -894,58 +926,73 @@ private:
         return a.topic == b.topic && a.type == b.type;
     }
 
-    /// @brief Octets the arena needs to store @p topic and @p type, sharing the names it holds.
-    uint32_t names_cost(const char* topic, const char* type) const noexcept {
-        return names_.cost(topic) + (strcmp(topic, type) == 0 ? 0u : names_.cost(type));
+    /// @brief Octets the arena needs to store @p topic, @p type and @p user_data (null for
+    /// none), sharing the strings it holds.
+    uint32_t names_cost(const char* topic, const char* type, const char* user_data) const noexcept {
+        const bool user_data_new =
+            user_data != nullptr && strcmp(user_data, topic) != 0 && strcmp(user_data, type) != 0;
+        return names_.cost(topic) + (strcmp(topic, type) == 0 ? 0u : names_.cost(type))
+               + (user_data_new ? names_.cost(user_data) : 0u);
+    }
+
+    /// @brief True when stored local endpoint @p l has exactly USER_DATA @p user_data.
+    bool has_user_data(const LocalEndpoint& l, const char* user_data) const noexcept {
+        const char* stored = user_data_of(l);
+        return stored == nullptr || user_data == nullptr ? stored == user_data
+                                                         : strcmp(stored, user_data) == 0;
     }
 
     /**
-     * @brief Records a local writer or reader, its names in the arena.
+     * @brief Records a local writer or reader, its strings in the arena.
      *
      * The record is the one already stored for `guid`, else a free one. A
-     * stored endpoint whose names are unchanged keeps them. Otherwise the
-     * update is admitted when the new names fit in the free octets plus the
-     * octets the old names free (reclaimable_bytes()), so a rename fits a
-     * full arena whenever the final set of names does. An admitted update
-     * releases the old names, then interns the new ones; a refused update
-     * leaves the record and the arena as they were, and an old name another
-     * record still uses stays in the arena.
+     * stored endpoint whose names and USER_DATA are unchanged keeps them.
+     * Otherwise the update is admitted when the new strings fit in the free
+     * octets plus the octets the old ones free (reclaimable_bytes()), so a
+     * rename fits a full arena whenever the final set of strings does. An
+     * admitted update releases the old strings, then interns the new ones; a
+     * refused update leaves the record and the arena as they were, and an
+     * old string another record still uses stays in the arena.
      *
      * @param[in,out] table     local_writers_ or local_readers_.
      * @param[in]     n         Entries in `table`.
-     * @param[in]     endpoint  The record to store, its `topic` and `type` offsets ignored.
+     * @param[in]     endpoint  The record to store, its arena offsets ignored.
      * @param[in]     topic     The endpoint's topic name.
      * @param[in]     type      The endpoint's type name.
-     * @param[out]    is_change `true` when the endpoint is new or its names changed.
-     * @return The stored record, or null when no record or no name room was free.
+     * @param[in]     user_data The endpoint's USER_DATA string, or null for none.
+     * @param[out]    is_change `true` when the endpoint is new or its strings changed.
+     * @return The stored record, or null when no record or no arena room was free.
      *
      * Verification:
-     * - Correct means: topic_of() and type_of() of the record read the names
-     *   back, a name already in the arena is not stored again, and a refusal
-     *   changes neither the table nor the arena.
-     * - Covered by: TC-SEDP-8.5.5.1-014, TC-SEDP-8.5.5.1-015, TC-SEDP-8.5.5.1-016.
+     * - Correct means: topic_of(), type_of() and user_data_of() of the
+     *   record read the strings back, a string already in the arena is not
+     *   stored again, and a refusal changes neither the table nor the arena.
+     * - Covered by: TC-SEDP-8.5.5.1-014, TC-SEDP-8.5.5.1-015, TC-SEDP-8.5.5.1-016,
+     *   TC-SEDP-9.6.3.2-005.
      */
     LocalEndpoint* store_local(LocalEndpoint* table, uint32_t n, const LocalEndpoint& endpoint,
-                               const char* topic, const char* type, bool& is_change) noexcept;
+                               const char* topic, const char* type, const char* user_data,
+                               bool& is_change) noexcept;
 
     /// @brief Octets the arena frees when stored local endpoint @p slot is renamed to
-    /// @p topic and @p type: its old names that no other record refers to and that the new names
-    /// do not repeat.
-    uint32_t reclaimable_bytes(const LocalEndpoint& slot, const char* topic,
-                               const char* type) const noexcept;
+    /// @p topic and @p type with @p user_data: its old strings that no other record refers to and
+    /// that the new strings do not repeat.
+    uint32_t reclaimable_bytes(const LocalEndpoint& slot, const char* topic, const char* type,
+                               const char* user_data) const noexcept;
 
     /// @brief Frees a stored local endpoint and its names.
     void clear_local(LocalEndpoint& l) noexcept;
 
     /**
-     * @brief Releases the names a record no longer uses, unless another record still does.
+     * @brief Releases the strings a record no longer uses, unless another record still does.
      *
-     * Each name is released only when no local writer or reader refers to
-     * it, and every record's offsets above it are lowered. The higher of the
-     * two offsets is released first, so releasing it never moves the other.
+     * Each string is released only when no local writer or reader refers to
+     * it, and every record's offsets above it are lowered. Offsets are
+     * released highest first, so releasing one never moves the others.
      *
-     * @param[in] topic The released record's topic offset, or Names::kNone.
-     * @param[in] type  The released record's type offset, or Names::kNone.
+     * @param[in] topic     The released record's topic offset, or Names::kNone.
+     * @param[in] type      The released record's type offset, or Names::kNone.
+     * @param[in] user_data The released record's USER_DATA offset, or Names::kNone.
      *
      * Verification:
      * - Correct means: a name another record shares stays readable through
@@ -953,7 +1000,7 @@ private:
      *   records refer to.
      * - Covered by: TC-SEDP-8.5.5.1-014.
      */
-    void release_names(uint16_t topic, uint16_t type) noexcept;
+    void release_names(uint16_t topic, uint16_t type, uint16_t user_data) noexcept;
 
     /// @brief Releases the arena string at @p at when no record refers to it.
     void release_if_unused(uint16_t at) noexcept;
@@ -1042,7 +1089,7 @@ private:
     /// @brief A stored local endpoint as on_match reports it; it is reached
     /// at its participant's own locators, so it carries none.
     static MatchedEndpoint matched(const LocalEndpoint& l) noexcept {
-        return MatchedEndpoint{l.guid, nullptr, 0u, l.expectsInlineQos, l.reliability_kind()};
+        return MatchedEndpoint{l.guid, nullptr, 0u, l.expects_inline_qos(), l.reliability_kind()};
     }
 
     /**

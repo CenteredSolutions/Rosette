@@ -108,30 +108,44 @@ static uint32_t plcdr_string_size_estimate(const char* str) noexcept
     return plcdr_param_size_estimate(4u + str_len);
 }
 
+// PID_USER_DATA: a sequence<octet> of the string without its NUL, or nothing.
+static uint32_t user_data_size_estimate(const char* user_data) noexcept {
+    return user_data == nullptr
+               ? 0u
+               : plcdr_param_size_estimate(4u + static_cast<uint32_t>(strlen(user_data)));
+}
+
+// Writes PID_USER_DATA when the endpoint has USER_DATA (DDS 1.4 §2.2.3.1):
+// the string's octets without its NUL, as stock DDS stacks set it.
+static bool write_user_data(Octet* buf, uint32_t cap, uint32_t& off,
+                            const char* user_data) noexcept {
+    return user_data == nullptr
+           || plcdr_write_octets(buf, cap, off, pid::USER_DATA, user_data,
+                                 static_cast<uint32_t>(strlen(user_data)));
+}
+
 static uint32_t writer_payload_size_estimate(const DiscoveredWriterData& wd) noexcept
 {
-    return 4u +                                   // RepresentationHeader
-           plcdr_param_size_estimate(16u) +       // PID_ENDPOINT_GUID
-           plcdr_string_size_estimate(wd.topicName.str) +
-           plcdr_string_size_estimate(wd.typeName.str) +
-           plcdr_param_size_estimate(RELIABILITY_POLICY_LEN) +
-           plcdr_param_size_estimate(DURABILITY_POLICY_LEN) +
-           static_cast<uint32_t>(wd.unicastLocatorCount) *
-               plcdr_param_size_estimate(24u) +
-           4u;                                    // PID_SENTINEL
+    return 4u +                              // RepresentationHeader
+           plcdr_param_size_estimate(16u) +  // PID_ENDPOINT_GUID
+           plcdr_string_size_estimate(wd.topicName.str)
+           + plcdr_string_size_estimate(wd.typeName.str)
+           + plcdr_param_size_estimate(RELIABILITY_POLICY_LEN)
+           + plcdr_param_size_estimate(DURABILITY_POLICY_LEN) + user_data_size_estimate(wd.userData)
+           + static_cast<uint32_t>(wd.unicastLocatorCount) * plcdr_param_size_estimate(24u)
+           + 4u;  // PID_SENTINEL
 }
 
 static uint32_t reader_payload_size_estimate(const DiscoveredReaderData& rd) noexcept
 {
-    return 4u +                                   // RepresentationHeader
-           plcdr_param_size_estimate(16u) +       // PID_ENDPOINT_GUID
-           plcdr_string_size_estimate(rd.topicName.str) +
-           plcdr_string_size_estimate(rd.typeName.str) +
-           plcdr_param_size_estimate(RELIABILITY_POLICY_LEN) +
-           plcdr_param_size_estimate(DURABILITY_POLICY_LEN) +
-           static_cast<uint32_t>(rd.unicastLocatorCount) *
-               plcdr_param_size_estimate(24u) +
-           4u;                                    // PID_SENTINEL
+    return 4u +                              // RepresentationHeader
+           plcdr_param_size_estimate(16u) +  // PID_ENDPOINT_GUID
+           plcdr_string_size_estimate(rd.topicName.str)
+           + plcdr_string_size_estimate(rd.typeName.str)
+           + plcdr_param_size_estimate(RELIABILITY_POLICY_LEN)
+           + plcdr_param_size_estimate(DURABILITY_POLICY_LEN) + user_data_size_estimate(rd.userData)
+           + static_cast<uint32_t>(rd.unicastLocatorCount) * plcdr_param_size_estimate(24u)
+           + 4u;  // PID_SENTINEL
 }
 
 // Removes the oldest disposal from a builtin writer's history when it is
@@ -313,6 +327,8 @@ static bool write_disposal(SedpWriter::BuiltinWriter& writer,
 //   PID_DURABILITY       (0x001D) — 4 bytes (kind enum)
 //   PID_UNICAST_LOCATOR  (0x002F) — 24 bytes, repeated
 //   PID_SENTINEL         (0x0001)
+// and, when the writer has USER_DATA (Table 9.13):
+//   PID_USER_DATA        (0x002C) — sequence<octet>
 // ============================================================
 
 [[gnu::noinline]] uint32_t SedpWriter::serialise_writer(const DiscoveredWriterData& wd, Octet* buf,
@@ -357,6 +373,10 @@ static bool write_disposal(SedpWriter::BuiltinWriter& writer,
                                &v, DURABILITY_POLICY_LEN)) return 0;
     }
 
+    if (!write_user_data(buf, cap, off, wd.userData)) {
+        return 0;
+    }
+
     // PID_UNICAST_LOCATOR — 24 bytes each.
     for (uint8_t i = 0; i < wd.unicastLocatorCount; ++i) {
         if (!plcdr_write_param(buf, cap, off, pid::UNICAST_LOCATOR,
@@ -373,7 +393,7 @@ static bool write_disposal(SedpWriter::BuiltinWriter& writer,
 // §9.6.3.2, Table 9.15, p. 263 — subscriptions PIDs:
 //   PID_ENDPOINT_GUID, PID_TOPIC_NAME, PID_TYPE_NAME,
 //   PID_RELIABILITY, PID_DURABILITY, PID_UNICAST_LOCATOR,
-//   PID_SENTINEL.
+//   PID_SENTINEL, and PID_USER_DATA when the reader has USER_DATA.
 // ============================================================
 
 [[gnu::noinline]] uint32_t SedpWriter::serialise_reader(const DiscoveredReaderData& rd, Octet* buf,
@@ -409,6 +429,11 @@ static bool write_disposal(SedpWriter::BuiltinWriter& writer,
         if (!plcdr_write_param(buf, cap, off, pid::DURABILITY, &v,
                                DURABILITY_POLICY_LEN)) return 0;
     }
+
+    if (!write_user_data(buf, cap, off, rd.userData)) {
+        return 0;
+    }
+
     for (uint8_t i = 0; i < rd.unicastLocatorCount; ++i) {
         if (!plcdr_write_param(buf, cap, off, pid::UNICAST_LOCATOR,
                                &rd.unicastLocatorList[i], 24u)) return 0;
