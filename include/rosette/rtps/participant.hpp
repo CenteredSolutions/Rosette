@@ -307,6 +307,11 @@ struct ReaderConfig {
     uint8_t minMatchedWriters = RTPS_MIN_MATCHES_PER_ENDPOINT;
     /// Most writers matched at once (the cap); raised to the floor when lower.
     uint8_t maxMatchedWriters = RTPS_MAX_MATCHED_WRITERS;
+    /// Pairs with remote writers only, never with a writer of this
+    /// participant: for a topic each participant both writes and reads,
+    /// such as `ros_discovery_info`, where the participant's own sample
+    /// would cost a proxy and a loopback send and tell it nothing new.
+    bool            ignoresLocalWriters = false;
 };
 
 // ============================================================
@@ -661,6 +666,28 @@ public:
      */
     void set_discovery_writer(const Guid& writer_guid) noexcept {
         discovery_writer_guid_ = writer_guid;
+    }
+
+    /**
+     * @brief Names the local reader of the topic every participant on the network writes.
+     *
+     * The reader of `ros_discovery_info` matches the writer of every other
+     * ROS 2 participant, so, like the discovery writer's
+     * (set_discovery_writer()), its matches keep no peer active. Parking a
+     * peer unmatches its writer, and the last sample it wrote reaches this
+     * reader again when the peer is reactivated (TRANSIENT_LOCAL). A peer
+     * whose nodes change while it is parked is reactivated by the endpoint
+     * announcements that come with them.
+     *
+     * @param[in] reader_guid The reader's GUID, or GUID_UNKNOWN for none.
+     *
+     * Verification:
+     * - Correct means: a peer whose only matches are with the discovery
+     *   writer and this reader is parked once settled.
+     * - Covered by: TC-PART-8.5.3-030.
+     */
+    void set_discovery_reader(const Guid& reader_guid) noexcept {
+        discovery_reader_guid_ = reader_guid;
     }
 
     /**
@@ -1306,6 +1333,8 @@ private:
     EndpointMatchTable match_table_;
     /// Local writer every participant reads; its matches keep no peer active.
     Guid discovery_writer_guid_ = GUID_UNKNOWN;
+    /// Local reader of the topic every participant writes; its matches keep no peer active.
+    Guid               discovery_reader_guid_ = GUID_UNKNOWN;
     SpdpWriter         spdp_writer_;
     SpdpReader         spdp_reader_;
     SedpWriter         sedp_writer_;

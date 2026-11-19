@@ -70,10 +70,11 @@ extern "C" {
 /**
  * @brief Lists every node in the graph with its namespace.
  *
- * A participant never reads its own `ros_discovery_info` writer, so the
- * context's own nodes come from its node table and every other participant's
- * from the GraphCache. Nodes sharing a name are all listed, as stock rmws do,
- * which is how `ros2 node list` warns about duplicates.
+ * The context's own nodes come from its node table, and every other
+ * participant's from the GraphCache: the context's `ros_discovery_info` reader
+ * never pairs with its own writer (ReaderConfig::ignoresLocalWriters).
+ * Nodes sharing a name are all listed, as stock rmws do, which is how
+ * `ros2 node list` warns about duplicates.
  *
  * @param[in]  node            Node whose context is queried.
  * @param[out] node_names      Zero-initialized array receiving the names.

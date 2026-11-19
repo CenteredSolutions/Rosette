@@ -20,6 +20,8 @@
 
 #include <std_msgs/msg/string.h>
 
+#include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <set>
 #include <string>
@@ -42,6 +44,31 @@ rtps::Guid make_guid(uint8_t participant, uint8_t entity) {
 }
 
 constexpr char kStringType[] = "std_msgs::msg::dds_::String_";
+
+/// @brief Counts the listed nodes with this name and namespace; SIZE_MAX when the query or its
+/// cleanup fails.
+size_t count_nodes(const rmw_node_t* node, const char* name, const char* namespace_) {
+    rcutils_string_array_t names = rcutils_get_zero_initialized_string_array();
+    rcutils_string_array_t namespaces = rcutils_get_zero_initialized_string_array();
+    if (rmw_get_node_names(node, &names, &namespaces) != RMW_RET_OK) {
+        return SIZE_MAX;
+    }
+
+    size_t count = 0;
+    for (size_t i = 0; i < names.size; ++i) {
+        if (std::strcmp(names.data[i], name) == 0
+            && std::strcmp(namespaces.data[i], namespace_) == 0) {
+            ++count;
+        }
+    }
+
+    const bool released = rcutils_string_array_fini(&names) == RCUTILS_RET_OK;
+    if (rcutils_string_array_fini(&namespaces) != RCUTILS_RET_OK || !released) {
+        return SIZE_MAX;
+    }
+
+    return count;
+}
 
 }  // namespace
 
@@ -388,6 +415,40 @@ TEST(RmwNodeNames, ListsALocalNodeUntilDestroyed) {
 
     ASSERT_EQ(rcutils_string_array_fini(&names), RCUTILS_RET_OK);
     ASSERT_EQ(rcutils_string_array_fini(&namespaces), RCUTILS_RET_OK);
+    ASSERT_EQ(rmw_destroy_node(node), RMW_RET_OK);
+    ASSERT_EQ(rmw_shutdown(&context), RMW_RET_OK);
+    ASSERT_EQ(rmw_context_fini(&context), RMW_RET_OK);
+}
+
+// The context's ros_discovery_info sample would loop back to its own reader if
+// the two paired; waiting on the graph guard drives the participant long
+// enough for that sample to arrive, and wakes as soon as it changes the cache.
+TEST(RmwNodeNames, ListsALocalNodeOnceAfterItsSampleIsSent) {
+    rmw_init_options_t init_options = rmw_get_zero_initialized_init_options();
+    ASSERT_EQ(rmw_rosette_test::init_options_as_rcl(&init_options), RMW_RET_OK);
+
+    rmw_context_t context = rmw_get_zero_initialized_context();
+    ASSERT_EQ(rmw_init(&init_options, &context), RMW_RET_OK);
+    ASSERT_EQ(rmw_init_options_fini(&init_options), RMW_RET_OK);
+
+    rmw_node_t* node = rmw_create_node(&context, "listed_once_node", "/robot");
+    ASSERT_NE(node, nullptr);
+    rmw_wait_set_t* wait_set = rmw_create_wait_set(&context, 1);
+    ASSERT_NE(wait_set, nullptr);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < deadline) {
+        void*                  guard = rmw_node_get_graph_guard_condition(node)->data;
+        rmw_guard_conditions_t guards{1, &guard};
+        rmw_time_t             timeout{0, 100000000};
+        const rmw_ret_t        waited =
+            rmw_wait(nullptr, &guards, nullptr, nullptr, nullptr, wait_set, &timeout);
+        ASSERT_TRUE(waited == RMW_RET_OK || waited == RMW_RET_TIMEOUT);
+    }
+
+    EXPECT_EQ(count_nodes(node, "listed_once_node", "/robot"), 1u);
+
+    ASSERT_EQ(rmw_destroy_wait_set(wait_set), RMW_RET_OK);
     ASSERT_EQ(rmw_destroy_node(node), RMW_RET_OK);
     ASSERT_EQ(rmw_shutdown(&context), RMW_RET_OK);
     ASSERT_EQ(rmw_context_fini(&context), RMW_RET_OK);

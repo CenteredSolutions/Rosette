@@ -292,6 +292,7 @@ StatefulReader* RTPSParticipant::create_reader(
     rd.reliabilityKind = cfg.reliability;
     rd.durabilityKind  = cfg.durability;
     rd.topicKind       = cfg.topicKind;
+    rd.ignoresLocalWriters = cfg.ignoresLocalWriters;
     rd.unicastLocatorCount =
         append_default_unicast_locators(rd.unicastLocatorList,
                                         RTPS_MAX_LOCATORS_PER_PARTICIPANT);

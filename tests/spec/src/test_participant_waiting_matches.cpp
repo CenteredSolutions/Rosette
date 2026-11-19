@@ -182,7 +182,7 @@ bool tc_part_8_4_1_4_002(std::string& err) {
     const ProxyPool& pool = p.reader_proxy_pool();
     CHECK(p.delete_writer(w), "the writer is deleted");
     CHECK(pool.free_count() == pool.capacity(), "its proxies return to the pool");
-    CHECK(!p.match_table().has_match_with(peer, GUID_UNKNOWN),
+    CHECK(!p.match_table().has_match_with(peer, GUID_UNKNOWN, GUID_UNKNOWN),
           "its waiting match is dissolved with it");
     return true;
 }
@@ -207,7 +207,7 @@ bool tc_part_8_4_1_4_003(std::string& err) {
     announce_reader(p, client_reader);
     CHECK(replies->matched_reader_lookup(client_reader) == nullptr,
           "the client's reply reader waits at the cap");
-    CHECK(p.match_table().has_match_with(client, GUID_UNKNOWN),
+    CHECK(p.match_table().has_match_with(client, GUID_UNKNOWN, GUID_UNKNOWN),
           "a waiting match keeps the client's peer in a match");
 
     InlineQos reply{};
@@ -253,7 +253,7 @@ bool tc_part_8_4_1_4_004(std::string& err) {
 
     fill_waiting(p, peer);
     announce_reader(p, remote_reader(late, 1u));
-    CHECK(!p.match_table().has_match_with(late, GUID_UNKNOWN),
+    CHECK(!p.match_table().has_match_with(late, GUID_UNKNOWN, GUID_UNKNOWN),
           "the reader beyond the waiting limit has no record");
 
     const Guid other = remote_reader(late, 2u);
@@ -279,7 +279,8 @@ bool tc_part_8_4_1_4_005(std::string& err) {
     fill_waiting(p, peer);
     const Guid turned_away = remote_reader(late, 1u);
     announce_reader(p, turned_away);
-    CHECK(!p.match_table().has_match_with(late, GUID_UNKNOWN), "the late reader is turned away");
+    CHECK(!p.match_table().has_match_with(late, GUID_UNKNOWN, GUID_UNKNOWN),
+          "the late reader is turned away");
     p.tick(100u);
     CHECK(p.ms_until_next_timer(100u) != 0u, "with no room freed, no rescan is due");
 
@@ -288,11 +289,11 @@ bool tc_part_8_4_1_4_005(std::string& err) {
     p.tick(200u);
     CHECK(w->matched_reader_lookup(remote_reader(peer, 2u)) != nullptr,
           "the oldest waiting reader binds first");
-    CHECK(!p.match_table().has_match_with(late, GUID_UNKNOWN),
+    CHECK(!p.match_table().has_match_with(late, GUID_UNKNOWN, GUID_UNKNOWN),
           "a tick that binds a waiting pair does not rescan");
 
     p.tick(201u);
-    CHECK(p.match_table().has_match_with(late, GUID_UNKNOWN),
+    CHECK(p.match_table().has_match_with(late, GUID_UNKNOWN, GUID_UNKNOWN),
           "the next tick rescans and records the late reader waiting");
     CHECK(w->matched_reader_lookup(turned_away) == nullptr, "it waits behind the older readers");
 
@@ -331,7 +332,8 @@ bool tc_part_8_4_1_4_006(std::string& err) {
     announce_reader(p, remote_reader(first, 2u), "pair_topic");
     announce_reader(p, remote_reader(late, 1u), "pair_topic");
     announce_reader(p, remote_reader(late, 2u), "pair_topic");
-    CHECK(w->matched_reader_count() == 2u && !p.match_table().has_match_with(late, GUID_UNKNOWN),
+    CHECK(w->matched_reader_count() == 2u
+              && !p.match_table().has_match_with(late, GUID_UNKNOWN, GUID_UNKNOWN),
           "two readers bind at the cap and the late two are turned away");
 
     p.match_table().remove_reader(remote_reader(first, 1u));
