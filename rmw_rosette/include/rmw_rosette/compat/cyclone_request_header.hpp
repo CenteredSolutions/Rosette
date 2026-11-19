@@ -31,7 +31,11 @@
  * other vendor the DDS-RPC one. A rosette client uses
  * request_writer_key() of its request writer as its `client_id`, and the
  * request writer's next sequence number as `sequence`, so `sequence_id`
- * means the same in both dialects.
+ * means the same in both dialects. A rosette reply to a Cyclone client also
+ * carries the DDS-RPC related sample identity, which Cyclone ignores
+ * (DDSI-RTPS §9.6.2.2.1): the reply writer keeps each reply until the
+ * requester that identity names has it, and without it would keep every
+ * Cyclone reply until KEEP_LAST evicted it, holding its pool block.
  *
  * rcl hands a request's `rmw_request_id_t` back to rmw_send_response()
  * unchanged, so a Cyclone request's identity is packed into it the way
@@ -132,18 +136,19 @@ void cyclone_request_to_request_id(const CycloneRequestHeader& header,
  * @param[in]  request_reader The service's request reader.
  * @param[in]  request_id     Identity cyclone_request_to_request_id() reported.
  * @param[out] header         The header to send with the reply; written when found.
+ * @param[out] request_writer GUID of the matched request writer; written when found.
  * @return `true` when a writer matched to `request_reader` has the packed
  *   request_writer_key(); `false` when that client has left (or the identity
  *   was never a Cyclone one).
  *
  * Verification:
  * - Correct means: for an identity reported by cyclone_request_to_request_id(),
- *   returns the original header while its writer stays matched, and `false`
- *   after matched_writer_remove() of that writer.
+ *   returns the original header and the writer's GUID while that writer stays
+ *   matched, and `false` after matched_writer_remove() of that writer.
  * - Covered by: rmw_rosette/test/test_cyclone_request_header.cpp.
  */
 bool find_cyclone_requester(const rosette::rtps::StatefulReader& request_reader,
-                            const rmw_request_id_t&              request_id,
-                            CycloneRequestHeader&                header) noexcept;
+                            const rmw_request_id_t& request_id, CycloneRequestHeader& header,
+                            rosette::rtps::Guid& request_writer) noexcept;
 
 }  // namespace rmw_rosette
