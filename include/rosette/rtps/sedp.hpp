@@ -312,21 +312,14 @@ public:
     /// the participant routes ACKNACK and NACK_FRAG through it.
     StatefulWriter* find_writer(const EntityId& writer_id) noexcept;
 
-    // Drive builtin writer periodic maintenance, and the announcement replay
-    // to newly discovered peers (StatefulWriter::drain_replays()).
-    void tick(uint32_t now_ms) noexcept;
+    /// @brief Runs both builtin writers' heartbeats, repairs and announcement
+    ///   replays (StatefulWriter::tick()); returns the sooner of their next timers.
+    uint32_t tick(uint32_t now_ms) noexcept;
 
     /// @brief True while either builtin writer is still replaying its
     ///   announcements to a newly discovered peer from tick().
     bool replay_pending() const noexcept {
         return publications_writer_.replay_pending() || subscriptions_writer_.replay_pending();
-    }
-
-    // Soonest timed action of the two builtin writers (heartbeat or repair).
-    uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept {
-        const uint32_t a = publications_writer_.ms_until_next_timer(now_ms);
-        const uint32_t b = subscriptions_writer_.ms_until_next_timer(now_ms);
-        return a < b ? a : b;
     }
 
 private:
@@ -350,10 +343,10 @@ private:
      * @brief Rebuilds the announcement a builtin writer's history change stands for.
      *
      * The StatefulWriter::PayloadBuilder of both builtin writers. The
-     * change's key hash is the endpoint GUID and its writer GUID names the
-     * builtin writer, which says whether the endpoint is a writer or a
-     * reader; the source describes it and serialise_writer() or
-     * serialise_reader() encodes it with in-place framing headroom.
+     * change's key hash is the endpoint GUID, which the source knows as
+     * either a writer or a reader; the source describes it and
+     * serialise_writer() or serialise_reader() encodes it with in-place
+     * framing headroom.
      *
      * @param[in] user   This SedpWriter.
      * @param[in] change A live announcement from either builtin writer.
@@ -368,7 +361,7 @@ private:
      * References:
      * - OMG DDSI-RTPS 2.5 §9.6.3.2 (PL_CDR endpoint data), §9.4.5.3 (DATA)
      */
-    static BufRef build_announcement(void* user, const CacheChange& change) noexcept;
+    static BufRef build_announcement(void* user, const HistoryChange& change) noexcept;
 
     /**
      * @brief Sizes the announcement build_announcement() would build for a change.
@@ -393,7 +386,7 @@ private:
      * - OMG DDSI-RTPS 2.5 §9.6.3.2 (PL_CDR endpoint data), §9.4.2.11
      *   (ParameterList, 4-octet alignment)
      */
-    static uint32_t announcement_size(void* user, const CacheChange& change) noexcept;
+    static uint32_t announcement_size(void* user, const HistoryChange& change) noexcept;
 
     /// Serialise one DiscoveredWriterData as PL_CDR_LE.
     uint32_t serialise_writer(const DiscoveredWriterData& wd,
@@ -476,7 +469,7 @@ public:
      * @brief Reports whether every announcement a peer has sent was received.
      *
      * The participant parks only a peer whose announcements this reader
-     * holds completely (RTPSParticipant::peer_is_settled()), and keeps the
+     * holds completely (RTPSParticipant::peer_idleness()), and keeps the
      * highest sequence number of each announcer so a parked peer that
      * announces something newer can be told apart from one repeating
      * itself.
@@ -502,6 +495,67 @@ public:
                         SequenceNumber& subscriptions) noexcept;
 
     /**
+     * @brief Reports whether each SEDP announcer a peer advertises has spoken since matching.
+     *
+     * Use it alongside caught_up_with(), which also holds for an announcer
+     * that has sent nothing, as it is when this reader's preemptive ACKNACK
+     * was lost; heard_from() tells the two apart. It is keyed to what the
+     * peer advertises, not to the proxies this reader holds: an advertised
+     * announcer with no proxy (one that could not be matched) is unheard,
+     * so the peer cannot settle without the replay, and stalls instead.
+     * To learn whether a replay is whole, use heard_heartbeat_from().
+     *
+     * @param[in] peer_prefix GUID prefix of the peer.
+     * @param[in] advertised  The peer's SPDP availableBuiltinEndpoints
+     *   (PeerEntry::availableBuiltinEndpoints); only its two SEDP announcer
+     *   bits are read.
+     * @return `true` when every announcer the peer advertises is matched
+     *   and has been heard; an announcer it does not advertise counts as
+     *   heard.
+     *
+     * Verification:
+     * - Correct means: false from matching until a HEARTBEAT, DATA, GAP or
+     *   fragment submessage from each advertised announcer arrives, then
+     *   true until the peer is matched again; false while an advertised
+     *   announcer has no proxy.
+     * - Covered by: TC-PART-8.5.3-019, TC-SEDP-8.5.4-021.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (WriterProxy), §8.5.4.1 (SEDP replay),
+     *   §8.5.4.3 (availableBuiltinEndpoints)
+     */
+    bool heard_from(const GuidPrefix& peer_prefix, uint32_t advertised) noexcept;
+
+    /**
+     * @brief Reports which of a peer's announcers have sent a HEARTBEAT since they were matched.
+     *
+     * Unlike heard_from(), a DATA or GAP does not count: only a HEARTBEAT
+     * states what the announcer holds. A reader that has heard no HEARTBEAT
+     * knows of no change it lacks, so caught_up_with() is trivially true for
+     * it. Once a HEARTBEAT has arrived, caught_up_with() holding means the
+     * reader has everything the announcer holds, which is how the participant
+     * tells a finished replay from one not yet begun
+     * (RTPSParticipant::finish_peer_refreshes()), even when the announcer's
+     * sequence numbers restarted below the ones kept at parking.
+     *
+     * @param[in]  peer_prefix   GUID prefix of the peer.
+     * @param[out] publications  `true` when the publications announcer is
+     *   matched and a HEARTBEAT from it has been applied.
+     * @param[out] subscriptions As `publications`, for the subscriptions
+     *   announcer.
+     *
+     * Verification:
+     * - Correct means: false for an announcer just matched, and true from the
+     *   first non-duplicate HEARTBEAT until it is unmatched.
+     * - Covered by: TC-PART-8.5.3-024.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (WriterProxy), §8.3.7.5 (HEARTBEAT count)
+     */
+    void heard_heartbeat_from(const GuidPrefix& peer_prefix, bool& publications,
+                              bool& subscriptions) noexcept;
+
+    /**
      * @brief The builtin reader matched with the SEDP announcer `writer_id`.
      *
      * The participant routes every DATA, DATA_FRAG, HEARTBEAT,
@@ -515,16 +569,11 @@ public:
      */
     StatefulReader* reader_for_writer(const EntityId& writer_id) noexcept;
 
-    /// @brief Sends ACKNACKs whose heartbeatResponseDelay has elapsed.
-    void tick(uint32_t now_ms) noexcept {
-        publications_reader_.tick(now_ms);
-        subscriptions_reader_.tick(now_ms);
-    }
-
-    /// @brief Soonest pending ACKNACK of the two builtin readers, or UINT32_MAX.
-    uint32_t ms_until_next_timer(uint32_t now_ms) const noexcept {
-        const uint32_t a = publications_reader_.ms_until_next_timer(now_ms);
-        const uint32_t b = subscriptions_reader_.ms_until_next_timer(now_ms);
+    /// @brief Sends both builtin readers' due ACKNACKs (StatefulReader::tick());
+    ///   returns the sooner of their next timers, or UINT32_MAX.
+    uint32_t tick(uint32_t now_ms) noexcept {
+        const uint32_t a = publications_reader_.tick(now_ms);
+        const uint32_t b = subscriptions_reader_.tick(now_ms);
         return a < b ? a : b;
     }
 

@@ -15,6 +15,8 @@
 
 #include <string.h>
 
+#include <algorithm>
+
 #include "rosette/rtps/gap_encoding.hpp"
 #include "rosette/rtps/log.hpp"
 
@@ -52,26 +54,15 @@ StatefulWriter::~StatefulWriter() noexcept {
     }
 }
 
-CacheChange* StatefulWriter::new_change(ChangeKind kind, BufRef& out_payload,
-                                        size_t payload_size) noexcept {
-    if (staging_.payload.valid())
-        staging_.payload.reset();
-
-    out_payload = buf_alloc(static_cast<uint32_t>(payload_size));
-    if (!out_payload.valid()) {
+HistoryChange StatefulWriter::new_change(ChangeKind kind, size_t payload_size) noexcept {
+    HistoryChange change{};
+    change.kind = kind;
+    change.payload = buf_alloc(static_cast<uint32_t>(payload_size));
+    if (!change.payload.valid()) {
         RTPS_LOG_E("writer", "buf_alloc failed (%zu) for new_change (pool exhausted)", payload_size);
-        return nullptr;
     }
-    staging_.kind           = kind;
-    staging_.writerGuid     = guid_;
-    staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;  // Assigned in add_change.
-    staging_.inlineQos      = {};
-    staging_.preframed      = false;
-    staging_.payload.block  = out_payload.block;
-    staging_.payload.data   = out_payload.data;
-    staging_.payload.size   = out_payload.size;
-    out_payload.retain();
-    return &staging_;
+
+    return change;
 }
 
 /// How a sample is cut into DATA_FRAGs over one transport.
@@ -98,7 +89,7 @@ static FragmentLayout fragment_layout(const ITransport& transport,
     return layout;
 }
 
-bool StatefulWriter::add_change(CacheChange&& change) noexcept {
+bool StatefulWriter::add_change(HistoryChange&& change) noexcept {
     // A reader tracks at most FragmentNumberSet::kMaxBits fragments of a
     // sample, so a larger one could never complete and would stall every
     // reliable reader. Refusing it here, before it takes a sequence number,
@@ -123,7 +114,7 @@ bool StatefulWriter::add_change(CacheChange&& change) noexcept {
         note_eviction();
     }
 
-    CacheChange* inserted = writer_cache_.add_change(static_cast<CacheChange&&>(change));
+    HistoryChange* inserted = writer_cache_.add_change(static_cast<HistoryChange&&>(change));
     if (!inserted) {
         RTPS_LOG_E("writer", "cache add_change failed (SN=%ld:%lu)", change.sequenceNumber.high,
                    static_cast<unsigned long>(change.sequenceNumber.low));
@@ -137,6 +128,7 @@ bool StatefulWriter::add_change(CacheChange&& change) noexcept {
         ++writesSinceHb_;
     }
 
+    mark_timers_stale();
     return true;
 }
 
@@ -146,26 +138,29 @@ void StatefulWriter::remove_change(const SequenceNumber& sn) noexcept {
 
 bool StatefulWriter::write_async(ChangeKind kind, const Octet* payload_data, uint32_t payload_size,
                                  const InlineQos& inline_qos, SequenceNumber* out_sn) noexcept {
-    if (!payload_data || payload_size == 0) return false;
+    if (!payload_data || payload_size == 0) {
+        return false;
+    }
 
-    BufRef payload_buf;
-    CacheChange* ch = new_change(kind, payload_buf, payload_size);
-    if (!ch) {
+    HistoryChange change = new_change(kind, payload_size);
+    if (!change.payload.valid()) {
         RTPS_LOG_E("writer", "write_async: new_change failed");
         return false;
     }
 
-    const uint32_t sz = (payload_size < payload_buf.capacity()) ? payload_size : payload_buf.capacity();
-    memcpy(payload_buf.data, payload_data, sz);
-    payload_buf.size = sz;
-    ch->payload.size = sz;
-    ch->inlineQos    = inline_qos;
-
-    if (!add_change(static_cast<CacheChange&&>(*ch))) {
-        payload_buf.reset();
+    const uint32_t capacity = change.payload.capacity();
+    const uint32_t sz = payload_size < capacity ? payload_size : capacity;
+    memcpy(change.payload.data, payload_data, sz);
+    change.payload.size = sz;
+    change.inlineQos = inline_qos;
+    if (!add_change(static_cast<HistoryChange&&>(change))) {
         return false;
     }
-    if (out_sn) *out_sn = nextSN_ - 1;
+
+    if (out_sn) {
+        *out_sn = nextSN_ - 1;
+    }
+
     send_unsent_changes(heartbeat_due());
     return true;
 }
@@ -177,18 +172,18 @@ bool StatefulWriter::write_async_owned(ChangeKind kind, BufRef&& payload,
         return false;
     }
 
-    if (staging_.payload.valid()) {
-        staging_.payload.reset();
+    HistoryChange change{};
+    change.kind = kind;
+    change.inlineQos = inline_qos;
+    change.payload = static_cast<BufRef&&>(payload);
+    if (!add_change(static_cast<HistoryChange&&>(change))) {
+        return false;
     }
 
-    staging_.kind           = kind;
-    staging_.writerGuid     = guid_;
-    staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
-    staging_.inlineQos      = inline_qos;
-    staging_.preframed      = false;
-    staging_.payload        = static_cast<BufRef&&>(payload);
-    if (!add_change(static_cast<CacheChange&&>(staging_))) return false;
-    if (out_sn) *out_sn = nextSN_ - 1;
+    if (out_sn) {
+        *out_sn = nextSN_ - 1;
+    }
+
     send_unsent_changes(heartbeat_due());
     return true;
 }
@@ -196,8 +191,9 @@ bool StatefulWriter::write_async_owned(ChangeKind kind, BufRef&& payload,
 bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* serialized_payload,
                                            uint32_t payload_size, SequenceNumber* out_sn,
                                            const InlineQos& inline_qos) noexcept {
-    if (!serialized_payload || payload_size == 0) return false;
-    if (staging_.payload.valid()) staging_.payload.reset();
+    if (!serialized_payload || payload_size == 0) {
+        return false;
+    }
 
     // Headroom covers the RTPS/DATA headers plus this change's inline QoS,
     // and tailroom one HEARTBEAT, so send_data_to() can always frame this
@@ -214,21 +210,19 @@ bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* seriali
     memcpy(payload_buf.data, serialized_payload, sz);
     payload_buf.size = sz;
 
-    staging_.kind           = kind;
-    staging_.writerGuid     = guid_;
-    staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
-    staging_.inlineQos      = inline_qos;
-    staging_.preframed      = true;
-    staging_.payload.block  = payload_buf.block;
-    staging_.payload.data   = payload_buf.data;
-    staging_.payload.size   = payload_buf.size;
-    payload_buf.retain();
-
-    if (!add_change(static_cast<CacheChange&&>(staging_))) {
-        payload_buf.reset();
+    HistoryChange change{};
+    change.kind = kind;
+    change.inlineQos = inline_qos;
+    change.preframed = true;
+    change.payload = static_cast<BufRef&&>(payload_buf);
+    if (!add_change(static_cast<HistoryChange&&>(change))) {
         return false;
     }
-    if (out_sn) *out_sn = nextSN_ - 1;
+
+    if (out_sn) {
+        *out_sn = nextSN_ - 1;
+    }
+
     send_unsent_changes(heartbeat_due());
     return true;
 }
@@ -244,16 +238,11 @@ bool StatefulWriter::write_preframed_async(ChangeKind kind, const Octet* seriali
         return false;
     }
 
-    if (staging_.payload.valid()) {
-        staging_.payload.reset();
-    }
-
-    staging_.kind = kind;
-    staging_.writerGuid = guid_;
-    staging_.sequenceNumber = SEQUENCENUMBER_UNKNOWN;
-    staging_.inlineQos = inline_qos;
-    staging_.preframed = true;
-    if (!add_change(static_cast<CacheChange&&>(staging_))) {
+    HistoryChange change{};
+    change.kind = kind;
+    change.inlineQos = inline_qos;
+    change.preframed = true;
+    if (!add_change(static_cast<HistoryChange&&>(change))) {
         return false;
     }
 
@@ -343,7 +332,7 @@ void StatefulWriter::drop_replies_to_departed(const GuidPrefix& requester) noexc
         return;
     }
 
-    writer_cache_.for_each_change([&](CacheChange& c) noexcept {
+    writer_cache_.for_each_change([&](HistoryChange& c) noexcept {
         if (c.inlineQos.hasRelatedSampleIdentity
             && c.inlineQos.relatedSampleIdentity.writerGuid.prefix == requester) {
             c.clear();
@@ -468,10 +457,16 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
     // that has acknowledged before is only behind a stream in flight: the
     // next piggybacked HEARTBEAT covers it, and answering every such ACK
     // would turn each HEARTBEAT into a HEARTBEAT/ACKNACK exchange per round
-    // trip for as long as the writer keeps writing.
-    if (msg.readerSNState.numBits == 0u && acked_nothing_before
-        && msg.readerSNState.bitmapBase < nextSN_) {
-        send_heartbeat(false, sg);
+    // trip for as long as the writer keeps writing. A writer that has
+    // written nothing still answers a non-final announcement (§8.3.7.1: the
+    // reader expects a response), with a final HEARTBEAT, so the reader
+    // learns the writer is there and need not answer it.
+    if (msg.readerSNState.numBits == 0u && acked_nothing_before) {
+        if (msg.readerSNState.bitmapBase < nextSN_) {
+            send_heartbeat(false, sg);
+        } else if (!msg.finalFlag && nextSN_ == SequenceNumber::from_int64(1)) {
+            send_heartbeat(true, sg);
+        }
     }
 
     release_finished_changes();
@@ -529,15 +524,29 @@ void StatefulWriter::record_fragment_repair(const ReaderProxy& proxy, const Sequ
     }
 }
 
-void StatefulWriter::tick(uint32_t now_ms) noexcept {
+uint32_t StatefulWriter::tick(uint32_t now_ms) noexcept {
     // Phase 0: the next part of any TRANSIENT_LOCAL replay.
     if (replayPending_) {
         drain_replays();
     }
 
     // Phase 1: repair what readers NACKed, once nackResponseDelay has passed.
+    // The same pass notes the soonest NACK still waiting and whether any
+    // reader is announcing, which is all the next timer depends on.
+    uint32_t next = UINT32_MAX;
+    bool     any_announcing = false;
     for (ReaderProxy& proxy : matched()) {
-        if (!proxy.nack_delay_elapsed(now_ms, nack_delay_ms_)) continue;
+        if (serves_reliably(proxy) && proxy.is_announcing(writer_cache_)) {
+            any_announcing = true;
+        }
+
+        if (!proxy.nack_delay_elapsed(now_ms, nack_delay_ms_)) {
+            if (proxy.nackPending) {
+                next = std::min(next, nack_delay_ms_ - (now_ms - proxy.nackPendingSinceMs));
+            }
+
+            continue;
+        }
 
         bool any_sent = false;
         SequenceNumberSet evicted{};
@@ -545,7 +554,7 @@ void StatefulWriter::tick(uint32_t now_ms) noexcept {
             const SequenceNumber sn = proxy.next_requested_change();
             if (sn == SEQUENCENUMBER_UNKNOWN) break;
             proxy.mark_underway(sn);
-            const CacheChange* ch = writer_cache_.get_change(sn);
+            const HistoryChange* ch = writer_cache_.get_change(sn);
             if (ch) {
                 const bool fragments_only = fragRepair_.proxy == &proxy && fragRepair_.sn == sn;
                 send_data_to(*ch, proxy, false, fragments_only ? &fragRepair_.fragments : nullptr);
@@ -594,6 +603,16 @@ void StatefulWriter::tick(uint32_t now_ms) noexcept {
             send_heartbeat_to(entity_id::UNKNOWN, dest, /*final=*/false);
         }
     }
+
+    if (replayPending_) {
+        return 0u;
+    }
+
+    if (any_announcing) {
+        next = std::min(next, hb_period_ms_ - (now_ms - lastHbSentMs_));
+    }
+
+    return next;
 }
 
 bool StatefulWriter::acknowledged_by_all() const noexcept {
@@ -717,7 +736,7 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
 // send_unsent_changes(), costing about 2.5 KB of flash on a Cortex-M0+ build
 // for no measurable gain on a path bounded by the transport.
 [[gnu::noinline]] bool StatefulWriter::send_data_to(
-    const CacheChange& ch, ReaderProxy& proxy, bool heartbeat,
+    const HistoryChange& ch, ReaderProxy& proxy, bool heartbeat,
     const FragmentRepairSet* only_fragments) noexcept {
     if (!ch.payload.valid() && payloadBuilder_ != nullptr) {
         return send_built_data_to(ch, proxy, heartbeat, only_fragments);
@@ -740,15 +759,18 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
     // A payload allocated with headroom is framed in place (§9.4.5.3); the
     // HEARTBEAT then needs tailroom in the same block and a payload that
     // ends on a 4-octet boundary (§9.4.1), since in-place bytes cannot be
-    // padded. A copied DATA is padded to the boundary instead. Either way the
-    // message must fit the datagram limit; otherwise the HEARTBEAT goes in a
-    // datagram of its own.
+    // padded. A copied DATA is padded to the boundary instead, unless it is
+    // preframed: its encapsulation options are its own and cannot record the
+    // padding (DDS-XTypes 1.3 §7.6.3.1.2). Either way the message must fit
+    // the datagram limit; otherwise the HEARTBEAT goes in a datagram of its
+    // own.
     const bool in_place = ch.payload.valid()
                        && ch.payload.headroom_available() >= kRtpsDataHeadroom + inline_qos_size;
-    const uint32_t pad = in_place ? 0u : (4u - (ch.payload.size & 3u)) & 3u;
-    const bool framable = !in_place
-                       || (ch.payload.capacity() - ch.payload.size >= kRtpsHeartbeatTailroom
-                           && (ch.payload.size & 3u) == 0u);
+    const bool     aligned = (ch.payload.size & 3u) == 0u;
+    const uint32_t pad = in_place || ch.preframed ? 0u : (4u - (ch.payload.size & 3u)) & 3u;
+    const bool     framable =
+        in_place ? aligned && ch.payload.capacity() - ch.payload.size >= kRtpsHeartbeatTailroom
+                     : aligned || !ch.preframed;
     const bool inline_hb = heartbeat && framable
                         && data_datagram + pad + kRtpsHeartbeatTailroom <= limit;
 
@@ -760,14 +782,13 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
         SequenceNumber first{};
         SequenceNumber last{};
         heartbeat_range(first, last);
-        const bool ok = builder_.append_data(proxy.remoteReaderGuid.entityId, guid_.entityId,
-                                             ch.sequenceNumber, ch.payload,
-                                             ch.kind != ChangeKind::ALIVE, ch.inlineQos,
-                                             /*pad_to_boundary=*/inline_hb)
-                     && (!inline_hb
-                         || builder_.append_heartbeat(proxy.remoteReaderGuid.entityId,
-                                                      guid_.entityId, first, last,
-                                                      heartbeatCount_, /*final=*/false));
+        const bool ok =
+            builder_.append_data(proxy.remoteReaderGuid.entityId, guid_.entityId, ch.sequenceNumber,
+                                 ch.payload, ch.kind != ChangeKind::ALIVE, ch.inlineQos,
+                                 /*pad_to_boundary=*/inline_hb, ch.preframed)
+            && (!inline_hb
+                || builder_.append_heartbeat(proxy.remoteReaderGuid.entityId, guid_.entityId, first,
+                                             last, heartbeatCount_, /*final=*/false));
         if (ok) {
             BufRef buf = builder_.finish();
             sent = send_counted(buf, dest);
@@ -786,13 +807,11 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
 
 // Cold: on-demand changes are sent on discovery and repair, never per sample.
 [[gnu::cold]] bool StatefulWriter::send_built_data_to(
-    const CacheChange& ch, ReaderProxy& proxy, bool heartbeat,
+    const HistoryChange& ch, ReaderProxy& proxy, bool heartbeat,
     const FragmentRepairSet* only_fragments) noexcept {
-    CacheChange built{};
+    HistoryChange built{};
     built.kind = ch.kind;
-    built.writerGuid = ch.writerGuid;
     built.sequenceNumber = ch.sequenceNumber;
-    built.sourceTimestamp = ch.sourceTimestamp;
     built.inlineQos = ch.inlineQos;
     built.preframed = ch.preframed;
     built.payload = payloadBuilder_(payloadBuilderUser_, ch);
@@ -811,7 +830,8 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
     return send_data_to(built, proxy, heartbeat, only_fragments);
 }
 
-bool StatefulWriter::frame_data_in_place(BufRef& view, const CacheChange& ch, uint32_t payload_size,
+bool StatefulWriter::frame_data_in_place(BufRef& view, const HistoryChange& ch,
+                                         uint32_t        payload_size,
                                          const EntityId& reader_id) const noexcept {
     // Inline QoS sits between the fixed DATA fields and the
     // serializedPayload — §9.4.5.3, Table 9.14.
@@ -847,9 +867,9 @@ bool StatefulWriter::frame_data_in_place(BufRef& view, const CacheChange& ch, ui
     return true;
 }
 
-bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& proxy,
+bool StatefulWriter::send_data_in_place(const HistoryChange& ch, ReaderProxy& proxy,
                                         const Locator& dest, bool heartbeat) noexcept {
-    // Work on a non-owning view; retain the block first so the CacheChange
+    // Work on a non-owning view; retain the block first so the HistoryChange
     // keeps its own reference. The view's prepends and append only write
     // outside [payload.data, payload.data + payload.size), so the stored
     // change is unchanged for the next reader or a repair.
@@ -876,7 +896,7 @@ bool StatefulWriter::send_data_in_place(const CacheChange& ch, ReaderProxy& prox
     return sent;
 }
 
-bool StatefulWriter::send_fragments_to(const CacheChange& ch, ReaderProxy& proxy,
+bool StatefulWriter::send_fragments_to(const HistoryChange& ch, ReaderProxy& proxy,
                                        const Locator& dest, bool heartbeat,
                                        const FragmentRepairSet* only_fragments) noexcept {
     static constexpr Octet kCdrLe[kEncapsulationSize] = {0x00u, 0x01u, 0x00u, 0x00u};
@@ -1025,7 +1045,7 @@ void StatefulWriter::note_eviction() noexcept {
     // The writer's own changes fill its history, so KEEP_LAST evicts the
     // lowest sequence number (HistoryCache::add_change()).
     const SequenceNumber oldest_sn = writer_cache_.get_seq_num_min();
-    const CacheChange*   oldest = writer_cache_.get_change(oldest_sn);
+    const HistoryChange* oldest = writer_cache_.get_change(oldest_sn);
     if (oldest == nullptr) {
         return;
     }
@@ -1078,7 +1098,7 @@ void StatefulWriter::release_finished_changes() noexcept {
         return;
     }
 
-    writer_cache_.for_each_change([&](CacheChange& c) noexcept {
+    writer_cache_.for_each_change([&](HistoryChange& c) noexcept {
         if (releaseRepliesOnDelivery_ && reply_delivered(c)) {
             c.clear();
             return;
@@ -1094,7 +1114,7 @@ void StatefulWriter::release_finished_changes() noexcept {
     });
 }
 
-bool StatefulWriter::reply_delivered(const CacheChange& reply) const noexcept {
+bool StatefulWriter::reply_delivered(const HistoryChange& reply) const noexcept {
     if (!reply.inlineQos.hasRelatedSampleIdentity) {
         return false;
     }

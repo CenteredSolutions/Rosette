@@ -31,8 +31,8 @@ void ReaderProxy::init(const Guid& reader_guid, const Locator* unicast_locs, uin
 void ReaderProxy::restart(const SequenceNumber& first_relevant_sn) noexcept {
     replaying = false;
     highestAckedSN = SEQUENCENUMBER_ZERO;
-    lastAcknackCount = 0;
-    lastNackFragCount = 0;
+    lastAcknackCount = kNoCount;
+    lastNackFragCount = kNoCount;
     nackPending = false;
     nackPendingSinceMs = 0;
     requestedBase_ = SEQUENCENUMBER_ZERO;
@@ -49,8 +49,8 @@ void ReaderProxy::clear() noexcept {
     isReliable = true;
     replaying = false;
     highestAckedSN      = SEQUENCENUMBER_ZERO;
-    lastAcknackCount    = 0;
-    lastNackFragCount   = 0;
+    lastAcknackCount = kNoCount;
+    lastNackFragCount = kNoCount;
     nackPending         = false;
     nackPendingSinceMs  = 0;
     firstRelevantSN_    = SequenceNumber::from_int64(1);
@@ -114,10 +114,15 @@ void ReaderProxy::mark_underway(const SequenceNumber& sn) noexcept {
 
 SequenceNumber ReaderProxy::next_unsent_change(const HistoryCache& history) const noexcept {
     SequenceNumber best = SEQUENCENUMBER_UNKNOWN;
-    history.for_each_change([&](const CacheChange& c) noexcept {
+    history.for_each_change([&](const HistoryChange& c) noexcept {
         const SequenceNumber sn = c.sequenceNumber;
-        if (!(highestSentSN_ < sn) || !is_relevant(sn)) return;
-        if (best == SEQUENCENUMBER_UNKNOWN || sn < best) best = sn;
+        if (!(highestSentSN_ < sn) || !is_relevant(sn)) {
+            return;
+        }
+
+        if (best == SEQUENCENUMBER_UNKNOWN || sn < best) {
+            best = sn;
+        }
     });
     return best;
 }

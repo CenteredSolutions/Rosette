@@ -45,7 +45,9 @@ for name in "${targets[@]}"; do
     mkdir -p "$work"
 
     echo "== $name (${seconds}s)"
-    if ! ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 "$binary" \
+    # UBSan in a libFuzzer build reports and carries on, so without halt_on_error an
+    # undefined-behavior finding leaves no reproducer and the run still passes.
+    if ! ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 "$binary" \
             -max_total_time="$seconds" -timeout=10 -rss_limit_mb=2048 \
             -artifact_prefix="$crash_dir/$name-" \
             "$work" "$build_dir/fuzz/corpus/$name"; then

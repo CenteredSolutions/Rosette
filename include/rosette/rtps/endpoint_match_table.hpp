@@ -418,14 +418,6 @@ struct MatchedEndpoint {
 };
 
 /**
- * @brief Endpoints known to a participant, and the pairs among them that match.
- *
- * See the file comment for what is stored and how matching works. The
- * table is filled by SEDP (remote endpoints) and by the participant (its
- * own endpoints); it tells local from remote by the participant's GUID
- * prefix (set_local_prefix()), and matches nothing until that is set.
- */
-/**
  * @brief Receives each endpoint's names as the match table learns them.
  *
  * The table keeps remote endpoints as name keys and forgets the names. An owner
@@ -433,9 +425,12 @@ struct MatchedEndpoint {
  * table itself still allocates nothing. Every callback runs on the thread
  * driving the participant, which holds the participant lock.
  *
- * The observer sees the network's endpoints, not the table's: a peer the
- * participant parks (RTPSParticipant::park_peer()) leaves the table but stays
- * alive, so the observer is not told; its endpoints remain listed.
+ * The observer sees every endpoint SEDP has delivered from a live peer, not
+ * only those the table holds: a peer the participant parks
+ * (RTPSParticipant::park_peer()) leaves the table but stays alive, so the
+ * observer is not told and its endpoints remain listed. A peer still waiting
+ * for an active slot has had no SEDP read from it, so the observer hears of
+ * its endpoints once the peer is first activated.
  *
  * - `on_endpoint` fires for every valid local or remote endpoint, including
  *   one the table has no room for, and again for a repeated announcement.
@@ -462,6 +457,14 @@ struct GraphEndpointObserver {
     void (*on_participant_refreshed)(void* user, const GuidPrefix& prefix) noexcept = nullptr;
 };
 
+/**
+ * @brief Endpoints known to a participant, and the pairs among them that match.
+ *
+ * See the file comment for what is stored and how matching works. The
+ * table is filled by SEDP (remote endpoints) and by the participant (its
+ * own endpoints); it tells local from remote by the participant's GUID
+ * prefix (set_local_prefix()), and matches nothing until that is set.
+ */
 class EndpointMatchTable {
 public:
     /// A writer-reader pair became compatible, or a waiting pair is offered
@@ -672,9 +675,12 @@ public:
      * @param[in] prefix GUID prefix of the participant being parked.
      *
      * Verification:
-     * - Correct means: as remove_participant() for the table and its pairs; the
-     *   graph observer receives no callback.
-     * - Covered by: TC-PART-8.5.3-015.
+     * - Correct means: as remove_participant() for the table and its pairs:
+     *   each pair with the participant on either side, bound or waiting, is
+     *   reported unmatched once and no other pair is, and on_change fires
+     *   once per forgotten endpoint; the graph observer receives no callback.
+     *   Its cost is one pass over the pairs, whatever the endpoint count.
+     * - Covered by: TC-SEDP-8.5.5.1-017, TC-PART-8.5.3-015.
      *
      * References:
      * - docs/design/two_tier_peer_table.md
@@ -691,6 +697,19 @@ public:
      */
     bool participant_refreshing(const GuidPrefix& prefix) noexcept;
 
+    /**
+     * @brief Whether the graph observer tracks refreshes of reactivated participants.
+     *
+     * A firmware build registers no observer, so no refresh is ever under way
+     * and the participant skips looking for one to finish.
+     *
+     * @return `true` exactly when participant_refreshing() would return `true`.
+     */
+    bool tracks_refreshes() const noexcept {
+        return graph_observer_ != nullptr && graph_observer_->on_participant_refreshing != nullptr
+               && graph_observer_->on_participant_refreshed != nullptr;
+    }
+
     /// @brief Tells the graph observer that a reactivated participant's replay is complete.
     void participant_refreshed(const GuidPrefix& prefix) noexcept;
 
@@ -698,7 +717,7 @@ public:
      * @brief True when a remote participant has an endpoint in a match that counts.
      *
      * The participant keeps a peer active while this is true and may park it
-     * otherwise (RTPSParticipant::peer_is_settled()). A match with
+     * otherwise (RTPSParticipant::peer_idleness()). A match with
      * `except_local` does not count: that is the endpoint every participant
      * on the network matches, such as `ros_discovery_info` for ROS 2, whose
      * readers are served by reactivating parked peers instead.
@@ -1279,6 +1298,9 @@ private:
      * - OMG DDSI-RTPS 2.5 §8.5.5.1 (endpoint matching)
      */
     void renumber_waiting_tickets() noexcept;
+    /// Forgets one recorded pair and reports it through on_unmatch.
+    void drop_pair(MatchRecord& m) noexcept;
+
     /// Reports every recorded pair involving `guid` as dissolved and forgets it.
     void dissolve(const Guid& guid, bool is_writer) noexcept;
 
@@ -1317,6 +1339,8 @@ private:
      */
     void unmatch_if_relocated(RemoteEndpoint* table, uint32_t n, bool is_writer, const Guid& guid,
                               const Locator* locators, uint8_t count) noexcept;
+
+    /// @brief Observer told every endpoint's names, or null; not owned, and outlives the table.
     const GraphEndpointObserver* graph_observer_ = nullptr;
 
     /// @brief Tells the owner the set of known endpoints changed.

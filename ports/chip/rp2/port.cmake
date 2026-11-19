@@ -9,6 +9,8 @@
 #   chip_rp2.cpp                  clock, unique id, boot nonce, GPIO interrupts, bare-metal sync hooks
 #   rp2_flash.c                   the flash hooks (flash.hpp), for every OS
 #   rp2_newlib_time.c             newlib clock_gettime() / _gettimeofday()
+#   nothrow_operator_new.cpp      `new (std::nothrow)` over malloc, beside the SDK's
+#                                 new_delete.cpp, so no image links the C++ unwinder
 #   rp2_spi_bus.hpp, rp2_qspi_bus.hpp
 #                                 WIZnet register buses; this directory is on the
 #                                 include path for the board's composition
@@ -55,6 +57,12 @@ target_include_directories(rosette_platform PUBLIC ${ROSETTE_PORT_DIR})
 target_link_libraries(rosette_platform PUBLIC
   pico_stdlib pico_flash pico_rand pico_time pico_unique_id
   hardware_flash hardware_gpio hardware_irq hardware_spi hardware_sync hardware_timer)
+# The SDK's pico_cxx_options compiles its allocator replacements into every
+# target that links it, executables included; the nothrow form rides along so
+# an executable's own object always wins over libstdc++'s, however its static
+# libraries are ordered.
+target_sources(pico_cxx_options INTERFACE ${ROSETTE_PORT_DIR}/nothrow_operator_new.cpp)
+
 set(ROSETTE_CHIP_STORAGE_SOURCES ${ROSETTE_PORT_DIR}/rp2_littlefs_region.cpp)
 set(ROSETTE_CHIP_TEST_LIBRARIES pico_multicore)
 set(ROSETTE_CHIP_BASE_HEADERS pico_base_headers)

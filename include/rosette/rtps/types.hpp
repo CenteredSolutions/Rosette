@@ -233,13 +233,27 @@ inline constexpr SequenceNumber SEQUENCENUMBER_ZERO   {  0, 0 };
 // "The GuidPrefix_t is a 12-octet array used as the prefix of a GUID."
 // "The EntityId_t is a 4-octet structure."
 //  — §8.2.4, Table 8.2, p. 27
+//
+// Equality compares four octets at a time instead of calling memcmp. At -Os
+// (the rp2 port's level) GCC keeps memcmp an out-of-line call, and the match
+// and peer tables compare GUIDs once per record on every scan.
 // ============================================================
+
+/// @brief Reads four octets at any alignment as one word, for equality tests only.
+inline uint32_t octets_as_word(const void* p) noexcept {
+    uint32_t word;
+    memcpy(&word, p, sizeof(word));
+    return word;
+}
 
 struct GuidPrefix {
     Octet value[12] = {};
 
     bool operator==(const GuidPrefix& o) const noexcept {
-        return memcmp(value, o.value, 12) == 0;
+        return ((octets_as_word(value) ^ octets_as_word(o.value))
+                | (octets_as_word(value + 4) ^ octets_as_word(o.value + 4))
+                | (octets_as_word(value + 8) ^ octets_as_word(o.value + 8)))
+               == 0u;
     }
     bool operator!=(const GuidPrefix& o) const noexcept {
         return !(*this == o);
@@ -253,12 +267,34 @@ struct EntityId {
     Octet entityKind   = 0;     ///< 1-octet kind.
 
     bool operator==(const EntityId& o) const noexcept {
-        return memcmp(this, &o, sizeof(*this)) == 0;
+        return octets_as_word(this) == octets_as_word(&o);
     }
     bool operator!=(const EntityId& o) const noexcept {
         return !(*this == o);
     }
+
+    /**
+     * @brief True when entityKind names a writer, user-defined or built-in.
+     *
+     * The two high bits of the kind say who defined the entity (user, built-in,
+     * vendor); the low six say what it is, and a writer is 0x02 (with key) or
+     * 0x03 (no key). Reader kinds are 0x04 and 0x07.
+     *
+     * Verification:
+     * - Correct means: true for 0x02, 0x03, 0xC2 and 0xC3; false for 0x04,
+     *   0x07, 0xC4, 0xC7 and the participant's 0xC1.
+     * - Covered by: TC-SEDP-8.5.4-021.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §9.3.1.2, Table 9.1 (entityKind values)
+     */
+    bool is_writer() const noexcept {
+        const Octet kind = static_cast<Octet>(entityKind & 0x3Fu);
+        return kind == 0x02u || kind == 0x03u;
+    }
 };
+
+static_assert(sizeof(EntityId) == 4u, "EntityId equality reads it as one word");
 
 // §8.2.4, Table 8.4 — Pre-defined EntityId values (p. 28-29).
 namespace entity_id {
@@ -350,10 +386,12 @@ namespace status_info {
 }
 
 struct InlineQos {
-    bool           hasRelatedSampleIdentity = false;
-    SampleIdentity relatedSampleIdentity    = {};
-    bool           hasKeyHash               = false;
+    // The one-octet members follow the wide ones, so no padding separates
+    // them: every writer history slot holds an InlineQos.
+    SampleIdentity relatedSampleIdentity = {};
     Octet          keyHash[16]              = {};
+    bool           hasRelatedSampleIdentity = false;
+    bool           hasKeyHash = false;
     bool           hasStatusInfo            = false;
     uint8_t        statusInfo               = 0u;   ///< status_info:: flags.
 
@@ -914,9 +952,11 @@ enum class DurabilityKind : uint32_t {
     PERSISTENT      = 3,
 };
 
-/// §8.2.9, Table 8.11  ChangeKind_t — kind of a CacheChange.
-enum class ChangeKind : uint32_t {
-    ALIVE              = 1,
+/// §8.2.9, Table 8.11  ChangeKind_t — kind of a CacheChange. It never goes on
+/// the wire as a number (the DATA flags and PID_STATUS_INFO carry it), so one
+/// octet holds it in every stored change.
+enum class ChangeKind : uint8_t {
+    ALIVE = 1,
     NOT_ALIVE_DISPOSED = 2,
     NOT_ALIVE_UNREGISTERED = 4,
 };
@@ -955,6 +995,45 @@ enum class TopicKind : uint32_t {
 /// into one ACKNACK. Deadlines are in whole milliseconds, so 2 is the
 /// smallest value that waits at least 1 ms.
 #  define RTPS_HEARTBEAT_RESPONSE_DELAY_MS 2u
+#endif
+#ifndef RTPS_PREEMPTIVE_ACKNACK_RETRY_MS
+/// §8.4.7.4. How often a reliable reader resends its preemptive ACKNACK to
+/// a matched writer it has not heard from. A writer whose proxy for this
+/// reader holds everything acknowledged sends nothing on its own, so a lost
+/// preemptive ACKNACK, or a lost answer to it, is repaired only by another.
+#  define RTPS_PREEMPTIVE_ACKNACK_RETRY_MS RTPS_HEARTBEAT_PERIOD_MS
+#endif
+#ifndef RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS
+/// §8.4.7.4. How many preemptive ACKNACKs a user reader sends a matched
+/// writer it has not heard from, the first included. Once they are spent
+/// nothing is lost: a writer holding changes this reader has not
+/// acknowledged keeps sending periodic HEARTBEATs, any of which marks it
+/// heard, and a writer holding none has nothing to repair. The limit stops
+/// a writer that never answers (a firewall, a stock writer that ignores the
+/// form) from costing a datagram every retry period for the whole match.
+#  define RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS 3u
+#endif
+#ifndef RTPS_PEER_EXCHANGE_TIMEOUT_MS
+/// How long an active peer that shares no match may go without sending SEDP
+/// DATA, and without settling, before its slot may be given to another peer:
+/// its exchange with this participant is taken to be stalled (an unreachable
+/// unicast locator, a firewall). The peer stays owed this participant's
+/// announcements and is tried again when a slot is free.
+#  define RTPS_PEER_EXCHANGE_TIMEOUT_MS 10000u
+#endif
+#ifndef RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS
+/// As RTPS_PREEMPTIVE_ACKNACK_ATTEMPTS, for the builtin SEDP readers. A
+/// peer settles only once both of its SEDP announcers are heard, and an
+/// announcer with nothing to announce speaks only to answer an ACKNACK, so
+/// these readers keep asking past the peer's exchange deadline
+/// (RTPS_PEER_EXCHANGE_TIMEOUT_MS): the first goes out at the match, so the
+/// last leaves (attempts - 1) retry periods later. A peer still unheard at
+/// the deadline is stalled, and its next activation matches afresh and asks
+/// again. The default is the fewest attempts whose last leaves after the
+/// deadline, so it follows RTPS_PREEMPTIVE_ACKNACK_RETRY_MS: 7 at the
+/// default 2 s retry and 10 s deadline.
+#  define RTPS_BUILTIN_PREEMPTIVE_ACKNACK_ATTEMPTS \
+      (RTPS_PEER_EXCHANGE_TIMEOUT_MS / RTPS_PREEMPTIVE_ACKNACK_RETRY_MS + 2u)
 #endif
 
 /// Most writers one user StatefulReader matches at once (its cap in the

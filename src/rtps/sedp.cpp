@@ -140,14 +140,24 @@ static uint32_t reader_payload_size_estimate(const DiscoveredReaderData& rd) noe
 // full history always holds at least one disposal.
 static void make_room_for_change(SedpWriter::BuiltinWriter& writer) noexcept
 {
-    if (writer.cache().size() < SedpWriter::kSedpHistoryDepth) return;
+    if (writer.cache().size() < SedpWriter::kSedpHistoryDepth) {
+        return;
+    }
+
     SequenceNumber oldest_disposal = SEQUENCENUMBER_UNKNOWN;
-    writer.cache().for_each_change([&](const CacheChange& c) noexcept {
-        if (c.kind == ChangeKind::ALIVE) return;
-        if (oldest_disposal == SEQUENCENUMBER_UNKNOWN || c.sequenceNumber < oldest_disposal)
+    writer.cache().for_each_change([&](const HistoryChange& c) noexcept {
+        if (c.kind == ChangeKind::ALIVE) {
+            return;
+        }
+
+        if (oldest_disposal == SEQUENCENUMBER_UNKNOWN || c.sequenceNumber < oldest_disposal) {
             oldest_disposal = c.sequenceNumber;
+        }
     });
-    if (oldest_disposal != SEQUENCENUMBER_UNKNOWN) writer.remove_change(oldest_disposal);
+
+    if (oldest_disposal != SEQUENCENUMBER_UNKNOWN) {
+        writer.remove_change(oldest_disposal);
+    }
 }
 
 // Serialises one endpoint and writes it as a live announcement keyed by
@@ -199,7 +209,7 @@ static SequenceNumber write_rebuilt_announcement(SedpWriter::BuiltinWriter& writ
 // data does not fit.
 template <typename EndpointData, typename SerialiseFn>
 static BufRef serialise_for_send(const EndpointData& endpoint, uint32_t size_estimate,
-                                 const CacheChange& change, SerialiseFn serialise) noexcept {
+                                 const HistoryChange& change, SerialiseFn serialise) noexcept {
     BufRef payload =
         buf_alloc_with_headroom(size_estimate + kRtpsHeartbeatTailroom,
                                 kRtpsDataHeadroom + inline_qos_serialized_size(change.inlineQos));
@@ -217,11 +227,11 @@ static BufRef serialise_for_send(const EndpointData& endpoint, uint32_t size_est
 
 // Cold: it runs on discovery and repair, never per sample, so it is
 // optimized for size rather than inlined into a hot path.
-[[gnu::cold]] BufRef SedpWriter::build_announcement(void* user,
-                                                    const CacheChange& change) noexcept {
+[[gnu::cold]] BufRef SedpWriter::build_announcement(void*                user,
+                                                    const HistoryChange& change) noexcept {
     const SedpWriter& self = *static_cast<const SedpWriter*>(user);
     const Guid endpoint_guid = change.inlineQos.key_hash_guid();
-    if (change.writerGuid.entityId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
+    if (endpoint_guid.entityId.is_writer()) {
         DiscoveredWriterData wd{};
         if (!self.endpoints_.writer(self.endpoints_.user, endpoint_guid, wd)) {
             return BufRef{};
@@ -246,11 +256,11 @@ static BufRef serialise_for_send(const EndpointData& endpoint, uint32_t size_est
         });
 }
 
-[[gnu::cold]] uint32_t SedpWriter::announcement_size(void*              user,
-                                                     const CacheChange& change) noexcept {
+[[gnu::cold]] uint32_t SedpWriter::announcement_size(void*                user,
+                                                     const HistoryChange& change) noexcept {
     const SedpWriter& self = *static_cast<const SedpWriter*>(user);
     const Guid        endpoint_guid = change.inlineQos.key_hash_guid();
-    if (change.writerGuid.entityId == entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER) {
+    if (endpoint_guid.entityId.is_writer()) {
         DiscoveredWriterData wd{};
         return self.endpoints_.writer(self.endpoints_.user, endpoint_guid, wd)
                    ? writer_payload_size_estimate(wd)
@@ -584,10 +594,10 @@ StatefulWriter* SedpWriter::find_writer(const EntityId& writer_id) noexcept
     return nullptr;
 }
 
-void SedpWriter::tick(uint32_t now_ms) noexcept
-{
-    publications_writer_.tick(now_ms);
-    subscriptions_writer_.tick(now_ms);
+uint32_t SedpWriter::tick(uint32_t now_ms) noexcept {
+    const uint32_t a = publications_writer_.tick(now_ms);
+    const uint32_t b = subscriptions_writer_.tick(now_ms);
+    return a < b ? a : b;
 }
 
 // ============================================================
@@ -765,6 +775,43 @@ bool SedpReader::caught_up_with(const GuidPrefix& peer_prefix, SequenceNumber& p
         subscriptions_reader_, Guid{peer_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER},
         subscriptions);
     return pubs && subs;
+}
+
+bool SedpReader::heard_from(const GuidPrefix& peer_prefix, uint32_t advertised) noexcept {
+    // An advertised announcer with no proxy has not been heard: absence
+    // must not pass for success, or a peer whose proxy was never made
+    // settles without the replay it was activated for.
+    const auto heard = [&](StatefulReader& reader, uint32_t bit,
+                           const EntityId& announcer) noexcept {
+        if ((advertised & bit) == 0u) {
+            return true;
+        }
+
+        const WriterProxy* proxy = reader.matched_writer_lookup(Guid{peer_prefix, announcer});
+        return proxy != nullptr && proxy->heard;
+    };
+
+    return heard(publications_reader_,
+                 builtin_endpoint::DISC_BUILTIN_ENDPOINT_PUBLICATIONS_ANNOUNCER,
+                 entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER)
+           && heard(subscriptions_reader_,
+                    builtin_endpoint::DISC_BUILTIN_ENDPOINT_SUBSCRIPTIONS_ANNOUNCER,
+                    entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER);
+}
+
+void SedpReader::heard_heartbeat_from(const GuidPrefix& peer_prefix, bool& publications,
+                                      bool& subscriptions) noexcept {
+    // HEARTBEAT counts start at 1 (§8.3.7.5), so a proxy's lastHBCount of 0
+    // means none has arrived since the announcer was matched.
+    const auto heard = [](StatefulReader& reader, const Guid& announcer) noexcept {
+        const WriterProxy* proxy = reader.matched_writer_lookup(announcer);
+        return proxy != nullptr && proxy->lastHBCount != 0;
+    };
+
+    publications = heard(publications_reader_,
+                         Guid{peer_prefix, entity_id::SEDP_BUILTIN_PUBLICATIONS_ANNOUNCER});
+    subscriptions = heard(subscriptions_reader_,
+                          Guid{peer_prefix, entity_id::SEDP_BUILTIN_SUBSCRIPTIONS_ANNOUNCER});
 }
 
 StatefulReader* SedpReader::reader_for_writer(const EntityId& writer_id) noexcept

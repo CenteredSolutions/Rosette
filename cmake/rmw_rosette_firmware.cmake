@@ -103,6 +103,7 @@ include(${ROSETTE_ROOT}/cmake/rosette_rtps_sources.cmake)
 add_library(rmw_rosette_static STATIC
   ${_rr_dir}/src/introspection_c_codec.cpp
   ${_rr_dir}/src/message_codec.cpp
+  ${_rr_dir}/src/serialize_for_write.cpp
   ${_rr_dir}/src/rmw_init.cpp
   ${_rr_dir}/src/argument_checks.cpp
   ${_rr_dir}/src/rmw_node.cpp

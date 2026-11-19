@@ -48,5 +48,16 @@ endif()
 
 include("${PICO_SDK_PATH}/pico_sdk_init.cmake")
 
+# arm-none-eabi's libstdc++ has thread model "single": the guard of a
+# function-local static only detects recursive initialization, by throwing,
+# and takes no lock, and the Pico SDK does not replace it. Dropping the guard
+# therefore loses no protection, and saves the exception runtime and libgcc
+# unwinder (about 4 KB) it links into firmware built without exceptions.
+# Neither form makes a first use safe across the RP2's two cores or between
+# FreeRTOS SMP tasks: a static used from both cores is initialized before
+# core 1 starts. Set here, at top-level directory scope before project(), so
+# every target of the build and of a standalone example gets it.
+add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-threadsafe-statics>)
+
 # Examples that call the Pico SDK themselves build only on this chip.
 set(ROSETTE_BOARD_ENABLE_PICO_SDK ON)

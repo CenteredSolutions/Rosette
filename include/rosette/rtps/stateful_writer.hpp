@@ -196,24 +196,32 @@ public:
     virtual ~StatefulWriter() noexcept;
 
     /**
-     * @brief Stages a new change and allocates a pool buffer for its payload.
+     * @brief Creates a change of `kind` with a fresh pool buffer for its payload.
      *
-     * The caller writes the serialized payload into `out_payload`, sets the
-     * staged change's payload size, and passes it to add_change(). Staging
-     * again releases a previously staged, unadded payload.
+     * The first half of the §8.4.1.4 write: the caller writes the serialized
+     * payload through `change.payload.data`, sets `change.payload.size`, and
+     * moves the change into add_change(), which numbers it and stores it.
+     * The change lives in the caller until then, so the writer keeps no slot
+     * for it; a change that is never added releases its buffer when it goes
+     * out of scope.
      *
-     * @param[in]  kind         ChangeKind of the change (ALIVE, NOT_ALIVE_*).
-     * @param[out] out_payload  The allocated buffer (an extra reference to
-     *   the staged change's payload) on success.
-     * @param[in]  payload_size Octets the caller will write; the pool may
+     * @param[in] kind         ChangeKind of the change (ALIVE, NOT_ALIVE_*).
+     * @param[in] payload_size Octets the caller will write; the pool may
      *   return a larger block.
-     * @return The staged change, or null when the pool has no block that size.
+     * @return The change, with no sequence number yet and no inline QoS, and
+     *   the only reference to its payload block. Its payload is invalid when
+     *   the pool has no block that size.
+     *
+     * Verification:
+     * - Correct means: adding the change numbers it nextSN; changes held
+     *   unadded own separate blocks, and dropping them returns every block
+     *   to the pool and takes no sequence number.
+     * - Covered by: TC-SWR-8.4.1.4-001, TC-SWR-8.4.1.4-016, TC-SWR-8.2.2-001.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (new_change)
      */
-    CacheChange* new_change(ChangeKind kind, BufRef& out_payload,
-                            size_t payload_size = kPoolMaxBlockSize) noexcept;
+    HistoryChange new_change(ChangeKind kind, size_t payload_size = kPoolMaxBlockSize) noexcept;
 
     /**
      * @brief Assigns the next sequence number and adds the change to the history.
@@ -247,7 +255,7 @@ public:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.4 (add_change), §8.3.3 (KEEP_LAST)
      */
-    bool add_change(CacheChange&& change) noexcept;
+    bool add_change(HistoryChange&& change) noexcept;
 
     /**
      * @brief Removes a change from the history.
@@ -357,7 +365,7 @@ public:
      *   lets the DATA be framed in place. An invalid BufRef means the payload
      *   cannot be built now; the send is then a lost datagram.
      */
-    using PayloadBuilder = BufRef (*)(void* user, const CacheChange& change) noexcept;
+    using PayloadBuilder = BufRef (*)(void* user, const HistoryChange& change) noexcept;
 
     /**
      * @brief Reports how many octets the PayloadBuilder would build for a change.
@@ -370,7 +378,7 @@ public:
      * @return The serializedPayload size in octets, never less than the
      *   builder produces for the same change; 0 when it cannot be built.
      */
-    using PayloadSizer = uint32_t (*)(void* user, const CacheChange& change) noexcept;
+    using PayloadSizer = uint32_t (*)(void* user, const HistoryChange& change) noexcept;
 
     /**
      * @brief Installs the builder that supplies payloads for write_on_demand_async() changes.
@@ -407,7 +415,7 @@ public:
      * Adds a change with no payload, then sends every UNSENT change, as
      * write_preframed_async() does. The builder must be installed first, and
      * the change's `inline_qos` (for SEDP, its key hash) must identify what
-     * it builds. The history slot costs its CacheChange alone; no pool block
+     * it builds. The history slot costs its HistoryChange alone; no pool block
      * stays allocated for the change.
      *
      * @param[in]  kind       ChangeKind of the change.
@@ -561,7 +569,9 @@ public:
      * (repaired by tick() after nackResponseDelay), GAPs the other NACKed
      * numbers the writer has assigned, and answers a preemptive ACKNACK (no
      * NACK bits, base below the next number, from a reader that has
-     * acknowledged nothing yet) with a directed HEARTBEAT. A plain ACK from
+     * acknowledged nothing yet) with a directed HEARTBEAT; a writer that has
+     * written nothing answers a non-final one with a directed final
+     * HEARTBEAT, so a reader waiting to hear from it does. A plain ACK from
      * a reader that has acknowledged before gets no answer, even while the
      * writer has written past it: the piggybacked HEARTBEATs keep such a
      * reader current, and answering would pair every HEARTBEAT with another
@@ -585,8 +595,10 @@ public:
      * - Correct means: no ACKNACK from a reader that has acknowledged before
      *   elicits a HEARTBEAT unless it NACKs, so a streaming writer sends about
      *   one datagram per sample to such a reader; and a reader that matched
-     *   this writer again receives what a newly matched reader would.
-     * - Covered by: TC-SWR-8.4.3-001, TC-SWR-8.4.3-002, TC-SWR-8.4.3-003,
+     *   this writer again receives what a newly matched reader would; a
+     *   non-final announcement is always answered, by a final HEARTBEAT
+     *   when the writer has written nothing.
+     * - Covered by: TC-SWR-8.4.3-001, TC-SWR-8.4.3-002, TC-SWR-8.4.3-003, TC-SWR-8.4.3-004,
      *   TC-SWR-8.4.9-001, TC-SWR-8.2.2-003, TC-SWR-8.4.1.4-004,
      *   TC-SWR-8.4.1.4-005, TC-SWR-8.4.1.4-006, TC-SWR-8.4.9.1-001.
      *
@@ -716,10 +728,19 @@ public:
      * piggybacked HEARTBEAT. A reader served best-effort requests nothing and
      * is never announcing, so tick() sends it nothing.
      *
+     * The repair pass over the matched readers also finds the next timer, so
+     * the participant learns when to tick this writer again without a second
+     * pass (RTPSParticipant::tick()).
+     *
      * @param[in] now_ms Current rosette::platform::monotonic_ms().
+     * @return What ms_until_next_timer(now_ms) returns once the call is done:
+     *   0 while a replay still has datagrams to send, UINT32_MAX when no
+     *   timer runs.
      *
      * Verification:
-     * - Covered by: TC-SWR-8.4.2.2-001, TC-SWR-8.4.9-004, TC-SWR-8.4.9-002,
+     * - Correct means: the return equals ms_until_next_timer(now_ms) called
+     *   right after; the sends follow the order above.
+     * - Covered by: TC-PART-8.5.1-016, TC-SWR-8.4.2.2-001, TC-SWR-8.4.9-004, TC-SWR-8.4.9-002,
      *   TC-SWR-8.2.2-003, TC-SWR-8.4.4-001, TC-SWR-8.4.9.1-001,
      *   TC-SWR-8.4.1.4-003, TC-SWR-8.4.1.4-010.
      *
@@ -727,7 +748,7 @@ public:
      * - OMG DDSI-RTPS 2.5 §8.4.1.1 (nackResponseDelay, heartbeatPeriod), §8.4.9.2,
      *   §8.4.9.1
      */
-    void tick(uint32_t now_ms) noexcept;
+    uint32_t tick(uint32_t now_ms) noexcept;
 
     const Guid&     guid()        const noexcept { return guid_; }
     ReliabilityKind reliability() const noexcept { return reliability_; }
@@ -735,12 +756,46 @@ public:
     const HistoryCache& cache()   const noexcept { return writer_cache_; }
 
     /// nack_response_delay() — §8.4.1.1, p. 104.
-    uint32_t nack_response_delay()            const noexcept { return nack_delay_ms_; }
-    void     nack_response_delay(uint32_t ms)       noexcept { nack_delay_ms_ = ms; }
+    uint32_t nack_response_delay() const noexcept { return nack_delay_ms_; }
+
+    void nack_response_delay(uint32_t ms) noexcept {
+        nack_delay_ms_ = ms;
+        mark_timers_stale();
+    }
 
     /// heartbeat_period() — §8.4.1.1, p. 104.
-    uint32_t heartbeat_period()               const noexcept { return hb_period_ms_; }
-    void     heartbeat_period(uint32_t ms)          noexcept { hb_period_ms_ = ms; }
+    uint32_t heartbeat_period() const noexcept { return hb_period_ms_; }
+
+    void heartbeat_period(uint32_t ms) noexcept {
+        hb_period_ms_ = ms;
+        mark_timers_stale();
+    }
+
+    /**
+     * @brief Names the participant's stale-timers flag, which this writer
+     *   sets when the application brings one of its timers nearer.
+     *
+     * A participant walks its endpoints only when its soonest timer is due
+     * or its timers are stale (RTPSParticipant::tick()). Datagrams, matches
+     * and endpoint changes pass through the participant, which marks the
+     * flag itself; the application calls the writer directly, so the writer
+     * marks it for those calls: a write starts the heartbeat period for
+     * readers that were fully acknowledged, and a changed heartbeat period
+     * or NACK response delay moves a running timer.
+     *
+     * @param[in] stale Set to true on each such call, never cleared here;
+     *   null for a writer no participant caches the timers of. Must outlive
+     *   the writer.
+     *
+     * Verification:
+     * - Correct means: after any application call that can make
+     *   ms_until_next_timer() return less than before, `*stale` is true.
+     * - Covered by: TC-PART-8.5.1-015, TC-PART-8.5.1-016 (tests/spec).
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.9.2 (heartbeat and repair timers)
+     */
+    void set_timers_stale_flag(bool* stale) noexcept { timersStale_ = stale; }
 
     /**
      * @brief Makes this a service reply writer that drops each reply once its requester has it.
@@ -1068,7 +1123,7 @@ private:
      *   §8.4.15.4 (piggybacked HEARTBEAT), §8.3.3 (a message carries any
      *   number of submessages)
      */
-    bool send_data_to(const CacheChange& ch, ReaderProxy& proxy, bool heartbeat = false,
+    bool send_data_to(const HistoryChange& ch, ReaderProxy& proxy, bool heartbeat = false,
                       const FragmentRepairSet* only_fragments = nullptr) noexcept;
 
     /**
@@ -1092,7 +1147,7 @@ private:
      *   stored payload; a failed build leaves the change for repair.
      * - Covered by: TC-SEDP-8.5.4-015, TC-SEDP-8.5.4-016.
      */
-    bool send_built_data_to(const CacheChange& ch, ReaderProxy& proxy, bool heartbeat,
+    bool send_built_data_to(const HistoryChange& ch, ReaderProxy& proxy, bool heartbeat,
                             const FragmentRepairSet* only_fragments) noexcept;
 
     /**
@@ -1122,7 +1177,7 @@ private:
      * References:
      * - OMG DDSI-RTPS 2.5 §9.4.5.3 (DATA), §9.4.5.5 (HEARTBEAT), §8.4.15.4
      */
-    bool send_data_in_place(const CacheChange& ch, ReaderProxy& proxy, const Locator& dest,
+    bool send_data_in_place(const HistoryChange& ch, ReaderProxy& proxy, const Locator& dest,
                             bool heartbeat) noexcept;
 
     /**
@@ -1158,7 +1213,7 @@ private:
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.14.1, §9.4.5.4 (DATA_FRAG), §8.4.15.4
      */
-    bool send_fragments_to(const CacheChange& ch, ReaderProxy& proxy, const Locator& dest,
+    bool send_fragments_to(const HistoryChange& ch, ReaderProxy& proxy, const Locator& dest,
                            bool                     heartbeat,
                            const FragmentRepairSet* only_fragments = nullptr) noexcept;
 
@@ -1309,7 +1364,7 @@ private:
     ///   @p reader_id: prepends the inline QoS, the DATA header and the message
     ///   header (§9.4.5.3). Sends nothing; false, leaving the headers partly
     ///   written, when the headroom is short.
-    bool frame_data_in_place(BufRef& view, const CacheChange& ch, uint32_t payload_size,
+    bool frame_data_in_place(BufRef& view, const HistoryChange& ch, uint32_t payload_size,
                              const EntityId& reader_id) const noexcept;
 
     /**
@@ -1342,7 +1397,7 @@ private:
     /// @brief Appends a DATA submessage for @p ch, whose built payload is
     ///   @p payload, after the region of @p datagram; false, changing nothing,
     ///   when it does not fit (the block, or the transport's datagram limit).
-    bool append_built_data(BufRef& datagram, const CacheChange& ch, const BufRef& payload,
+    bool append_built_data(BufRef& datagram, const HistoryChange& ch, const BufRef& payload,
                            const EntityId& reader_id) const noexcept;
 
     /// @brief The range a HEARTBEAT advertises: the history's oldest and
@@ -1457,7 +1512,7 @@ private:
     /// @brief True when `reply` names a requester whose matched readers are
     ///   all done with it (ReaderProxy::is_done_with(), as each is served), at
     ///   least one of them is matched, and none waits to bind.
-    bool reply_delivered(const CacheChange& reply) const noexcept;
+    bool reply_delivered(const HistoryChange& reply) const noexcept;
 
     /// @brief Counts and logs the oldest change, about to be evicted from a
     ///   full history, when a reader still needs it (evicted_unacknowledged()).
@@ -1472,7 +1527,6 @@ private:
     ReaderProxyPool& pool_;
     ProxyList readers_;  ///< Bound proxies, floor and cap.
 
-    CacheChange    staging_{};     ///< Staging area for new_change().
     int32_t        heartbeatCount_ = 0;
     SequenceNumber nextSN_         = SequenceNumber::from_int64(1);
     uint32_t       nack_delay_ms_;
@@ -1497,6 +1551,16 @@ private:
         WaitingReaderQuery fn = nullptr;
         void* context = nullptr;
     } waitingReaderQuery_;
+
+    bool* timersStale_ = nullptr;  ///< See set_timers_stale_flag().
+
+    /// @brief Marks the participant's timers stale (set_timers_stale_flag()).
+    void mark_timers_stale() noexcept {
+        if (timersStale_ != nullptr) {
+            *timersStale_ = true;
+        }
+    }
+
     PayloadBuilder payloadBuilder_ = nullptr;  ///< Builds payloads of on-demand changes.
     void* payloadBuilderUser_ = nullptr;
     PayloadSizer   payloadSizer_ = nullptr;  ///< Sizes them, for replay packing.

@@ -106,10 +106,10 @@ static bool tc_swr_8_4_6_002(std::string& err) {
     proxy.init(reader, nullptr, 0u, false, SequenceNumber::from_int64(3), true);
     HistoryCacheStorage<8> history{};
     for (int64_t sn = 1; sn <= 6; ++sn) {
-        CacheChange c{};
+        HistoryChange c{};
         c.sequenceNumber = SequenceNumber::from_int64(sn);
         c.kind = ChangeKind::ALIVE;
-        CHECK(history.add_change(static_cast<CacheChange&&>(c)) != nullptr, "history add");
+        CHECK(history.add_change(static_cast<HistoryChange&&>(c)) != nullptr, "history add");
     }
     std::vector<int64_t> sent{};
     for (SequenceNumber sn = proxy.next_unsent_change(history); sn != SEQUENCENUMBER_UNKNOWN;

@@ -773,12 +773,12 @@ public:
     /**
      * @brief Time until the earliest repair deadline of this assembler's samples.
      *
-     * The reader folds this into ms_until_next_timer(), which the driver
-     * calls on every pass, so it must cost nothing for a reader that is not
-     * repairing a sample. While repairs_pending_ is false it returns at once
-     * without reading the shared pool; otherwise it scans the pool for this
-     * assembler's slots with rounds left, and clears repairs_pending_ when
-     * it finds none.
+     * The reader folds this into ms_until_next_timer(), which the
+     * participant asks of every reader each time it looks at its timers, so
+     * it must cost nothing for a reader that is not repairing a sample.
+     * While repairs_pending_ is false it returns at once without reading the
+     * shared pool; otherwise it scans the pool for this assembler's slots
+     * with rounds left, and clears repairs_pending_ when it finds none.
      *
      * @param[in] now_ms Monotonic time, in milliseconds.
      * @return Milliseconds until run_due_repairs() has a sample to hand out, 0

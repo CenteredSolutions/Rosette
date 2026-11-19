@@ -12,6 +12,7 @@
 #include "rmw_rosette/message_codec.hpp"
 #include "rmw_rosette/pool.hpp"
 #include "rmw_rosette/qos.hpp"
+#include "rmw_rosette/serialize_for_write.hpp"
 #include "rmw_rosette/topic_naming.hpp"
 #include "rmw_rosette/types.hpp"
 
@@ -192,13 +193,15 @@ rmw_ret_t rmw_destroy_publisher(rmw_node_t* node, rmw_publisher_t* publisher) {
 /**
  * @brief Serializes and publishes a ROS message.
  *
- * Encodes `ros_message` into a pool buffer (serialize_to_pool()) and hands
+ * Encodes `ros_message` into a pool buffer (serialize_for_write()) and hands
  * it to the publisher's `StatefulWriter::write_async_owned()`, which adds
  * the change to the writer history, prepends the CDR encapsulation header,
  * and sends it to every matched reader, as DATA_FRAG when it exceeds the
- * transport's datagram limit. The call does
- * not wait for acknowledgments: RELIABLE delivery is completed by
- * HEARTBEAT/ACKNACK repair while rmw_wait() drives the participant.
+ * transport's datagram limit. The call does not wait for acknowledgments:
+ * RELIABLE delivery is completed by HEARTBEAT/ACKNACK repair while rmw_wait()
+ * drives the participant. A RELIABLE publisher whose samples pin the whole
+ * buffer pool waits up to RMW_ROSETTE_MAX_BLOCKING_TIME_MS for one to be
+ * acknowledged, as a DDS write does.
  *
  * @param[in] publisher Publisher to send through.
  * @param[in] ros_message Message instance to encode and send.
@@ -216,15 +219,16 @@ rmw_ret_t rmw_publish(const rmw_publisher_t* publisher, const void* ros_message,
         return checked;
     }
 
-    auto* impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
-    rmw_rosette::ContextUpdateLock lock(*impl->node->context);
-
-    rtps::BufRef payload = rmw_rosette::serialize_to_pool(impl->codec, ros_message);
+    auto*        impl = static_cast<rmw_rosette::Publisher*>(publisher->data);
+    rtps::BufRef payload = rmw_rosette::serialize_for_write(*impl->node->context, impl->codec,
+                                                            ros_message, impl->qos.reliability);
     if (!payload.valid()) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_publish: serialization failed (message larger "
                           "than RMW_ROSETTE_MAX_SAMPLE_SIZE, or buffer pool exhausted)");
         return RMW_RET_ERROR;
     }
+
+    rmw_rosette::ContextUpdateLock lock(*impl->node->context);
 
     // A DDS write with KEEP_LAST history does not wait for acknowledgments;
     // reliability comes from the history plus HEARTBEAT/ACKNACK repair driven
