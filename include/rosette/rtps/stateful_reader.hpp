@@ -375,6 +375,24 @@ public:
     /// @brief Number of matched writers (§8.4.7.1 matched_writers).
     uint8_t matched_writer_count() const noexcept { return writers_.count; }
 
+    /**
+     * @brief Calls `visit(const Guid&)` with the GUID of each matched writer, in match order.
+     *
+     * `visit` returns `true` to stop early.
+     *
+     * @return `true` when `visit` stopped the walk.
+     */
+    template <typename Visit>
+    bool any_matched_writer(Visit&& visit) const noexcept {
+        for (const WriterProxy& proxy : matched()) {
+            if (visit(proxy.remoteWriterGuid)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// @brief Writers this reader is always granted proxies for (its floor).
     uint8_t min_matched_writers() const noexcept { return writers_.floor; }
 

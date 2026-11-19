@@ -128,6 +128,7 @@ add_library(rmw_rosette_static STATIC
   ${_rr_dir}/src/rmw_qos_event.cpp
   ${_rr_dir}/src/rmw_serialize.cpp
   ${_rr_dir}/src/service_endpoints.cpp
+  ${_rr_dir}/src/compat/cyclone_request_header.cpp
   ${ROSETTE_RTPS_PROTOCOL_SOURCES}
   ${ROSETTE_RTPS_IO_SOURCES}
   ${ROSETTE_ROOT}/src/rtps/rtps_stdio_log.cpp

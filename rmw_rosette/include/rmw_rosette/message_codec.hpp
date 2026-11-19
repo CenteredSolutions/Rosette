@@ -181,19 +181,25 @@ uint32_t serialize_message(const MessageCodec& codec, const void* ros_message,
  *
  * @param[in]  codec        Resolved codec for the message's type.
  * @param[in]  ros_message  Message instance to encode.
+ * @param[in]  header_size  Octets left unwritten at the front of the body for
+ *   the caller to fill, such as the Cyclone request header
+ *   (compat/cyclone_request_header.hpp); a multiple of 8, so the message
+ *   encodes exactly as it would at the start of the body.
  * @param[out] refused_size When not null, set to the block size the pool
  *   refused when it had none left, and to 0 otherwise.
- * @return A buffer holding the CDR body (payload.size set), or an invalid
- *   buffer when the message does not fit the largest pool block
- *   (RMW_ROSETTE_MAX_SAMPLE_SIZE, `*refused_size` 0) or the pool is
- *   exhausted (`*refused_size` nonzero; serialize_for_write() waits for it).
+ * @return A buffer holding the CDR body (payload.size set, `header_size`
+ *   included), or an invalid buffer when the body does not fit the largest
+ *   pool block (RMW_ROSETTE_MAX_SAMPLE_SIZE, `*refused_size` 0) or the pool
+ *   is exhausted (`*refused_size` nonzero; serialize_for_write() waits for it).
  *
  * Verification:
- * - Correct means: equals serialize_message() into a large enough buffer.
+ * - Correct means: the octets after `header_size` equal serialize_message()
+ *   into a large enough buffer.
  * - Covered by: rmw_rosette/test/test_introspection_c_codec.cpp
- *   (SerializeToPoolFitsLargeMessages).
+ *   (SerializeToPoolFitsLargeMessages), test_cyclone_request_header.cpp.
  */
 rosette::rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* ros_message,
+                                        uint32_t  header_size = 0,
                                         uint32_t* refused_size = nullptr) noexcept;
 
 /**
@@ -207,6 +213,8 @@ rosette::rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* r
  * @param[in]  in_buf      Payload including the encapsulation header.
  * @param[in]  in_len      Length of `in_buf` in bytes.
  * @param[out] ros_message Initialized message instance to overwrite.
+ * @param[in]  header_size Octets at the front of the body that precede the
+ *   message, such as the Cyclone request header; a multiple of 8.
  * @return `true` on success; `false` for a short or non-CDR_LE payload or a
  *   decode failure.
  *
@@ -220,6 +228,6 @@ rosette::rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* r
  * - OMG DDS-XTypes 1.3 §7.6.3.1.2 (encapsulation identifiers)
  */
 bool deserialize_message(const MessageCodec& codec, const uint8_t* in_buf, uint32_t in_len,
-                         void* ros_message) noexcept;
+                         void* ros_message, uint32_t header_size = 0) noexcept;
 
 }  // namespace rmw_rosette

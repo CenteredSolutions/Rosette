@@ -208,7 +208,7 @@ uint32_t serialize_message(const MessageCodec& codec, const void* ros_message,
 }
 
 rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* ros_message,
-                               uint32_t* refused_size) noexcept {
+                               uint32_t header_size, uint32_t* refused_size) noexcept {
     if (refused_size != nullptr) {
         *refused_size = 0u;
     }
@@ -224,9 +224,12 @@ rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* ros_messag
             return {};
         }
 
-        const uint32_t len = serialize_message(codec, ros_message, buf.data, buf.capacity());
+        const uint32_t len = buf.capacity() > header_size
+                                 ? serialize_message(codec, ros_message, buf.data + header_size,
+                                                     buf.capacity() - header_size)
+                                 : 0u;
         if (len > 0u) {
-            buf.size = len;
+            buf.size = header_size + len;
             return buf;
         }
         // Did not fit (or failed to encode): retry one pool class up, until
@@ -244,11 +247,14 @@ rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* ros_messag
 }
 
 bool deserialize_message(const MessageCodec& codec, const uint8_t* in_buf, uint32_t in_len,
-                         void* ros_message) noexcept {
-    if (in_len < kRtpsEncapsulationHeaderSize) return false;
-    if (in_buf[0] != kCdrLeId[0] || in_buf[1] != kCdrLeId[1]) return false;
-    const uint8_t* body = in_buf + kRtpsEncapsulationHeaderSize;
-    const uint32_t body_len = in_len - kRtpsEncapsulationHeaderSize;
+                         void* ros_message, uint32_t header_size) noexcept {
+    if (in_len < kRtpsEncapsulationHeaderSize + header_size || in_buf[0] != kCdrLeId[0]
+        || in_buf[1] != kCdrLeId[1]) {
+        return false;
+    }
+
+    const uint8_t* body = in_buf + kRtpsEncapsulationHeaderSize + header_size;
+    const uint32_t body_len = in_len - kRtpsEncapsulationHeaderSize - header_size;
 
     switch (codec.kind) {
         case CodecKind::IntrospectionC: {

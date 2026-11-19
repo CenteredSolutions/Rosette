@@ -6,15 +6,23 @@
  * @brief rmw_create_service / rmw_take_request / rmw_send_response.
  *
  * A service is a reader on the request topic and a writer on the reply topic
- * (service_endpoints.hpp). A request's identity is the GUID of the writer that
- * sent it plus that DATA's sequence number; rmw_take_request() reports it as
- * the rmw_request_id_t, rcl hands it back to rmw_send_response(), and the
- * reply carries it as PID_RELATED_SAMPLE_IDENTITY so the calling client, and
- * only that client, accepts the reply. This is the wire contract
- * rmw_fastrtps_cpp uses, so stock clients call rosette services directly.
+ * (service_endpoints.hpp). rmw_take_request() reports each request's identity
+ * as the rmw_request_id_t, rcl hands it back to rmw_send_response(), and the
+ * reply carries it so the calling client, and only that client, accepts the
+ * reply. How the reply carries it depends on the client's dialect
+ * (compat/cyclone_request_header.hpp):
+ *
+ * | Client vendor       | Request identity                 | Reply carries it in         |
+ * |---------------------|----------------------------------|-----------------------------|
+ * | Eclipse Cyclone DDS | in-payload header {client, seq}  | the same header, echoed     |
+ * | any other (DDS-RPC) | {request writer GUID, DATA's SN} | PID_RELATED_SAMPLE_IDENTITY |
+ *
+ * So stock rmw_fastrtps_cpp and rmw_cyclonedds_cpp clients both call rosette
+ * services directly.
  */
 
 #include "rmw_rosette/argument_checks.hpp"
+#include "rmw_rosette/compat/cyclone_request_header.hpp"
 #include "rmw_rosette/guid.hpp"
 #include "rmw_rosette/identifier.h"
 #include "rmw_rosette/message_codec.hpp"
@@ -51,6 +59,39 @@ ServiceSlot* slot_from(rmw_service_t* service) noexcept {
 /// Request-reader callback: buffers the request with its writer GUID and SN.
 void on_request(const rtps::CacheChange& change, void* user_data) noexcept {
     static_cast<rmw_rosette::Service*>(user_data)->requests.push(change);
+}
+
+/**
+ * @brief Finds the client that sent the request `request_header` names.
+ *
+ * A DDS-RPC client names its request writer by GUID, a Cyclone client by
+ * request_writer_key(); naming no matched writer either way, the client has
+ * gone. Fills the reply's related sample identity for a DDS-RPC client, or
+ * the header to echo for a Cyclone one. The caller holds the context lock.
+ *
+ * @return false when the client has gone.
+ */
+bool find_requester(const rmw_rosette::Service& impl, const rmw_request_id_t& request_header,
+                    rtps::InlineQos& qos, rmw_rosette::CycloneRequestHeader& cyclone,
+                    uint32_t& header_size) noexcept {
+    const rtps::Guid request_writer =
+        rmw_rosette::guid_from_request_writer(request_header.writer_guid);
+    qos = rtps::InlineQos{};
+    header_size = 0u;
+    if (impl.request_reader->matched_writer_lookup(request_writer) != nullptr) {
+        qos.hasRelatedSampleIdentity = true;
+        qos.relatedSampleIdentity.writerGuid = request_writer;
+        qos.relatedSampleIdentity.sequenceNumber =
+            rtps::SequenceNumber::from_int64(request_header.sequence_number);
+        return true;
+    }
+
+    if (rmw_rosette::find_cyclone_requester(*impl.request_reader, request_header, cyclone)) {
+        header_size = rmw_rosette::kCycloneRequestHeaderSize;
+        return true;
+    }
+
+    return false;
 }
 
 }  // namespace
@@ -163,8 +204,9 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
  * @brief Takes the oldest buffered request and reports its identity.
  *
  * @param[in]  service        Service to take from.
- * @param[out] request_header Receives the request writer's GUID and the
- *   request's SN (`request_id`) and its source timestamp.
+ * @param[out] request_header Receives the request's identity (`request_id`,
+ *   in the client's dialect as the file comment tabulates) and its source
+ *   timestamp.
  * @param[out] ros_request    Initialized request message to decode into.
  * @param[out] taken          `true` when a request was taken.
  * @return `RMW_RET_OK` (including when nothing was waiting);
@@ -172,11 +214,15 @@ rmw_ret_t rmw_destroy_service(rmw_node_t* node, rmw_service_t* service) {
  *   request fails to decode.
  *
  * Verification:
- * - Correct means: `request_id` equals the {writer GUID, SN} of the DATA
- *   that carried the request, the identity a stock client correlates on.
+ * - Correct means: from a DDS-RPC client, `request_id` equals the {writer
+ *   GUID, SN} of the DATA that carried the request; from a Cyclone client,
+ *   the message decodes from after the 16-octet header and `request_id`
+ *   packs that header's client id and sequence.
+ * - Covered by: tests/ros2 service interop against rmw_cyclonedds_cpp.
  *
  * References:
  * - rmw/rmw.h (Humble), `rmw_take_request`
+ * - rmw_cyclonedds_cpp (Humble) rmw_node.cpp, rmw_take_response_request
  */
 rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* request_header,
                            void* ros_request, bool* taken) {
@@ -191,16 +237,32 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
     auto* impl = static_cast<rmw_rosette::Service*>(service->data);
     rmw_rosette::ContextLock lock(*impl->node->context);
     rmw_rosette::PendingChange change;
-    if (!impl->requests.pop(change)) return RMW_RET_OK;
+    if (!impl->requests.pop(change)) {
+        return RMW_RET_OK;
+    }
 
-    if (!rmw_rosette::deserialize_message(impl->request_codec, change.payload.data, change.payload.size,
-                                          ros_request)) {
+    const bool from_cyclone =
+        rmw_rosette::is_cyclone_peer(*impl->node->context->participant, change.writer_guid.prefix);
+    rmw_rosette::CycloneRequestHeader cyclone{};
+    const uint32_t header_size = from_cyclone ? rmw_rosette::kCycloneRequestHeaderSize : 0u;
+    if ((from_cyclone
+         && !rmw_rosette::read_cyclone_request_header(change.payload.data, change.payload.size,
+                                                      cyclone))
+        || !rmw_rosette::deserialize_message(impl->request_codec, change.payload.data,
+                                             change.payload.size, ros_request, header_size)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_take_request: malformed request");
         return RMW_RET_ERROR;
     }
-    rmw_rosette::guid_to_request_writer(change.writer_guid,
-                                        request_header->request_id.writer_guid);
-    request_header->request_id.sequence_number = change.sequence_number.to_int64();
+
+    if (from_cyclone) {
+        rmw_rosette::cyclone_request_to_request_id(cyclone, change.writer_guid,
+                                                   request_header->request_id);
+    } else {
+        rmw_rosette::guid_to_request_writer(change.writer_guid,
+                                            request_header->request_id.writer_guid);
+        request_header->request_id.sequence_number = change.sequence_number.to_int64();
+    }
+
     request_header->source_timestamp = rmw_rosette::timestamp_to_ns(change.source_timestamp);
     request_header->received_timestamp = 0;
     *taken = true;
@@ -211,7 +273,9 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
  * @brief Sends a reply correlated with the request identified by `request_header`.
  *
  * The reply goes to every matched client reader; each client keeps only
- * replies whose related sample identity names its own request writer.
+ * replies that name its own request, in its dialect (file comment): a
+ * DDS-RPC reply carries the identity as PID_RELATED_SAMPLE_IDENTITY, a
+ * Cyclone reply as the in-payload header echoed from the request.
  *
  * A client that has left is not replied to. The reply writer keeps a reply
  * whose client has no matched reader yet, so it reaches a reply reader that
@@ -220,9 +284,12 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
  * evicts it and be replayed to every later client. The request writer named
  * in `request_header` tells the two apart: it stays matched to this
  * service's request reader for as long as the client exists, and a new
- * client has a writer of its own, so the test is exact per client. The
- * response is then dropped instead of written, and the call succeeds, as
- * rmw_fastrtps_cpp does for a client it reports gone.
+ * client has a writer of its own, so the test is exact per client. A
+ * DDS-RPC identity names that writer by GUID, a Cyclone one by
+ * request_writer_key(); an identity that names no matched writer either
+ * way is a client that has gone. The response is then dropped instead of
+ * written, and the call succeeds, as rmw_fastrtps_cpp and rmw_cyclonedds_cpp
+ * do for a client they report gone.
  *
  * Unacknowledged replies pin their pool blocks, so a service answering
  * back-to-back calls with large replies can find the pool exhausted before
@@ -241,20 +308,25 @@ rmw_ret_t rmw_take_request(const rmw_service_t* service, rmw_service_info_t* req
  *   exhausted for the whole wait.
  *
  * Verification:
- * - Correct means: the reply's PID_RELATED_SAMPLE_IDENTITY equals
- *   `request_header`, so the stock client that sent the request accepts it;
- *   a reply whose request writer is no longer matched leaves nothing in the
- *   reply writer's history; a reply that finds the pool exhausted is sent
- *   once a block is released within RMW_ROSETTE_MAX_BLOCKING_TIME_MS, and
- *   leaves nothing in the history when its client unmatches during the wait.
+ * - Correct means: a reply to a DDS-RPC client carries
+ *   PID_RELATED_SAMPLE_IDENTITY equal to `request_header`; a reply to a
+ *   Cyclone client starts its body with the request's {client id,
+ *   sequence} header; either way the stock client that sent the request
+ *   accepts it. A reply whose request writer is no longer matched leaves
+ *   nothing in the reply writer's history; a reply that finds the pool
+ *   exhausted is sent once a block is released within
+ *   RMW_ROSETTE_MAX_BLOCKING_TIME_MS, and leaves nothing in the history
+ *   when its client unmatches during the wait.
  * - Covered by: rmw_rosette/test/test_service_departed_client.cpp,
- *   test_write_waits_for_pool.cpp (TC-RMW-WRITE-001, TC-RMW-WRITE-004).
+ *   test_write_waits_for_pool.cpp (TC-RMW-WRITE-001, TC-RMW-WRITE-004),
+ *   tests/ros2 service interop against rmw_cyclonedds_cpp.
  *
  * References:
  * - rmw/rmw.h (Humble), `rmw_send_response`
  * - OMG DDS-RPC 1.0 §7.8.2 (related sample identity)
  * - OMG DDS 1.4 §2.2.3.14 (RELIABILITY `max_blocking_time`)
  * - OMG DDSI-RTPS 2.5 §8.4.7.4 (matched_writer_lookup)
+ * - rmw_cyclonedds_cpp (Humble) rmw_node.cpp, rmw_send_response
  */
 rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* request_header,
                             void* ros_response) {
@@ -267,16 +339,28 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
 
     auto*                 impl = static_cast<rmw_rosette::Service*>(service->data);
     rmw_rosette::Context& ctx = *impl->node->context;
-    const rtps::Guid request_writer =
-        rmw_rosette::guid_from_request_writer(request_header->writer_guid);
-    rtps::BufRef payload = rmw_rosette::serialize_for_write(ctx, impl->response_codec, ros_response,
-                                                            impl->qos.reliability);
 
-    // The participant runs while the reply is encoded, and the client can
-    // leave meanwhile, so it is looked up under the lock that the write
-    // holds; a reply written after its client is gone stays in the history.
+    // The client is found before encoding, which sizes the Cyclone header and
+    // skips encoding for a client already gone, and again under the write's
+    // lock, since the participant runs during serialize_for_write()'s wait and
+    // the client can leave meanwhile.
+    rmw_rosette::CycloneRequestHeader cyclone{};
+    rtps::InlineQos                   qos{};
+    uint32_t                          header_size = 0;
+    {
+        rmw_rosette::ContextUpdateLock lock(ctx);
+        if (!find_requester(*impl, *request_header, qos, cyclone, header_size)) {
+            return RMW_RET_OK;
+        }
+    }
+
+    rtps::BufRef payload = rmw_rosette::serialize_for_write(ctx, impl->response_codec, ros_response,
+                                                            impl->qos.reliability, header_size);
+
     rmw_rosette::ContextUpdateLock lock(ctx);
-    if (impl->request_reader->matched_writer_lookup(request_writer) == nullptr) {
+    const uint32_t                 encoded_header_size = header_size;
+    if (!find_requester(*impl, *request_header, qos, cyclone, header_size)
+        || header_size != encoded_header_size) {
         return RMW_RET_OK;
     }
 
@@ -287,11 +371,10 @@ rmw_ret_t rmw_send_response(const rmw_service_t* service, rmw_request_id_t* requ
         return RMW_RET_ERROR;
     }
 
-    rtps::InlineQos qos{};
-    qos.hasRelatedSampleIdentity = true;
-    qos.relatedSampleIdentity.writerGuid = request_writer;
-    qos.relatedSampleIdentity.sequenceNumber =
-        rtps::SequenceNumber::from_int64(request_header->sequence_number);
+    if (header_size != 0u) {
+        rmw_rosette::write_cyclone_request_header(cyclone, payload.data);
+    }
+
     if (!impl->reply_writer->write_async_owned(rtps::ChangeKind::ALIVE,
                                                static_cast<rtps::BufRef&&>(payload), qos)) {
         RMW_SET_ERROR_MSG("rmw_rosette: rmw_send_response: write failed");
