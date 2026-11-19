@@ -207,11 +207,23 @@ uint32_t serialize_message(const MessageCodec& codec, const void* ros_message,
     }
 }
 
-rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* ros_message) noexcept {
+rtps::BufRef serialize_to_pool(const MessageCodec& codec, const void* ros_message,
+                               uint32_t* refused_size) noexcept {
+    if (refused_size != nullptr) {
+        *refused_size = 0u;
+    }
+
     uint32_t request = 256u;
     for (;;) {
         rtps::BufRef buf = rtps::buf_alloc(request);
-        if (!buf.valid()) return {};
+        if (!buf.valid()) {
+            if (refused_size != nullptr) {
+                *refused_size = request;
+            }
+
+            return {};
+        }
+
         const uint32_t len = serialize_message(codec, ros_message, buf.data, buf.capacity());
         if (len > 0u) {
             buf.size = len;
