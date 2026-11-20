@@ -95,7 +95,6 @@ working with also holds an **active slot**.
 | Their SEDP announcers → our SEDP readers | highest sequence number processed, per announcer | a `WriterProxy` per announcer |
 | Our SEDP announcers → their SEDP readers | highest sequence number acknowledged, per announcer | a `ReaderProxy` per announcer |
 | Our `ros_discovery_info` writer → their reader | reader entity ID, highest sequence number acknowledged | a `ReaderProxy` in the writer |
-| Their `ros_discovery_info` writer → our reader (hosts) | writer entity ID, highest sequence number processed | a `WriterProxy` in the reader |
 | Vendor ID, builtin endpoint set | builtin set as three flag bits | full values |
 
 The active slot is the full per-peer discovery state: the discovered
@@ -267,11 +266,6 @@ An active peer is **settled** when all of these hold:
   announcers have written.
 * Its `ros_discovery_info` reader, if it has one, has acknowledged the
   current sample.
-* On a host that reads `ros_discovery_info` (`RTPS_DISCOVERY_READER`), its
-  `ros_discovery_info` writer, if it has one, has been heard since its
-  activation and processed, with no gaps, up to the `lastSN` of its latest
-  HEARTBEAT, as for the SEDP announcers. Neither the writer's matches nor
-  the reader's count as application matches.
 * It has been settled for at least `RTPS_PEER_SETTLE_MS`, so a peer in the
   middle of creating its endpoints (rclcpp creates them over tens of
   milliseconds) is not parked between two of them.
@@ -364,10 +358,6 @@ record) when:
 * **It announces something new:** a HEARTBEAT or DATA from one of its SEDP
   announcers carries a sequence number above the parked one. This covers the
   operator console subscribing to a board's topic long after both started.
-  On a host that reads `ros_discovery_info`, a HEARTBEAT or DATA from the
-  peer's `ros_discovery_info` writer above the number kept at parking does
-  the same, so a node the peer adds or removes while parked reaches the
-  graph listing even when no endpoint announcement comes with it.
 * **A local endpoint matches one of its stored remote endpoints.** This is
   the case where this side creates an endpoint late. On a board it does not
   happen: firmware declares every entity before the participant first runs
@@ -471,10 +461,7 @@ numbers, and the slot index with state flags. Reactivation resyncs SEDP from
 the start, so the record keeps no acknowledged sequence numbers and no
 `ros_discovery_info` reader. With 96 records and 8 active slots (120 B
 each), the table costs 7.5 KB of `.bss`, 6.5 KB more than a table of 8 full
-peers. A host build that reads `ros_discovery_info` (`RTPS_DISCOVERY_READER`,
-set with `RMW_ROSETTE_GRAPH_CACHE`) adds 8 B to each record: the entity ID of
-the peer's `ros_discovery_info` writer and the highest sample processed from
-it.
+peers.
 
 Active slot: the remainder of a full peer, about 400 B (the ranked locator
 lists, 120 B, and four SEDP proxies). A board needs as many active slots as the peers
@@ -566,12 +553,6 @@ Spec tests:
   observer's listing unchanged and a departure is announced once; a promoted
   peer's endpoint withdrawn while parked is forgotten once the replay has
   caught up, and not before an advertised re-announcement arrives.
-* `ros_discovery_info` reader (`TC-PART-8.5.3-030` to `-032`): a peer
-  matched only through the discovery topic parks; it does not settle until
-  the reader has heard its writer and holds every sample the writer
-  announced; once parked, a DATA or HEARTBEAT from that writer above the
-  kept number reactivates it, and one at or below it, or from another of
-  its writers, does not.
 
 Interop: a stock participant parked on the board lists the board's node with
 `ros2 node list`, and lists a node the board creates after the peer was

@@ -245,9 +245,8 @@ struct DiscoveredParticipant {
 //   pending  known from SPDP, waiting for an active slot;
 //   active   SEDP is exchanged with it: it holds an active slot;
 //   parked   it was active, has everything this participant announced and
-//            this participant has everything it announced, its
-//            `ros_discovery_info` included, and it shares no match that
-//            counts; its slot went to another peer.
+//            this participant has everything it announced, and it shares
+//            no match that counts; its slot went to another peer.
 //
 // A record (PeerEntry) is what every known peer costs, so it keeps only what
 // recognises the peer, keeps its lease, and lets it be activated again: its
@@ -269,14 +268,6 @@ struct DiscoveredParticipant {
 /// Records of known participants, active or not; size it for the network.
 #ifndef RTPS_MAX_KNOWN_PEERS
 #define RTPS_MAX_KNOWN_PEERS RTPS_MAX_PEERS
-#endif
-
-/// 1 where the participant names a `ros_discovery_info` reader
-/// (RTPSParticipant::set_discovery_reader()): each peer record then keeps
-/// what that reader had received from the peer when it was parked, 8 octets
-/// per known peer. Builds that read no `ros_discovery_info` leave it 0.
-#ifndef RTPS_DISCOVERY_READER
-#  define RTPS_DISCOVERY_READER 0
 #endif
 
 /// How long an active peer must go without sending SEDP DATA before it can
@@ -340,14 +331,6 @@ struct PeerEntry {
     /// the record no octet.
     uint32_t parkedPublicationsSn = 0;
     uint32_t parkedSubscriptionsSn = 0;
-#if RTPS_DISCOVERY_READER
-    /// Low 32 bits of the highest sequence number the discovery reader had
-    /// received from the peer's `ros_discovery_info` writer when it was
-    /// parked, and that writer's entity; ENTITYID_UNKNOWN when it matched
-    /// none. A DATA or HEARTBEAT above the number reactivates the peer.
-    uint32_t parkedDiscoverySn = 0;
-    EntityId parkedDiscoveryWriter = entity_id::UNKNOWN;
-#endif
     /// Port of the most reachable default unicast locator at the address of
     /// metatrafficLocator; 0 when there is none, and the record cannot
     /// rebuild the peer's default list.

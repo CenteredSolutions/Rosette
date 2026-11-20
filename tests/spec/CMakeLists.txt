@@ -611,7 +611,6 @@ target_compile_definitions(participant_tier_spec_tests PRIVATE
     RTPS_PEER_EXCHANGE_TIMEOUT_MS=500u
     RTPS_PREEMPTIVE_ACKNACK_RETRY_MS=200u
     RTPS_PEER_STALL_BACKOFF_MAX_MS=2000u
-    RTPS_DISCOVERY_READER=1
 )
 add_test(
     NAME participant_tier_spec_conformance
