@@ -1060,15 +1060,26 @@ void StatefulWriter::note_eviction() noexcept {
     // outpaces a slow reader evicts on every write, and the log must not
     // flood a serial console while the count stays exact.
     ++evictedUnacknowledged_;
-    if ((evictedUnacknowledged_ & (evictedUnacknowledged_ - 1u)) == 0u) {
-        [[maybe_unused]] const EntityId& id = guid_.entityId;
+    if ((evictedUnacknowledged_ & (evictedUnacknowledged_ - 1u)) != 0u) {
+        return;
+    }
+
+    [[maybe_unused]] const EntityId& id = guid_.entityId;
+    [[maybe_unused]] const auto      sn = static_cast<unsigned long>(oldest_sn.low);
+    [[maybe_unused]] const auto      depth = static_cast<unsigned>(writer_cache_.capacity());
+    [[maybe_unused]] const auto      total = static_cast<unsigned long>(evictedUnacknowledged_);
+    if (releaseRepliesOnDelivery_) {
+        // A lost reply leaves a client waiting: raise RMW_ROSETTE_REPLY_DEPTH.
+        RTPS_LOG_W("writer", "%02x%02x%02x%02x lost reply SN=%lu from %u-deep history (%lu so far)",
+                   id.entityKey[0], id.entityKey[1], id.entityKey[2], id.entityKind, sn, depth,
+                   total);
+    } else {
+        // KEEP_LAST at work, such as the depth-1 ros_discovery_info writer
+        // during a burst of entity creation.
         RTPS_LOG_D(
             "writer",
             "%02x%02x%02x%02x evicted unacknowledged SN=%lu from %u-deep history (%lu so far)",
-            id.entityKey[0], id.entityKey[1], id.entityKey[2], id.entityKind,
-            static_cast<unsigned long>(oldest_sn.low),
-            static_cast<unsigned>(writer_cache_.capacity()),
-            static_cast<unsigned long>(evictedUnacknowledged_));
+            id.entityKey[0], id.entityKey[1], id.entityKey[2], id.entityKind, sn, depth, total);
     }
 }
 
