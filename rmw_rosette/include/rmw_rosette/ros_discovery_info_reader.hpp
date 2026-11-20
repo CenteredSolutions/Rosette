@@ -46,8 +46,9 @@ namespace rmw_rosette {
  * @param[in]  payload Serialized payload, starting at the CDR encapsulation header.
  * @param[in]  size    Length of `payload` in octets.
  * @param[out] nodes   Replaced with the decoded nodes on success; unchanged on failure.
- * @return `true` when the whole message decoded; `false` for an unsupported
- *   encapsulation or a malformed or truncated message.
+ * @return `true` when the whole message decoded; `false` for an encapsulation
+ *   other than CDR_LE (a big-endian writer's CDR_BE among them) or a malformed
+ *   or truncated message.
  * @throws std::bad_alloc when the heap is exhausted.
  *
  * Verification:

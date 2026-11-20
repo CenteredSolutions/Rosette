@@ -868,7 +868,8 @@ public:
      * writer repairs nothing, so it counts nothing, and a BEST_EFFORT reader
      * of a RELIABLE writer is never repaired, so a change only it lacks does
      * not count either. The 1st, 2nd, 4th, 8th, ... eviction
-     * counted also logs a warning naming the writer and the sequence number.
+     * counted also logs a line naming the writer and the sequence number: a
+     * warning on a service reply writer, a debug line on any other.
      *
      * On a service reply writer any count is a lost reply: more replies were
      * in flight at once than its depth (RMW_ROSETTE_REPLY_DEPTH) while one of

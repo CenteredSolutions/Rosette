@@ -386,6 +386,24 @@ TEST(RmwGraphNames, ListsALocalPublisherAndForgetsItWhenDestroyed) {
     ASSERT_EQ(rmw_context_fini(&context), RMW_RET_OK);
 }
 
+// Whether `observer`'s context lists a node named `name` in `ns`.
+static bool lists_node(const rmw_node_t* observer, const char* name, const char* ns) {
+    rcutils_string_array_t names = rcutils_get_zero_initialized_string_array();
+    rcutils_string_array_t namespaces = rcutils_get_zero_initialized_string_array();
+    bool                   found = false;
+    if (rmw_get_node_names(observer, &names, &namespaces) == RMW_RET_OK) {
+        for (size_t i = 0; i < names.size && i < namespaces.size; ++i) {
+            found = found
+                    || (std::strcmp(names.data[i], name) == 0
+                        && std::strcmp(namespaces.data[i], ns) == 0);
+        }
+    }
+
+    EXPECT_EQ(rcutils_string_array_fini(&names), RCUTILS_RET_OK);
+    EXPECT_EQ(rcutils_string_array_fini(&namespaces), RCUTILS_RET_OK);
+    return found;
+}
+
 TEST(RmwNodeNames, ListsALocalNodeUntilDestroyed) {
     rmw_init_options_t init_options = rmw_get_zero_initialized_init_options();
     ASSERT_EQ(rmw_rosette_test::init_options_as_rcl(&init_options), RMW_RET_OK);
@@ -394,28 +412,27 @@ TEST(RmwNodeNames, ListsALocalNodeUntilDestroyed) {
     ASSERT_EQ(rmw_init(&init_options, &context), RMW_RET_OK);
     ASSERT_EQ(rmw_init_options_fini(&init_options), RMW_RET_OK);
 
-    rmw_node_t* node = rmw_create_node(&context, "graph_listed_node", "/robot");
-    ASSERT_NE(node, nullptr);
+    rmw_node_t* listed = rmw_create_node(&context, "graph_listed_node", "/robot");
+    ASSERT_NE(listed, nullptr);
+    rmw_node_t* observer = rmw_create_node(&context, "graph_observer_node", "/");
+    ASSERT_NE(observer, nullptr);
+    EXPECT_TRUE(lists_node(observer, "graph_listed_node", "/robot"));
+    EXPECT_TRUE(lists_node(observer, "graph_observer_node", "/"));
 
+    // The output arrays must start zero-initialized, as for every rmw.
     rcutils_string_array_t names = rcutils_get_zero_initialized_string_array();
     rcutils_string_array_t namespaces = rcutils_get_zero_initialized_string_array();
-    ASSERT_EQ(rmw_get_node_names(node, &names, &namespaces), RMW_RET_OK);
-
-    bool found = false;
-    ASSERT_EQ(names.size, namespaces.size);
-    for (size_t i = 0; i < names.size; ++i) {
-        found = found
-                || (std::strcmp(names.data[i], "graph_listed_node") == 0
-                    && std::strcmp(namespaces.data[i], "/robot") == 0);
-    }
-
-    EXPECT_TRUE(found);
-    EXPECT_EQ(rmw_get_node_names(node, &names, &namespaces), RMW_RET_INVALID_ARGUMENT);
+    ASSERT_EQ(rmw_get_node_names(observer, &names, &namespaces), RMW_RET_OK);
+    EXPECT_EQ(rmw_get_node_names(observer, &names, &namespaces), RMW_RET_INVALID_ARGUMENT);
     rcutils_reset_error();
-
     ASSERT_EQ(rcutils_string_array_fini(&names), RCUTILS_RET_OK);
     ASSERT_EQ(rcutils_string_array_fini(&namespaces), RCUTILS_RET_OK);
-    ASSERT_EQ(rmw_destroy_node(node), RMW_RET_OK);
+
+    ASSERT_EQ(rmw_destroy_node(listed), RMW_RET_OK);
+    EXPECT_FALSE(lists_node(observer, "graph_listed_node", "/robot"));
+    EXPECT_TRUE(lists_node(observer, "graph_observer_node", "/"));
+
+    ASSERT_EQ(rmw_destroy_node(observer), RMW_RET_OK);
     ASSERT_EQ(rmw_shutdown(&context), RMW_RET_OK);
     ASSERT_EQ(rmw_context_fini(&context), RMW_RET_OK);
 }
