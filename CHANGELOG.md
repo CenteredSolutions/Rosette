@@ -18,7 +18,7 @@ version may change the public API.
   option controls this and is off for firmware, which keeps no endpoint names.
 - `ros2 node list` on POSIX hosts: with the same option, `rmw_rosette` reads other
   participants' `ros_discovery_info`. Firmware has no such reader. The reader skips
-  its own participant's writer, and its matches keep no peer from parking.
+  its own participant's writer.
 - Samples above the largest pool block on POSIX hosts, stored on the heap up to
   `RMW_ROSETTE_MAX_SAMPLE_SIZE` (1 MiB by default) and a total of
   `RMW_ROSETTE_HEAP_BUDGET` (64 MiB, half each for written and received samples).

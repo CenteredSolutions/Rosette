@@ -386,62 +386,6 @@ static bool tc_part_8_5_3_012(std::string& err) {
     return true;
 }
 
-// A ROS 2 peer both reads and writes `ros_discovery_info`: a peer whose only
-// matches are with the discovery writer and the discovery reader is parked
-// once settled, which unmatches its writer from that reader too. The reader
-// never pairs with the discovery writer of its own participant.
-static bool tc_part_8_5_3_030(std::string& err) {
-    CaptureTransport tx{};
-    RTPSParticipant  p(0u, 1u, tx);
-    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
-
-    ReaderConfig dcfg{};
-    dcfg.topicName.assign("rt/discovery");
-    dcfg.typeName.assign("pkg::msg::dds_::T_");
-    dcfg.reliability = ReliabilityKind::RELIABLE;
-    dcfg.ignoresLocalWriters = true;
-    StatefulReader* discovery_reader = p.create_reader(dcfg, on_reader_change, nullptr);
-    CHECK(discovery_reader != nullptr, "the discovery reader is created");
-    p.set_discovery_reader(discovery_reader->guid());
-    WriterConfig wcfg{};
-    wcfg.topicName.assign("rt/discovery");
-    wcfg.typeName.assign("pkg::msg::dds_::T_");
-    wcfg.reliability = ReliabilityKind::RELIABLE;
-    auto* discovery = p.create_writer<1>(wcfg);
-    CHECK(discovery != nullptr, "the discovery writer is created");
-    p.set_discovery_writer(discovery->guid());
-    CHECK(discovery->matched_reader_lookup(discovery_reader->guid()) == nullptr,
-          "the discovery reader does not pair with its own participant's writer");
-    ReaderConfig rcfg{};
-    rcfg.topicName.assign("rt/control");
-    rcfg.typeName.assign("pkg::msg::dds_::T_");
-    rcfg.reliability = ReliabilityKind::RELIABLE;
-    CHECK(p.create_reader(rcfg, on_reader_change, nullptr) != nullptr, "the reader is created");
-
-    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
-    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
-    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
-    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1000u), "two peers are active");
-    CHECK(hear_announcers(p, a, 1000u) && hear_announcers(p, b, 1000u), "their announcers answer");
-    CHECK(deliver_announcement(p, a, false, "rt/discovery", 1, 1000u)
-              && deliver_announcement(p, a, true, "rt/discovery", 1, 1000u),
-          "peer A reads and writes the discovery topic");
-    CHECK(deliver_announcement(p, b, true, "rt/control", 1, 1000u),
-          "peer B writes the topic the local reader reads");
-    const Guid a_writer{a, make_entity(0x71u, 0x72u, 1u, 0x03u)};
-    CHECK(discovery_reader->matched_writer_lookup(a_writer) != nullptr,
-          "the discovery reader matches peer A's writer");
-
-    CHECK(acknowledge_sedp(p, a, true, 1) && acknowledge_sedp(p, a, false, 2),
-          "peer A acknowledges every announcement");
-    CHECK(announce(p, c, 0x13u, 1300u), "a third peer is recorded");
-    CHECK(is_active(p, c) && is_parked(p, a) && is_active(p, b),
-          "A, matched only on the discovery topic, is parked; B is not");
-    CHECK(discovery_reader->matched_writer_lookup(a_writer) == nullptr,
-          "parking A unmatches its writer from the discovery reader");
-    return true;
-}
-
 // A peer parked while it reads only the discovery writer receives no sample
 // written after: discovery_info_changed() owes it the change, tick()
 // reactivates it in place of a settled peer, and its replayed reader is
@@ -1321,11 +1265,6 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "§8.5.3: an owed peer whose record cannot rebuild it does not hold back the "
                      "owed peers behind it.",
                      tc_part_8_5_3_029});
-    tests.push_back({"TC-PART-8.5.3-030",
-                     "§8.5.3: a peer matched only with the discovery writer and the discovery "
-                     "reader is parked once settled; the discovery reader ignores its own "
-                     "participant's writer.",
-                     tc_part_8_5_3_030});
 }
 
 }  // namespace spec_test

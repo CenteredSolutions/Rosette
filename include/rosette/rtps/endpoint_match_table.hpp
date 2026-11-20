@@ -725,27 +725,22 @@ public:
      *
      * The participant keeps a peer active while this is true and may park it
      * otherwise (RTPSParticipant::peer_idleness()). A match with
-     * `except_writer` or `except_reader` does not count: those are the
-     * endpoints every participant on the network matches, such as the
-     * `ros_discovery_info` writer and reader for ROS 2. A parked peer's
-     * readers are served by reactivating it when the writer changes, and its
-     * writer's last sample reaches the reader again when it is reactivated.
+     * `except_local` does not count: that is the endpoint every participant
+     * on the network matches, such as `ros_discovery_info` for ROS 2, whose
+     * readers are served by reactivating parked peers instead.
      *
-     * @param[in] prefix        GUID prefix of the remote participant.
-     * @param[in] except_writer A local writer whose matches are ignored, or
-     *   GUID_UNKNOWN.
-     * @param[in] except_reader A local reader whose matches are ignored, or
-     *   GUID_UNKNOWN.
+     * @param[in] prefix       GUID prefix of the remote participant.
+     * @param[in] except_local A local endpoint whose matches are ignored, or
+     *   GUID_UNKNOWN to count every match.
      * @return `true` when some active match pairs an endpoint of `prefix`
-     *   with a local endpoint other than the two excepted.
+     *   with a local endpoint other than `except_local`.
      *
      * Verification:
      * - Correct means: only matches naming `prefix` count, and a peer whose
-     *   only matches are with `except_writer` or `except_reader` reports false.
-     * - Covered by: TC-PART-8.5.3-012, TC-PART-8.5.3-030.
+     *   only match is with `except_local` reports false.
+     * - Covered by: TC-PART-8.5.3-012.
      */
-    bool has_match_with(const GuidPrefix& prefix, const Guid& except_writer,
-                        const Guid& except_reader) const noexcept;
+    bool has_match_with(const GuidPrefix& prefix, const Guid& except_local) const noexcept;
 
     /**
      * @brief Reports again the oldest waiting pair the owner may now bind.

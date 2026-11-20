@@ -62,7 +62,7 @@ set(RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE 2 CACHE STRING
 set(RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS 32 CACHE STRING
     "Remote DDS participants tracked at once (every ROS 2 process is one)")
 set(RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS ${RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS} CACHE STRING
-    "Remote DDS participants known at once, active or parked; size it for the whole network. Only RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS of them exchange endpoint discovery at a time")
+    "Remote DDS participants known at once, active or parked; size it for the whole network. Only RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS of them exchange endpoint discovery at a time. Keep it equal to that with RMW_ROSETTE_GRAPH_CACHE: the ros_discovery_info reader keeps every ROS 2 peer active")
 set(RMW_ROSETTE_MAX_MATCHED_ENDPOINTS 16 CACHE STRING
     "Remote readers per local writer and remote writers per local reader")
 set(RMW_ROSETTE_MIN_MATCHED_ENDPOINTS 1 CACHE STRING

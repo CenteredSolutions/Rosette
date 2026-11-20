@@ -17,7 +17,7 @@
  * whose last SEDP DATA (or activation) is oldest, or, when none is settled,
  * the oldest stalled one. An active peer is idle when it is settled or
  * stalled (peer_idleness()), and neither ever shares a match that counts
- * (one other than with the discovery writer or reader), so the slots end up held by
+ * (one other than with the discovery writer), so the slots end up held by
  * the peers this participant really talks to and the rest rotate through
  * the network. A settled peer goes first because a stalled peer is parked
  * owed: parking it while a settled peer could go would only have the next
@@ -190,7 +190,7 @@ RTPSParticipant::PeerIdleness RTPSParticipant::peer_idleness(const PeerEntry& pe
     const uint32_t    quiet_ms = now_ms - peer.lastSedpMs;
     const GuidPrefix& prefix = peer.guidPrefix;
     if (!peer.active() || !peer.rebuildable() || quiet_ms < RTPS_PEER_SETTLE_MS
-        || match_table_.has_match_with(prefix, discovery_writer_guid_, discovery_reader_guid_)) {
+        || match_table_.has_match_with(prefix, discovery_writer_guid_)) {
         return PeerIdleness::busy;
     }
 
