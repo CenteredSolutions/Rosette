@@ -62,7 +62,7 @@ set(RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE 2 CACHE STRING
 set(RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS 32 CACHE STRING
     "Remote DDS participants tracked at once (every ROS 2 process is one)")
 set(RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS ${RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS} CACHE STRING
-    "Remote DDS participants known at once, active or parked; size it for the whole network. Only RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS of them exchange endpoint discovery at a time")
+    "Remote DDS participants known at once, active or parked; size it for the whole network. Only RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS of them exchange endpoint discovery at a time. Keep it equal to that with RMW_ROSETTE_GRAPH_CACHE: the ros_discovery_info reader keeps every ROS 2 peer active")
 set(RMW_ROSETTE_MAX_MATCHED_ENDPOINTS 16 CACHE STRING
     "Remote readers per local writer and remote writers per local reader")
 set(RMW_ROSETTE_MIN_MATCHED_ENDPOINTS 1 CACHE STRING
@@ -97,8 +97,14 @@ math(EXPR _rr_publishers
 math(EXPR _rr_services
      "${RMW_ROSETTE_MAX_SERVICES} + ${RMW_ROSETTE_MAX_NODES} * ${RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE}")
 math(EXPR _rr_rtps_writers "${_rr_publishers} + ${_rr_services} + ${RMW_ROSETTE_MAX_CLIENTS} + 1")
+# A build with the graph cache adds the participant's ros_discovery_info reader.
+if(RMW_ROSETTE_GRAPH_CACHE)
+  set(_rr_participant_readers 1)
+else()
+  set(_rr_participant_readers 0)
+endif()
 math(EXPR _rr_rtps_readers
-     "${RMW_ROSETTE_MAX_SUBSCRIPTIONS} + ${_rr_services} + ${RMW_ROSETTE_MAX_CLIENTS}")
+     "${RMW_ROSETTE_MAX_SUBSCRIPTIONS} + ${_rr_services} + ${RMW_ROSETTE_MAX_CLIENTS} + ${_rr_participant_readers}")
 if(_rr_rtps_writers GREATER _rr_rtps_readers)
   set(_rr_local_endpoints ${_rr_rtps_writers})
 else()
@@ -131,13 +137,15 @@ else()
   set(_rr_reader_proxies ${RMW_ROSETTE_MATCHED_READERS})
 endif()
 if(RMW_ROSETTE_MATCHED_WRITERS STREQUAL "")
-  math(EXPR _rr_writer_proxies "${_rr_rtps_readers} * ${RMW_ROSETTE_MAX_MATCHED_ENDPOINTS}")
+  math(EXPR _rr_writer_proxies
+       "(${_rr_rtps_readers} - ${_rr_participant_readers}) * ${RMW_ROSETTE_MAX_MATCHED_ENDPOINTS} + ${_rr_participant_readers} * ${RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS}")
 else()
   set(_rr_writer_proxies ${RMW_ROSETTE_MATCHED_WRITERS})
 endif()
 math(EXPR _rr_min_reader_proxies
      "(${_rr_rtps_writers} - 1) * ${RMW_ROSETTE_MIN_MATCHED_ENDPOINTS} + ${RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS}")
-math(EXPR _rr_min_writer_proxies "${_rr_rtps_readers} * ${RMW_ROSETTE_MIN_MATCHED_ENDPOINTS}")
+math(EXPR _rr_min_writer_proxies
+     "(${_rr_rtps_readers} - ${_rr_participant_readers}) * ${RMW_ROSETTE_MIN_MATCHED_ENDPOINTS} + ${_rr_participant_readers} * ${RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS}")
 if(_rr_reader_proxies LESS _rr_min_reader_proxies OR _rr_reader_proxies GREATER 65534)
   message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_MATCHED_READERS (${_rr_reader_proxies}) must be "
                       "${_rr_min_reader_proxies} to 65534: one floor per writer and one proxy per "

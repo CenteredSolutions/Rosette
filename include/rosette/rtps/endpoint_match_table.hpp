@@ -251,6 +251,10 @@ struct DiscoveredReaderData {
     DurabilityKind  durabilityKind     = DurabilityKind::VOLATILE;
     TopicKind       topicKind          = TopicKind::NO_KEY;
     bool            expectsInlineQos   = false;
+    /// A local reader that pairs with remote writers only, never with a
+    /// writer of its own participant (ReaderConfig::ignoresLocalWriters).
+    /// Never on the wire; SEDP leaves it false for a remote reader.
+    bool            ignoresLocalWriters = false;
 
     // Locators at which ACKNACK / NACK_FRAG are sent to the reader.
     Locator  unicastLocatorList[RTPS_MAX_LOCATORS_PER_PARTICIPANT] = {};
@@ -545,7 +549,9 @@ public:
      *
      * A local writer is compared with every local reader by name and with
      * every remote reader by topic and type key (name_key()); a remote
-     * writer is compared with every local reader by name. Adding a known
+     * writer is compared with every local reader by name. A local reader
+     * recorded with DiscoveredReaderData::ignoresLocalWriters pairs with no
+     * local writer, whichever of the two is added first. Adding a known
      * GUID updates its record and reports only pairs not reported before.
      * A writer whose topic or type name did not fit a TopicName is ignored.
      * When the remote writer table is full, a remote writer that pairs with
@@ -559,9 +565,10 @@ public:
      * - Correct means: every compatible pair with a local endpoint is
      *   reported exactly once until it is dissolved; remote-remote pairs
      *   never are; a full table still admits a remote endpoint that
-     *   completes a match unless every stored record is in one.
+     *   completes a match unless every stored record is in one; a reader
+     *   that ignores local writers is paired with remote writers alone.
      * - Covered by: TC-SEDP-8.5.5.1-001..005, TC-SEDP-8.5.5.1-008,
-     *   TC-SEDP-8.5.5.1-009, TC-SEDP-8.5.4-002.
+     *   TC-SEDP-8.5.5.1-009, TC-SEDP-8.5.5.1-018, TC-SEDP-8.5.4-002.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.5.5.1
@@ -847,7 +854,8 @@ public:
      */
     bool local_writer_data(const Guid& guid, DiscoveredWriterData& out) const noexcept;
 
-    /// @brief As local_writer_data(), for a local reader; also fills expectsInlineQos.
+    /// @brief As local_writer_data(), for a local reader; also fills expectsInlineQos and
+    /// ignoresLocalWriters.
     bool local_reader_data(const Guid& guid, DiscoveredReaderData& out) const noexcept;
 
 private:
@@ -862,6 +870,7 @@ private:
         uint8_t  reliability = 1u;      ///< ReliabilityKind.
         uint8_t  durability = 0u;       ///< DurabilityKind.
         bool     expectsInlineQos = false;
+        bool     ignoresLocalWriters = false;  ///< A reader that pairs with remote writers only.
 
         bool valid() const noexcept { return guid != GUID_UNKNOWN; }
 

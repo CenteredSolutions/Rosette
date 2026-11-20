@@ -127,10 +127,18 @@ constexpr uint32_t kParticipantWriters = 1;
 constexpr uint32_t kRtpsWriterCapacity =
     kPublisherCapacity + kServiceCapacity + kClientCapacity + kParticipantWriters;
 
+#ifndef RMW_ROSETTE_GRAPH_CACHE
+#  define RMW_ROSETTE_GRAPH_CACHE 0
+#endif
+
+/// Participant-level readers: the `ros_discovery_info` reader of a build with
+/// the graph cache.
+constexpr uint32_t kParticipantReaders = RMW_ROSETTE_GRAPH_CACHE ? 1u : 0u;
+
 /// RTPS readers the participant must hold: subscriptions, service requests,
-/// client replies.
+/// client replies, and the participant's own.
 constexpr uint32_t kRtpsReaderCapacity =
-    kSubscriptionCapacity + kServiceCapacity + kClientCapacity;
+    kSubscriptionCapacity + kServiceCapacity + kClientCapacity + kParticipantReaders;
 
 }  // namespace rmw_rosette
 
@@ -163,6 +171,15 @@ static_assert(RTPS_MAX_USER_WRITERS - RTPS_MAX_SHALLOW_WRITERS
 static_assert(RTPS_MAX_LOCAL_ENDPOINTS >= rmw_rosette::kRtpsWriterCapacity &&
               RTPS_MAX_LOCAL_ENDPOINTS >= rmw_rosette::kRtpsReaderCapacity,
               "RTPS_MAX_LOCAL_ENDPOINTS cannot announce every local endpoint through SEDP");
+#endif
+#if RMW_ROSETTE_GRAPH_CACHE && defined(RTPS_WRITER_PROXY_POOL)
+// The participant reserves every reader slot's floor, and the
+// ros_discovery_info reader reserves the rest of its floor of one proxy per
+// active peer (RosDiscoveryInfoReader::create()).
+static_assert(RTPS_WRITER_PROXY_POOL
+                  >= (RTPS_MAX_USER_READERS - 1) * RTPS_MIN_MATCHES_PER_ENDPOINT + RTPS_MAX_PEERS,
+              "RTPS_WRITER_PROXY_POOL cannot hold every reader's floor and one ros_discovery_info "
+              "proxy per active peer");
 #endif
 #ifdef RTPS_READER_PROXY_POOL
 // The participant reserves every writer slot's floor when it is created, and

@@ -225,7 +225,10 @@ every peer:
 Reading `ros_discovery_info` is the expensive direction at this scale: each
 peer's message lists all of its nodes and endpoints, and keeping them is a
 whole graph cache. Boards do not read it; a firmware that needs other
-participants' node names is a separate design.
+participants' node names is a separate design. A host that lists nodes
+(`RMW_ROSETTE_GRAPH_CACHE`) does read it, and the reader's match with every
+ROS 2 peer's writer keeps that peer active, so a host's known-peer table is
+no larger than its active tier and parks no peer.
 
 ## Lifecycle
 

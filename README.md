@@ -79,11 +79,11 @@ $ ros2 node list
 
 ### Known limitations
 
-- **Graph queries and QoS events.** On a host, topic and service listings such
-  as `ros2 topic list` work on a Rosette node. `rmw_get_node_names`, the
-  `*_by_node` queries, and `*_info_by_topic` return `RMW_RET_UNSUPPORTED`, as
-  every name listing does in firmware, and QoS events are not offered. Stock
-  tools on other nodes see Rosette nodes normally.
+- **Graph queries and QoS events.** On a host, topic, service, and node
+  listings such as `ros2 topic list` and `ros2 node list` work on a Rosette
+  node. The `*_by_node` queries, enclave listings, and `*_info_by_topic` return
+  `RMW_RET_UNSUPPORTED`, as every name listing does in firmware, and QoS events
+  are not offered. Stock tools on other nodes see Rosette nodes normally.
 - **Sample size.** A sample is at most `RMW_ROSETTE_MAX_SAMPLE_SIZE` bytes:
   1 MiB on a host, where samples above 65,532 bytes are stored on the heap, and
   4,096 in the firmware profile by default, with no heap use. A larger sample

@@ -27,6 +27,7 @@
 #include "graph_cache.hpp"
 #include "message_codec.hpp"
 #include "participant_pump.hpp"
+#include "ros_discovery_info_reader.hpp"
 #include "ros_discovery_info_writer.hpp"
 #include "rosette/net/socket.hpp"
 #include "rosette/rtps/buf_pool.hpp"
@@ -123,7 +124,9 @@ struct Context {
     /// from an exit handler after that static's destructor has run, and a
     /// GraphCache held by value would already be gone.
     alignas(GraphCache) unsigned char graph_cache_storage[sizeof(GraphCache)];
-    GraphCache* graph_cache = nullptr;  ///< placement-new'd into graph_cache_storage
+    GraphCache*            graph_cache = nullptr;  ///< placement-new'd into graph_cache_storage
+    /// Feeds other participants' nodes into graph_cache.
+    RosDiscoveryInfoReader discovery_info_reader;
 #endif
     /// Triggered whenever the participant's view of the ROS graph changes
     /// (a peer, endpoint, or local node comes or goes). One per context,

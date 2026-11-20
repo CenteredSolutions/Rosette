@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <rcutils/types/string_array.h>
 #include <rmw/get_service_names_and_types.h>
 #include <rmw/get_topic_names_and_types.h>
 #include <rmw/names_and_types.h>
@@ -19,12 +20,17 @@
 
 #include <std_msgs/msg/string.h>
 
+#include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "rcl_default_init_options.hpp"
 #include "rmw_rosette/graph_cache.hpp"
+#include "rmw_rosette/ros_discovery_info_reader.hpp"
+#include "rmw_rosette/types.hpp"
 
 namespace rtps = rosette::rtps;
 
@@ -38,6 +44,31 @@ rtps::Guid make_guid(uint8_t participant, uint8_t entity) {
 }
 
 constexpr char kStringType[] = "std_msgs::msg::dds_::String_";
+
+/// @brief Counts the listed nodes with this name and namespace; SIZE_MAX when the query or its
+/// cleanup fails.
+size_t count_nodes(const rmw_node_t* node, const char* name, const char* namespace_) {
+    rcutils_string_array_t names = rcutils_get_zero_initialized_string_array();
+    rcutils_string_array_t namespaces = rcutils_get_zero_initialized_string_array();
+    if (rmw_get_node_names(node, &names, &namespaces) != RMW_RET_OK) {
+        return SIZE_MAX;
+    }
+
+    size_t count = 0;
+    for (size_t i = 0; i < names.size; ++i) {
+        if (std::strcmp(names.data[i], name) == 0
+            && std::strcmp(namespaces.data[i], namespace_) == 0) {
+            ++count;
+        }
+    }
+
+    const bool released = rcutils_string_array_fini(&names) == RCUTILS_RET_OK;
+    if (rcutils_string_array_fini(&namespaces) != RCUTILS_RET_OK || !released) {
+        return SIZE_MAX;
+    }
+
+    return count;
+}
 
 }  // namespace
 
@@ -208,6 +239,106 @@ TEST(GraphCache, ObserverForwardsToTheCache) {
     EXPECT_EQ(changes, 2);
 }
 
+/// @brief A serialized ParticipantEntitiesInfo with `nodes` of (namespace, name), and no endpoints.
+static std::vector<uint8_t> encode_nodes(const std::vector<rmw_rosette::NodeName>& nodes) {
+    std::vector<uint8_t> out = {0x00u, 0x01u, 0x00u, 0x00u};
+    out.resize(out.size() + rmw_rosette::kGidSize);
+
+    const auto put_u32 = [&out](uint32_t value) {
+        while ((out.size() - 4u) % 4u != 0u) {
+            out.push_back(0u);
+        }
+
+        for (int shift = 0; shift < 32; shift += 8) {
+            out.push_back(static_cast<uint8_t>(value >> shift));
+        }
+    };
+    const auto put_string = [&](const std::string& text) {
+        put_u32(static_cast<uint32_t>(text.size() + 1u));
+        out.insert(out.end(), text.begin(), text.end());
+        out.push_back(0u);
+    };
+
+    put_u32(static_cast<uint32_t>(nodes.size()));
+    for (const rmw_rosette::NodeName& node : nodes) {
+        put_string(node.namespace_);
+        put_string(node.name);
+        put_u32(0u);
+        put_u32(0u);
+    }
+
+    return out;
+}
+
+// A participant's latest node list replaces its earlier one and lasts until it
+// leaves; the graph guard wakes only when node_names() could differ.
+TEST(GraphCache, ReplacesAndForgetsNodes) {
+    rmw_rosette::GraphCache cache;
+    int                     changes = 0;
+    cache.set_on_change([](void* user) noexcept { ++*static_cast<int*>(user); }, &changes);
+    const rtps::GuidPrefix peer = make_guid(1, 0).prefix;
+    const rtps::GuidPrefix other = make_guid(2, 0).prefix;
+
+    EXPECT_TRUE(cache.set_participant_nodes(peer, {{"/", "first"}}));
+    EXPECT_TRUE(cache.set_participant_nodes(other, {{"/robot", "kept"}}));
+    EXPECT_FALSE(cache.set_participant_nodes(other, {{"/robot", "kept"}}));
+    EXPECT_TRUE(cache.set_participant_nodes(peer, {{"/", "second"}}));
+    EXPECT_FALSE(cache.set_participant_nodes(make_guid(3, 0).prefix, {}));
+    ASSERT_EQ(cache.node_names().size(), 2u);
+    EXPECT_EQ(changes, 3);
+
+    // A participant with nodes and no endpoints still changes the graph by leaving.
+    EXPECT_TRUE(cache.remove_participant(peer));
+    EXPECT_EQ(changes, 4);
+    const std::vector<rmw_rosette::NodeName> left = cache.node_names();
+    ASSERT_EQ(left.size(), 1u);
+    EXPECT_EQ(left[0].namespace_, "/robot");
+    EXPECT_EQ(left[0].name, "kept");
+
+    EXPECT_TRUE(cache.set_participant_nodes(other, {}));
+    EXPECT_TRUE(cache.node_names().empty());
+    EXPECT_EQ(changes, 5);
+}
+
+TEST(GraphCache, DecodesNodeNames) {
+    const std::vector<uint8_t> bytes = encode_nodes({{"/", "talker"}, {"/robot", "listener"}});
+
+    std::vector<rmw_rosette::NodeName> nodes;
+    ASSERT_TRUE(rmw_rosette::decode_participant_node_names(bytes.data(), bytes.size(), nodes));
+    ASSERT_EQ(nodes.size(), 2u);
+    EXPECT_EQ(nodes[0].namespace_, "/");
+    EXPECT_EQ(nodes[0].name, "talker");
+    EXPECT_EQ(nodes[1].namespace_, "/robot");
+    EXPECT_EQ(nodes[1].name, "listener");
+}
+
+TEST(GraphCache, RefusesTruncatedNodeMessages) {
+    const std::vector<uint8_t> bytes = encode_nodes({{"/", "talker"}});
+
+    for (size_t size = 0; size < bytes.size(); ++size) {
+        std::vector<rmw_rosette::NodeName> nodes = {{"/", "unchanged"}};
+        EXPECT_FALSE(rmw_rosette::decode_participant_node_names(bytes.data(), size, nodes)) << size;
+        ASSERT_EQ(nodes.size(), 1u);
+        EXPECT_EQ(nodes[0].name, "unchanged");
+    }
+}
+
+TEST(GraphCache, RefusesBigEndianAndHugeCounts) {
+    std::vector<uint8_t> big_endian = encode_nodes({{"/", "talker"}});
+    big_endian[1] = 0x00u;
+
+    std::vector<rmw_rosette::NodeName> nodes;
+    EXPECT_FALSE(
+        rmw_rosette::decode_participant_node_names(big_endian.data(), big_endian.size(), nodes));
+
+    std::vector<uint8_t> huge = encode_nodes({});
+    for (size_t i = huge.size() - 4u; i < huge.size(); ++i) {
+        huge[i] = 0xFFu;
+    }
+
+    EXPECT_FALSE(rmw_rosette::decode_participant_node_names(huge.data(), huge.size(), nodes));
+}
+
 TEST(RmwGraphNames, ListsALocalPublisherAndForgetsItWhenDestroyed) {
     rmw_init_options_t init_options = rmw_get_zero_initialized_init_options();
     ASSERT_EQ(rmw_rosette_test::init_options_as_rcl(&init_options), RMW_RET_OK);
@@ -250,6 +381,74 @@ TEST(RmwGraphNames, ListsALocalPublisherAndForgetsItWhenDestroyed) {
 
     ASSERT_EQ(rmw_names_and_types_fini(&listing), RMW_RET_OK);
 
+    ASSERT_EQ(rmw_destroy_node(node), RMW_RET_OK);
+    ASSERT_EQ(rmw_shutdown(&context), RMW_RET_OK);
+    ASSERT_EQ(rmw_context_fini(&context), RMW_RET_OK);
+}
+
+TEST(RmwNodeNames, ListsALocalNodeUntilDestroyed) {
+    rmw_init_options_t init_options = rmw_get_zero_initialized_init_options();
+    ASSERT_EQ(rmw_rosette_test::init_options_as_rcl(&init_options), RMW_RET_OK);
+
+    rmw_context_t context = rmw_get_zero_initialized_context();
+    ASSERT_EQ(rmw_init(&init_options, &context), RMW_RET_OK);
+    ASSERT_EQ(rmw_init_options_fini(&init_options), RMW_RET_OK);
+
+    rmw_node_t* node = rmw_create_node(&context, "graph_listed_node", "/robot");
+    ASSERT_NE(node, nullptr);
+
+    rcutils_string_array_t names = rcutils_get_zero_initialized_string_array();
+    rcutils_string_array_t namespaces = rcutils_get_zero_initialized_string_array();
+    ASSERT_EQ(rmw_get_node_names(node, &names, &namespaces), RMW_RET_OK);
+
+    bool found = false;
+    ASSERT_EQ(names.size, namespaces.size);
+    for (size_t i = 0; i < names.size; ++i) {
+        found = found
+                || (std::strcmp(names.data[i], "graph_listed_node") == 0
+                    && std::strcmp(namespaces.data[i], "/robot") == 0);
+    }
+
+    EXPECT_TRUE(found);
+    EXPECT_EQ(rmw_get_node_names(node, &names, &namespaces), RMW_RET_INVALID_ARGUMENT);
+    rcutils_reset_error();
+
+    ASSERT_EQ(rcutils_string_array_fini(&names), RCUTILS_RET_OK);
+    ASSERT_EQ(rcutils_string_array_fini(&namespaces), RCUTILS_RET_OK);
+    ASSERT_EQ(rmw_destroy_node(node), RMW_RET_OK);
+    ASSERT_EQ(rmw_shutdown(&context), RMW_RET_OK);
+    ASSERT_EQ(rmw_context_fini(&context), RMW_RET_OK);
+}
+
+// The context's ros_discovery_info sample would loop back to its own reader if
+// the two paired; waiting on the graph guard drives the participant long
+// enough for that sample to arrive, and wakes as soon as it changes the cache.
+TEST(RmwNodeNames, ListsALocalNodeOnceAfterItsSampleIsSent) {
+    rmw_init_options_t init_options = rmw_get_zero_initialized_init_options();
+    ASSERT_EQ(rmw_rosette_test::init_options_as_rcl(&init_options), RMW_RET_OK);
+
+    rmw_context_t context = rmw_get_zero_initialized_context();
+    ASSERT_EQ(rmw_init(&init_options, &context), RMW_RET_OK);
+    ASSERT_EQ(rmw_init_options_fini(&init_options), RMW_RET_OK);
+
+    rmw_node_t* node = rmw_create_node(&context, "listed_once_node", "/robot");
+    ASSERT_NE(node, nullptr);
+    rmw_wait_set_t* wait_set = rmw_create_wait_set(&context, 1);
+    ASSERT_NE(wait_set, nullptr);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < deadline) {
+        void*                  guard = rmw_node_get_graph_guard_condition(node)->data;
+        rmw_guard_conditions_t guards{1, &guard};
+        rmw_time_t             timeout{0, 100000000};
+        const rmw_ret_t        waited =
+            rmw_wait(nullptr, &guards, nullptr, nullptr, nullptr, wait_set, &timeout);
+        ASSERT_TRUE(waited == RMW_RET_OK || waited == RMW_RET_TIMEOUT);
+    }
+
+    EXPECT_EQ(count_nodes(node, "listed_once_node", "/robot"), 1u);
+
+    ASSERT_EQ(rmw_destroy_wait_set(wait_set), RMW_RET_OK);
     ASSERT_EQ(rmw_destroy_node(node), RMW_RET_OK);
     ASSERT_EQ(rmw_shutdown(&context), RMW_RET_OK);
     ASSERT_EQ(rmw_context_fini(&context), RMW_RET_OK);

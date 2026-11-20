@@ -587,7 +587,8 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
                                    Names::kNone,
                                    static_cast<uint8_t>(rd.reliabilityKind),
                                    static_cast<uint8_t>(rd.durabilityKind),
-                                   rd.expectsInlineQos};
+                                   rd.expectsInlineQos,
+                                   rd.ignoresLocalWriters};
         bool                is_change = false;
         LocalEndpoint*      r = store_local(local_readers_, RTPS_MAX_LOCAL_READERS, record,
                                             rd.topicName.str, rd.typeName.str, is_change);
@@ -706,7 +707,7 @@ bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
 bool EndpointMatchTable::report_writer_pairs(const LocalEndpoint& w, bool stop_at_bind) noexcept {
     const MatchedEndpoint writer = matched(w);
     for (const LocalEndpoint& r : local_readers_) {
-        if (!r.valid() || !same_names(r, w)
+        if (!r.valid() || r.ignoresLocalWriters || !same_names(r, w)
             || !qos_compatible(w.reliability_kind(), w.durability_kind(), r.reliability_kind(),
                                r.durability_kind())) {
             continue;
@@ -736,7 +737,7 @@ bool EndpointMatchTable::report_writer_pairs(const LocalEndpoint& w, bool stop_a
 bool EndpointMatchTable::report_reader_pairs(const LocalEndpoint& r, bool stop_at_bind) noexcept {
     const MatchedEndpoint reader = matched(r);
     for (const LocalEndpoint& w : local_writers_) {
-        if (!w.valid() || !same_names(w, r)
+        if (!w.valid() || r.ignoresLocalWriters || !same_names(w, r)
             || !qos_compatible(w.reliability_kind(), w.durability_kind(), r.reliability_kind(),
                                r.durability_kind())) {
             continue;
@@ -1116,6 +1117,7 @@ uint32_t EndpointMatchTable::count(const char* topic, bool writers) const noexce
         out.reliabilityKind = r.reliability_kind();
         out.durabilityKind = r.durability_kind();
         out.expectsInlineQos = r.expectsInlineQos;
+        out.ignoresLocalWriters = r.ignoresLocalWriters;
         return true;
     }
 
