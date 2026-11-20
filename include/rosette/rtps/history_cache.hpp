@@ -239,12 +239,23 @@ public:
     /**
      * @brief Highest sequence number in the cache.
      *
+     * Constant time: the cache remembers which slot holds its newest change,
+     * because a writer asks once per matched reader on every tick.
+     *
      * @return The maximum, or SEQUENCENUMBER_UNKNOWN when the cache is empty.
+     *
+     * Verification:
+     * - Correct means: the result equals the highest sequence number held
+     *   after any sequence of add_change(), KEEP_LAST eviction,
+     *   remove_change() (including of the newest change), and clear_all().
+     * - Covered by: TC-HC-8.3.1-005.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.3.1 (get_seq_num_max)
      */
-    SequenceNumber get_seq_num_max() const noexcept;
+    SequenceNumber get_seq_num_max() const noexcept {
+        return newest_ == kNoSlot ? SEQUENCENUMBER_UNKNOWN : slots_[newest_].sequenceNumber;
+    }
 
     /// @brief True when no slot holds a change.
     bool is_empty() const noexcept { return size() == 0u; }
@@ -279,6 +290,8 @@ public:
     }
 
     /// @brief Calls `fn(HistoryChange&)` for each change held, in slot order.
+    /// `fn` must not change a held change's sequence number (the cache indexes
+    /// its newest change by it), nor that of one reached by get_change().
     template<typename Fn>
     void for_each_change(Fn&& fn) noexcept {
         for (uint8_t i = 0; i < capacity_; ++i) {
@@ -329,12 +342,23 @@ protected:
     ~HistoryCache() = default;
 
 private:
-    /// @brief The held change with the lowest sequence number, or null.
-    HistoryChange* find_oldest() noexcept;
+    /// @brief newest_ when the cache is empty; above any slot index (capacity <= 255).
+    static constexpr uint8_t kNoSlot = 0xFFu;
+
+    /// @brief Slot index of the lowest sequence number; the cache must be full.
+    uint8_t find_oldest() const noexcept;
+
+    /// @brief Slot index of the highest sequence number held, or kNoSlot.
+    uint8_t find_newest() const noexcept;
 
     HistoryChange* slots_;
     uint8_t capacity_;
+    uint8_t        newest_ = kNoSlot;  ///< Slot of the newest change; sits in capacity_'s padding.
 };
+
+// newest_ rides in padding the slot pointer already forces, so every writer's
+// history costs what it did before the cache remembered its newest change.
+static_assert(sizeof(HistoryCache) == sizeof(void*) * 2u, "HistoryCache grew past two words");
 
 namespace detail {
 /// @brief The slot array of a HistoryCacheStorage, as a base class so it is
