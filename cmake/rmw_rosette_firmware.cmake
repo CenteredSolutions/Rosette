@@ -92,6 +92,12 @@ set(ROSETTE_RTPS_MAX_DATAGRAM_SIZE 1472 CACHE STRING "Largest UDP payload the li
 set(RMW_ROSETTE_MAX_DATAGRAM_SIZE ${ROSETTE_RTPS_MAX_DATAGRAM_SIZE} CACHE STRING "Largest UDP datagram")
 set(RMW_ROSETTE_MAX_SAMPLE_SIZE 4096 CACHE STRING "Largest serialized message")
 set(RMW_ROSETTE_LARGE_BUFFERS 2 CACHE STRING "Blocks of RMW_ROSETTE_MAX_SAMPLE_SIZE")
+# A board holds few changes behind a loss: each pins a block, and an rclc
+# node's writers are shallow. A board that reads a writer deeper than 4 at
+# more than one change per round trip raises the per-reader window to that
+# depth (rmw_rosette_capacity.cmake explains why).
+set(RMW_ROSETTE_HELD_CHANGES 8 CACHE STRING "Changes all reliable readers hold behind a lost one")
+set(RMW_ROSETTE_READER_HELD_CHANGES 4 CACHE STRING "Changes one reader holds behind a lost one; its hold window")
 set(RMW_ROSETTE_POOL_PROFILE firmware CACHE STRING "Buffer-pool layout")
 include(${ROSETTE_ROOT}/rmw_rosette/cmake/rmw_rosette_capacity.cmake)
 

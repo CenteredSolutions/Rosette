@@ -48,6 +48,52 @@ void WriterProxy::irrelevant_change_set(const SequenceNumber&    gap_start,
         (void)changes_.resolve(sn);
         missing_changes_update(sn);
     });
+    settle_gap_repair();
+}
+
+void WriterProxy::settle_gap_repair() noexcept {
+    if (!has_missing_changes()) {
+        gapRepairsLeft = 0;
+        gapRepairDoublings = 0;
+    }
+}
+
+void WriterProxy::schedule_gap_repair(uint32_t now_ms) noexcept {
+    settle_gap_repair();
+    if (!has_missing_changes()) {
+        return;
+    }
+
+    // A deadline already running is kept, so a writer that streams faster
+    // than the wait cannot hold the request back.
+    if (gapRepairsLeft == 0u) {
+        gapRepairDueMs = now_ms + gap_repair_wait();
+    }
+
+    gapRepairsLeft = static_cast<uint8_t>(RTPS_GAP_REPAIR_ROUNDS);
+}
+
+uint32_t WriterProxy::ms_until_gap_repair(uint32_t now_ms) const noexcept {
+    if (gapRepairsLeft == 0u || !has_missing_changes()) {
+        return UINT32_MAX;
+    }
+
+    // Wrap-safe: a deadline up to 2^31 ms in the past counts as passed.
+    const uint32_t left = gapRepairDueMs - now_ms;
+    return left > 0x80000000u ? 0u : left;
+}
+
+void WriterProxy::gap_repair_sent(uint32_t now_ms) noexcept {
+    if (gapRepairsLeft == 0u) {
+        return;
+    }
+
+    --gapRepairsLeft;
+    if (gapRepairDoublings < RTPS_GAP_REPAIR_MAX_DOUBLINGS) {
+        ++gapRepairDoublings;
+    }
+
+    gapRepairDueMs = now_ms + gap_repair_wait();
 }
 
 bool WriterProxy::on_heartbeat(const SequenceNumber& first_sn,
@@ -64,6 +110,7 @@ bool WriterProxy::on_heartbeat(const SequenceNumber& first_sn,
     on_heard();
     lost_changes_update(first_sn);
     missing_changes_update(last_sn);
+    settle_gap_repair();
 
     const bool must_reply = !final_flag || has_missing_changes();
     if (must_reply && !acknackPending) {

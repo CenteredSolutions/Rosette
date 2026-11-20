@@ -52,7 +52,7 @@ bool FragmentAssembler::on_data_frag(const Guid& writer_guid, const SequenceNumb
                                      uint16_t frag_size, uint32_t data_size, const Octet* payload,
                                      uint32_t payload_len, const Timestamp& source_ts,
                                      CacheChange& out_change, const InlineQos* inline_qos,
-                                     bool* stored_new) noexcept {
+                                     bool* stored_new, BufRef* block) noexcept {
     if (stored_new != nullptr) {
         *stored_new = false;
     }
@@ -85,7 +85,7 @@ bool FragmentAssembler::on_data_frag(const Guid& writer_guid, const SequenceNumb
             return false;
         }
 
-        slot = alloc_slot(writer_guid, writer_sn, frag_size, data_size, total_frags);
+        slot = alloc_slot(writer_guid, writer_sn, frag_size, data_size, total_frags, block);
         if (slot == nullptr) {
             return false;
         }
@@ -321,18 +321,26 @@ AssemblySlot* FragmentAssembler::select_slot(const Guid& wg, const SequenceNumbe
 
 FragmentedChange* FragmentAssembler::alloc_slot(const Guid& wg, const SequenceNumber& sn,
                                                 uint16_t frag_size, uint32_t data_size,
-                                                uint32_t total_frags) noexcept {
+                                                uint32_t total_frags, BufRef* block) noexcept {
     AssemblySlot* slot = select_slot(wg, sn);
     if (slot == nullptr) {
         return nullptr;
     }
 
     // The buffer is taken before a victim is emptied, so a refusal leaves the
-    // victim's partial sample intact. A victim whose own buffer is large
-    // enough lends it to the replacement when the pool has no other block.
-    // A sample larger than the largest pool class cannot be reassembled and
-    // is refused rather than delivered short.
-    BufRef buf = buf_alloc_received(data_size);
+    // victim's partial sample intact. The caller's block comes first: the
+    // reader takes it under its own pool rules (StatefulReader::
+    // take_sample_block()). A victim whose own buffer is large enough lends
+    // it to the replacement when the pool has no other block. A sample
+    // larger than the largest pool class cannot be reassembled and is
+    // refused rather than delivered short.
+    BufRef buf{};
+    if (block != nullptr && block->valid() && block->capacity() >= data_size) {
+        buf = static_cast<BufRef&&>(*block);
+    } else {
+        buf = buf_alloc_received(data_size);
+    }
+
     if (!buf.valid() || buf.capacity() < data_size) {
         buf.reset();
         FragmentedChange& victim = slot->change;

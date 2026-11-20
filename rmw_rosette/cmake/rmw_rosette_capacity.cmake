@@ -85,6 +85,25 @@ set(RMW_ROSETTE_MAX_WRITER_DEPTH 8 CACHE STRING
     "Deepest KEEP_LAST history a publisher keeps, 1 to 255; deeper requests and KEEP_ALL run at this depth. Writer slots that hold any writer are sized for it, at about 100 octets per history slot on a 32-bit target")
 set(RMW_ROSETTE_REPLY_DEPTH 4 CACHE STRING
     "Replies each service holds until their clients acknowledge them, 1 to RMW_ROSETTE_MAX_WRITER_DEPTH: a reply written while this many are unacknowledged displaces the oldest, whose client never receives it. Every service reply writer has this depth whatever its QoS requests, and takes a writer slot sized for it rather than for the deepest writer")
+# A reader holds the changes that arrive behind a lost one until the lost one
+# is repaired, and refuses a change further than its hold window past it. A
+# refused change is requested again, but a KEEP_LAST writer publishing faster
+# than one change per round trip displaces it from its history first, so the
+# reader then receives only what repairs reach before eviction and never
+# catches up. The window must therefore span the deepest history of a writer
+# the reader hears: a writer runs at most its depth ahead of the oldest change
+# it can still repair. The host default is the reader's own KEEP_LAST bound,
+# RMW_ROSETTE_MAX_PENDING_CHANGES, which also covers RMW_ROSETTE_MAX_WRITER_DEPTH
+# and the depth-10 default QoS of stock writers. The shared pool lets four
+# readers stall at their full window at once.
+set(RMW_ROSETTE_READER_HELD_CHANGES ${RMW_ROSETTE_MAX_PENDING_CHANGES} CACHE STRING
+    "Most changes one reader holds behind a lost one, 1 to 63 and at most RMW_ROSETTE_HELD_CHANGES, and how far past the next change it expects from a writer it holds one. A later change is refused on arrival and requested again with the lost one, so this must span the history depth of the fastest writer the reader hears")
+math(EXPR _rr_held_default "4 * ${RMW_ROSETTE_READER_HELD_CHANGES}")
+if(_rr_held_default GREATER 255)
+  set(_rr_held_default 255)
+endif()
+set(RMW_ROSETTE_HELD_CHANGES ${_rr_held_default} CACHE STRING
+    "Changes all reliable subscriptions, services, and clients together hold behind a lost one, 1 to 255, so each is delivered in the order written once the lost one is repaired; each takes a 104-octet slot and pins a buffer-pool block until then, and a quiet reader holds none")
 set(RMW_ROSETTE_LARGE_BUFFERS 48 CACHE STRING
     "Blocks of RMW_ROSETTE_MAX_SAMPLE_SIZE (and, in the host pool profile, of 16 KiB): samples held in writer histories, reassembly, and take rings")
 set(RMW_ROSETTE_ASSEMBLY_SLOTS "" CACHE STRING
@@ -106,6 +125,16 @@ else()
 endif()
 if(RMW_ROSETTE_MAX_WRITER_DEPTH LESS 1 OR RMW_ROSETTE_MAX_WRITER_DEPTH GREATER 255)
   message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_MAX_WRITER_DEPTH (${RMW_ROSETTE_MAX_WRITER_DEPTH}) must be 1 to 255")
+endif()
+if(RMW_ROSETTE_HELD_CHANGES LESS 1 OR RMW_ROSETTE_HELD_CHANGES GREATER 255)
+  message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_HELD_CHANGES (${RMW_ROSETTE_HELD_CHANGES}) must be 1 to 255")
+endif()
+if(RMW_ROSETTE_READER_HELD_CHANGES LESS 1
+   OR RMW_ROSETTE_READER_HELD_CHANGES GREATER RMW_ROSETTE_HELD_CHANGES
+   OR RMW_ROSETTE_READER_HELD_CHANGES GREATER 63)
+  message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_READER_HELD_CHANGES (${RMW_ROSETTE_READER_HELD_CHANGES}) must be 1 to "
+                      "RMW_ROSETTE_HELD_CHANGES (${RMW_ROSETTE_HELD_CHANGES}) and below the 64-change sequence "
+                      "number window")
 endif()
 if(RMW_ROSETTE_REPLY_DEPTH LESS 1 OR RMW_ROSETTE_REPLY_DEPTH GREATER RMW_ROSETTE_MAX_WRITER_DEPTH)
   message(FATAL_ERROR "rmw_rosette: RMW_ROSETTE_REPLY_DEPTH (${RMW_ROSETTE_REPLY_DEPTH}) must be 1 to "
@@ -354,6 +383,8 @@ function(rmw_rosette_apply_capacity target)
     RMW_ROSETTE_PUMP_THREAD=$<BOOL:${RMW_ROSETTE_PUMP_THREAD}>
     RMW_ROSETTE_GRAPH_CACHE=$<BOOL:${RMW_ROSETTE_GRAPH_CACHE}>
     RTPS_DEEP_WRITER_DEPTH=${RMW_ROSETTE_MAX_WRITER_DEPTH}
+    RTPS_HELD_CHANGES=${RMW_ROSETTE_HELD_CHANGES}u
+    RTPS_HELD_CHANGES_PER_READER=${RMW_ROSETTE_READER_HELD_CHANGES}u
     RTPS_SEDP_REBUILD_ANNOUNCEMENTS=${_rr_sedp_rebuild}
     RTPS_MAX_USER_WRITERS=${_rr_rtps_writers}
     RTPS_MAX_SHALLOW_WRITERS=${_rr_services}

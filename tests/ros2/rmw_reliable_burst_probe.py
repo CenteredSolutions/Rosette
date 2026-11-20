@@ -11,12 +11,20 @@ Architecture:
     has acknowledged them. Role `subscriber` (the RMW under test) creates a
     RELIABLE, VOLATILE, KEEP_LAST subscription of `--depth` (default 10, the
     rclc/rclcpp/rclpy default profile depth), spins for `--discover-sec` so
-    discovery completes, then stops spinning for `--idle-sec` and finally
-    takes everything that arrived. The publisher waits `--publish-delay-sec`
-    after matching, which places the burst inside the subscriber's idle
-    window, so the whole burst reaches the reader before the first take.
-    Timed windows stand in for a graph query because they need nothing from
-    the RMW under test beyond publish/subscribe.
+    discovery completes, then stops spinning and finally takes everything
+    that arrived. The publisher waits `--publish-delay-sec` after matching
+    and then publishes.
+
+    The subscriber's windows are measured from the burst, not from its own
+    start: when both roles share `--published-marker`, the publisher creates
+    that file right after publishing, and the subscriber waits for it before
+    its `--idle-sec` (not spinning, so the burst queues untaken) and
+    `--collect-sec` windows. Discovery that is slow under packet loss then
+    shortens nothing, and a sample still missing at the end was not repaired
+    within idle + collect seconds of being written. Without the marker the
+    windows start when discovery ends, which suits a lossless network. A file
+    stands in for a graph query because it needs nothing from the RMW under
+    test beyond publish/subscribe.
 
     Against a board, run only the publisher role with `--topic` naming the
     board's subscription (for rclc_chatter, `/rosette/command`); every run
@@ -35,14 +43,20 @@ Verification:
     burst fits the depth, and only the newest when it does not (a history
     deeper than requested hands the application stale samples). None may be
     taken before its idle
-    window (otherwise the burst was not queued and the run proves nothing). The
+    window (otherwise the burst was not queued and the run proves nothing).
+    A failure names its kind: samples missing, or every sample taken but out
+    of order (a reliable reader must deliver one writer's samples in the
+    order written). The
     publisher passes only when `wait_for_all_acked()` succeeds. Each role
     checks `rclpy.get_rmw_implementation_identifier()` against
     `--expect-rmw` so a misconfigured environment fails loudly.
 
 References:
     - OMG DDS 1.4 §2.2.3.18 (HISTORY: KEEP_LAST depth), §2.2.3.14 (RELIABILITY).
-    - OMG DDSI-RTPS 2.5 §8.4.9.2 (reliable StatefulReader behavior).
+    - OMG DDSI-RTPS 2.5 §8.4.9.2 (reliable StatefulReader behavior),
+      §8.4.10.4 (WriterProxy: changes are made available in order).
+    - OMG DDS 1.4 §2.2.3.18 (DESTINATION_ORDER; samples from one writer keep
+      their order).
     - ROS 2 rmw `rmw_qos_profile_default` (depth 10).
 """
 
@@ -127,6 +141,9 @@ def run_publisher(node: Node, topic: str, args: argparse.Namespace) -> int:
     for index in range(args.count):
         pub.publish(String(data=f"burst-{index}"))
     _log("publisher", f"published {args.count}")
+    if args.published_marker:
+        with open(args.published_marker, "w", encoding="utf-8") as marker:
+            marker.write(f"{time.time()}\n")
     acked = pub.wait_for_all_acked(Duration(seconds=args.ack_timeout_sec))
     _log("publisher", f"wait_for_all_acked={acked}")
     # Stay up so the subscriber's takes are never raced by a disposal.
@@ -154,6 +171,15 @@ def run_subscriber(node: Node, topic: str, args: argparse.Namespace) -> int:
     if received:
         _log("subscriber", f"FAIL: took {received} before the idle window; lengthen the windows")
         return 1
+    if args.published_marker:
+        # Not spinning: the burst must queue untaken.
+        deadline = time.monotonic() + args.marker_timeout_sec
+        while not os.path.exists(args.published_marker):
+            if time.monotonic() > deadline:
+                _log("subscriber", "FAIL: the publisher never published (no match on its side)")
+                return 1
+            time.sleep(0.05)
+        _log("subscriber", "the burst was published; idle and collect windows start now")
     time.sleep(args.idle_sec)
     _spin_until(node, lambda: len(received) >= args.count, args.collect_sec)
     first = max(0, args.count - args.depth)
@@ -161,7 +187,8 @@ def run_subscriber(node: Node, topic: str, args: argparse.Namespace) -> int:
     _log("subscriber", f"took {len(received)}: {received}")
     if received != expected:
         missing = [data for data in expected if data not in received]
-        _log("subscriber", f"FAIL: expected {expected}; missing {missing}")
+        kind = "missing samples" if missing else "out of order"
+        _log("subscriber", f"FAIL ({kind}): expected {expected}; missing {missing}")
         return 1
     _log("subscriber", "PASS")
     return 0
@@ -187,6 +214,11 @@ def main() -> int:
     parser.add_argument("--match-timeout-sec", type=float, default=15.0)
     parser.add_argument("--ack-timeout-sec", type=float, default=15.0)
     parser.add_argument("--linger-sec", type=float, default=3.0)
+    parser.add_argument("--published-marker", default="",
+                        help="File the publisher creates after publishing; the subscriber's "
+                        "windows start when it appears.")
+    parser.add_argument("--marker-timeout-sec", type=float, default=30.0,
+                        help="Subscriber's bound on waiting for --published-marker.")
     parser.add_argument("--expect-rmw", default=os.environ.get("RMW_IMPLEMENTATION", ""))
     args = parser.parse_args()
 

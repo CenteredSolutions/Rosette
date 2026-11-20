@@ -350,11 +350,12 @@ static bool superseded_partial_case(Superseded how, bool rounds_spent, std::stri
     CaptureTransport                 tx{};
     ProxyPoolStorage<WriterProxy, 1> proxies;
     FragmentAssemblyPoolStorage<1>   assembly;
+    HeldChangePoolStorage<2>         held;
     CHECK(proxies.reserve(1u), "a floor for the reader");
     const Guid               reader = make_guid(0x57u, make_entity(1u, 2u, 3u, 0x04u));
     const Guid               writer = make_guid(0x68u, make_entity(4u, 5u, 6u, 0x03u));
-    SharedPoolStatefulReader r(reader, ReliabilityKind::RELIABLE, tx, proxies, 1u, 1u, assembly,
-                               1u);
+    SharedPoolStatefulReader r(reader, ReliabilityKind::RELIABLE, tx, proxies, 1u, 1u, assembly, 1u,
+                               held, 2u);
     CHECK(r.matched_writer_add(writer, &kLoc, 1u), "match");
 
     g_stateful_reader_test_now_ms = 0u;

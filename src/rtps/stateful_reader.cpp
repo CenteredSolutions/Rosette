@@ -53,6 +53,7 @@ ChangeKind change_kind_of(const ParsedData& msg) noexcept
 StatefulReader::StatefulReader(const Guid& guid, ReliabilityKind reliability, ITransport& transport,
                                WriterProxyPool& pool, uint8_t min_writers, uint8_t max_writers,
                                FragmentAssemblyPool& assembly_pool, uint16_t assembly_limit,
+                               HeldChangePool& held_pool, uint8_t held_limit,
                                OnChangeAvailable on_change_avail, void* user_data,
                                uint32_t hb_response_ms) noexcept
     : guid_(guid),
@@ -62,6 +63,7 @@ StatefulReader::StatefulReader(const Guid& guid, ReliabilityKind reliability, IT
       user_data_(user_data),
       pool_(pool),
       assembler_(assembly_pool, assembly_limit),
+      held_(held_pool, this, held_limit),
       hb_response_ms_(hb_response_ms) {
     writers_.floor = min_writers;
     writers_.cap = max_writers;
@@ -144,6 +146,7 @@ void StatefulReader::matched_writer_remove(const Guid& writer_guid) noexcept {
 
     // Release partial assembly buffers for this writer — §8.4.14.
     assembler_.discard_writer(writer_guid);
+    held_.discard_writer(writer_guid);
 }
 
 WriterProxy* StatefulReader::matched_writer_lookup(
@@ -177,7 +180,15 @@ void StatefulReader::on_data(const ParseContext& ctx,
         proxy->on_heard();
     }
 
+    // A change too far past the lowest hole to record is not new to the
+    // proxy's window, yet it is no duplicate: it shows the gap, and is
+    // refused as beyond the hold window so its repair starts. A duplicate is
+    // never beyond the hold window.
     if (proxy && !is_new_change(*proxy, msg.writerSN)) {
+        if (refuse_beyond_window(proxy, msg.writerSN)) {
+            return;
+        }
+
         note_dropped(proxy, msg.writerSN);
         RTPS_LOG_T("reader", "DATA SN=%d:%lu from %02x%02x%02x%02x not new, dropped",
                    static_cast<int>(msg.writerSN.high),
@@ -208,23 +219,14 @@ void StatefulReader::on_data(const ParseContext& ctx,
         return;
     }
 
-    // Copy the payload into the smallest pool class that fits it. A
-    // disposal sent as inline QoS alone has no payload to copy.
+    if (refuse_beyond_window(proxy, msg.writerSN)) {
+        return;
+    }
+
+    // A disposal sent as inline QoS alone has no payload to copy.
     BufRef payload{};
-    uint32_t copy_size = 0;
-    if (msg.dataFlag || msg.keyFlag) {
-        payload = buf_alloc(msg.serializedPayloadSize);
-        if (!payload.valid()) {
-            RTPS_LOG_E("reader", "buf_alloc failed for DATA payload size=%lu",
-                       static_cast<unsigned long>(msg.serializedPayloadSize));
-            note_dropped(proxy, msg.writerSN);
-            return;
-        }
-        copy_size = (msg.serializedPayloadSize <= payload.capacity())
-                    ? msg.serializedPayloadSize : payload.capacity();
-        if (copy_size > 0 && msg.serializedPayload)
-            memcpy(payload.data, msg.serializedPayload, copy_size);
-        payload.size = copy_size;
+    if ((msg.dataFlag || msg.keyFlag) && !copy_payload(proxy, msg, payload)) {
+        return;
     }
 
     CacheChange change{};
@@ -239,23 +241,97 @@ void StatefulReader::on_data(const ParseContext& ctx,
                static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
                ctx.senderGuidPrefix.value[0], ctx.senderGuidPrefix.value[1],
                ctx.senderGuidPrefix.value[2], ctx.senderGuidPrefix.value[3],
-               static_cast<unsigned long>(copy_size));
+               static_cast<unsigned long>(change.payload.size));
 
+    // A whole DATA supersedes any partial assembly of the same change from
+    // earlier DATA_FRAGs, which would never be completed or requested; its
+    // slot is freed now rather than left to a repair round that may never come.
     if (proxy) {
-        const bool repair = proxy->is_missing(msg.writerSN);
-        record_change(*proxy, msg.writerSN);
-
-        // The change is no longer new, so a partial assembly of it from
-        // earlier DATA_FRAGs is never completed or requested; free its slot
-        // now rather than leave it to a repair round that may never come.
         assembler_.discard(change.writerGuid, msg.writerSN);
-        deliver(change);
-        if (repair) {
-            request_next_repair(*proxy);
-        }
-    } else {
-        deliver(change);
     }
+
+    accept_change(proxy, change);
+}
+
+StatefulReader::BlockGrant StatefulReader::take_sample_block(WriterProxy*          proxy,
+                                                             const SequenceNumber& sn,
+                                                             uint32_t size, bool received,
+                                                             BufRef& out) noexcept {
+    out = received ? buf_alloc_received(size) : buf_alloc(size);
+
+    // An exhausted pool must not wedge a writer: held changes pin blocks,
+    // and the change that closes its gap would otherwise be dropped on every
+    // resend. Only that change takes a held change's block; any other waits
+    // for its repair.
+    const bool   closes_gap = proxy != nullptr && sn == proxy->available_changes_max() + 1;
+    HeldEviction evicted{};
+    while (!out.valid() && closes_gap && held_.evict_for_block(proxy->remoteWriterGuid, evicted)) {
+        withdraw_evicted(evicted);
+        out = received ? buf_alloc_received(size) : buf_alloc(size);
+    }
+
+    // A change that will only be held must leave a block for the ACKNACK
+    // that requests its gap: holding the last one would leave the reader
+    // unable to ask for the change that releases it.
+    if (out.valid() && proxy != nullptr && !closes_gap && reliability_ == ReliabilityKind::RELIABLE
+        && !g_buf_pool.can_alloc(MessageBuilder::kControlMessageCapacity)) {
+        RTPS_LOG_D("reader", "SN=%d:%lu not held: the pool keeps a block for the ACKNACK",
+                   static_cast<int>(sn.high), static_cast<unsigned long>(sn.low));
+        out = BufRef{};
+        return BlockGrant::kRefused;
+    }
+
+    if (!out.valid()) {
+        RTPS_LOG_E("reader", "no pool block for SN=%d:%lu of %lu octets", static_cast<int>(sn.high),
+                   static_cast<unsigned long>(sn.low), static_cast<unsigned long>(size));
+        return BlockGrant::kNone;
+    }
+
+    return BlockGrant::kTaken;
+}
+
+bool StatefulReader::copy_payload(WriterProxy* proxy, const ParsedData& msg, BufRef& out) noexcept {
+    if (take_sample_block(proxy, msg.writerSN, msg.serializedPayloadSize, /*received=*/false, out)
+        != BlockGrant::kTaken) {
+        note_refused(proxy, msg.writerSN);
+        return false;
+    }
+
+    const uint32_t copy_size =
+        (msg.serializedPayloadSize <= out.capacity()) ? msg.serializedPayloadSize : out.capacity();
+    if (copy_size > 0 && msg.serializedPayload) {
+        memcpy(out.data, msg.serializedPayload, copy_size);
+    }
+
+    out.size = copy_size;
+    return true;
+}
+
+bool StatefulReader::refuse_unassemblable(WriterProxy* proxy, const ParsedDataFrag& msg) noexcept {
+    // Every fragment carries the sample's size and fragment size, so a sample
+    // this reader could never reassemble is recognized on the first fragment
+    // that arrives: one above the build's limit, or one split into more
+    // fragments than a FragmentNumberSet names, as a peer capped at a small
+    // datagram sends a large sample. Left MISSING, it would be requested
+    // forever and hold back every later change.
+    const bool too_many_fragments =
+        msg.fragmentSize != 0u
+        && (uint64_t{msg.dataSize} + msg.fragmentSize - 1u) / msg.fragmentSize
+               > static_cast<uint64_t>(FragmentNumberSet::kMaxBits);
+    if (msg.dataSize <= kMaxSampleOctets && !too_many_fragments) {
+        return false;
+    }
+
+    RTPS_LOG_W("reader",
+               "DATA_FRAG SN=%d:%lu of %lu octets in %u-octet fragments cannot be "
+               "reassembled, lost",
+               static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
+               static_cast<unsigned long>(msg.dataSize), static_cast<unsigned>(msg.fragmentSize));
+    if (proxy != nullptr) {
+        account_undelivered(*proxy, msg.writerSN);
+    }
+
+    return true;
 }
 
 // ============================================================
@@ -301,30 +377,23 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     }
 
     // A fragment of a sample already delivered (the writer resends whole
-    // samples on NACK_FRAG) must not assemble and deliver it again.
+    // samples on NACK_FRAG) must not assemble and deliver it again. As in
+    // on_data(), one too far ahead to record starts the gap repair instead.
     if (proxy && !is_new_change(*proxy, msg.writerSN)) {
-        assembler_.discard(writer_guid, msg.writerSN);
+        if (!refuse_beyond_window(proxy, msg.writerSN)) {
+            assembler_.discard(writer_guid, msg.writerSN);
+        }
+
         return;
     }
 
-    // Every fragment carries the sample's size and fragment size, so a sample
-    // this reader could never reassemble is recognized on the first fragment
-    // that arrives: one above the build's limit, or one split into more
-    // fragments than a FragmentNumberSet names, as a peer capped at a small
-    // datagram sends a large sample. Left MISSING, it would be requested
-    // forever and hold back every later change.
-    const bool too_many_fragments =
-        msg.fragmentSize != 0u
-        && (uint64_t{msg.dataSize} + msg.fragmentSize - 1u) / msg.fragmentSize
-               > static_cast<uint64_t>(FragmentNumberSet::kMaxBits);
-    if (msg.dataSize > kMaxSampleOctets || too_many_fragments) {
-        RTPS_LOG_W(
-            "reader",
-            "DATA_FRAG SN=%d:%lu of %lu octets in %u-octet fragments cannot be "
-            "reassembled, lost",
-            static_cast<int>(msg.writerSN.high), static_cast<unsigned long>(msg.writerSN.low),
-            static_cast<unsigned long>(msg.dataSize), static_cast<unsigned>(msg.fragmentSize));
-        if (proxy) account_undelivered(*proxy, msg.writerSN);
+    if (refuse_unassemblable(proxy, msg)) {
+        return;
+    }
+
+    // A sample the reader could not hold is not reassembled either: it would
+    // take an assembly slot and a block only to be refused when complete.
+    if (refuse_beyond_window(proxy, msg.writerSN)) {
         return;
     }
 
@@ -334,16 +403,29 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
                static_cast<unsigned long>(msg.fragmentsInSubmessage),
                static_cast<unsigned long>(msg.dataSize));
 
-    // Attempt to deliver this fragment to the assembler.
-    // §8.4.14, p. 156: on_data_frag() returns true when the sample
-    // is complete; out_change is populated with the assembled payload.
+    // The fragment that starts an assembly takes the sample's block, so the
+    // pool rules a whole DATA follows (take_sample_block()) apply here: the
+    // change that closes the gap may take a held change's block, and one
+    // that would only be held leaves the ACKNACK's block; refused, it stays
+    // MISSING. With no block at all, the assembler may still lend itself the
+    // buffer of the writer's older partial sample.
+    BufRef block{};
+    if (proxy != nullptr && !assembler_.assembling(writer_guid, msg.writerSN)
+        && take_sample_block(proxy, msg.writerSN, msg.dataSize, /*received=*/true, block)
+               == BlockGrant::kRefused) {
+        note_refused(proxy, msg.writerSN);
+        return;
+    }
+
+    // §8.4.14, p. 156: the assembler returns true when the sample is
+    // complete, with out_change holding the assembled payload.
     CacheChange out_change{};
     bool        stored_new = false;
     const bool  complete = assembler_.on_data_frag(
         writer_guid, msg.writerSN, msg.fragmentStartingNum, msg.fragmentsInSubmessage,
         msg.fragmentSize, msg.dataSize, msg.fragmentPayload, msg.fragmentPayloadSize,
         ctx.sourceTimestamp, out_change, msg.inlineQosPresent ? &msg.inlineQos : nullptr,
-        &stored_new);
+        &stored_new, block.valid() ? &block : nullptr);
 
     // An incomplete sample of a reliable writer is asked for again once new
     // fragments stop arriving (fragment_assembler.hpp, quiet-period repair).
@@ -359,14 +441,7 @@ void StatefulReader::on_data_frag(const ParseContext&   ctx,
     }
 
     // Sample is complete — treat identically to a full DATA reception.
-    if (proxy) {
-        const bool repair = proxy->is_missing(msg.writerSN);
-        record_change(*proxy, msg.writerSN);
-        deliver(out_change);
-        if (repair) request_next_repair(*proxy);
-    } else {
-        deliver(out_change);
-    }
+    accept_change(proxy, out_change);
 }
 
 // ============================================================
@@ -412,6 +487,18 @@ void StatefulReader::on_heartbeat(const ParseContext&    ctx,
     assembler_.discard_if(proxy->remoteWriterGuid, [&](const SequenceNumber& sn) noexcept {
         return !is_new_change(*proxy, sn);
     });
+
+    // firstSN may have resolved the gap held changes wait behind.
+    release_held(*proxy);
+
+    // lastSN may show changes MISSING that no later change revealed, such
+    // as the tail of a burst; if the resend this HEARTBEAT's answer asks
+    // for is lost, the timer asks again well before the next HEARTBEAT.
+    // It counts from the answer's deadline, so it never undercuts
+    // heartbeatResponseDelay; sending the answer spends its first round.
+    if (needs_acknack) {
+        proxy->schedule_gap_repair(now_ms + hb_response_ms_);
+    }
 
     RTPS_LOG_D("reader", "HEARTBEAT first=%d:%lu last=%d:%lu final=%d needs_ack=%d",
                static_cast<int>(msg.firstSN.high), static_cast<unsigned long>(msg.firstSN.low),
@@ -561,7 +648,10 @@ void StatefulReader::on_gap(const ParseContext& ctx,
 
     const bool had_missing = proxy->has_missing_changes();
     proxy->irrelevant_change_set(msg.gapStart, msg.gapList);
-    if (had_missing) request_next_repair(*proxy);
+    release_held(*proxy);
+    if (had_missing) {
+        request_next_repair(*proxy);
+    }
 
     // If all previously missing changes are now LOST, send a pure ACK.
     if (proxy->acknackPending && !proxy->has_missing_changes()) {
@@ -578,12 +668,10 @@ void StatefulReader::on_gap(const ParseContext& ctx,
 // "Sends an ACKNACK to the matched writer."  — §8.4.7.3, p. 140
 // ============================================================
 
-void StatefulReader::send_acknack(WriterProxy& proxy,
-                                  bool         final_flag) noexcept
-{
+bool StatefulReader::send_acknack(WriterProxy& proxy, bool final_flag) noexcept {
     const Locator& dest = proxy.best_locator();
     if (dest == LOCATOR_INVALID) {
-        return;
+        return false;
     }
 
     SequenceNumberSet missing{};
@@ -614,7 +702,7 @@ void StatefulReader::send_acknack(WriterProxy& proxy,
     }
 
     if (!builder_.begin(guid_.prefix)) {
-        return;
+        return false;
     }
 
     builder_.append_info_dst(proxy.remoteWriterGuid.prefix);
@@ -646,9 +734,16 @@ void StatefulReader::send_acknack(WriterProxy& proxy,
         for (uint8_t i = 0; sent && i < partial_count; ++i) {
             assembler_.repair_requested(proxy.remoteWriterGuid, partial[i], now_ms);
         }
+
+        if (sent && !final_flag) {
+            proxy.gap_repair_sent(now_ms);
+        }
+
+        return sent;
     } else {
         RTPS_LOG_W("reader", "ACKNACK builder failed (pool exhausted?)");
         builder_.abort();
+        return false;
     }
 }
 
@@ -707,10 +802,21 @@ uint32_t StatefulReader::tick(uint32_t now_ms) noexcept {
             } else {
                 send_preemptive_acknack(proxy, now_ms);
             }
+        } else if (proxy.gap_repair_due(now_ms)) {
+            // The writer went quiet with changes MISSING: ask now rather
+            // than at its next HEARTBEAT. One that could not go out is
+            // tried again after the same wait.
+            if (send_acknack(proxy, /*final=*/false)) {
+                proxy.on_acknack_sent();
+            } else {
+                proxy.gap_repair_postpone(now_ms);
+            }
         }
 
-        // A preemptive ACKNACK re-arms its own retry, so the deadline is read
-        // after the send rather than only for writers that were not yet due.
+        // A preemptive ACKNACK re-arms its own retry, and a gap repair sets
+        // its next round, so both deadlines are read after the sends rather
+        // than only for writers that were not yet due.
+        next = std::min(next, proxy.ms_until_gap_repair(now_ms));
         if (proxy.acknackPending) {
             next = std::min(next, proxy.heartbeatResponseDeadlineMs - now_ms);
         }
@@ -727,6 +833,11 @@ uint32_t StatefulReader::tick(uint32_t now_ms) noexcept {
 uint32_t StatefulReader::ms_until_next_timer(uint32_t now_ms) const noexcept {
     uint32_t next = UINT32_MAX;
     for (const WriterProxy& proxy : matched()) {
+        const uint32_t gap = proxy.ms_until_gap_repair(now_ms);
+        if (gap < next) {
+            next = gap;
+        }
+
         if (!proxy.acknackPending) {
             continue;
         }
@@ -783,11 +894,107 @@ void StatefulReader::note_dropped(WriterProxy* proxy, const SequenceNumber& sn) 
     }
 }
 
+void StatefulReader::note_refused(WriterProxy* proxy, const SequenceNumber& sn) noexcept {
+    note_dropped(proxy, sn);
+
+    // The refused change is new, so it is evidence of a live writer and of a
+    // gap: the repair starts now rather than at the writer's next HEARTBEAT.
+    if (proxy != nullptr && reliability_ == ReliabilityKind::RELIABLE) {
+        proxy->schedule_gap_repair(rosette::platform::monotonic_ms());
+    }
+}
+
 void StatefulReader::account_undelivered(WriterProxy& proxy, const SequenceNumber& sn) noexcept
 {
     const bool repair = proxy.is_missing(sn);
     record_change(proxy, sn);
-    if (repair) request_next_repair(proxy);
+    release_held(proxy);
+    if (reliability_ == ReliabilityKind::RELIABLE) {
+        proxy.schedule_gap_repair(rosette::platform::monotonic_ms());
+    }
+
+    if (repair) {
+        request_next_repair(proxy);
+    }
+}
+
+void StatefulReader::accept_change(WriterProxy* proxy, CacheChange& change) noexcept {
+    if (proxy == nullptr) {
+        deliver(change);
+        return;
+    }
+
+    const SequenceNumber sn = change.sequenceNumber;
+    const bool           repair = proxy->is_missing(sn);
+    record_change(*proxy, sn);
+
+    // Every change below the writer's first unresolved one is delivered,
+    // held, or resolved without data, so `sn` is next in order exactly when
+    // recording it moved that bound past it.
+    if (proxy->available_changes_max() < sn) {
+        hold_change(*proxy, change);
+    } else {
+        deliver(change);
+        release_held(*proxy);
+    }
+
+    if (reliability_ == ReliabilityKind::RELIABLE) {
+        proxy->schedule_gap_repair(rosette::platform::monotonic_ms());
+    }
+
+    if (repair) {
+        request_next_repair(*proxy);
+    }
+}
+
+void StatefulReader::hold_change(WriterProxy& proxy, CacheChange& change) noexcept {
+    const SequenceNumber sn = change.sequenceNumber;
+    if (!held_.hold(change)) {
+        proxy.received_change_withdraw(sn);
+        RTPS_LOG_D("reader", "SN=%d:%lu arrived behind a gap with no hold slot, requested again",
+                   static_cast<int>(sn.high), static_cast<unsigned long>(sn.low));
+    }
+}
+
+bool StatefulReader::beyond_hold_window(const WriterProxy&    proxy,
+                                        const SequenceNumber& sn) const noexcept {
+    return reliability_ == ReliabilityKind::RELIABLE
+           && proxy.available_changes_max() + (1 + static_cast<int64_t>(held_.limit())) < sn;
+}
+
+bool StatefulReader::refuse_beyond_window(WriterProxy* proxy, const SequenceNumber& sn) noexcept {
+    if (proxy == nullptr || !beyond_hold_window(*proxy, sn)) {
+        return false;
+    }
+
+    // The writer has written `sn`, so every change up to it not yet here is
+    // MISSING, `sn` included; the gap timer asks for the ones in the window.
+    proxy->missing_changes_update(sn);
+    proxy->schedule_gap_repair(rosette::platform::monotonic_ms());
+    RTPS_LOG_D("reader", "SN=%d:%lu is beyond the hold window, requested again later",
+               static_cast<int>(sn.high), static_cast<unsigned long>(sn.low));
+    return true;
+}
+
+void StatefulReader::withdraw_evicted(const HeldEviction& evicted) noexcept {
+    WriterProxy* proxy = evicted.owner->find_proxy(evicted.writer);
+    if (proxy == nullptr) {
+        return;
+    }
+
+    proxy->received_change_withdraw(evicted.sn);
+    proxy->schedule_gap_repair(rosette::platform::monotonic_ms());
+    RTPS_LOG_D("reader", "held SN=%d:%lu gave its block to a closing change, requested again",
+               static_cast<int>(evicted.sn.high), static_cast<unsigned long>(evicted.sn.low));
+}
+
+void StatefulReader::release_held(WriterProxy& proxy) noexcept {
+    const SequenceNumber limit = proxy.available_changes_max() + 1;
+    CacheChange          next{};
+    while (held_.take_below(proxy.remoteWriterGuid, limit, next)) {
+        deliver(next);
+        next.clear();
+    }
 }
 
 void StatefulReader::deliver(const CacheChange& change) noexcept

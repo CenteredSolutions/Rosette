@@ -42,6 +42,7 @@ set(ROSETTE_RTPS_PROTOCOL_SOURCES
   ${ROSETTE_ROOT}/src/rtps/proxy_pool.cpp
   ${ROSETTE_ROOT}/src/rtps/stateful_reader.cpp
   ${ROSETTE_ROOT}/src/rtps/sn_window.cpp
+  ${ROSETTE_ROOT}/src/rtps/held_changes.cpp
   ${ROSETTE_ROOT}/src/rtps/writer_proxy.cpp
 )
 

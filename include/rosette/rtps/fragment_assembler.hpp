@@ -539,6 +539,11 @@ public:
      *   invalid submessage and for one carrying only fragments already received. The reader
      *   uses it to tell a writer still delivering the sample from repeated or rejected
      *   traffic, which must not delay the sample's repair (schedule_repair()).
+     * @param[in,out] block     When not null and holding a block of at least `data_size`
+     *   octets, the block a new sample's slot takes in place of one from the pool; it is
+     *   moved out only when a slot is taken, and otherwise left with the caller, who frees
+     *   it. Ignored for a sample already in assembly. The reader passes the block it took
+     *   under its own pool rules (StatefulReader::take_sample_block()).
      * @return true when the sample is complete and `out_change` holds it;
      *   false while fragments are outstanding, and when the fields are
      *   invalid, the sample has more than 256 fragments, `frag_size` or
@@ -552,7 +557,7 @@ public:
      *   `stored_new` is true exactly when a fragment's received bit went
      *   from clear to set.
      * - Covered by: TC-FAS-8.4.14-001…010, TC-FAS-8.3.3.1-001,
-     *   TC-SRR-8.4.12-008.
+     *   TC-SRR-8.4.12-008, TC-SRR-8.4.10.4-024, TC-SRR-8.4.10.4-025.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.14, §9.4.5.4
@@ -561,7 +566,22 @@ public:
                       uint16_t frags_in_submsg, uint16_t frag_size, uint32_t data_size,
                       const Octet* payload, uint32_t payload_len, const Timestamp& source_ts,
                       CacheChange& out_change, const InlineQos* inline_qos = nullptr,
-                      bool* stored_new = nullptr) noexcept;
+                      bool* stored_new = nullptr, BufRef* block = nullptr) noexcept;
+
+    /**
+     * @brief Whether this assembler holds a partial sample (writer_guid, writer_sn).
+     *
+     * A fragment of a sample in assembly lands in the slot's buffer, so the
+     * reader takes a pool block only for a fragment that starts an assembly.
+     *
+     * @param[in] writer_guid Writer of the sample.
+     * @param[in] writer_sn   Sequence number of the sample.
+     * @return true while the sample has a slot here; false before its first
+     *   stored fragment and after it completes or is discarded.
+     */
+    bool assembling(const Guid& writer_guid, const SequenceNumber& writer_sn) const noexcept {
+        return find_slot(writer_guid, writer_sn) != nullptr;
+    }
 
     /**
      * @brief Lists the fragments of a partial sample that have not arrived, for a NACK_FRAG.
@@ -836,13 +856,16 @@ private:
      * @brief Takes a slot for a new sample and gives it a buffer that holds the whole sample.
      *
      * The buffer is obtained before any replaced sample is dropped, so a
-     * refusal leaves the existing assembly intact.
+     * refusal leaves the existing assembly intact. It is the caller's
+     * `block` when that holds `data_size` octets, else a new pool block,
+     * else the buffer of the sample being replaced when that is large enough.
      *
+     * @param[in]     block The caller's block, or null; see on_data_frag().
      * @return The slot, ready for fragments; null when no slot is available
-     *   or no buffer-pool block holds `data_size` octets.
+     *   or no buffer holds `data_size` octets, and `block` is then untouched.
      */
     FragmentedChange* alloc_slot(const Guid& wg, const SequenceNumber& sn, uint16_t frag_size,
-                                 uint32_t data_size, uint32_t total_frags) noexcept;
+                                 uint32_t data_size, uint32_t total_frags, BufRef* block) noexcept;
 
     FragmentAssemblyPool& pool_;
     uint16_t limit_;

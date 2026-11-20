@@ -526,10 +526,12 @@ static bool tc_part_8_5_3_015(std::string& err) {
 }
 
 // A parked peer that withdrew one endpoint and announced another is
-// reactivated by the new announcement. The replay skips the withdrawn one
-// with a GAP, so the refresh started at reactivation completes only once
-// both announcers have caught up past the numbers kept at parking; it then
-// forgets the withdrawn endpoint and keeps the new one.
+// reactivated by the new announcement, which the SEDP reader holds behind
+// the SNs it is missing (§8.4.10.4). The replay skips the withdrawn one with
+// a GAP, which releases the new announcement, so the refresh started at
+// reactivation completes only once both announcers have caught up past the
+// numbers kept at parking; it then forgets the withdrawn endpoint and keeps
+// the new one.
 static bool tc_part_8_5_3_016(std::string& err) {
     CaptureTransport tx{};
     RTPSParticipant  p(0u, 1u, tx);
@@ -551,8 +553,8 @@ static bool tc_part_8_5_3_016(std::string& err) {
     CHECK(deliver_announcement(p, a, true, "rt/new", 3, 1400u), "A announces a new writer");
     CHECK(is_active(p, a) && log.refreshing == 1,
           "the announcement reactivates A and refreshes it");
-    CHECK(log.lists(announced_writer(a, 3)) && log.lists(announced_writer(a, 1)),
-          "the new writer is listed; the withdrawn one is not yet known to be gone");
+    CHECK(!log.lists(announced_writer(a, 3)) && log.lists(announced_writer(a, 1)),
+          "the new writer waits behind SNs 1 and 2; the withdrawn one is not yet known to be gone");
 
     g_participant_test_now_ms = 1450u;
     p.tick(1450u);
@@ -564,7 +566,7 @@ static bool tc_part_8_5_3_016(std::string& err) {
     p.tick(1500u);
     CHECK(log.refreshed == 1, "the refresh completes once the replay has caught up");
     CHECK(!log.lists(announced_writer(a, 1)), "the writer withdrawn while parked is forgotten");
-    CHECK(log.lists(announced_writer(a, 3)), "the replayed writer stays listed");
+    CHECK(log.lists(announced_writer(a, 3)), "the new writer is listed once released in order");
     entry = record(p, a);
     CHECK(
         entry != nullptr && entry->parkedPublicationsSn == 0u && entry->parkedSubscriptionsSn == 0u,
