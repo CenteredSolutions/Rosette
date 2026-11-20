@@ -1002,8 +1002,7 @@ private:
         /// Drawn from next_ticket_ when the pair was reported; orders waiting pairs.
         uint16_t ticket = 0u;
         /// The owner could not bind a proxy for some local half of the pair.
-        bool waiting = false;
-        bool active() const noexcept { return writer_guid != GUID_UNKNOWN; }
+        bool     waiting = false;
     };
 
     static constexpr uint32_t kMaxMatches = RTPS_MAX_MATCH_RECORDS;
@@ -1298,8 +1297,9 @@ private:
      * - OMG DDSI-RTPS 2.5 §8.5.5.1 (endpoint matching)
      */
     void renumber_waiting_tickets() noexcept;
-    /// Forgets one recorded pair and reports it through on_unmatch.
-    void drop_pair(MatchRecord& m) noexcept;
+    /// Forgets the pair in record `i` and reports it through on_unmatch. The
+    /// last live record moves into slot `i`, so a scan that drops visits `i` again.
+    void drop_pair(uint32_t i) noexcept;
 
     /// Reports every recorded pair involving `guid` as dissolved and forgets it.
     void dissolve(const Guid& guid, bool is_writer) noexcept;
@@ -1368,6 +1368,10 @@ private:
     GuidPrefix local_prefix_ = {};
     /// Next ticket to issue; below kRenumberTicketsAt after every report().
     uint16_t next_ticket_ = 0u;
+    /// Records [0, live_) of matches_ hold pairs and the rest are free, so
+    /// every scan of the pairs ends at live_ (about ten of 176 records on a
+    /// board in steady state) and a new pair takes record live_.
+    uint32_t            live_ = 0u;
     /// Records marked waiting. Bounds the waiting limit, and lets every scan
     /// for a waiting record end at once in the common case of none.
     uint32_t            waiting_count_ = 0u;

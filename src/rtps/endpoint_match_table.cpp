@@ -364,9 +364,13 @@ bool EndpointMatchTable::pairs_with_local(const TopicName& topic, uint32_t topic
 
 bool EndpointMatchTable::in_match(const Guid& guid, bool is_writer) const noexcept
 {
-    for (const MatchRecord& m : matches_) {
-        if (m.active() && (is_writer ? m.writer_guid : m.reader_guid) == guid) return true;
+    for (uint32_t i = 0u; i < live_; ++i) {
+        const MatchRecord& m = matches_[i];
+        if ((is_writer ? m.writer_guid : m.reader_guid) == guid) {
+            return true;
+        }
     }
+
     return false;
 }
 
@@ -653,20 +657,16 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
 
 bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
                                 const char* topic) noexcept {
-    MatchRecord* free_slot = nullptr;
-    for (MatchRecord& m : matches_) {
+    for (uint32_t i = 0u; i < live_; ++i) {
+        const MatchRecord& m = matches_[i];
         if (m.writer_guid == writer.guid && m.reader_guid == reader.guid) {
             return false;
-        }
-
-        if (!free_slot && !m.active()) {
-            free_slot = &m;
         }
     }
 
     // Without a free record the pair is not reported, so every reported
     // match has a matching unmatch.
-    if (!free_slot) {
+    if (live_ == kMaxMatches) {
         RTPS_LOG_W("match", "match record table full (RTPS_MAX_MATCH_RECORDS=%lu)",
                    static_cast<unsigned long>(kMaxMatches));
         turned_away_ = true;
@@ -691,15 +691,18 @@ bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
         renumber_waiting_tickets();
     }
 
-    free_slot->writer_guid = writer.guid;
-    free_slot->reader_guid = reader.guid;
-    free_slot->ticket = next_ticket_++;
-    free_slot->waiting = !may_bind || (on_match_ && !on_match_(writer, reader, topic, user_data_));
-    if (free_slot->waiting) {
+    // The record is live before on_match runs, so the owner sees the pair as
+    // matched from inside the callback.
+    MatchRecord& record = matches_[live_++];
+    record.writer_guid = writer.guid;
+    record.reader_guid = reader.guid;
+    record.ticket = next_ticket_++;
+    record.waiting = !may_bind || (on_match_ && !on_match_(writer, reader, topic, user_data_));
+    if (record.waiting) {
         ++waiting_count_;
     }
 
-    return !free_slot->waiting;
+    return !record.waiting;
 }
 
 bool EndpointMatchTable::report_writer_pairs(const LocalEndpoint& w, bool stop_at_bind) noexcept {
@@ -837,8 +840,9 @@ void EndpointMatchTable::renumber_waiting_tickets() noexcept {
     int32_t last_old = -1;
     while (rank < waiting_count_) {
         MatchRecord* next = nullptr;
-        for (MatchRecord& m : matches_) {
-            if (m.active() && m.waiting && static_cast<int32_t>(m.ticket) > last_old
+        for (uint32_t i = 0u; i < live_; ++i) {
+            MatchRecord& m = matches_[i];
+            if (m.waiting && static_cast<int32_t>(m.ticket) > last_old
                 && (next == nullptr || m.ticket < next->ticket)) {
                 next = &m;
             }
@@ -861,8 +865,9 @@ EndpointMatchTable::MatchRecord* EndpointMatchTable::oldest_bindable() noexcept 
     }
 
     MatchRecord* oldest = nullptr;
-    for (MatchRecord& m : matches_) {
-        if (!m.active() || !m.waiting) {
+    for (uint32_t i = 0u; i < live_; ++i) {
+        MatchRecord& m = matches_[i];
+        if (!m.waiting) {
             continue;
         }
 
@@ -882,9 +887,9 @@ bool EndpointMatchTable::has_waiting_reader(const Guid& writer_guid,
         return false;
     }
 
-    for (const MatchRecord& m : matches_) {
-        if (m.active() && m.waiting && m.writer_guid == writer_guid
-            && m.reader_guid.prefix == reader_prefix) {
+    for (uint32_t i = 0u; i < live_; ++i) {
+        const MatchRecord& m = matches_[i];
+        if (m.waiting && m.writer_guid == writer_guid && m.reader_guid.prefix == reader_prefix) {
             return true;
         }
     }
@@ -914,9 +919,9 @@ bool EndpointMatchTable::match_oldest_waiting() noexcept {
 // Removal
 // ------------------------------------------------------------
 
-void EndpointMatchTable::drop_pair(MatchRecord& m) noexcept {
-    const MatchRecord gone = m;
-    m = MatchRecord{};
+void EndpointMatchTable::drop_pair(uint32_t i) noexcept {
+    const MatchRecord gone = matches_[i];
+    matches_[i] = matches_[--live_];
     room_freed_ = true;
     if (gone.waiting) {
         --waiting_count_;
@@ -929,9 +934,12 @@ void EndpointMatchTable::drop_pair(MatchRecord& m) noexcept {
 
 void EndpointMatchTable::dissolve(const Guid& guid, bool is_writer) noexcept
 {
-    for (MatchRecord& m : matches_) {
-        if (m.active() && (is_writer ? m.writer_guid : m.reader_guid) == guid) {
-            drop_pair(m);
+    uint32_t i = 0u;
+    while (i < live_) {
+        if ((is_writer ? matches_[i].writer_guid : matches_[i].reader_guid) == guid) {
+            drop_pair(i);
+        } else {
+            ++i;
         }
     }
 }
@@ -1002,12 +1010,9 @@ void EndpointMatchTable::remove_reader(const Guid& reader_guid) noexcept
 
 bool EndpointMatchTable::has_match_with(const GuidPrefix& prefix,
                                         const Guid& except_local) const noexcept {
-    for (const MatchRecord& m : matches_) {
-        if (!m.active()) {
-            continue;
-        }
-
-        const bool counts = m.writer_guid != except_local && m.reader_guid != except_local;
+    for (uint32_t i = 0u; i < live_; ++i) {
+        const MatchRecord& m = matches_[i];
+        const bool         counts = m.writer_guid != except_local && m.reader_guid != except_local;
         if (counts && (m.writer_guid.prefix == prefix || m.reader_guid.prefix == prefix)) {
             return true;
         }
@@ -1032,9 +1037,13 @@ void EndpointMatchTable::release_participant(const GuidPrefix& prefix) noexcept 
     // has a dozen or more endpoints, and walking every pair for each of them
     // stalled the pump for milliseconds. The pairs go before the records, as
     // remove_endpoint() orders them, so on_unmatch still sees the records.
-    for (MatchRecord& m : matches_) {
-        if (m.active() && (m.writer_guid.prefix == prefix || m.reader_guid.prefix == prefix)) {
-            drop_pair(m);
+    uint32_t i = 0u;
+    while (i < live_) {
+        const MatchRecord& m = matches_[i];
+        if (m.writer_guid.prefix == prefix || m.reader_guid.prefix == prefix) {
+            drop_pair(i);
+        } else {
+            ++i;
         }
     }
 
