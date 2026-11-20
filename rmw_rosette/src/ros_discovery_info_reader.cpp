@@ -105,7 +105,17 @@ bool RosDiscoveryInfoReader::create(rtps::RTPSParticipant& participant,
     // rmw_get_node_names() lists the context's own nodes from its node table,
     // so the context's own writer is not read: it would list them twice.
     cfg.ignoresLocalWriters = true;
-    return participant.create_reader(cfg, &RosDiscoveryInfoReader::on_change, this) != nullptr;
+    const rtps::StatefulReader* reader =
+        participant.create_reader(cfg, &RosDiscoveryInfoReader::on_change, this);
+    if (reader == nullptr) {
+        return false;
+    }
+
+    // Every ROS 2 participant writes this topic, so its matches keep no peer
+    // in the participant's active tier. A peer settles once this reader holds
+    // its writer's samples, and a newer one from a parked peer reactivates it.
+    participant.set_discovery_reader(reader->guid());
+    return true;
 }
 
 void RosDiscoveryInfoReader::on_change(const rtps::CacheChange& change, void* self) noexcept {

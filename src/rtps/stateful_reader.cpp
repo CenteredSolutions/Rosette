@@ -152,6 +152,16 @@ WriterProxy* StatefulReader::matched_writer_lookup(
     return find_proxy(writer_guid);
 }
 
+const WriterProxy* StatefulReader::matched_writer_from(const GuidPrefix& prefix) const noexcept {
+    for (const WriterProxy& proxy : matched()) {
+        if (proxy.remoteWriterGuid.prefix == prefix) {
+            return &proxy;
+        }
+    }
+
+    return nullptr;
+}
+
 // ============================================================
 // §8.4.8  on_data()
 //

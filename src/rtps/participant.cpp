@@ -913,6 +913,10 @@ void RTPSParticipant::dispatch_data(const ParseContext& ctx,
         p->on_announcer_traffic(ctx.senderGuidPrefix, msg.writerId, msg.writerSN, true, now_ms);
     }
 
+#if RTPS_DISCOVERY_READER
+    p->on_discovery_traffic(ctx.senderGuidPrefix, msg.writerId, msg.writerSN, now_ms);
+#endif
+
     p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
         r.on_data(ctx, msg);
     });
@@ -930,6 +934,11 @@ void RTPSParticipant::dispatch_data_frag(const ParseContext&   ctx,
         p->on_announcer_traffic(ctx.senderGuidPrefix, msg.writerId, msg.writerSN, true,
                                 rosette::platform::monotonic_ms());
     }
+
+#if RTPS_DISCOVERY_READER
+    p->on_discovery_traffic(ctx.senderGuidPrefix, msg.writerId, msg.writerSN,
+                            rosette::platform::monotonic_ms());
+#endif
 
     p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
         r.on_data_frag(ctx, msg);
@@ -949,6 +958,11 @@ void RTPSParticipant::dispatch_heartbeat(const ParseContext&    ctx,
         p->on_announcer_traffic(ctx.senderGuidPrefix, msg.writerId, msg.lastSN, false,
                                 rosette::platform::monotonic_ms());
     }
+
+#if RTPS_DISCOVERY_READER
+    p->on_discovery_traffic(ctx.senderGuidPrefix, msg.writerId, msg.lastSN,
+                            rosette::platform::monotonic_ms());
+#endif
 
     p->for_each_addressed_reader(msg.writerId, msg.readerId, [&](StatefulReader& r) noexcept {
         r.on_heartbeat(ctx, msg);
