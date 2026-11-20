@@ -292,6 +292,97 @@ Guid announced_writer(const GuidPrefix& prefix, int64_t sn) {
     return Guid{prefix, make_entity(0x71u, 0x72u, static_cast<Octet>(sn), 0x03u)};
 }
 
+/// A participant with a `ros_discovery_info` reader and writer, and a reader
+/// of `rt/control`. setup() makes two peers active at 1000: A reads and
+/// writes the discovery topic, and B writes `rt/control`.
+struct DiscoveryPeers {
+    CaptureTransport tx{};
+    RTPSParticipant  p{0u, 1u, tx};
+    StatefulReader*  reader = nullptr;
+    StatefulWriter*  writer = nullptr;
+    ReaderChangeObs  seen{};  ///< Samples the discovery reader delivered.
+    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
+    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
+    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
+    /// Peer A's discovery writer, as deliver_announcement() announces it.
+    const Guid       a_writer = announced_writer(a, 1);
+
+    bool setup(std::string& err) {
+        CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+        ReaderConfig dcfg{};
+        dcfg.topicName.assign("rt/discovery");
+        dcfg.typeName.assign("pkg::msg::dds_::T_");
+        dcfg.reliability = ReliabilityKind::RELIABLE;
+        dcfg.ignoresLocalWriters = true;
+        reader = p.create_reader(dcfg, on_reader_change, &seen);
+        CHECK(reader != nullptr, "the discovery reader is created");
+        p.set_discovery_reader(reader->guid());
+
+        WriterConfig wcfg{};
+        wcfg.topicName.assign("rt/discovery");
+        wcfg.typeName.assign("pkg::msg::dds_::T_");
+        wcfg.reliability = ReliabilityKind::RELIABLE;
+        writer = p.create_writer<1>(wcfg);
+        CHECK(writer != nullptr, "the discovery writer is created");
+        p.set_discovery_writer(writer->guid());
+
+        ReaderConfig rcfg{};
+        rcfg.topicName.assign("rt/control");
+        rcfg.typeName.assign("pkg::msg::dds_::T_");
+        rcfg.reliability = ReliabilityKind::RELIABLE;
+        CHECK(p.create_reader(rcfg, on_reader_change, nullptr) != nullptr, "the reader is created");
+
+        CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1000u), "two peers are active");
+        CHECK(hear_announcers(p, a, 1000u) && hear_announcers(p, b, 1000u),
+              "their announcers answer");
+        CHECK(deliver_announcement(p, a, false, "rt/discovery", 1, 1000u)
+                  && deliver_announcement(p, a, true, "rt/discovery", 1, 1000u),
+              "peer A reads and writes the discovery topic");
+        CHECK(deliver_announcement(p, b, true, "rt/control", 1, 1000u),
+              "peer B writes the topic the local reader reads");
+        CHECK(reader->matched_writer_lookup(a_writer) != nullptr,
+              "the discovery reader matches peer A's writer");
+        return true;
+    }
+
+    /// Delivers, at `now_ms`, peer A's DATA at `sn` to the discovery reader.
+    bool deliver_discovery_data(int64_t sn, uint32_t now_ms) {
+        const std::vector<Octet> payload{0x00u, 0x01u, 0x00u, 0x00u};
+        std::vector<Octet>       msg{};
+        if (!build_data_message(a, reader->guid().entityId, a_writer.entityId, payload, msg,
+                                SequenceNumber::from_int64(sn))) {
+            return false;
+        }
+
+        g_participant_test_now_ms = now_ms;
+        return p.parse_received(msg.data(), static_cast<uint32_t>(msg.size())) == ParseResult::OK;
+    }
+
+    /// Delivers, at `now_ms`, a HEARTBEAT holding [1, `last`] from A's writer `writer_id`.
+    bool deliver_discovery_heartbeat(const EntityId& writer_id, int64_t last, uint32_t now_ms) {
+        MessageBuilder builder{};
+        if (!builder.begin(a)
+            || !builder.append_heartbeat(
+                reader->guid().entityId, writer_id, SequenceNumber::from_int64(1),
+                SequenceNumber::from_int64(last), ++g_heartbeat_count, false)) {
+            builder.abort();
+            return false;
+        }
+
+        BufRef                   msg = builder.finish();
+        const std::vector<Octet> bytes(msg.data, msg.data + msg.size);
+        msg.reset();
+        g_participant_test_now_ms = now_ms;
+        return p.parse_received(bytes.data(), static_cast<uint32_t>(bytes.size()))
+               == ParseResult::OK;
+    }
+
+    /// Delivers peer `prefix`'s ACKNACKs of every local SEDP announcement.
+    bool acknowledge_all(const GuidPrefix& prefix) {
+        return acknowledge_sedp(p, prefix, true, 1) && acknowledge_sedp(p, prefix, false, 2);
+    }
+};
+
 }  // namespace
 
 // A peer that finds the active tier full waits until a settled peer can be
@@ -391,54 +482,104 @@ static bool tc_part_8_5_3_012(std::string& err) {
 // once settled, which unmatches its writer from that reader too. The reader
 // never pairs with the discovery writer of its own participant.
 static bool tc_part_8_5_3_030(std::string& err) {
-    CaptureTransport tx{};
-    RTPSParticipant  p(0u, 1u, tx);
-    CHECK(p.add_ipv4_address(0xC0A8010Au), "local address setup should succeed");
+    DiscoveryPeers net{};
+    if (!net.setup(err)) {
+        return false;
+    }
 
-    ReaderConfig dcfg{};
-    dcfg.topicName.assign("rt/discovery");
-    dcfg.typeName.assign("pkg::msg::dds_::T_");
-    dcfg.reliability = ReliabilityKind::RELIABLE;
-    dcfg.ignoresLocalWriters = true;
-    StatefulReader* discovery_reader = p.create_reader(dcfg, on_reader_change, nullptr);
-    CHECK(discovery_reader != nullptr, "the discovery reader is created");
-    p.set_discovery_reader(discovery_reader->guid());
-    WriterConfig wcfg{};
-    wcfg.topicName.assign("rt/discovery");
-    wcfg.typeName.assign("pkg::msg::dds_::T_");
-    wcfg.reliability = ReliabilityKind::RELIABLE;
-    auto* discovery = p.create_writer<1>(wcfg);
-    CHECK(discovery != nullptr, "the discovery writer is created");
-    p.set_discovery_writer(discovery->guid());
-    CHECK(discovery->matched_reader_lookup(discovery_reader->guid()) == nullptr,
+    RTPSParticipant& p = net.p;
+    CHECK(net.writer->matched_reader_lookup(net.reader->guid()) == nullptr,
           "the discovery reader does not pair with its own participant's writer");
-    ReaderConfig rcfg{};
-    rcfg.topicName.assign("rt/control");
-    rcfg.typeName.assign("pkg::msg::dds_::T_");
-    rcfg.reliability = ReliabilityKind::RELIABLE;
-    CHECK(p.create_reader(rcfg, on_reader_change, nullptr) != nullptr, "the reader is created");
-
-    const GuidPrefix a = make_prefix(0xA1u, 0xA2u, 0xA3u);
-    const GuidPrefix b = make_prefix(0xB1u, 0xB2u, 0xB3u);
-    const GuidPrefix c = make_prefix(0xC1u, 0xC2u, 0xC3u);
-    CHECK(announce(p, a, 0x11u, 1000u) && announce(p, b, 0x12u, 1000u), "two peers are active");
-    CHECK(hear_announcers(p, a, 1000u) && hear_announcers(p, b, 1000u), "their announcers answer");
-    CHECK(deliver_announcement(p, a, false, "rt/discovery", 1, 1000u)
-              && deliver_announcement(p, a, true, "rt/discovery", 1, 1000u),
-          "peer A reads and writes the discovery topic");
-    CHECK(deliver_announcement(p, b, true, "rt/control", 1, 1000u),
-          "peer B writes the topic the local reader reads");
-    const Guid a_writer{a, make_entity(0x71u, 0x72u, 1u, 0x03u)};
-    CHECK(discovery_reader->matched_writer_lookup(a_writer) != nullptr,
-          "the discovery reader matches peer A's writer");
-
-    CHECK(acknowledge_sedp(p, a, true, 1) && acknowledge_sedp(p, a, false, 2),
-          "peer A acknowledges every announcement");
-    CHECK(announce(p, c, 0x13u, 1300u), "a third peer is recorded");
-    CHECK(is_active(p, c) && is_parked(p, a) && is_active(p, b),
+    CHECK(net.deliver_discovery_data(1, 1000u), "A's discovery writer sends its sample");
+    CHECK(net.acknowledge_all(net.a), "peer A acknowledges every announcement");
+    CHECK(announce(p, net.c, 0x13u, 1300u), "a third peer is recorded");
+    CHECK(is_active(p, net.c) && is_parked(p, net.a) && is_active(p, net.b),
           "A, matched only on the discovery topic, is parked; B is not");
-    CHECK(discovery_reader->matched_writer_lookup(a_writer) == nullptr,
+    CHECK(net.reader->matched_writer_lookup(net.a_writer) == nullptr,
           "parking A unmatches its writer from the discovery reader");
+    return true;
+}
+
+// A peer settles only once the discovery reader has heard its
+// `ros_discovery_info` writer and holds every sample the writer announced:
+// until then a third peer is turned away, and once they arrive the peer is
+// parked with the writer and the highest number received kept.
+static bool tc_part_8_5_3_031(std::string& err) {
+    DiscoveryPeers net{};
+    if (!net.setup(err)) {
+        return false;
+    }
+
+    RTPSParticipant& p = net.p;
+    CHECK(net.acknowledge_all(net.a), "peer A acknowledges every announcement");
+    CHECK(announce(p, net.c, 0x13u, 1300u), "a third peer is recorded");
+    CHECK(is_active(p, net.a) && !is_active(p, net.c) && is_owed(p, net.c),
+          "A's discovery writer is unheard, so A is not settled and C is turned away");
+
+    CHECK(net.deliver_discovery_heartbeat(net.a_writer.entityId, 2, 1310u),
+          "A's discovery writer announces samples 1 and 2");
+    CHECK(net.deliver_discovery_data(1, 1320u), "sample 1 arrives");
+    g_participant_test_now_ms = 1400u;
+    p.tick(1400u);
+    CHECK(is_active(p, net.a) && !is_active(p, net.c),
+          "with sample 2 missing, A is still not settled");
+
+    CHECK(net.deliver_discovery_data(2, 1410u), "sample 2 arrives");
+    g_participant_test_now_ms = 1450u;
+    p.tick(1450u);
+    CHECK(is_parked(p, net.a) && is_active(p, net.c) && is_active(p, net.b),
+          "A, caught up, is parked for C");
+    const PeerEntry* entry = record(p, net.a);
+    CHECK(entry != nullptr && entry->parkedDiscoverySn == 2u
+              && entry->parkedDiscoveryWriter == net.a_writer.entityId,
+          "A's record keeps its discovery writer and the highest sample received");
+    return true;
+}
+
+// A parked peer whose `ros_discovery_info` writer sends a DATA or HEARTBEAT
+// above the number kept at parking is reactivated; one at or below it, or
+// traffic from another of its writers, leaves it parked.
+static bool discovery_wake(bool by_heartbeat, std::string& err) {
+    DiscoveryPeers net{};
+    if (!net.setup(err)) {
+        return false;
+    }
+
+    RTPSParticipant& p = net.p;
+    CHECK(net.deliver_discovery_data(1, 1000u) && net.acknowledge_all(net.a),
+          "A's sample arrives and A acknowledges every announcement");
+    CHECK(announce(p, net.c, 0x13u, 1300u) && is_parked(p, net.a) && is_active(p, net.c),
+          "A is parked for C");
+    CHECK(hear_announcers(p, net.c, 1300u) && net.acknowledge_all(net.c),
+          "C's exchange completes, so C can settle");
+
+    CHECK(net.deliver_discovery_data(1, 1500u), "A's writer resends sample 1");
+    CHECK(net.deliver_discovery_heartbeat(net.a_writer.entityId, 1, 1510u),
+          "A's writer announces sample 1");
+    const Guid a_other = announced_writer(net.a, 9);
+    CHECK(net.deliver_discovery_heartbeat(a_other.entityId, 5, 1520u),
+          "another of A's writers announces sample 5");
+    CHECK(is_parked(p, net.a) && is_active(p, net.c), "none of it reactivates A");
+
+    CHECK(by_heartbeat ? net.deliver_discovery_heartbeat(net.a_writer.entityId, 2, 1530u)
+                       : net.deliver_discovery_data(2, 1530u),
+          "A's writer sends sample 2");
+    CHECK(is_active(p, net.a) && is_parked(p, net.c),
+          "the newer sample reactivates A in place of the settled C");
+    return true;
+}
+
+static bool tc_part_8_5_3_032(std::string& err) {
+    if (!discovery_wake(true, err)) {
+        err = "by HEARTBEAT: " + err;
+        return false;
+    }
+
+    if (!discovery_wake(false, err)) {
+        err = "by DATA: " + err;
+        return false;
+    }
+
     return true;
 }
 
@@ -1326,6 +1467,14 @@ void append_participant_tests_8_5_3_peer_tiers(std::vector<TestCase>& tests) {
                      "reader is parked once settled; the discovery reader ignores its own "
                      "participant's writer.",
                      tc_part_8_5_3_030});
+    tests.push_back({"TC-PART-8.5.3-031",
+                     "§8.5.3: a peer is not settled until the discovery reader has heard its "
+                     "discovery writer and holds every sample it announced.",
+                     tc_part_8_5_3_031});
+    tests.push_back({"TC-PART-8.5.3-032",
+                     "§8.5.3: a parked peer whose discovery writer sends a DATA or HEARTBEAT "
+                     "above the number kept at parking is reactivated.",
+                     tc_part_8_5_3_032});
 }
 
 }  // namespace spec_test

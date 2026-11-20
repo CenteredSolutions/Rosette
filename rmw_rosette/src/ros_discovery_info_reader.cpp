@@ -112,8 +112,8 @@ bool RosDiscoveryInfoReader::create(rtps::RTPSParticipant& participant,
     }
 
     // Every ROS 2 participant writes this topic, so its matches keep no peer
-    // in the participant's active tier; a reactivated peer's last sample
-    // arrives again instead.
+    // in the participant's active tier. A peer settles once this reader holds
+    // its writer's samples, and a newer one from a parked peer reactivates it.
     participant.set_discovery_reader(reader->guid());
     return true;
 }
