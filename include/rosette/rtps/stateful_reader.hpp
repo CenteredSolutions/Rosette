@@ -179,6 +179,27 @@ public:
     WriterProxy* matched_writer_lookup(const Guid& writer_guid) noexcept;
 
     /**
+     * @brief The proxy of the first matched writer whose GUID has `prefix`.
+     *
+     * For a topic each participant writes once, such as `ros_discovery_info`,
+     * this is that participant's writer; use matched_writer_lookup() when the
+     * writer's full GUID is known.
+     *
+     * @param[in] prefix The remote participant's GUID prefix.
+     * @return The proxy, valid until the writer is unmatched; null when no
+     *   writer of that participant is matched.
+     *
+     * Verification:
+     * - Correct means: a writer matched from `prefix` is found, and none is
+     *   found once it is unmatched or when only other participants' writers are.
+     * - Covered by: TC-PART-8.5.3-031
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (WriterProxy)
+     */
+    const WriterProxy* matched_writer_from(const GuidPrefix& prefix) const noexcept;
+
+    /**
      * @brief Processes a DATA submessage addressed to this reader.
      *
      * The change is delivered (to the OnChangeAvailable callback, or the

@@ -668,6 +668,40 @@ public:
         discovery_writer_guid_ = writer_guid;
     }
 
+#if RTPS_DISCOVERY_READER
+    /**
+     * @brief Names the local reader of the topic every participant on the network writes.
+     *
+     * The reader of `ros_discovery_info` matches the writer of every other
+     * ROS 2 participant, so, like the discovery writer's
+     * (set_discovery_writer()), its matches keep no peer active. Instead, a
+     * peer settles only once this reader has heard its writer and holds every
+     * sample the writer announced. Parking a peer unmatches its writer, and
+     * the peer's record keeps the highest sequence number received from it:
+     * a DATA or HEARTBEAT from that writer above the number reactivates the
+     * peer, and its latest sample then reaches this reader again
+     * (TRANSIENT_LOCAL). Requires RTPS_DISCOVERY_READER, which gives each peer
+     * record the 8 octets this takes.
+     *
+     * @param[in] reader_guid The reader's GUID, or GUID_UNKNOWN for none.
+     *
+     * Verification:
+     * - Correct means: a peer whose only matches are with the discovery
+     *   writer and this reader is parked once settled; one whose writer this
+     *   reader has not heard, or has heard announce a sample not yet
+     *   received, is not settled; a parked peer whose writer sends a DATA or
+     *   HEARTBEAT above the number it was parked at is reactivated, and one
+     *   at or below it is not.
+     * - Covered by: TC-PART-8.5.3-030, TC-PART-8.5.3-031, TC-PART-8.5.3-032.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.4.10.4 (WriterProxy), §8.3.7.5 (HEARTBEAT lastSN)
+     */
+    void set_discovery_reader(const Guid& reader_guid) noexcept {
+        discovery_reader_guid_ = reader_guid;
+    }
+#endif
+
     /**
      * @brief Owes every parked peer the discovery writer's new sample.
      *
@@ -1010,6 +1044,29 @@ private:
     void on_announcer_traffic(const GuidPrefix& prefix, const EntityId& writer_id,
                               const SequenceNumber& sn, bool is_data, uint32_t now_ms) noexcept;
 
+#if RTPS_DISCOVERY_READER
+    /**
+     * @brief Reactivates a parked peer whose `ros_discovery_info` writer has a newer sample.
+     *
+     * The receive path calls this for every DATA, DATA_FRAG and HEARTBEAT.
+     * Only the writer recorded when the peer was parked counts, and only
+     * above the sequence number recorded then.
+     *
+     * @param[in] prefix    Sending participant's GUID prefix.
+     * @param[in] writer_id The submessage's writerId.
+     * @param[in] sn        DATA writerSN, or HEARTBEAT lastSN.
+     * @param[in] now_ms    rosette::platform::monotonic_ms().
+     */
+    void on_discovery_traffic(const GuidPrefix& prefix, const EntityId& writer_id,
+                              const SequenceNumber& sn, uint32_t now_ms) noexcept;
+
+    /// @brief Whether the discovery reader holds every sample of the peer's writer it heard of.
+    bool discovery_caught_up_with(const GuidPrefix& prefix) noexcept;
+
+    /// @brief Records in `peer` what the discovery reader received from it, for its wake.
+    void record_parked_discovery(PeerEntry& peer) noexcept;
+#endif
+
     /// @brief Marks every parked peer owed this participant's changed announcements.
     void owe_parked_peers() noexcept;
 
@@ -1311,6 +1368,11 @@ private:
     EndpointMatchTable match_table_;
     /// Local writer every participant reads; its matches keep no peer active.
     Guid discovery_writer_guid_ = GUID_UNKNOWN;
+#if RTPS_DISCOVERY_READER
+    /// Local reader of the topic every participant writes; its matches keep no peer active.
+    Guid discovery_reader_guid_ = GUID_UNKNOWN;
+#endif
+
     SpdpWriter         spdp_writer_;
     SpdpReader         spdp_reader_;
     SedpWriter         sedp_writer_;
