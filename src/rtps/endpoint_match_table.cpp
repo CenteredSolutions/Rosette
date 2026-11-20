@@ -654,7 +654,6 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
 bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
                                 const char* topic) noexcept {
     MatchRecord* free_slot = nullptr;
-    uint32_t waiting = 0u;
     for (MatchRecord& m : matches_) {
         if (m.writer_guid == writer.guid && m.reader_guid == reader.guid) {
             return false;
@@ -662,10 +661,6 @@ bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
 
         if (!free_slot && !m.active()) {
             free_slot = &m;
-        }
-
-        if (m.active() && m.waiting) {
-            ++waiting;
         }
     }
 
@@ -685,7 +680,7 @@ bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
     const bool may_bind =
         oldest_bindable() == nullptr
         && (may_match_ == nullptr || may_match_(writer.guid, reader.guid, user_data_));
-    if (!may_bind && waiting >= RTPS_MAX_WAITING_MATCHES) {
+    if (!may_bind && waiting_count_ >= RTPS_MAX_WAITING_MATCHES) {
         RTPS_LOG_W("match", "waiting matches full (RTPS_MAX_WAITING_MATCHES=%lu): topic=%s",
                    static_cast<unsigned long>(RTPS_MAX_WAITING_MATCHES), topic);
         turned_away_ = true;
@@ -700,6 +695,10 @@ bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
     free_slot->reader_guid = reader.guid;
     free_slot->ticket = next_ticket_++;
     free_slot->waiting = !may_bind || (on_match_ && !on_match_(writer, reader, topic, user_data_));
+    if (free_slot->waiting) {
+        ++waiting_count_;
+    }
+
     return !free_slot->waiting;
 }
 
@@ -836,7 +835,7 @@ void EndpointMatchTable::renumber_waiting_tickets() noexcept {
     // renumbered is never above `last_old` and is not visited twice.
     uint32_t rank = 0u;
     int32_t last_old = -1;
-    while (true) {
+    while (rank < waiting_count_) {
         MatchRecord* next = nullptr;
         for (MatchRecord& m : matches_) {
             if (m.active() && m.waiting && static_cast<int32_t>(m.ticket) > last_old
@@ -857,7 +856,7 @@ void EndpointMatchTable::renumber_waiting_tickets() noexcept {
 }
 
 EndpointMatchTable::MatchRecord* EndpointMatchTable::oldest_bindable() noexcept {
-    if (may_match_ == nullptr) {
+    if (may_match_ == nullptr || waiting_count_ == 0u) {
         return nullptr;
     }
 
@@ -879,6 +878,10 @@ EndpointMatchTable::MatchRecord* EndpointMatchTable::oldest_bindable() noexcept 
 
 bool EndpointMatchTable::has_waiting_reader(const Guid& writer_guid,
                                             const GuidPrefix& reader_prefix) const noexcept {
+    if (waiting_count_ == 0u) {
+        return false;
+    }
+
     for (const MatchRecord& m : matches_) {
         if (m.active() && m.waiting && m.writer_guid == writer_guid
             && m.reader_guid.prefix == reader_prefix) {
@@ -899,7 +902,11 @@ bool EndpointMatchTable::match_oldest_waiting() noexcept {
     }
 
     oldest->waiting = !on_match_(writer, reader, topic, user_data_);
-    room_freed_ = room_freed_ || !oldest->waiting;
+    if (!oldest->waiting) {
+        --waiting_count_;
+        room_freed_ = true;
+    }
+
     return !oldest->waiting;
 }
 
@@ -911,6 +918,10 @@ void EndpointMatchTable::drop_pair(MatchRecord& m) noexcept {
     const MatchRecord gone = m;
     m = MatchRecord{};
     room_freed_ = true;
+    if (gone.waiting) {
+        --waiting_count_;
+    }
+
     if (on_unmatch_) {
         on_unmatch_(gone.writer_guid, gone.reader_guid, user_data_);
     }

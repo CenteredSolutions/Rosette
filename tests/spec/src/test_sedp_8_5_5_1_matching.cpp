@@ -676,7 +676,102 @@ static bool tc_sedp_8_5_5_1_017(std::string& err) {
     return true;
 }
 
+// TC-SEDP-8.5.5.1-018: the waiting limit counts exactly the records that wait,
+// through every way a record stops waiting (dissolved, bound, released).
+static bool tc_sedp_8_5_5_1_018(std::string& err) {
+    struct Obs {
+        bool open = false;
+    } obs;
+
+    EndpointMatchTable t([](const MatchedEndpoint&, const MatchedEndpoint&, const char*,
+                            void*) noexcept { return true; },
+                         [](const Guid&, const Guid&, void*) noexcept {}, &obs,
+                         [](void*) noexcept {});
+    t.set_may_match(
+        [](const Guid&, const Guid&, void* u) noexcept { return static_cast<Obs*>(u)->open; });
+
+    const char* type = "std_msgs::msg::dds_::String_";
+    const auto  writer = [&](Octet p, Octet key, const char* topic) {
+        return make_writer(make_guid(p, p, p, make_entity(key, key, key, 0x03u)), topic, type,
+                            ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    };
+    const auto reader = [&](Octet p, Octet key, const char* topic) {
+        return make_reader(make_guid(p, p, p, make_entity(key, key, key, 0x04u)), topic, type,
+                           ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    };
+    const Octet local = 0x10u;
+    t.set_local_prefix(make_guid(local, local, local, entity_id::UNKNOWN).prefix);
+    const Guid local_writer = writer(local, 1u, "rt/a").writerGuid;
+    t.add_writer(writer(local, 1u, "rt/a"));
+    t.add_reader(reader(local, 2u, "rt/b"));
+
+    // Pair n is a remote reader of `peer` when n is even and a remote writer
+    // when odd, so the limit's pairs fit one origin and the remote tables;
+    // each pair a check names has a peer of its own.
+    const Octet peer = 0x40u;
+    const auto  add_pair = [&](Octet key, uint32_t n) {
+        if (n % 2u == 0u) {
+            t.add_reader(reader(peer, key, "rt/a"));
+        } else {
+            t.add_writer(writer(peer, key, "rt/b"));
+        }
+    };
+    const auto remove_pair = [&](Octet key, uint32_t n) {
+        if (n % 2u == 0u) {
+            t.remove_reader(reader(peer, key, "rt/a").readerGuid);
+        } else {
+            t.remove_writer(writer(peer, key, "rt/b").writerGuid);
+        }
+    };
+    const auto waits = [&](Octet p) {
+        return t.has_waiting_reader(local_writer, reader(p, 2u, "rt/a").readerGuid.prefix);
+    };
+    const uint32_t limit = RTPS_MAX_WAITING_MATCHES;
+
+    for (uint32_t n = 0u; n < limit; ++n) {
+        add_pair(static_cast<Octet>(0x20u + n), n);
+    }
+
+    t.add_reader(reader(0xC0u, 2u, "rt/a"));
+    CHECK(waits(peer), "a pair that may not bind waits");
+    CHECK(!waits(0xC0u), "a pair beyond RTPS_MAX_WAITING_MATCHES waiting pairs is turned away");
+
+    remove_pair(0x20u, 0u);
+    CHECK(t.rescan_due(), "dissolving a waiting pair frees room for the turned-away pair");
+    t.rescan_unrecorded();
+    CHECK(waits(0xC0u), "the turned-away pair takes the dissolved pair's place under the limit");
+
+    obs.open = true;
+    uint32_t bound = 0u;
+    while (t.match_oldest_waiting()) {
+        ++bound;
+    }
+
+    CHECK(bound == limit, "every waiting pair binds once its proxy is free");
+    CHECK(!waits(0xC0u) && !waits(peer), "a bound pair no longer waits");
+
+    for (uint32_t n = 1u; n < limit; ++n) {
+        remove_pair(static_cast<Octet>(0x20u + n), n);
+    }
+
+    t.remove_reader(reader(0xC0u, 2u, "rt/a").readerGuid);
+    obs.open = false;
+    for (uint32_t n = 0u; n + 1u < limit; ++n) {
+        add_pair(static_cast<Octet>(0x60u + n), n);
+    }
+
+    t.add_reader(reader(0x80u, 2u, "rt/a"));
+    t.add_reader(reader(0xC0u, 2u, "rt/a"));
+    CHECK(waits(0x80u), "after binding and release, the full limit of pairs can wait again");
+    CHECK(!waits(0xC0u), "and the limit still turns away the pair beyond it");
+    return true;
+}
+
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests) {
+    tests.push_back({"TC-SEDP-8.5.5.1-018",
+                     "§8.5.5.1/waiting matches: the waiting limit counts exactly the records that "
+                     "wait, as pairs wait, dissolve, bind, and are released.",
+                     tc_sedp_8_5_5_1_018});
     tests.push_back({"TC-SEDP-8.5.5.1-017",
                      "§8.5.5.1/two-tier peer table: releasing a parked participant unmatches each "
                      "of its pairs, bound or waiting, exactly once and no other, forgets its "

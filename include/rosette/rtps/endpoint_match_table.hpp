@@ -1368,6 +1368,9 @@ private:
     GuidPrefix local_prefix_ = {};
     /// Next ticket to issue; below kRenumberTicketsAt after every report().
     uint16_t next_ticket_ = 0u;
+    /// Records marked waiting. Bounds the waiting limit, and lets every scan
+    /// for a waiting record end at once in the common case of none.
+    uint32_t            waiting_count_ = 0u;
     /// A pair found no record since the last complete rescan.
     bool turned_away_ = false;
     /// A record was dissolved or a waiting pair bound since the last complete rescan.
