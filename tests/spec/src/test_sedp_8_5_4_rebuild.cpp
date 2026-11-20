@@ -21,6 +21,8 @@
 #include "rosette/rtps/sedp.hpp"
 #include "rosette/rtps/transport.hpp"
 
+#include <cstring>
+
 namespace spec_test {
 
 extern uint32_t g_stateful_writer_test_now_ms;
@@ -102,6 +104,29 @@ std::vector<std::vector<Octet>> data_payloads(const std::vector<std::vector<Octe
     }
 
     return out;
+}
+
+/// The value octets of the first parameter `pid_val` in a PL_CDR_LE payload,
+/// or nothing when the list has none.
+std::vector<Octet> find_param(const std::vector<Octet>& payload, uint16_t pid_val) {
+    size_t off = 4u;
+    while (off + 4u <= payload.size()) {
+        const uint16_t id = static_cast<uint16_t>(payload[off] | (payload[off + 1u] << 8));
+        const uint16_t len = static_cast<uint16_t>(payload[off + 2u] | (payload[off + 3u] << 8));
+        if (id == pid::SENTINEL || off + 4u + len > payload.size()) {
+            break;
+        }
+
+        if (id == pid_val) {
+            return std::vector<Octet>(
+                payload.begin() + static_cast<std::ptrdiff_t>(off + 4u),
+                payload.begin() + static_cast<std::ptrdiff_t>(off + 4u + len));
+        }
+
+        off += 4u + len;
+    }
+
+    return {};
 }
 
 /// An ACKNACK from `peer`'s publications detector that NACKs SN 1 alone.
@@ -333,6 +358,85 @@ static bool tc_sedp_8_5_4_021(std::string& err) {
     return true;
 }
 
+// An endpoint's USER_DATA is announced as PID_USER_DATA, a sequence<octet>
+// of the string without its NUL, identically when stored and rebuilt; an
+// endpoint without it announces no PID_USER_DATA. The match table keeps one
+// copy of a string two local endpoints share, until neither has it.
+static bool tc_sedp_9_6_3_2_005(std::string& err) {
+    static const char  kUserData[] = "clientid=31.ae.0.0.0.0.0.0.0.0.0.0.0.0.0.1;";
+    EndpointMatchTable table(nullptr, nullptr, nullptr);
+    const GuidPrefix   local = make_guid(0x31u, entity_id::PARTICIPANT).prefix;
+    table.set_local_prefix(local);
+    DiscoveredWriterData       wd = make_writer(make_guid(0x31u, make_entity(1u, 0u, 1u, 0x03u)));
+    DiscoveredReaderData       rd = make_reader(make_guid(0x31u, make_entity(2u, 0u, 2u, 0x04u)));
+    const DiscoveredWriterData plain =
+        make_writer(make_guid(0x31u, make_entity(3u, 0u, 3u, 0x03u)));
+    wd.userData = kUserData;
+    rd.userData = kUserData;
+
+    table.add_writer(plain);
+    const uint32_t names_only = table.local_name_bytes_used();
+    table.add_writer(wd);
+    CHECK(table.local_name_bytes_used() == names_only + sizeof(kUserData),
+          "the arena stores the USER_DATA string once, beside the shared names");
+    table.add_reader(rd);
+    const uint32_t with_reader = table.local_name_bytes_used();
+
+    DiscoveredWriterData w_out{};
+    DiscoveredReaderData r_out{};
+    CHECK(table.local_writer_data(wd.writerGuid, w_out) && w_out.userData != nullptr
+              && std::strcmp(w_out.userData, kUserData) == 0,
+          "the writer's USER_DATA is served back");
+    CHECK(table.local_reader_data(rd.readerGuid, r_out) && r_out.userData != nullptr
+              && std::strcmp(r_out.userData, kUserData) == 0,
+          "the reader's USER_DATA is served back");
+    CHECK(table.local_writer_data(plain.writerGuid, w_out) && w_out.userData == nullptr,
+          "an endpoint without USER_DATA serves none");
+
+    RecordedEndpoints endpoints{};
+    endpoints.writers.push_back(wd);
+    endpoints.writers.push_back(plain);
+    endpoints.readers.push_back(rd);
+    const GuidPrefix   peer = make_guid(0x32u, entity_id::PARTICIPANT).prefix;
+    const Locator      dest = make_udpv4_locator(0xC0A80132u, 7410u);
+    RecordingTransport stored_tx{};
+    RecordingTransport rebuilt_tx{};
+    SedpWriter         stored(local, stored_tx);
+    SedpWriter         rebuilt(local, rebuilt_tx, endpoints.source());
+    CHECK(stored.register_writer(wd) && stored.register_writer(plain) && stored.register_reader(rd)
+              && rebuilt.register_writer(wd) && rebuilt.register_writer(plain)
+              && rebuilt.register_reader(rd),
+          "registration");
+    stored.announce_to_peer(peer, dest);
+    finish_replay(stored, 0u);
+    rebuilt.announce_to_peer(peer, dest);
+    finish_replay(rebuilt, 0u);
+    const std::vector<std::vector<Octet>> payloads = data_payloads(stored_tx.sent);
+    CHECK(payloads.size() == 3u && data_payloads(rebuilt_tx.sent) == payloads,
+          "rebuilt announcements equal stored ones");
+
+    const uint32_t     len = static_cast<uint32_t>(std::strlen(kUserData));
+    std::vector<Octet> expected = {static_cast<Octet>(len), 0u, 0u, 0u};
+    expected.insert(expected.end(), kUserData, kUserData + len);
+    expected.resize((expected.size() + 3u) & ~size_t{3u}, 0u);
+    uint32_t announced = 0u;
+    for (const std::vector<Octet>& p : payloads) {
+        const std::vector<Octet> value = find_param(p, pid::USER_DATA);
+        CHECK(value.empty() || value == expected,
+              "PID_USER_DATA is the length, the octets without NUL, and zero padding");
+        announced += value.empty() ? 0u : 1u;
+    }
+
+    CHECK(announced == 2u, "exactly the two endpoints with USER_DATA announce it");
+
+    table.remove_writer(wd.writerGuid);
+    CHECK(table.local_name_bytes_used() == with_reader,
+          "a string the reader still uses stays in the arena");
+    table.remove_reader(rd.readerGuid);
+    CHECK(table.local_name_bytes_used() == names_only, "the last user releases the USER_DATA");
+    return true;
+}
+
 void append_sedp_tests_8_5_4_rebuild(std::vector<TestCase>& tests) {
     tests.push_back(
         {"TC-SEDP-8.5.4-015",
@@ -356,6 +460,11 @@ void append_sedp_tests_8_5_4_rebuild(std::vector<TestCase>& tests) {
                      "§9.3.1.2: a rebuilt announcement is described from the table its "
                      "endpoint's entityKind names; a reader's never searches the writer table.",
                      tc_sedp_8_5_4_021});
+    tests.push_back({"TC-SEDP-9.6.3.2-005",
+                     "§9.6.3.2 / DDS §2.2.3.1: an endpoint's USER_DATA is announced as "
+                     "PID_USER_DATA, the same when stored and rebuilt, and none without it; the "
+                     "match table keeps one copy of a string local endpoints share.",
+                     tc_sedp_9_6_3_2_005});
 }
 
 }  // namespace spec_test

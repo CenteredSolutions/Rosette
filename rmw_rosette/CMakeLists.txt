@@ -72,6 +72,8 @@ add_library(rmw_rosette SHARED
   src/rmw_qos_event.cpp
   src/rmw_serialize.cpp
   src/service_endpoints.cpp
+  src/compat/cyclone_request_header.cpp
+  src/compat/cyclone_service_user_data.cpp
   src/network_port.cpp
   src/participant_pump.cpp
   ${ROSETTE_RTPS_SOURCES}
@@ -204,7 +206,7 @@ if(BUILD_TESTING)
                          test_change_ring test_local_node_entities test_service_departed_client
                          test_service_reply_depth test_init_options test_argument_checks
                          test_live_context_refusals test_publish_fragment_limit
-                         test_write_waits_for_pool)
+                         test_write_waits_for_pool test_cyclone_request_header)
   if(RMW_ROSETTE_CXX_TYPESUPPORT)
     list(APPEND _rmw_rosette_tests test_introspection_cpp_codec)
   endif()

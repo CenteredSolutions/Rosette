@@ -9,6 +9,7 @@
 #include "rmw_rosette/service_endpoints.hpp"
 
 #include "rmw_rosette/capacity.hpp"
+#include "rmw_rosette/compat/cyclone_service_user_data.hpp"
 #include "rmw_rosette/qos.hpp"
 #include "rmw_rosette/topic_naming.hpp"
 
@@ -39,8 +40,15 @@ ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role, co
         return ServiceEndpointsStatus::NameTooLong;
     }
 
+    // Both endpoints announce one id, by which Cyclone peers pair them; the
+    // participant copies the string when it creates each endpoint.
+    char endpoint_user_data[kCycloneServiceUserDataSize];
+    compose_cyclone_service_user_data(role, participant.guid_prefix(),
+                                      ++node.context->service_ids_issued, endpoint_user_data);
+
     rtps::WriterConfig wcfg{};
     fill_writer_config(wcfg, qos);
+    wcfg.userData = endpoint_user_data;
     // A client may see the service as available (its endpoints matched ours)
     // before this reply writer has matched the client's reply reader. A
     // TRANSIENT_LOCAL reply writer delivers retained replies to readers that
@@ -61,6 +69,7 @@ ServiceEndpointsStatus create_service_endpoints(Node& node, ServiceRole role, co
 
     rtps::ReaderConfig rcfg{};
     fill_reader_config(rcfg, qos);
+    rcfg.userData = endpoint_user_data;
     rcfg.topicName.assign(server ? request_topic : reply_topic);
     rcfg.typeName.assign(server ? request_type : reply_type);
 

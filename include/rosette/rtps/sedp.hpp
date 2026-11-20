@@ -22,7 +22,9 @@
  * Each endpoint announcement is a PL_CDR_LE parameter list.
  * Mandatory PIDs for publications: PID_ENDPOINT_GUID, PID_TOPIC_NAME,
  * PID_TYPE_NAME, PID_RELIABILITY, PID_DURABILITY.
- * Optional: PID_UNICAST_LOCATOR (if different from participant default).
+ * Optional: PID_UNICAST_LOCATOR (if different from participant default),
+ * and PID_USER_DATA when the endpoint was created with USER_DATA
+ * (WriterConfig::userData, ReaderConfig::userData).
  *
  * Reliability (§8.5.4.1, p. 165)
  * --------------------------------
@@ -65,39 +67,37 @@ struct ITransport;
 // String PID values (topicName, typeName) are encoded as a
 // 4-byte length prefix followed by the string bytes (including
 // the null terminator), padded to a 4-byte boundary.
-// — §9.4.2.11, p. 202.
+// — §9.4.2.11, p. 202. A sequence<octet> (USER_DATA) is encoded
+// the same way, its length counting only its octets.
 // ============================================================
 
-/// Write a string PID: { PID, padded_len, uint32 str_len, str_bytes }.
-inline bool plcdr_write_string(Octet*      buf,
-                               uint32_t    cap,
-                               uint32_t&   off,
-                               uint16_t    pid_val,
-                               const char* str) noexcept
-{
-    uint32_t str_len = 0;
-    while (str && str[str_len]) ++str_len;
-    ++str_len;   // Include null terminator.
-
-    // Total value = uint32 length prefix (4) + string bytes (str_len).
-    const uint32_t val_len    = 4u + str_len;
+/// Write a sequence<octet> PID: { PID, padded_len, uint32 len, octets, zero padding }.
+inline bool plcdr_write_octets(Octet* buf, uint32_t cap, uint32_t& off, uint16_t pid_val,
+                               const void* octets, uint32_t len) noexcept {
+    const uint32_t val_len = 4u + len;
     const uint32_t val_padded = (val_len + 3u) & ~3u;
-    const uint32_t total      = 4u + val_padded;   // PID + len + value.
-
-    if (off + total > cap) return false;
-
-    memcpy(buf + off, &pid_val,   2u); off += 2u;
-    const uint16_t padded16 = static_cast<uint16_t>(val_padded);
-    memcpy(buf + off, &padded16,  2u); off += 2u;
-    memcpy(buf + off, &str_len,   4u); off += 4u;   // Length prefix.
-    if (str_len > 1u) memcpy(buf + off, str, str_len - 1u);
-    buf[off + str_len - 1u] = '\0';
-    // Zero-pad to padded boundary.
-    if (val_padded > val_len) {
-        memset(buf + off + str_len, 0, val_padded - val_len);
+    if (val_padded > 0xFFFFu || off + 4u + val_padded > cap) {
+        return false;
     }
-    off += val_padded - 4u;   // Advance past string part (already advanced past uint32 len).
+
+    const uint16_t padded16 = static_cast<uint16_t>(val_padded);
+    memcpy(buf + off, &pid_val, 2u);
+    memcpy(buf + off + 2u, &padded16, 2u);
+    memcpy(buf + off + 4u, &len, 4u);
+    if (len > 0u) {
+        memcpy(buf + off + 8u, octets, len);
+    }
+
+    memset(buf + off + 4u + val_len, 0, val_padded - val_len);
+    off += 4u + val_padded;
     return true;
+}
+
+/// Write a string PID: { PID, padded_len, uint32 str_len, str_bytes, NUL }.
+inline bool plcdr_write_string(Octet* buf, uint32_t cap, uint32_t& off, uint16_t pid_val,
+                               const char* str) noexcept {
+    const char* s = str != nullptr ? str : "";
+    return plcdr_write_octets(buf, cap, off, pid_val, s, static_cast<uint32_t>(strlen(s)) + 1u);
 }
 
 // ============================================================

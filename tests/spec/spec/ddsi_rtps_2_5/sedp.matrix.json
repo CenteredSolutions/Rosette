@@ -192,6 +192,15 @@
       "statement": "A matched remote endpoint that re-announces a different unicastLocatorList is matched again at the new locators, and no match refers to the locators it left.",
       "status": "implemented",
       "test_ids": ["TC-SEDP-8.5.5.1-012"]
+    },
+    {
+      "id": "REQ-SEDP-9.6.3.2-USER-DATA",
+      "section": "9.6.3.2",
+      "page": 263,
+      "normativity": "should",
+      "statement": "A local endpoint's USER_DATA QoS is announced as PID_USER_DATA, a sequence<octet>, whether the announcement is stored or rebuilt for each send; an endpoint without USER_DATA announces none.",
+      "status": "implemented",
+      "test_ids": ["TC-SEDP-9.6.3.2-005"]
     }
   ]
 }

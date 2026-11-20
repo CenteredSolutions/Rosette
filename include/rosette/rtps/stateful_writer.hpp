@@ -962,6 +962,34 @@ public:
     /// @brief Number of matched readers (§8.4.7.1 matched_readers).
     uint8_t matched_reader_count() const noexcept { return readers_.count; }
 
+    /**
+     * @brief Calls `visit(const Guid&)` with the GUID of each matched reader, in match order.
+     *
+     * `visit` returns `true` to stop early. A reader still waiting for a proxy is not visited.
+     *
+     * @return `true` when `visit` stopped the walk.
+     */
+    template <typename Visit>
+    bool any_matched_reader(Visit&& visit) const noexcept {
+        for (const ReaderProxy& proxy : matched()) {
+            if (visit(proxy.remoteReaderGuid)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @brief The sequence number the next write assigns: lastChangeSequenceNumber + 1
+     *   (§8.4.7.1).
+     *
+     * Lets a caller embed the number in a payload before writing it, as the
+     * Cyclone DDS service request header requires; the caller must hold the
+     * lock that serializes writes to this writer until the write.
+     */
+    SequenceNumber next_sequence_number() const noexcept { return nextSN_; }
+
     /// @brief Readers this writer is always granted proxies for (its floor).
     uint8_t min_matched_readers() const noexcept { return readers_.floor; }
 
