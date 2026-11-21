@@ -145,6 +145,15 @@ public:
         return status;
     }
 
+    /// @brief The chip has no receive interrupt of its own: the board attaches its INT pin.
+    bool set_receive_event(rosette::platform::Event*) noexcept override { return false; }
+
+    /// @brief No-op: socket 0 in MACRAW mode passes every multicast frame to the host.
+    void add_multicast(const MacAddress&) noexcept override {}
+
+    /// @brief No-op: socket 0 in MACRAW mode passes every multicast frame to the host.
+    void remove_multicast(const MacAddress&) noexcept override {}
+
 private:
     Bus bus_;
     raw_device_type device_;

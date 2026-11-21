@@ -131,6 +131,16 @@ bool realtime_hint_us(int64_t& unix_us) noexcept {
     return false;
 }
 
+/// @brief Not tracked on the RP2040 / RP2350 yet: reports {0, 0}.
+RegionUse main_stack_use() noexcept {
+    return {};
+}
+
+/// @brief Not tracked on the RP2040 / RP2350 yet: reports {0, 0}.
+RegionUse c_heap_use() noexcept {
+    return {};
+}
+
 }  // namespace rosette::platform
 
 namespace rosette::platform::chip {

@@ -75,6 +75,16 @@ bool realtime_hint_us(int64_t& unix_us) noexcept {
     return true;
 }
 
+/// @brief A host's stacks and heap belong to the OS: reports {0, 0}.
+RegionUse main_stack_use() noexcept {
+    return {};
+}
+
+/// @brief A host's stacks and heap belong to the OS: reports {0, 0}.
+RegionUse c_heap_use() noexcept {
+    return {};
+}
+
 bool attach_falling_edge(uint32_t pin, GpioInterruptHandler handler, void* context) noexcept {
     (void)pin;
     (void)handler;

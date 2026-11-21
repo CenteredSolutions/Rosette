@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace rosette::platform {
@@ -100,6 +101,28 @@ inline void sleep_ms(uint32_t ms) noexcept {
     const uint64_t start = monotonic_us();
     while (monotonic_us() - start < static_cast<uint64_t>(ms) * 1000u) {
     }
+}
+
+/**
+ * @brief Runs @p entry, the application's main loop, on the calling thread.
+ *
+ * There is no scheduler to start, so this is a plain call; see
+ * platform.hpp for the contract.
+ *
+ * @param[in] entry The application's main loop.
+ */
+inline void run_main_task(void (*entry)()) noexcept {
+    entry();
+}
+
+/// @brief No kernel heap here: reports {0, 0}.
+inline RegionUse rtos_heap_use() noexcept {
+    return {};
+}
+
+/// @brief No tasks here: visits nothing and returns 0.
+inline std::size_t visit_task_stacks(TaskStackVisitor, void*) noexcept {
+    return 0u;
 }
 
 }  // namespace rosette::platform

@@ -855,7 +855,7 @@ public:
      *   exchanges datagrams of the requested family only; on the W6x00,
      *   Sn_MR2 holds DHAM_MANUAL exactly when `manual_dest_mac` asked for it.
      * - Covered by: tests/host/wiznet_udp_socket_test.cpp (register sequence),
-     *   TC-NET-WIZ-ARP-014 (Sn_MR2); examples/wiznet_udp_echo on the
+     *   TC-NET-WIZ-ARP-014 (Sn_MR2); examples/udp_echo on the
      *   W6100-EVB-Pico (on the wire).
      *
      * References:
@@ -1005,7 +1005,7 @@ public:
      *   `peer`, from the family's own source address, and to `dest_mac` when
      *   one is given.
      * - Covered by: TC-NET-WIZ-ARP-010, TC-NET-WIZ-ARP-014;
-     *   examples/rtps_chatter (IPv4), examples/wiznet_udp_echo (IPv4 and IPv6)
+     *   examples/rtps_chatter (IPv4), examples/udp_echo (IPv4 and IPv6)
      *   on hardware.
      *
      * References:

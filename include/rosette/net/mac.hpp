@@ -8,20 +8,24 @@
  * @brief Hardware-neutral contract for an Ethernet MAC / link device.
  *
  * rosette::net::MacDevice is the contract between a link-layer device and a
- * software IP stack that runs on the microcontroller. Three roles meet here:
+ * software IP stack that runs on the microcontroller; MacLink is its control
+ * half, which a zero-copy device (rosette/net/zero_copy_mac.hpp) shares. Three
+ * roles meet here:
  *
  *  - this header defines the contract and nothing else; it names no RTOS,
  *    no IP stack, and no chip;
  *  - a MAC provider implements it against hardware, for example the WIZnet
- *    chip in MACRAW mode (ports/net/wiznet/macraw_device.hpp);
+ *    chip in MACRAW mode (ports/net/wiznet/macraw_device.hpp) or the i.MX RT
+ *    ENET (ports/chip/imxrt/imxrt_enet_mac_device.hpp);
  *  - an IP-stack port consumes it, for example the FreeRTOS+TCP network
- *    interface (ports/net/freertos_tcp/freertos_tcp_interface.hpp), which is
+ *    interface (ports/net/freertos_tcp/interface.hpp), which is
  *    a template over the provider type and owns the provider by value.
  *
  * A board composes the two, e.g.
  * `freertos::NetworkInterface<wiznet::WiznetMacrawDevice<Chip, Bus>>`, and
- * wires the controller's interrupt pin to the consumer. Neither the provider
- * nor the consumer knows the other's concrete type.
+ * wires a SPI controller's interrupt pin to the consumer; an on-chip MAC
+ * signals the consumer from its own interrupt (set_receive_event()). Neither
+ * the provider nor the consumer knows the other's concrete type.
  *
  * The interface mirrors rosette::net::AddressProvider in style: a small set
  * of pure virtual operations and no compile-time capability probing. A
@@ -33,6 +37,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+
+namespace rosette::platform {
+class Event;
+}  // namespace rosette::platform
 
 namespace rosette::net {
 
@@ -66,31 +74,39 @@ struct PhyStatus {
 };
 
 /**
- * @brief Abstract Ethernet MAC device: framed transmit/receive plus link state.
+ * @brief The control half of an Ethernet controller: bring-up, address, PHY, wake-up, multicast.
  *
- * A MacDevice sits directly above the register interface of an Ethernet
- * controller and exposes whole-frame send and receive to the IP stack. It
- * owns the controller's data path: callers never touch chip registers, they
- * hand down frames and query link state.
+ * Every link-layer device a software IP stack drives has these operations,
+ * whatever its data path. MacDevice adds whole-frame copying on top
+ * (send_frame(), receive_frame()); ZeroCopyMacDevice (rosette/net/zero_copy_mac.hpp)
+ * adds buffer exchange, for a DMA controller that moves frames straight into
+ * and out of the IP stack's own buffers. A consumer is written against one of
+ * the two, never against MacLink alone.
  *
- * Receive notification: a consumer drains the receive queue with
- * peek_frame_size() and receive_frame() until it is empty, then sleeps until
- * the controller's interrupt line falls (or a poll interval passes, on a
- * board with no line). A provider whose controller has an interrupt line
- * must leave it so that any frame queued after receive_frame() returns
- * produces a fresh falling edge. Which GPIO carries that line is a board
- * fact, so the provider never attaches it.
+ * Receive notification: a consumer drains the receive queue until it is
+ * empty, then sleeps on a platform::Event until a frame arrives (or a poll
+ * interval passes). Two kinds of provider signal it. An on-chip MAC with its
+ * own interrupt signals the event from that interrupt (set_receive_event()).
+ * A SPI controller cannot: its interrupt line is a GPIO, a board fact, so the
+ * board attaches the line to the consumer instead, and the provider must
+ * leave the line so that any frame queued after the consumer's last receive
+ * produces a fresh falling edge.
  *
- * Lifetime and threading: a MacDevice is constructed once and lives for the
- * duration of the network stack. receive_frame() and peek_frame_size() run
- * on the network interface's RX task; send_frame() runs on the IP task and
- * the IGMP output path. Implementations must make those two call sites safe
- * to run concurrently, either lock-free (independent controller sockets) or
- * behind the bus mutex.
+ * Multicast: a MAC that filters multicast frames in hardware passes only the
+ * groups the consumer has asked for (add_multicast()); one that passes every
+ * multicast frame treats those calls as no-ops.
+ *
+ * Lifetime and threading: a device is constructed once and lives for the
+ * duration of the network stack. The receive operations run on the network
+ * interface's RX task; the transmit operations run on the IP task and the
+ * IGMP output path; phy_status() and the multicast calls run on either.
+ * Implementations must make those call sites safe to run concurrently,
+ * either lock-free (independent controller sockets or rings) or behind a
+ * mutex.
  */
-class MacDevice {
+class MacLink {
 public:
-    virtual ~MacDevice() = default;
+    virtual ~MacLink() = default;
 
     /**
      * @brief Bring the controller out of reset and program @p mac.
@@ -121,14 +137,84 @@ public:
     /**
      * @brief Largest frame the controller can move, in bytes.
      *
-     * Measured as the buffer handed to send_frame(): the Ethernet header
-     * plus payload, without the hardware-appended FCS. The network interface
-     * rejects oversized transmit descriptors before calling send_frame().
+     * Measured from the destination MAC: the Ethernet header plus payload,
+     * without the hardware-appended FCS. The network interface rejects
+     * longer frames before handing them to the device.
      *
      * @return Maximum frame size in bytes; 0 disables the length check.
      */
     virtual std::size_t max_frame_size() const noexcept = 0;
 
+    /**
+     * @brief Current PHY link state, with the MAC following what the PHY negotiated.
+     *
+     * The consumer calls it on every idle wake of its receive task and
+     * whenever the IP stack asks for the link. A MAC whose speed and duplex
+     * are programmed separately from the PHY's (an on-chip MAC over RMII)
+     * reprograms them here when the negotiated values change, so frames keep
+     * flowing after the link partner renegotiates.
+     *
+     * @return A PhyStatus snapshot for the controller's link.
+     */
+    virtual PhyStatus phy_status() noexcept = 0;
+
+    /**
+     * @brief Hands the device the event to signal when a frame arrives.
+     *
+     * Called once by the consumer before its receive task starts. A device
+     * with its own receive interrupt signals @p event from it
+     * (platform::Event::signal_from_isr()) for every frame queued after the
+     * consumer last found the queue empty.
+     *
+     * @param[in] event The consumer's receive event; it outlives the device.
+     * @return True when the device signals @p event itself; false when it has
+     *   no interrupt of its own, in which case the board attaches the
+     *   controller's interrupt line to the consumer, or the consumer polls.
+     */
+    virtual bool set_receive_event(rosette::platform::Event* event) noexcept = 0;
+
+    /**
+     * @brief Accepts frames addressed to one multicast MAC address.
+     *
+     * The consumer calls it once per group join (IPv4 01:00:5e:..., IPv6
+     * 33:33:...), and remove_multicast() once per leave. A hardware hash
+     * filter can map two groups to one bucket, so the device counts requests
+     * per bucket and closes a bucket only when its last group leaves.
+     *
+     * @param[in] group A multicast address (I/G bit set).
+     */
+    virtual void add_multicast(const MacAddress& group) noexcept = 0;
+
+    /**
+     * @brief Withdraws one add_multicast() request for @p group.
+     *
+     * @param[in] group An address passed to add_multicast() earlier.
+     */
+    virtual void remove_multicast(const MacAddress& group) noexcept = 0;
+
+protected:
+    MacLink() = default;
+    MacLink(const MacLink&) = default;
+    MacLink(MacLink&&) = default;
+    MacLink& operator=(const MacLink&) = default;
+    MacLink& operator=(MacLink&&) = default;
+};
+
+/**
+ * @brief An Ethernet MAC whose frames are copied in and out: framed transmit/receive plus link
+ * state.
+ *
+ * A MacDevice sits directly above the register interface of an Ethernet
+ * controller and exposes whole-frame send and receive to the IP stack. It
+ * owns the controller's data path and its frame storage (on-chip SRAM for a
+ * SPI controller, driver-owned DMA buffers for an on-chip MAC): callers hand
+ * down frames to copy and receive copies of frames.
+ *
+ * A consumer drains the receive queue with peek_frame_size() and
+ * receive_frame() until it is empty, then sleeps as MacLink describes.
+ */
+class MacDevice : public MacLink {
+public:
     /**
      * @brief Transmit one complete Ethernet frame.
      *
@@ -168,13 +254,6 @@ public:
      *         that is non-zero, or 0 when the RX queue is empty.
      */
     virtual std::size_t peek_frame_size() noexcept = 0;
-
-    /**
-     * @brief Current PHY link state.
-     *
-     * @return A PhyStatus snapshot for the controller's link.
-     */
-    virtual PhyStatus phy_status() noexcept = 0;
 
 protected:
     MacDevice() = default;
