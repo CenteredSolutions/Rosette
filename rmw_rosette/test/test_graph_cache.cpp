@@ -239,8 +239,21 @@ TEST(GraphCache, ObserverForwardsToTheCache) {
     EXPECT_EQ(changes, 2);
 }
 
-/// @brief A serialized ParticipantEntitiesInfo with `nodes` of (namespace, name), and no endpoints.
-static std::vector<uint8_t> encode_nodes(const std::vector<rmw_rosette::NodeName>& nodes) {
+/// @brief How many reader and writer GIDs one fixture node owns.
+struct EndpointCounts {
+    uint32_t readers = 0;
+    uint32_t writers = 0;
+};
+
+/**
+ * @brief A serialized ParticipantEntitiesInfo with `nodes` of (namespace, name).
+ *
+ * Node `i` owns `endpoints[i]` reader and writer GIDs, and none past the end of `endpoints`.
+ * Each GID's octets are nonzero and differ from the next one's, so a decoder that skips the
+ * wrong number of octets reads GID bytes as a string length and fails or misnames a node.
+ */
+static std::vector<uint8_t> encode_nodes(const std::vector<rmw_rosette::NodeName>& nodes,
+                                         const std::vector<EndpointCounts>&        endpoints = {}) {
     std::vector<uint8_t> out = {0x00u, 0x01u, 0x00u, 0x00u};
     out.resize(out.size() + rmw_rosette::kGidSize);
 
@@ -259,12 +272,21 @@ static std::vector<uint8_t> encode_nodes(const std::vector<rmw_rosette::NodeName
         out.push_back(0u);
     };
 
+    uint8_t    gid_fill = 0x40u;
+    const auto put_gids = [&](uint32_t count) {
+        put_u32(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            out.insert(out.end(), rmw_rosette::kGidSize, gid_fill++);
+        }
+    };
+
     put_u32(static_cast<uint32_t>(nodes.size()));
-    for (const rmw_rosette::NodeName& node : nodes) {
-        put_string(node.namespace_);
-        put_string(node.name);
-        put_u32(0u);
-        put_u32(0u);
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        const EndpointCounts counts = i < endpoints.size() ? endpoints[i] : EndpointCounts{};
+        put_string(nodes[i].namespace_);
+        put_string(nodes[i].name);
+        put_gids(counts.readers);
+        put_gids(counts.writers);
     }
 
     return out;
@@ -337,6 +359,68 @@ TEST(GraphCache, RefusesBigEndianAndHugeCounts) {
     }
 
     EXPECT_FALSE(rmw_rosette::decode_participant_node_names(huge.data(), huge.size(), nodes));
+}
+
+// Stock nodes own endpoints (a /rosout writer, parameter services), so a real sample
+// carries GID sequences between node names; each skip must land on the next name.
+TEST(GraphCache, DecodesNodeNamesPastEndpointGids) {
+    const std::vector<uint8_t> bytes =
+        encode_nodes({{"/", "talker"}, {"/robot", "listener"}, {"/robot", "params"}},
+                     {{2u, 3u}, {0u, 1u}, {4u, 0u}});
+
+    std::vector<rmw_rosette::NodeName> nodes;
+    ASSERT_TRUE(rmw_rosette::decode_participant_node_names(bytes.data(), bytes.size(), nodes));
+    ASSERT_EQ(nodes.size(), 3u);
+    EXPECT_EQ(nodes[0].namespace_, "/");
+    EXPECT_EQ(nodes[0].name, "talker");
+    EXPECT_EQ(nodes[1].namespace_, "/robot");
+    EXPECT_EQ(nodes[1].name, "listener");
+    EXPECT_EQ(nodes[2].namespace_, "/robot");
+    EXPECT_EQ(nodes[2].name, "params");
+}
+
+// A sample cut anywhere, including inside a GID, is refused and leaves the output alone.
+TEST(GraphCache, RefusesNodeMessagesTruncatedInsideGids) {
+    const std::vector<uint8_t> bytes =
+        encode_nodes({{"/", "talker"}, {"/robot", "listener"}}, {{2u, 1u}, {1u, 2u}});
+
+    for (size_t size = 0; size < bytes.size(); ++size) {
+        std::vector<rmw_rosette::NodeName> nodes = {{"/", "unchanged"}};
+        EXPECT_FALSE(rmw_rosette::decode_participant_node_names(bytes.data(), size, nodes)) << size;
+        ASSERT_EQ(nodes.size(), 1u);
+        EXPECT_EQ(nodes[0].name, "unchanged");
+    }
+}
+
+// A GID count is refused one past what the sample holds and accepted at exactly what it holds.
+TEST(GraphCache, BoundsGidCountsBySampleSize) {
+    // The fixture ends with the last node's writer GID count, which is zero.
+    const std::vector<uint8_t> base = encode_nodes({{"/", "talker"}}, {{2u, 0u}});
+    const auto                 with_writer_count = [&base](uint32_t count) {
+        std::vector<uint8_t> out = base;
+        for (size_t i = 0; i < 4u; ++i) {
+            out[out.size() - 4u + i] = static_cast<uint8_t>(count >> (8u * i));
+        }
+
+        return out;
+    };
+
+    // The last count's octet total wraps a 32-bit size_t to a few octets, as on a microcontroller.
+    for (const uint32_t count : {1u, 0xFFFFFFFFu, 0xFFFFFFFFu / rmw_rosette::kGidSize + 1u}) {
+        const std::vector<uint8_t>         bytes = with_writer_count(count);
+        std::vector<rmw_rosette::NodeName> nodes = {{"/", "unchanged"}};
+        EXPECT_FALSE(rmw_rosette::decode_participant_node_names(bytes.data(), bytes.size(), nodes))
+            << count;
+        ASSERT_EQ(nodes.size(), 1u);
+        EXPECT_EQ(nodes[0].name, "unchanged");
+    }
+
+    std::vector<uint8_t> exact = with_writer_count(1u);
+    exact.insert(exact.end(), rmw_rosette::kGidSize, 0x7Fu);
+    std::vector<rmw_rosette::NodeName> nodes;
+    ASSERT_TRUE(rmw_rosette::decode_participant_node_names(exact.data(), exact.size(), nodes));
+    ASSERT_EQ(nodes.size(), 1u);
+    EXPECT_EQ(nodes[0].name, "talker");
 }
 
 TEST(RmwGraphNames, ListsALocalPublisherAndForgetsItWhenDestroyed) {
