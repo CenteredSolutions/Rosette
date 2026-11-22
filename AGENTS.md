@@ -159,10 +159,11 @@ function that calls them, not individually.
 
 ### Enforcement
 `.clang-format` encodes the formatting rules, pinned to clang-format 18.1.8. `tools/style/run_style_checks.sh`
-runs every check locally and in the GitHub `style` workflow: formatting and the blank-line rule on lines changed
-since the merge base with `main`, and the function-length cap across the tree, where functions already over the cap
-are listed in `tools/style/function_length_baseline.txt` and may only shrink. Install the tools with
-`python3 -m pip install -r tools/style/requirements.txt`.
+runs every check locally and in the GitHub `style` workflow: formatting (with column alignment of declarations and
+trailing comments left to the author, so a block of definitions may line up while a stray local does not) and the
+blank-line rule on lines changed since the merge base with `main`, and the function-length cap across the tree,
+where functions already over the cap are listed in `tools/style/function_length_baseline.txt` and may only shrink.
+Install the tools with `python3 -m pip install -r tools/style/requirements.txt`.
 
 ### Editing existing code
 When editing code, improve surrounding code toward those standards where practical. Favor consistency, readability,

@@ -19,6 +19,10 @@ ContinuationIndentWidth: 4
 AccessModifierOffset: -4
 ColumnLimit: 100
 
+# Column alignment of consecutive declarations and trailing comments is the
+# author's choice: clang-format collapses it to one space, and
+# tools/style/check_clang_format.py accepts either form.
+
 # Wrapped expressions start each continuation line with the operator.
 BreakBeforeBinaryOperators: NonAssignment
 BreakBeforeTernaryOperators: true
