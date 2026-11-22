@@ -83,7 +83,7 @@
       "normativity": "shall",
       "statement": "get_seq_num_max returns the highest sequence number held after any sequence of insertions, KEEP_LAST evictions, removals, and clear_all, and UNKNOWN when the cache is empty.",
       "status": "implemented",
-      "test_ids": ["TC-HC-8.3.1-005"]
+      "test_ids": ["TC-HC-8.3.1-005", "TC-HC-8.3.1-006"]
     }
   ]
 }

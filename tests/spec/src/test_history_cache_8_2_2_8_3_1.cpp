@@ -199,6 +199,35 @@ static bool tc_hc_8_3_1_008(std::string& err) {
     return true;
 }
 
+// A writer releases delivered replies and finished volatile changes by
+// clearing them in place through the mutable traversal, not remove_change().
+static bool tc_hc_8_3_1_009(std::string& err) {
+    HistoryCacheStorage<3> cache{};
+    CHECK(cache.add_change(make_change(1, 0x31u)) != nullptr, "add_change SN 1 should succeed");
+    CHECK(cache.add_change(make_change(2, 0x32u)) != nullptr, "add_change SN 2 should succeed");
+    CHECK(cache.add_change(make_change(3, 0x33u)) != nullptr, "add_change SN 3 should succeed");
+
+    auto clear_sn = [&cache](int64_t sn) {
+        cache.for_each_change([sn](HistoryChange& c) noexcept {
+            if (c.sequenceNumber == SequenceNumber::from_int64(sn)) {
+                c.clear();
+            }
+        });
+    };
+
+    clear_sn(1);
+    CHECK(max_is(cache, 3), "clearing an older change should leave the maximum at 3");
+    clear_sn(3);
+    CHECK(max_is(cache, 2), "clearing the newest change should expose SN 2");
+    CHECK(cache.add_change(make_change(4, 0x34u)) != nullptr, "add_change SN 4 should succeed");
+    CHECK(max_is(cache, 4), "a change added after the traversal should become the maximum");
+
+    cache.for_each_change([](HistoryChange& c) noexcept { c.clear(); });
+    CHECK(cache.get_seq_num_max() == SEQUENCENUMBER_UNKNOWN,
+          "clearing every change should report an UNKNOWN maximum");
+    return true;
+}
+
 void append_history_cache_tests_8_2_2_8_3_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-HC-8.3.1-001",
                      "§8.3.1: add_change/get_change/get_seq_num_min/get_seq_num_max/is_empty/size expose expected HistoryCache state transitions.",
@@ -229,6 +258,10 @@ void append_history_cache_tests_8_2_2_8_3_1(std::vector<TestCase>& tests) {
                      "§8.3.1: get_seq_num_max follows insertions in any order, KEEP_LAST "
                      "eviction, removal of the newest and of older changes, and clear_all.",
                      tc_hc_8_3_1_008});
+    tests.push_back({"TC-HC-8.3.1-006",
+                     "§8.3.1: get_seq_num_max follows changes cleared in place by the mutable "
+                     "for_each_change, including the newest.",
+                     tc_hc_8_3_1_009});
 }
 
 } // namespace spec_test

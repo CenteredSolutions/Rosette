@@ -289,13 +289,30 @@ public:
         }
     }
 
-    /// @brief Calls `fn(HistoryChange&)` for each change held, in slot order.
-    /// `fn` must not change a held change's sequence number (the cache indexes
-    /// its newest change by it), nor that of one reached by get_change().
+    /**
+     * @brief Calls `fn(HistoryChange&)` for each change held, in slot order.
+     *
+     * `fn` may release a change with HistoryChange::clear(); the cache then
+     * finds its newest change again after the traversal. `fn` must not change
+     * a held change's sequence number (the cache indexes its newest change by
+     * it), nor that of one reached by get_change().
+     *
+     * Verification:
+     * - Correct means: after `fn` clears any subset of changes, including the
+     *   newest, get_seq_num_max() returns the highest sequence number still
+     *   held, or SEQUENCENUMBER_UNKNOWN when none is.
+     * - Covered by: TC-HC-8.3.1-003, TC-HC-8.3.1-006.
+     */
     template<typename Fn>
     void for_each_change(Fn&& fn) noexcept {
         for (uint8_t i = 0; i < capacity_; ++i) {
-            if (slots_[i].is_valid()) fn(slots_[i]);
+            if (slots_[i].is_valid()) {
+                fn(slots_[i]);
+            }
+        }
+
+        if (newest_ != kNoSlot && !slots_[newest_].is_valid()) {
+            newest_ = find_newest();
         }
     }
 
