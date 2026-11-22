@@ -28,6 +28,11 @@ Details and examples: [.agents/code-style.md](.agents/code-style.md).
 - `tools/style/run_style_checks.sh` passes before you push; CI runs the same script.
 - When editing, improve the surrounding code toward these rules where practical.
 
+## Testing
+
+Which suites prove a change, and the traps that make a run lie: [.agents/testing.md](.agents/testing.md). Flashing
+a board without its BOOTSEL drive: [.agents/flashing.md](.agents/flashing.md).
+
 ## Documentation
 
 Tiers, template, and diagrams: [.agents/doc-comments.md](.agents/doc-comments.md).
