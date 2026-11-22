@@ -32,9 +32,10 @@ understand. See [AI_ASSISTANCE.md](AI_ASSISTANCE.md).
 
 ## Style and checks
 
-[AGENTS.md](AGENTS.md) holds the coding style and the documentation rule
-(`Verification:` and `References:` on every non-trivial function). Before
-opening a pull request, run:
+[AGENTS.md](AGENTS.md) holds the coding style and the documentation rules,
+with details in [.agents/](.agents/). Code that implements an external
+standard says what proves it correct (`Verification:`) and which section it
+derives from (`References:`). Before opening a pull request, run:
 
 ```bash
 python3 -m pip install -r tools/style/requirements.txt

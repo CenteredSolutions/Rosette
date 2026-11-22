@@ -4,8 +4,8 @@
 """Check that no function is longer than 100 lines.
 
 Architecture:
-    AGENTS.md ("Function length") caps every function at 100 lines, measured
-    from its signature to its closing brace, blank lines and comments
+    .agents/code-style.md ("Function length") caps every function at 100 lines,
+    measured from its signature to its closing brace, blank lines and comments
     included, because the rule is about fitting on one screen. lizard parses
     C, C++, and Python and reports that span as `length`.
 

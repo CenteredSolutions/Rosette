@@ -4,10 +4,10 @@
 """Check that a closing brace on its own line is followed by a blank line.
 
 Architecture:
-    AGENTS.md ("Blocks and vertical whitespace") requires a blank line after a
-    `}` that sits on a line by itself, so the end of a loop or branch is
-    visually separated from the statement after it. clang-format has no option
-    for this, so this script checks it. Only lines the branch adds or modifies
+    .agents/code-style.md ("Blocks and vertical whitespace") requires a blank
+    line after a `}` that sits on a line by itself, so the end of a loop or
+    branch is visually separated from the statement after it. clang-format has
+    no option for this, so this script checks it. Only lines the branch adds or modifies
     are held to the rule (see changed_lines.py); untouched code is reported
     once it is edited.
 
@@ -52,13 +52,6 @@ def find_violations(lines: list, changed: set) -> list:
 
     Returns:
         The 1-based numbers of offending `}` lines, in file order.
-
-    Verification:
-        Correct means: `}` then `return x;` is reported; `}` then a blank
-        line, `} else {`, another `}`, `case 2:`, or `#endif` is not.
-
-    References:
-        AGENTS.md, "Coding Style" > "Blocks and vertical whitespace".
     """
     violations = []
     for index in range(len(lines) - 1):

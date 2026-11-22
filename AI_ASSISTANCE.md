@@ -34,10 +34,11 @@ The project is set up so that correctness is established by evidence rather
 than by trust in whoever, or whatever, wrote a change:
 
 - **[AGENTS.md](AGENTS.md) is the working contract.** It states the
-  architecture, the coding style, and a documentation rule: every non-trivial
-  function says what proves it correct (`Verification:`) and which
-  specification section it derives from (`References:`). A reviewer compares
-  the implementation against the documented algorithm and the cited standard.
+  architecture, the coding style, and a documentation rule: every function
+  that implements a standard says what proves it correct (`Verification:`) and
+  which specification section it derives from (`References:`). A reviewer
+  compares the implementation against the documented algorithm and the cited
+  standard.
 - **Spec-keyed conformance tests.** `tests/spec` checks DDSI-RTPS statements by
   specification section, with test IDs of the form `TC-<AREA>-<section>-<seq>`
   that the code's documentation cites.
