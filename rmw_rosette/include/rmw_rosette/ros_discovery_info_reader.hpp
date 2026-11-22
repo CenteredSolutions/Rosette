@@ -88,10 +88,8 @@ public:
      * The reader is deleted with the participant. Every active peer writes this
      * topic, so the reader's floor and cap in the WriterProxy pool are both
      * RTPS_MAX_PEERS, and capacity.hpp proves the pool holds them. The reader
-     * never pairs with the context's own writer. Its matches keep each ROS 2
-     * peer in the active tier, so a host leaves
-     * RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS at RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS,
-     * and its peers are never parked.
+     * never pairs with the context's own writer, and its matches keep no peer
+     * active (RTPSParticipant::set_discovery_reader()).
      *
      * @param[in,out] participant Participant that owns the reader; outlives this object.
      * @param[in,out] cache       Receives each peer's nodes, and tells the graph guard
@@ -101,9 +99,10 @@ public:
      *
      * Verification:
      * - Correct means: each local node is listed once after the context's own
-     *   `ros_discovery_info` sample has had time to loop back.
+     *   `ros_discovery_info` sample has had time to loop back, and a peer
+     *   matched only on `ros_discovery_info` can be parked.
      * - Covered by: RmwNodeNames.ListsALocalNodeOnceAfterItsSampleIsSent,
-     *   TC-SEDP-8.5.5.1-018.
+     *   TC-SEDP-8.5.5.1-018, TC-PART-8.5.3-030.
      */
     bool create(rosette::rtps::RTPSParticipant& participant, GraphCache& cache) noexcept;
 

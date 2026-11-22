@@ -990,14 +990,14 @@ void EndpointMatchTable::remove_reader(const Guid& reader_guid) noexcept
     remove_endpoint(reader_guid, /*is_writer=*/false);
 }
 
-bool EndpointMatchTable::has_match_with(const GuidPrefix& prefix,
-                                        const Guid& except_local) const noexcept {
+bool EndpointMatchTable::has_match_with(const GuidPrefix& prefix, const Guid& except_writer,
+                                        const Guid& except_reader) const noexcept {
     for (const MatchRecord& m : matches_) {
         if (!m.active()) {
             continue;
         }
 
-        const bool counts = m.writer_guid != except_local && m.reader_guid != except_local;
+        const bool counts = m.writer_guid != except_writer && m.reader_guid != except_reader;
         if (counts && (m.writer_guid.prefix == prefix || m.reader_guid.prefix == prefix)) {
             return true;
         }

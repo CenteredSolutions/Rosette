@@ -17,7 +17,7 @@
  * whose last SEDP DATA (or activation) is oldest, or, when none is settled,
  * the oldest stalled one. An active peer is idle when it is settled or
  * stalled (peer_idleness()), and neither ever shares a match that counts
- * (one other than with the discovery writer), so the slots end up held by
+ * (one other than with the discovery writer or reader), so the slots end up held by
  * the peers this participant really talks to and the rest rotate through
  * the network. A settled peer goes first because a stalled peer is parked
  * owed: parking it while a settled peer could go would only have the next
@@ -29,7 +29,9 @@
  * |-------------|-------------------------------|---------------------------------|------------|
  * | settled     | RTPS_PEER_SETTLE_MS           | both announcers heard, caught   | not owed   |
  * |             |                               | up; its readers acknowledged    |            |
- * |             |                               | every local SEDP and user write |            |
+ * |             |                               | every local SEDP and user       |            |
+ * |             |                               | write; its discovery writer     |            |
+ * |             |                               | heard, caught up                |            |
  * | stalled     | RTPS_PEER_EXCHANGE_TIMEOUT_MS | nothing else                    | owed       |
  * | neither     |                               |                                 | not parked |
  *
@@ -58,7 +60,12 @@
  * participant keeps the highest sequence number of each of the peer's SEDP
  * announcers, so a parked peer that announces a new endpoint (a HEARTBEAT
  * or DATA above that number) is reactivated and its announcements are
- * received again in full. When this participant's own announcements
+ * received again in full. The same holds for the peer's
+ * `ros_discovery_info` writer where a discovery reader is named
+ * (RTPS_DISCOVERY_READER): the peer settles only once that reader has
+ * heard the writer and holds every sample it announced, and a DATA or
+ * HEARTBEAT from it above the number kept at parking reactivates the peer
+ * (on_discovery_traffic()). When this participant's own announcements
  * change, or its discovery writer writes new contents
  * (discovery_info_changed()), every parked peer is owed them and is
  * reactivated in turn, oldest last SEDP DATA or activation first
@@ -73,9 +80,11 @@
  * replay has caught up, so an endpoint withdrawn while the peer was parked
  * leaves the listing too.
  *
- * Verification: TC-PART-8.5.3-011 to -029 (tests/spec), at network scale
+ * Verification: TC-PART-8.5.3-011 to -032 (tests/spec), at network scale
  * tests/ros2/discovery_scale, and as a design by the TLA+ models
- * RosettePeerTable and RosettePeerOutbound (tests/formal).
+ * RosettePeerTable and RosettePeerOutbound (tests/formal), which cover
+ * SEDP and this participant's own writes but not the inbound
+ * `ros_discovery_info` wait and wake.
  *
  * References:
  * - OMG DDSI-RTPS 2.5 §8.5.3.2 (SPDP lease), §8.5.4.1 (SEDP builtin
@@ -189,8 +198,13 @@ RTPSParticipant::PeerIdleness RTPSParticipant::peer_idleness(const PeerEntry& pe
                                                              uint32_t         now_ms) noexcept {
     const uint32_t    quiet_ms = now_ms - peer.lastSedpMs;
     const GuidPrefix& prefix = peer.guidPrefix;
+#if RTPS_DISCOVERY_READER
+    const Guid& discovery_reader = discovery_reader_guid_;
+#else
+    const Guid& discovery_reader = GUID_UNKNOWN;
+#endif
     if (!peer.active() || !peer.rebuildable() || quiet_ms < RTPS_PEER_SETTLE_MS
-        || match_table_.has_match_with(prefix, discovery_writer_guid_)) {
+        || match_table_.has_match_with(prefix, discovery_writer_guid_, discovery_reader)) {
         return PeerIdleness::busy;
     }
 
@@ -200,6 +214,9 @@ RTPSParticipant::PeerIdleness RTPSParticipant::peer_idleness(const PeerEntry& pe
     bool complete = sedp_reader_.heard_from(prefix, peer.availableBuiltinEndpoints)
                     && sedp_reader_.caught_up_with(prefix, publications, subscriptions)
                     && sedp_writer_.acknowledged_by(prefix);
+#if RTPS_DISCOVERY_READER
+    complete = complete && discovery_caught_up_with(prefix);
+#endif
     for (int i = 0; complete && i < RTPS_MAX_USER_WRITERS; ++i) {
         complete =
             !writer_alive_[i] || !writers_[i] || writers_[i]->acknowledged_by_participant(prefix);
@@ -235,6 +252,9 @@ void RTPSParticipant::park_peer(PeerEntry& peer) noexcept {
 
     peer.parkedPublicationsSn = kept(peer.parkedPublicationsSn, publications);
     peer.parkedSubscriptionsSn = kept(peer.parkedSubscriptionsSn, subscriptions);
+#if RTPS_DISCOVERY_READER
+    record_parked_discovery(peer);
+#endif
     peer.parked = true;
     peer.owed = false;
 
@@ -322,6 +342,68 @@ void RTPSParticipant::on_announcer_traffic(const GuidPrefix& prefix, const Entit
 
     (void)admit_peer(*peer, now_ms);
 }
+
+#if RTPS_DISCOVERY_READER
+/// @brief The discovery reader's proxy of the peer's `ros_discovery_info` writer, or null.
+static const WriterProxy* discovery_writer_of(StatefulReader*   reader,
+                                              const GuidPrefix& prefix) noexcept {
+    return reader != nullptr ? reader->matched_writer_from(prefix) : nullptr;
+}
+
+bool RTPSParticipant::discovery_caught_up_with(const GuidPrefix& prefix) noexcept {
+    if (discovery_reader_guid_ == GUID_UNKNOWN) {
+        return true;
+    }
+
+    // Heard, not only caught up, as for the SEDP announcers: a proxy that
+    // has heard nothing knows of no sample it lacks.
+    const WriterProxy* writer =
+        discovery_writer_of(find_reader(discovery_reader_guid_.entityId), prefix);
+    return writer == nullptr || (writer->heard && !writer->has_missing_changes());
+}
+
+void RTPSParticipant::record_parked_discovery(PeerEntry& peer) noexcept {
+    if (discovery_reader_guid_ == GUID_UNKNOWN) {
+        return;
+    }
+
+    // A peer parked again before its writer was matched keeps its record:
+    // the samples received before still bound what it has. The same writer
+    // keeps the larger number, which a match whose replay has not arrived
+    // leaves above what the reader holds.
+    const WriterProxy* writer =
+        discovery_writer_of(find_reader(discovery_reader_guid_.entityId), peer.guidPrefix);
+    if (writer == nullptr) {
+        return;
+    }
+
+    const SequenceNumber received = writer->available_changes_max();
+    const uint32_t       low = received.high != 0 ? UINT32_MAX : received.low;
+    const EntityId&      entity = writer->remoteWriterGuid.entityId;
+    if (entity != peer.parkedDiscoveryWriter || low > peer.parkedDiscoverySn) {
+        peer.parkedDiscoverySn = low;
+    }
+
+    peer.parkedDiscoveryWriter = entity;
+}
+
+void RTPSParticipant::on_discovery_traffic(const GuidPrefix& prefix, const EntityId& writer_id,
+                                           const SequenceNumber& sn, uint32_t now_ms) noexcept {
+    // Builtin writers are SPDP's and SEDP's; only a user writer can be the
+    // peer's `ros_discovery_info` writer.
+    if (discovery_reader_guid_ == GUID_UNKNOWN || (writer_id.entityKind & 0xC0u) != 0u) {
+        return;
+    }
+
+    PeerEntry* peer = spdp_reader_.find_peer(prefix);
+    if (peer == nullptr || !peer->parked || writer_id != peer->parkedDiscoveryWriter
+        || (sn.high == 0 && sn.low <= peer->parkedDiscoverySn)) {
+        return;
+    }
+
+    (void)admit_peer(*peer, now_ms);
+}
+#endif
 
 void RTPSParticipant::owe_parked_peers() noexcept {
     spdp_reader_.for_each_peer([](PeerEntry& peer) noexcept {

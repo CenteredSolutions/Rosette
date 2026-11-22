@@ -62,7 +62,7 @@ set(RMW_ROSETTE_BUILTIN_PUBLISHERS_PER_NODE 2 CACHE STRING
 set(RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS 32 CACHE STRING
     "Remote DDS participants tracked at once (every ROS 2 process is one)")
 set(RMW_ROSETTE_MAX_KNOWN_PARTICIPANTS ${RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS} CACHE STRING
-    "Remote DDS participants known at once, active or parked; size it for the whole network. Only RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS of them exchange endpoint discovery at a time. Keep it equal to that with RMW_ROSETTE_GRAPH_CACHE: the ros_discovery_info reader keeps every ROS 2 peer active")
+    "Remote DDS participants known at once, active or parked; size it for the whole network. Only RMW_ROSETTE_MAX_REMOTE_PARTICIPANTS of them exchange endpoint discovery at a time")
 set(RMW_ROSETTE_MAX_MATCHED_ENDPOINTS 16 CACHE STRING
     "Remote readers per local writer and remote writers per local reader")
 set(RMW_ROSETTE_MIN_MATCHED_ENDPOINTS 1 CACHE STRING
@@ -361,6 +361,7 @@ function(rmw_rosette_apply_capacity target)
     RMW_ROSETTE_REPLY_DEPTH=${RMW_ROSETTE_REPLY_DEPTH}
     RMW_ROSETTE_PUMP_THREAD=$<BOOL:${RMW_ROSETTE_PUMP_THREAD}>
     RMW_ROSETTE_GRAPH_CACHE=$<BOOL:${RMW_ROSETTE_GRAPH_CACHE}>
+    RTPS_DISCOVERY_READER=$<BOOL:${RMW_ROSETTE_GRAPH_CACHE}>
     RTPS_DEEP_WRITER_DEPTH=${RMW_ROSETTE_MAX_WRITER_DEPTH}
     RTPS_SEDP_REBUILD_ANNOUNCEMENTS=${_rr_sedp_rebuild}
     RTPS_MAX_USER_WRITERS=${_rr_rtps_writers}
