@@ -353,7 +353,7 @@ private:
 
     HistoryChange* slots_;
     uint8_t capacity_;
-    uint8_t        newest_ = kNoSlot;  ///< Slot of the newest change; sits in capacity_'s padding.
+    uint8_t newest_ = kNoSlot;  ///< Slot of the newest change; sits in capacity_'s padding.
 };
 
 // newest_ rides in padding the slot pointer already forces, so every writer's
