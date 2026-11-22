@@ -676,7 +676,65 @@ static bool tc_sedp_8_5_5_1_017(std::string& err) {
     return true;
 }
 
+// A local reader that ignores local writers (the `ros_discovery_info` reader
+// of a ROS 2 participant) pairs with remote writers on its topic and with no
+// local writer, whether the writer is added before or after it; a reader
+// without the flag on the same topic still pairs with both local writers.
+static bool tc_sedp_8_5_5_1_018(std::string& err) {
+    std::vector<GuidPair> matched;
+    EndpointMatchTable    t(
+        [](const MatchedEndpoint& w, const MatchedEndpoint& r, const char*, void* u) noexcept {
+            static_cast<std::vector<GuidPair>*>(u)->emplace_back(w.guid, r.guid);
+            return true;
+        },
+        [](const Guid&, const Guid&, void*) noexcept {}, &matched);
+
+    const char* topic = "ros_discovery_info";
+    const char* type = "rmw_dds_common::msg::dds_::ParticipantEntitiesInfo_";
+    const auto  writer = [&](Octet p, Octet key) {
+        return make_writer(make_guid(p, p, p, make_entity(key, key, key, 0x03u)), topic, type,
+                            ReliabilityKind::RELIABLE, DurabilityKind::TRANSIENT_LOCAL);
+    };
+    const auto reader = [&](Octet p, Octet key) {
+        return make_reader(make_guid(p, p, p, make_entity(key, key, key, 0x04u)), topic, type,
+                           ReliabilityKind::RELIABLE, DurabilityKind::TRANSIENT_LOCAL);
+    };
+    const Octet local = 0x10u;
+    const Octet peer = 0xA0u;
+    t.set_local_prefix(make_guid(local, local, local, entity_id::UNKNOWN).prefix);
+
+    DiscoveredReaderData discovery_reader = reader(local, 2u);
+    discovery_reader.ignoresLocalWriters = true;
+    const Guid earlier_writer = writer(local, 1u).writerGuid;
+    const Guid plain_reader = reader(local, 3u).readerGuid;
+    const Guid later_writer = writer(local, 4u).writerGuid;
+    const Guid peer_writer = writer(peer, 1u).writerGuid;
+
+    t.add_writer(writer(local, 1u));
+    t.add_reader(discovery_reader);
+    CHECK(matched.empty(), "the reader does not pair with a local writer added before it");
+
+    t.add_reader(reader(local, 3u));
+    t.add_writer(writer(local, 4u));
+    t.add_writer(writer(peer, 1u));
+    CHECK(reported_exactly(matched, {{earlier_writer, plain_reader},
+                                     {later_writer, plain_reader},
+                                     {peer_writer, plain_reader},
+                                     {peer_writer, discovery_reader.readerGuid}}),
+          "the flagged reader pairs only with the remote writer; the plain reader pairs with "
+          "every writer");
+
+    DiscoveredReaderData stored{};
+    CHECK(t.local_reader_data(discovery_reader.readerGuid, stored) && stored.ignoresLocalWriters,
+          "the reader's record keeps the flag");
+    return true;
+}
+
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests) {
+    tests.push_back({"TC-SEDP-8.5.5.1-018",
+                     "§8.5.5.1: a local reader that ignores local writers pairs with remote "
+                     "writers only, whichever of it and a local writer is added first.",
+                     tc_sedp_8_5_5_1_018});
     tests.push_back({"TC-SEDP-8.5.5.1-017",
                      "§8.5.5.1/two-tier peer table: releasing a parked participant unmatches each "
                      "of its pairs, bound or waiting, exactly once and no other, forgets its "

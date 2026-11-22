@@ -131,6 +131,9 @@ public:
     void remove_endpoints(const rosette::rtps::Guid* reader,
                           const rosette::rtps::Guid* writer) noexcept;
 
+    /// @brief The local node table, which answers node queries for this context.
+    const LocalNodeEntities& local_entities() const noexcept { return entities_; }
+
 private:
     /**
      * @brief Encodes the current table into a pool buffer and writes it.

@@ -313,6 +313,11 @@ struct ReaderConfig {
     uint8_t minMatchedWriters = RTPS_MIN_MATCHES_PER_ENDPOINT;
     /// Most writers matched at once (the cap); raised to the floor when lower.
     uint8_t maxMatchedWriters = RTPS_MAX_MATCHED_WRITERS;
+    /// Pairs with remote writers only, never with a writer of this
+    /// participant: for a topic each participant both writes and reads,
+    /// such as `ros_discovery_info`, where the participant's own sample
+    /// would cost a proxy and a loopback send and tell it nothing new.
+    bool            ignoresLocalWriters = false;
 };
 
 // ============================================================

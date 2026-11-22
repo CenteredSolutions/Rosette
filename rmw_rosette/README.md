@@ -118,13 +118,14 @@ the same relationships.
    `ros_discovery_info_writer.hpp`), so stock peers see them. Rosette nodes
    see the graph through `rmw_count_publishers`/`rmw_count_subscribers`
    (answered by the participant's `EndpointMatchTable`) and the context's one
-   graph guard condition, which discovery triggers. `rmw_get_node_names*` and
-   the `*_by_node` queries need other participants' `ros_discovery_info`, which
-   nothing reads yet, so they report `RMW_RET_UNSUPPORTED`.
-   `rmw_get_topic_names_and_types` and `rmw_get_service_names_and_types` need
-   remote endpoint names, which the match table keeps only as keys: a hosted
-   build keeps them on the heap in a `GraphCache` (`RMW_ROSETTE_GRAPH_CACHE`,
-   on for POSIX), and firmware leaves it out and reports `RMW_RET_UNSUPPORTED`.
+   graph guard condition, which discovery triggers. Topic, service, and node
+   listings need names the match table does not keep: a hosted build reads
+   other participants' `ros_discovery_info` and keeps endpoint and node names
+   on the heap in a `GraphCache` (`RMW_ROSETTE_GRAPH_CACHE`, on for POSIX), so
+   `rmw_get_node_names` and the name listings work there. Firmware leaves the
+   cache and that reader out and reports `RMW_RET_UNSUPPORTED`. On every build,
+   `rmw_get_node_names_with_enclaves`, the `*_by_node` queries, and
+   `*_info_by_topic` report `RMW_RET_UNSUPPORTED`.
 3. **QoS events and listeners.** Event initialization reports
    `RMW_RET_UNSUPPORTED`, which both client libraries accept.
 4. **C++ type support on boards.** `rclcpp`'s C++ message structs are encoded

@@ -152,6 +152,12 @@ public:
      */
     uint32_t encoded_size(const rosette::rtps::Guid& participant) const noexcept;
 
+    /// @brief Number of nodes in the table.
+    uint32_t node_count() const noexcept { return node_count_; }
+
+    /// @brief Returns the node at `index`, which must be below node_count().
+    const Node& node(uint32_t index) const noexcept { return *nodes_[index]; }
+
 private:
     /**
      * @brief Writes the ParticipantEntitiesInfo body that encode() documents.
