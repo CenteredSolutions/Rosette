@@ -17,6 +17,7 @@
 #include "rmw_rosette/local_node_entities.hpp"
 #include "rmw_rosette/message_codec.hpp"
 #include "rmw_rosette/ros_discovery_info_writer.hpp"
+#include "rosette/rtps/log.hpp"
 
 namespace rtps = rosette::rtps;
 
@@ -61,7 +62,9 @@ void skip_gid_sequence(CdrReader& cdr) {
 
 bool decode_participant_node_names(const uint8_t* payload, size_t size,
                                    std::vector<NodeName>& nodes) {
-    // Stock rmw implementations serialize this topic as little-endian plain CDR.
+    // Stock rmw implementations write plain CDR in their host's byte order:
+    // CDR_LE (0x0001) from every little-endian host, CDR_BE (0x0000) from a
+    // big-endian one, which this decoder refuses.
     if (payload == nullptr || size < kRtpsEncapsulationHeaderSize || payload[0] != 0x00u
         || payload[1] != 0x01u) {
         return false;
@@ -119,6 +122,16 @@ void RosDiscoveryInfoReader::on_change(const rtps::CacheChange& change, void* se
     try {
         std::vector<NodeName> nodes;
         if (!decode_participant_node_names(change.payload.data, change.payload.size, nodes)) {
+            // Once per process: every sample from a big-endian peer would repeat it.
+            static bool logged = false;
+            if (!logged && change.payload.size >= 2u) {
+                logged = true;
+                RTPS_LOG_W("rmw_rosette",
+                           "a ros_discovery_info sample with encapsulation %02x%02x was not "
+                           "decoded; its participant's nodes are not listed",
+                           change.payload.data[0], change.payload.data[1]);
+            }
+
             return;
         }
 

@@ -281,10 +281,9 @@ void report_transport_stats(const rtps::SocketUdpTransport& transport) noexcept 
  *
  * KEEP_LAST writers evict in normal operation, such as the depth-1
  * `ros_discovery_info` writer during a burst of entity creation, so this total
- * and the per-eviction log (StatefulWriter::evicted_unacknowledged()) stay
- * below the default log level. On a node with services the total counts the
- * replies lost to a reply history shallower than the replies in flight, the
- * evidence for raising RMW_ROSETTE_REPLY_DEPTH.
+ * stays below the default log level. A lost service reply is warned of as it
+ * happens (StatefulWriter::evicted_unacknowledged()); on a node with services
+ * the total includes them, the evidence for raising RMW_ROSETTE_REPLY_DEPTH.
  */
 void report_writer_evictions(const rtps::RTPSParticipant& participant) noexcept {
     [[maybe_unused]] const uint32_t evicted = participant.evicted_unacknowledged();
