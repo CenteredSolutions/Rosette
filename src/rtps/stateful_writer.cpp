@@ -532,11 +532,13 @@ uint32_t StatefulWriter::tick(uint32_t now_ms) noexcept {
 
     // Phase 1: repair what readers NACKed, once nackResponseDelay has passed.
     // The same pass notes the soonest NACK still waiting and whether any
-    // reader is announcing, which is all the next timer depends on.
+    // reader is announcing, which is all the next timer depends on. Repairs
+    // only resend changes, so the newest one stays the same for both phases.
+    const SequenceNumber newest = writer_cache_.get_seq_num_max();
     uint32_t next = UINT32_MAX;
-    bool     any_announcing = false;
+    bool any_announcing = false;
     for (ReaderProxy& proxy : matched()) {
-        if (serves_reliably(proxy) && proxy.is_announcing(writer_cache_)) {
+        if (serves_reliably(proxy) && proxy.is_announcing(newest)) {
             any_announcing = true;
         }
 
@@ -591,7 +593,7 @@ uint32_t StatefulWriter::tick(uint32_t now_ms) noexcept {
         writesSinceHb_ = 0u;
         ++heartbeatCount_;
         for (ReaderProxy& proxy : matched()) {
-            if (!serves_reliably(proxy) || !proxy.is_announcing(writer_cache_)) {
+            if (!serves_reliably(proxy) || !proxy.is_announcing(newest)) {
                 continue;
             }
 
@@ -647,10 +649,11 @@ uint32_t StatefulWriter::ms_until_next_timer(uint32_t now_ms) const noexcept {
         return 0u;
     }
 
+    const SequenceNumber newest = writer_cache_.get_seq_num_max();
     uint32_t next = UINT32_MAX;
     bool any_announcing = false;
     for (const ReaderProxy& proxy : matched()) {
-        if (serves_reliably(proxy) && proxy.is_announcing(writer_cache_)) {
+        if (serves_reliably(proxy) && proxy.is_announcing(newest)) {
             any_announcing = true;
         }
 

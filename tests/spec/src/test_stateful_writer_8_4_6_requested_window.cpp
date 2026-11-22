@@ -119,9 +119,11 @@ static bool tc_swr_8_4_6_002(std::string& err) {
     }
     CHECK((sent == std::vector<int64_t>{3, 4, 5, 6}),
           "a reader matched at SN 3 is sent 3..6 in order, and nothing before its match");
-    CHECK(proxy.is_announcing(history), "sent but unacknowledged changes keep the proxy announcing");
+    CHECK(proxy.is_announcing(history.get_seq_num_max()),
+          "sent but unacknowledged changes keep the proxy announcing");
     proxy.acked_changes_set(SequenceNumber::from_int64(6));
-    CHECK(!proxy.is_announcing(history), "acknowledging the newest change makes the proxy idle");
+    CHECK(!proxy.is_announcing(history.get_seq_num_max()),
+          "acknowledging the newest change makes the proxy idle");
     return true;
 }
 

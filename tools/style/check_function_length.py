@@ -7,7 +7,9 @@ Architecture:
     AGENTS.md ("Function length") caps every function at 100 lines, measured
     from its signature to its closing brace, blank lines and comments
     included, because the rule is about fitting on one screen. lizard parses
-    C, C++, and Python and reports that span as `length`.
+    C, C++, and Python (https://github.com/terryyin/lizard) and reports that
+    span as `length`; its CSV columns are NLOC, CCN, token, PARAM, length,
+    location, file, function, long_name, start, end.
 
     Functions that were already longer than the cap are listed in
     function_length_baseline.txt with their length. A listed function may
@@ -18,16 +20,6 @@ Architecture:
 Usage:
     tools/style/check_function_length.py
 
-Verification:
-    Correct means: exit status 1 when an unlisted function exceeds 100 lines
-    or a listed one exceeds its recorded length, and 0 otherwise; stale
-    entries are reported but do not fail the check. Checked by running it on
-    the tree (passes) and after lengthening a listed function (fails).
-
-References:
-    AGENTS.md, "Coding Style" > "Function length".
-    lizard: https://github.com/terryyin/lizard (CSV columns: NLOC, CCN, token,
-    PARAM, length, location, file, function, long_name, start, end).
 """
 
 import csv

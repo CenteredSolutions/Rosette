@@ -148,7 +148,8 @@ static bool tc_swr_8_4_1_4_004(std::string& err) {
     const ReaderProxy* proxy = w.matched_reader_lookup(reader);
     CHECK(proxy != nullptr && proxy->highestAckedSN == SEQUENCENUMBER_ZERO,
           "nothing counts as acknowledged by the re-matched reader");
-    CHECK(proxy->is_announcing(w.cache()), "it stays announcing until it acknowledges again");
+    CHECK(proxy->is_announcing(w.cache().get_seq_num_max()),
+          "it stays announcing until it acknowledges again");
 
     acknack(w, reader, writer, 5, 3);
     tx.reset();
