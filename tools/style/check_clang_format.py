@@ -14,15 +14,6 @@ Architecture:
 
 Usage:
     tools/style/check_clang_format.py --base <commit>
-
-Verification:
-    Correct means: exit status 0 when every clang-format hunk differs only in
-    interior space runs (`uint32_t   next;` vs `uint32_t next;`), and exit
-    status 1 with those hunks printed when any hunk changes indentation, line
-    breaks, or other tokens (`a+b` vs `a + b`).
-
-References:
-    AGENTS.md, "Coding Style" > "Enforcement".
 """
 
 import argparse
