@@ -694,10 +694,7 @@ bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
     // The record is live before on_match runs, so the owner sees the pair as
     // matched from inside the callback.
     MatchRecord& record = matches_[live_++];
-    record.writer_guid = writer.guid;
-    record.reader_guid = reader.guid;
-    record.ticket = next_ticket_++;
-    record.waiting = false;
+    record = MatchRecord{writer.guid, reader.guid, next_ticket_++, false};
     record.waiting = !may_bind || (on_match_ && !on_match_(writer, reader, topic, user_data_));
     if (record.waiting) {
         ++waiting_count_;
@@ -923,6 +920,7 @@ bool EndpointMatchTable::match_oldest_waiting() noexcept {
 void EndpointMatchTable::drop_pair(uint32_t i) noexcept {
     const MatchRecord gone = matches_[i];
     matches_[i] = matches_[--live_];
+    matches_[live_] = MatchRecord{};
     room_freed_ = true;
     if (gone.waiting) {
         --waiting_count_;

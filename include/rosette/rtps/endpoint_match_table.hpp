@@ -471,6 +471,10 @@ public:
     /// again. `topic` is the topic name of the pair's local endpoint, valid
     /// for the call. Returns `true` when every local endpoint of the pair
     /// holds a proxy for its partner, `false` when the pair waits for one.
+    /// The pair is already recorded, and counts as matched and not waiting,
+    /// while the callback runs. The callback must not add or remove endpoints
+    /// or pairs in this table: the table holds the pair's record across the
+    /// call, and removing a pair moves records.
     using OnMatch = bool (*)(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
                              const char* topic, void* user_data) noexcept;
 
@@ -479,7 +483,8 @@ public:
     using MayMatch = bool (*)(const Guid& writer_guid, const Guid& reader_guid,
                               void* user_data) noexcept;
 
-    /// A previously reported pair was dissolved.
+    /// A previously reported pair was dissolved. When one call dissolves
+    /// several pairs, the order they are reported in is unspecified.
     using OnUnmatch = void (*)(const Guid& writer_guid,
                                const Guid& reader_guid,
                                void* user_data) noexcept;
@@ -1270,7 +1275,7 @@ private:
     bool report_reader_pairs(const LocalEndpoint& r, bool stop_at_bind) noexcept;
 
     /// @brief Describes a recorded pair as report() described it; false when
-    /// either endpoint is no longer stored, which no active record allows:
+    /// either endpoint is no longer stored, which no live record allows:
     /// every path that forgets an endpoint dissolves its pairs first, and
     /// displacement spares an endpoint in any record, waiting or not.
     bool describe(const MatchRecord& m, MatchedEndpoint& writer, MatchedEndpoint& reader,
@@ -1368,9 +1373,9 @@ private:
     GuidPrefix local_prefix_ = {};
     /// Next ticket to issue; below kRenumberTicketsAt after every report().
     uint16_t next_ticket_ = 0u;
-    /// Records [0, live_) of matches_ hold pairs and the rest are free, so
-    /// every scan of the pairs ends at live_ (about ten of 176 records on a
-    /// board in steady state) and a new pair takes record live_.
+    /// Records [0, live_) of matches_ hold pairs and the rest are free, so a
+    /// scan costs the pairs that exist rather than the table's capacity, and
+    /// a new pair takes record live_.
     uint32_t            live_ = 0u;
     /// Records marked waiting. Bounds the waiting limit, and lets every scan
     /// for a waiting record end at once in the common case of none.
