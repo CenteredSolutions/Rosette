@@ -676,7 +676,173 @@ static bool tc_sedp_8_5_5_1_017(std::string& err) {
     return true;
 }
 
+// TC-SEDP-8.5.5.1-018: the waiting limit counts exactly the records that wait,
+// through every way a record stops waiting (dissolved, bound, released).
+static bool tc_sedp_8_5_5_1_018(std::string& err) {
+    struct Obs {
+        bool open = false;
+    } obs;
+
+    EndpointMatchTable t([](const MatchedEndpoint&, const MatchedEndpoint&, const char*,
+                            void*) noexcept { return true; },
+                         [](const Guid&, const Guid&, void*) noexcept {}, &obs,
+                         [](void*) noexcept {});
+    t.set_may_match(
+        [](const Guid&, const Guid&, void* u) noexcept { return static_cast<Obs*>(u)->open; });
+
+    const char* type = "std_msgs::msg::dds_::String_";
+    const auto  writer = [&](Octet p, Octet key, const char* topic) {
+        return make_writer(make_guid(p, p, p, make_entity(key, key, key, 0x03u)), topic, type,
+                            ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    };
+    const auto reader = [&](Octet p, Octet key, const char* topic) {
+        return make_reader(make_guid(p, p, p, make_entity(key, key, key, 0x04u)), topic, type,
+                           ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    };
+    const Octet local = 0x10u;
+    t.set_local_prefix(make_guid(local, local, local, entity_id::UNKNOWN).prefix);
+    const Guid local_writer = writer(local, 1u, "rt/a").writerGuid;
+    t.add_writer(writer(local, 1u, "rt/a"));
+    t.add_reader(reader(local, 2u, "rt/b"));
+
+    // Pair n is a remote reader of `peer` when n is even and a remote writer
+    // when odd, so the limit's pairs fit one origin and the remote tables;
+    // each pair a check names has a peer of its own.
+    const Octet peer = 0x40u;
+    const auto  add_pair = [&](Octet key, uint32_t n) {
+        if (n % 2u == 0u) {
+            t.add_reader(reader(peer, key, "rt/a"));
+        } else {
+            t.add_writer(writer(peer, key, "rt/b"));
+        }
+    };
+    const auto remove_pair = [&](Octet key, uint32_t n) {
+        if (n % 2u == 0u) {
+            t.remove_reader(reader(peer, key, "rt/a").readerGuid);
+        } else {
+            t.remove_writer(writer(peer, key, "rt/b").writerGuid);
+        }
+    };
+    const auto waits = [&](Octet p) {
+        return t.has_waiting_reader(local_writer, reader(p, 2u, "rt/a").readerGuid.prefix);
+    };
+    const uint32_t limit = RTPS_MAX_WAITING_MATCHES;
+
+    for (uint32_t n = 0u; n < limit; ++n) {
+        add_pair(static_cast<Octet>(0x20u + n), n);
+    }
+
+    t.add_reader(reader(0xC0u, 2u, "rt/a"));
+    CHECK(waits(peer), "a pair that may not bind waits");
+    CHECK(!waits(0xC0u), "a pair beyond RTPS_MAX_WAITING_MATCHES waiting pairs is turned away");
+
+    remove_pair(0x20u, 0u);
+    CHECK(t.rescan_due(), "dissolving a waiting pair frees room for the turned-away pair");
+    t.rescan_unrecorded();
+    CHECK(waits(0xC0u), "the turned-away pair takes the dissolved pair's place under the limit");
+
+    obs.open = true;
+    uint32_t bound = 0u;
+    while (t.match_oldest_waiting()) {
+        ++bound;
+    }
+
+    CHECK(bound == limit, "every waiting pair binds once its proxy is free");
+    CHECK(!waits(0xC0u) && !waits(peer), "a bound pair no longer waits");
+
+    for (uint32_t n = 1u; n < limit; ++n) {
+        remove_pair(static_cast<Octet>(0x20u + n), n);
+    }
+
+    t.remove_reader(reader(0xC0u, 2u, "rt/a").readerGuid);
+    obs.open = false;
+    for (uint32_t n = 0u; n + 1u < limit; ++n) {
+        add_pair(static_cast<Octet>(0x60u + n), n);
+    }
+
+    t.add_reader(reader(0x80u, 2u, "rt/a"));
+    t.add_reader(reader(0xC0u, 2u, "rt/a"));
+    CHECK(waits(0x80u), "after binding and release, the full limit of pairs can wait again");
+    CHECK(!waits(0xC0u), "and the limit still turns away the pair beyond it");
+    return true;
+}
+
+// TC-SEDP-8.5.5.1-019: dissolving pairs in any order, including the pair a
+// removal moves into a freed record, unmatches each exactly once and keeps
+// every other pair recorded.
+static bool tc_sedp_8_5_5_1_019(std::string& err) {
+    ReleaseObs         obs{};
+    EndpointMatchTable t(
+        [](const MatchedEndpoint&, const MatchedEndpoint&, const char*, void* u) noexcept {
+            static_cast<ReleaseObs*>(u)->matches++;
+            return true;
+        },
+        [](const Guid& w, const Guid& r, void* u) noexcept {
+            static_cast<ReleaseObs*>(u)->unmatched.emplace_back(w, r);
+        },
+        &obs, [](void*) noexcept {});
+
+    const char* type = "std_msgs::msg::dds_::String_";
+    const auto  writer = [&](Octet p, Octet key) {
+        return make_writer(make_guid(p, p, p, make_entity(key, key, key, 0x03u)), "rt/a", type,
+                            ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    };
+    const auto reader = [&](Octet p) {
+        return make_reader(make_guid(p, p, p, make_entity(2u, 2u, 2u, 0x04u)), "rt/a", type,
+                           ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE);
+    };
+    const Octet local = 0x10u;
+    t.set_local_prefix(make_guid(local, local, local, entity_id::UNKNOWN).prefix);
+    const Guid w1 = writer(local, 1u).writerGuid;
+    const Guid w2 = writer(local, 5u).writerGuid;
+    const auto r = [&](uint32_t k) {
+        return reader(static_cast<Octet>(0x40u + k)).readerGuid;
+    };
+
+    // Each remote reader pairs with both local writers in turn, so the
+    // records of w1 and w2 interleave and the last record is one of w2's.
+    t.add_writer(writer(local, 1u));
+    t.add_writer(writer(local, 5u));
+    for (uint32_t k = 0u; k < 4u; ++k) {
+        t.add_reader(reader(static_cast<Octet>(0x40u + k)));
+    }
+
+    CHECK(obs.matches == 8, "two local writers and four remote readers make eight pairs");
+
+    t.remove_writer(w2);
+    CHECK(reported_exactly(obs.unmatched, {{w2, r(0)}, {w2, r(1)}, {w2, r(2)}, {w2, r(3)}}),
+          "removing a writer unmatches each of its pairs once, including those moved by a "
+          "removal into a freed record");
+
+    obs.unmatched.clear();
+    t.remove_reader(r(0));
+    CHECK(reported_exactly(obs.unmatched, {{w1, r(0)}}), "removing a reader unmatches its pair");
+
+    obs.unmatched.clear();
+    t.remove_participant(r(2).prefix);
+    CHECK(reported_exactly(obs.unmatched, {{w1, r(2)}}),
+          "removing a participant unmatches only its pairs");
+
+    t.add_writer(writer(local, 5u));
+    CHECK(obs.matches == 10, "a writer added again pairs with each remaining reader once");
+
+    obs.unmatched.clear();
+    t.remove_writer(w1);
+    t.remove_writer(w2);
+    CHECK(reported_exactly(obs.unmatched, {{w1, r(1)}, {w1, r(3)}, {w2, r(1)}, {w2, r(3)}}),
+          "every pair still recorded is unmatched exactly once, and no dissolved one again");
+    return true;
+}
+
 void append_sedp_tests_8_5_5_1(std::vector<TestCase>& tests) {
+    tests.push_back({"TC-SEDP-8.5.5.1-019",
+                     "§8.5.5.1: dissolving pairs in any order unmatches each exactly once and "
+                     "keeps every other pair recorded.",
+                     tc_sedp_8_5_5_1_019});
+    tests.push_back({"TC-SEDP-8.5.5.1-018",
+                     "§8.5.5.1/waiting matches: the waiting limit counts exactly the records that "
+                     "wait, as pairs wait, dissolve, bind, and are released.",
+                     tc_sedp_8_5_5_1_018});
     tests.push_back({"TC-SEDP-8.5.5.1-017",
                      "§8.5.5.1/two-tier peer table: releasing a parked participant unmatches each "
                      "of its pairs, bound or waiting, exactly once and no other, forgets its "
