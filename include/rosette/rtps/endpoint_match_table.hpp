@@ -107,6 +107,16 @@
  *   topic or type changed, or it was forgotten); the owner tells graph
  *   observers to re-query.
  *
+ * Order
+ * -----
+ * The table keeps no order. Endpoints take whatever slot is free, and a
+ * displaced or forgotten endpoint frees its slot for the next one; pair
+ * records are packed, and removing one moves the last record into its place.
+ * So the order in which on_match and on_unmatch report pairs, including the
+ * pairs one call reports or dissolves together, is unspecified, and an owner
+ * must not depend on it. The one promise is the binding order of waiting
+ * pairs, which follows their tickets (see Waiting matches).
+ *
  * Waiting matches
  * ---------------
  * The owner binds a proxy from a fixed pool for every local half of a pair
@@ -483,8 +493,7 @@ public:
     using MayMatch = bool (*)(const Guid& writer_guid, const Guid& reader_guid,
                               void* user_data) noexcept;
 
-    /// A previously reported pair was dissolved. When one call dissolves
-    /// several pairs, the order they are reported in is unspecified.
+    /// A previously reported pair was dissolved.
     using OnUnmatch = void (*)(const Guid& writer_guid,
                                const Guid& reader_guid,
                                void* user_data) noexcept;
