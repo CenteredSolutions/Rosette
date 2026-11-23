@@ -697,6 +697,7 @@ bool EndpointMatchTable::report(const MatchedEndpoint& writer, const MatchedEndp
     record.writer_guid = writer.guid;
     record.reader_guid = reader.guid;
     record.ticket = next_ticket_++;
+    record.waiting = false;
     record.waiting = !may_bind || (on_match_ && !on_match_(writer, reader, topic, user_data_));
     if (record.waiting) {
         ++waiting_count_;
