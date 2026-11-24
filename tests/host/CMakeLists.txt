@@ -20,9 +20,12 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/rosette_warnings.cmake)
 rosette_warnings_for_directory()
 
 # Host tests run on the POSIX platform port (include/rosette/platform/platform.hpp):
-# its OS layer is ports/os/posix/rosette_os_port.hpp.
+# its OS layer is ports/os/posix/rosette_os_port.hpp and its chip layer
+# ports/chip/host/rosette_chip_port.hpp.
 add_compile_definitions(ROSETTE_OS_POSIX ROSETTE_CHIP_HOST)
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../../ports/os/posix)
+include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/os/posix
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host)
 
 # The out-of-line pieces of the address layer (candidates, lists, manager, config, WIZnet DHCP).
 add_library(rosette_host_address STATIC

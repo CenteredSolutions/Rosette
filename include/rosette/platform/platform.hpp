@@ -34,6 +34,9 @@
  *    and, in their own headers, flash (flash.hpp), GPIO interrupts
  *    (gpio_interrupt.hpp), and the critical section and event wait the
  *    bare-metal OS layer is built on (chip_sync.hpp).
+ *  - from the chip layer's fixed-name header (ports/chip/<name>/rosette_chip_port.hpp):
+ *      ROSETTE_RAM_FUNCTION(name)   places a function where it runs without
+ *                                   instruction fetches from flash
  *
  * ports/chip/stub/ and ports/os/stub/ implement every item and are the
  * starting point for a new port.
@@ -49,6 +52,22 @@
 #pragma once
 
 #include <cstdint>
+
+// ------------------------------------------------------------------
+// Chip layer: code placement
+//
+// ROSETTE_RAM_FUNCTION(name) wraps a function's name where it is defined,
+//
+//     void ROSETTE_RAM_FUNCTION(on_interrupt)(void* context) noexcept { ... }
+//
+// and puts that function in RAM on a chip that executes in place from flash,
+// so it runs with no flash fetch latency and while flash is being written.
+// Interrupt handlers and the functions they call use it; a callee left in
+// flash brings the fetch back. On a chip that already runs from RAM it
+// leaves the function where it is. The selected chip port supplies it under
+// this fixed name; its port.cmake puts ports/chip/<name>/ on the include path.
+// ------------------------------------------------------------------
+#include "rosette_chip_port.hpp"
 
 namespace rosette::platform {
 

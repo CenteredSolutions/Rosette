@@ -48,6 +48,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/rtps
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/os/posix
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host
 )
 
 add_executable(message_parser_spec_tests

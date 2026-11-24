@@ -7,8 +7,11 @@
 # directory, after the `rosette_platform` target exists. Outputs:
 #   chip_stub.cpp                 the platform, flash, and runtime hooks, in rosette_platform
 #   stub_atomic.c                 the atomic helpers a Cortex-M0+ calls, in rosette_platform
+#   rosette_chip_port.hpp         ROSETTE_RAM_FUNCTION(), the default section; this
+#                                 directory is on rosette_platform's include path
 #   ROSETTE_CHIP_STORAGE_SOURCES  the LittleFS block device, for the storage library to compile
 target_sources(rosette_platform PRIVATE
   ${ROSETTE_PORT_DIR}/chip_stub.cpp
   ${ROSETTE_PORT_DIR}/stub_atomic.c)
 set(ROSETTE_CHIP_STORAGE_SOURCES ${ROSETTE_PORT_DIR}/stub_littlefs.cpp)
+target_include_directories(rosette_platform PUBLIC ${ROSETTE_PORT_DIR})

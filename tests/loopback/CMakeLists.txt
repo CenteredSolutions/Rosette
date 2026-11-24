@@ -25,6 +25,7 @@ target_include_directories(rtps_loopback_smoke PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include/rosette/rtps
     ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/os/posix
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../ports/chip/host
 )
 
 target_compile_definitions(rtps_loopback_smoke PRIVATE

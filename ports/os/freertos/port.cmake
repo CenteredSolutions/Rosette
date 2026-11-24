@@ -6,7 +6,9 @@
 # Included by cmake/rosette_platform.cmake with ROSETTE_PORT_DIR set to this
 # directory, after the chip port. Every target that links `rosette_platform`
 # finds this directory's rosette_os_port.hpp through platform.hpp, and links
-# the kernel, `freertos_kernel`.
+# the kernel, `freertos_kernel`. On the RP2040 kernel port,
+# rp2_kernel_ram_placement.cmake defines rosette_os_add_image_outputs(), which
+# links the kernel's interrupt path into RAM.
 #
 # The kernel comes from FREERTOS_KERNEL_PATH (environment or -D) when set, or
 # is fetched. Its configuration is the board's: FreeRTOSConfig.h is found in
@@ -95,6 +97,9 @@ if(FREERTOS_PORT STREQUAL "GCC_RP2040")
     LIB_FREERTOS_KERNEL=1
     FREE_RTOS_KERNEL_SMP=1
     PICO_CONFIG_RTOS_ADAPTER_HEADER=${_rf_kernel_dir}/portable/ThirdParty/GCC/RP2040/include/freertos_sdk_config.h)
+
+  # The kernel's interrupt path runs from RAM: rosette_os_add_image_outputs().
+  include("${ROSETTE_PORT_DIR}/rp2_kernel_ram_placement.cmake")
 endif()
 
 # Examples that use FreeRTOS directly check this.

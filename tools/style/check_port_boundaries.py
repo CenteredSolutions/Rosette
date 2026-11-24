@@ -120,7 +120,7 @@ _INCLUDE_ROOTS = (
 # Headers every port of an axis supplies under one name, found through
 # whichever port the build selected: including one is the contract's seam,
 # not a reach into a particular port (platform.hpp -> rosette_os_port.hpp).
-_FIXED_NAME_HEADERS = frozenset({"rosette_os_port.hpp"})
+_FIXED_NAME_HEADERS = frozenset({"rosette_chip_port.hpp", "rosette_os_port.hpp"})
 _EXCLUDED_PREFIXES = ("third_party/", "external/", "build")
 
 

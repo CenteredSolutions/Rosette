@@ -14,7 +14,8 @@ carries. New code must pass, and the baseline may only shrink.
 
 ```
 ports/
-  chip/<name>/          monotonic clock, unique id, flash, SPI/QSPI bus, GPIO edge interrupt, newlib shims
+  chip/<name>/          monotonic clock, unique id, flash, SPI/QSPI bus, GPIO edge interrupt, code placement
+                        (rosette_chip_port.hpp, fixed name), newlib shims
     rp2/  host/  stub/
   os/<name>/            Mutex, Event, sleep_ms: rosette_os_port.hpp (fixed name, see below)
     baremetal/  freertos/  posix/  stub/
@@ -42,7 +43,10 @@ Three choices follow from this layout:
   when `ports/chip/foo/port.cmake` exists (also searched in `ROSETTE_PORT_DIRS`), and the same for `ROSETTE_OS`
   and `ROSETTE_NET_STACK`, so an out-of-tree port needs no edit to Rosette. A chip port's `port.cmake` may define
   `rosette_chip_add_image_outputs(target)`, which `rosette_add_image_outputs(target)` calls (the rp2 port: .uf2
-  files and USB stdio), so the root CMakeLists and the examples name no chip SDK function.
+  files and USB stdio), so the root CMakeLists and the examples name no chip SDK function. An OS port's `port.cmake` may
+  define `rosette_os_add_image_outputs(target)`, called first, to change how the image links (FreeRTOS on the
+  RP2040 kernel port: `rp2_kernel_ram_placement.cmake` rewrites the linker script so the kernel's interrupt path
+  runs from RAM). An application that sets its own linker script does so before `rosette_add_image_outputs()`.
 
 ## Rules
 
@@ -75,6 +79,7 @@ Three choices follow from this layout:
 | chip | `chip_sync.hpp`: `chip::critical_enter/exit`, `chip::wait_for_event_until(deadline_us)`, `chip::send_event` | the bare-metal OS layer is built on these alone; rp2 uses spin lock `PICO_SPINLOCK_ID_OS1` and WFE/SEV |
 | chip | `flash.hpp`: `rosette_platform_flash_*` | storage region for littlefs |
 | chip | `gpio_interrupt.hpp`: `attach_falling_edge(pin, void (*)(void*), void*)` | the host and stub chips return false |
+| chip | `rosette_chip_port.hpp`: `ROSETTE_RAM_FUNCTION(name)` | wraps a function's name where it is defined and places it in RAM on a chip that executes from flash, one section per name; the interrupt path (`attach_falling_edge` handlers, `Event::signal_from_isr`, the `chip_sync.hpp` hooks) uses it. rp2: the SDK's `__not_in_flash_func`; host and stub: the name unchanged |
 | chip | bus concept used by `WiznetDevice<Chip, Bus>` | written down in `ports/chip/stub/stub_bus.hpp`; `Rp2SpiBus` / `Rp2QspiBus` implement it. `acquire()` nests, see "A bus shared between threads" |
 | chip | `__atomic_*` helpers (`fetch_add`, `exchange`, `compare_exchange`, ...) on a core without atomic instructions | the RTPS buffer pool's `std::atomic` counts call them on Cortex-M0+; the Pico SDK's `pico_atomic` supplies them on the RP2040, `ports/chip/stub/stub_atomic.c` shows the set |
 | os | `rosette_os_port.hpp`: `Mutex`, `Event` (with `signal_from_isr`), `sleep_ms` | one per `ports/os/<name>/` |

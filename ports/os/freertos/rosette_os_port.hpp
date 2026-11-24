@@ -13,6 +13,11 @@
  * configSUPPORT_STATIC_ALLOCATION, otherwise from the kernel heap. Nothing
  * allocates afterwards. On SMP ports (RP2350 dual-core) the kernel's
  * semaphores already serialize across cores.
+ *
+ * Event::signal_from_isr() runs from RAM (ROSETTE_RAM_FUNCTION). On the
+ * RP2040 kernel port, the kernel functions it reaches run from RAM too
+ * (rp2_kernel_ram_placement.cmake beside this file), so an interrupt wakes a
+ * task with no flash fetch on the way.
  */
 
 #pragma once
@@ -20,6 +25,7 @@
 #include <cstdint>
 
 #include "FreeRTOS.h"
+#include "rosette_chip_port.hpp"
 #include "semphr.h"
 #include "task.h"
 
@@ -74,7 +80,7 @@ public:
 
     /// @brief Wakes one current or future wait from an interrupt handler,
     /// yielding to the woken task on return when it has higher priority.
-    void signal_from_isr() noexcept {
+    void ROSETTE_RAM_FUNCTION(signal_from_isr)() noexcept {
         BaseType_t woken = pdFALSE;
         xSemaphoreGiveFromISR(handle_, &woken);
         portYIELD_FROM_ISR(woken);
