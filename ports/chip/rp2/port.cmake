@@ -7,6 +7,7 @@
 # directory, after the `rosette_platform` target exists; prelude.cmake beside
 # this file has already included the Pico SDK, before project(). Outputs:
 #   chip_rp2.cpp                  clock, unique id, boot nonce, GPIO interrupts, bare-metal sync hooks
+#   rosette_chip_port.hpp         ROSETTE_RAM_FUNCTION(): the SDK's .time_critical sections
 #   rp2_flash.c                   the flash hooks (flash.hpp), for every OS
 #   rp2_newlib_time.c             newlib clock_gettime() / _gettimeofday()
 #   nothrow_operator_new.cpp      `new (std::nothrow)` over malloc, beside the SDK's

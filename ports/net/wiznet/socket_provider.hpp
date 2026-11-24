@@ -482,12 +482,7 @@ public:
      *   exchange (recv_from()), examples/rtps_chatter and examples/rclc_chatter.
      */
     bool attach_interrupt(uint32_t pin) noexcept {
-        interrupt_attached_ = rosette::platform::attach_falling_edge(
-            pin,
-            [](void* provider) {
-                static_cast<WiznetSocketProvider*>(provider)->interrupt_from_isr();
-            },
-            this);
+        interrupt_attached_ = rosette::platform::attach_falling_edge(pin, &on_interrupt, this);
         return interrupt_attached_;
     }
 
@@ -708,8 +703,18 @@ private:
         return true;
     }
 
-    /// @brief Signals every registered event; runs in interrupt context and touches no bus.
-    void interrupt_from_isr() noexcept {
+    /// @brief The attach_falling_edge() handler; `provider` is this object.
+    static void ROSETTE_RAM_FUNCTION(on_interrupt)(void* provider) noexcept {
+        static_cast<WiznetSocketProvider*>(provider)->interrupt_from_isr();
+    }
+
+    /**
+     * @brief Signals every registered event; runs in interrupt context and touches no bus.
+     *
+     * It and on_interrupt() run from RAM, so the INT edge reaches the waiting
+     * thread without flash fetches on a chip that executes in place.
+     */
+    void ROSETTE_RAM_FUNCTION(interrupt_from_isr)() noexcept {
         rosette::platform::Event* const registered = receive_event_;
         if (registered != nullptr) {
             registered->signal_from_isr();

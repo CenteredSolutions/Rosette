@@ -15,7 +15,10 @@
  *
  * Falling-edge GPIO interrupts use the SDK's raw per-pin handlers, so the
  * application keeps the single shared GPIO callback
- * (gpio_set_irq_enabled_with_callback()) for its own pins.
+ * (gpio_set_irq_enabled_with_callback()) for its own pins. The raw handlers
+ * and the sync hooks an interrupt reaches through Event::signal_from_isr()
+ * run from RAM (ROSETTE_RAM_FUNCTION), as the SDK's shared-handler chain
+ * already does, with the SDK calls they make inlined into them.
  *
  * The bare-metal sync hooks (chip_sync.hpp) hold hardware spin lock
  * PICO_SPINLOCK_ID_OS1, which the SDK reserves for an OS layer; only the
@@ -53,9 +56,14 @@ struct FallingEdgeSlot {
 
 FallingEdgeSlot g_falling_edge[4];
 
-/// The raw handler for slot `N`: the SDK passes a raw handler no argument.
+/**
+ * @brief The raw handler for slot `N`: the SDK passes a raw handler no argument.
+ *
+ * Flattened, because at -Os the compiler keeps the SDK's `static inline` GPIO
+ * helpers out of line in flash, which would put a flash fetch back on every edge.
+ */
 template <std::size_t N>
-void falling_edge_irq() {
+[[gnu::flatten]] void ROSETTE_RAM_FUNCTION(falling_edge_irq)() {
     FallingEdgeSlot& slot = g_falling_edge[N];
     if ((gpio_get_irq_event_mask(slot.pin) & GPIO_IRQ_EDGE_FALL) == 0u) {
         return;
@@ -135,11 +143,11 @@ bool realtime_hint_us(int64_t& unix_us) noexcept {
 
 namespace rosette::platform::chip {
 
-uint32_t critical_enter() noexcept {
+uint32_t ROSETTE_RAM_FUNCTION(critical_enter)() noexcept {
     return spin_lock_blocking(spin_lock_instance(PICO_SPINLOCK_ID_OS1));
 }
 
-void critical_exit(uint32_t state) noexcept {
+void ROSETTE_RAM_FUNCTION(critical_exit)(uint32_t state) noexcept {
     spin_unlock(spin_lock_instance(PICO_SPINLOCK_ID_OS1), state);
 }
 
@@ -152,7 +160,7 @@ void wait_for_event_until(uint64_t deadline_us) noexcept {
     (void)best_effort_wfe_or_timeout(from_us_since_boot(deadline_us));
 }
 
-void send_event() noexcept {
+void ROSETTE_RAM_FUNCTION(send_event)() noexcept {
     __sev();
 }
 

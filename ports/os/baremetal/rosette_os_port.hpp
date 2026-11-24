@@ -30,6 +30,7 @@
 #include <cstdint>
 
 #include "rosette/platform/chip_sync.hpp"
+#include "rosette_chip_port.hpp"
 
 namespace rosette::platform {
 
@@ -89,8 +90,8 @@ public:
     Event(const Event&) = delete;
     Event& operator=(const Event&) = delete;
 
-    /// @brief Wakes one current or future wait, from any core.
-    void signal() noexcept {
+    /// @brief Wakes one current or future wait, from any core; runs from RAM for interrupts.
+    void ROSETTE_RAM_FUNCTION(signal)() noexcept {
         const uint32_t state = chip::critical_enter();
         pending_ = true;
         chip::critical_exit(state);
@@ -98,7 +99,7 @@ public:
     }
 
     /// @brief Same as signal(); the critical section also masks interrupts.
-    void signal_from_isr() noexcept { signal(); }
+    void ROSETTE_RAM_FUNCTION(signal_from_isr)() noexcept { signal(); }
 
     /**
      * @brief Sleeps until signaled or the timeout passes, consuming the signal.

@@ -6,9 +6,12 @@
 # Included by cmake/rosette_platform.cmake with ROSETTE_PORT_DIR set to this
 # directory, after the `rosette_platform` target exists. Outputs:
 #   chip_host.cpp                 CLOCK_MONOTONIC, a per-process unique id, OS wall clock
+#   rosette_chip_port.hpp         ROSETTE_RAM_FUNCTION(), the default section; this
+#                                 directory is on rosette_platform's include path
 #   ROSETTE_CHIP_STORAGE_SOURCES  a file-backed LittleFS volume and flash hooks
 # The library is position-independent, since rmw_rosette links it into a
 # shared object.
 target_sources(rosette_platform PRIVATE ${ROSETTE_PORT_DIR}/chip_host.cpp)
 set_target_properties(rosette_platform PROPERTIES POSITION_INDEPENDENT_CODE ON)
 set(ROSETTE_CHIP_STORAGE_SOURCES ${ROSETTE_PORT_DIR}/host_flash_file.cpp)
+target_include_directories(rosette_platform PUBLIC ${ROSETTE_PORT_DIR})

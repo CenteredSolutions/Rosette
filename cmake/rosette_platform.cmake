@@ -15,14 +15,19 @@
 # include directories, and libraries to `rosette_platform`, and a chip port
 # sets ROSETTE_CHIP_STORAGE_SOURCES to its LittleFS block device;
 # ROSETTE_PORT_DIR names the port's directory while it runs. The OS port's
-# include directory holds `rosette_os_port.hpp`, which platform.hpp includes
-# by that fixed name. A chip port's optional prelude.cmake runs earlier,
-# before project() (cmake/rosette_prelude.cmake), to set up a cross toolchain.
+# include directory holds `rosette_os_port.hpp` and the chip port's holds
+# `rosette_chip_port.hpp`, which platform.hpp includes by those fixed names. A
+# chip port's optional prelude.cmake runs earlier, before project()
+# (cmake/rosette_prelude.cmake), to set up a cross toolchain.
 #
 # A chip port may also define rosette_chip_add_image_outputs(<target>), which
 # rosette_add_image_outputs(<target>) calls to make a firmware image's
 # flashable files and console (the rp2 port: .uf2 and USB stdio); on a port
-# without one it does nothing. ROSETTE_CHIP_TEST_LIBRARIES names what the
+# without one it does nothing. An OS port may likewise define
+# rosette_os_add_image_outputs(<target>), called first, to adjust how the image
+# links (FreeRTOS on the RP2040: the kernel's interrupt path in RAM); an
+# application that sets its own linker script does so before
+# rosette_add_image_outputs(). ROSETTE_CHIP_TEST_LIBRARIES names what the
 # platform contract test needs to start a second core, if the chip has one.
 #
 # Output: STATIC library target `rosette_platform`. It compiles the chip layer
@@ -68,6 +73,10 @@ endif()
 
 # Makes <target>'s flashable outputs and console, as its chip port defines them.
 function(rosette_add_image_outputs target)
+  if(COMMAND rosette_os_add_image_outputs)
+    rosette_os_add_image_outputs(${target})
+  endif()
+
   if(COMMAND rosette_chip_add_image_outputs)
     rosette_chip_add_image_outputs(${target})
   endif()
