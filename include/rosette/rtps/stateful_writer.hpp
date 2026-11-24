@@ -1412,8 +1412,10 @@ private:
         return transport_.send_unicast(datagram, dest);
     }
 
-    /// @brief Sends a HEARTBEAT for the current history range to one locator.
-    void send_heartbeat_to(const EntityId& reader_id, const Locator& dest, bool final_flag) noexcept;
+    /// @brief Sends a HEARTBEAT for the current history range to one locator,
+    ///   preceded in the same message by a GAP for `irrelevant` when it is non-empty.
+    void send_heartbeat_to(const EntityId& reader_id, const Locator& dest, bool final_flag,
+                           const SequenceNumberSet& irrelevant = SequenceNumberSet{}) noexcept;
 
     /**
      * @brief Writes since the last HEARTBEAT that make the next one due: half
@@ -1508,6 +1510,27 @@ private:
 
     /// @brief True when the owner reports a reader of `requester` waiting to bind.
     bool requester_has_waiting_reader(const GuidPrefix& requester) const noexcept;
+
+    /**
+     * @brief True when `change` is a reply to a requester other than `proxy`'s participant.
+     *
+     * A service reply writer (release_replies_on_delivery()) sends a reply
+     * only to the readers in its requester's participant, whose prefix the
+     * request writer GUID in PID_RELATED_SAMPLE_IDENTITY carries. Every other
+     * matched reader is told the reply's sequence number is irrelevant to it
+     * with GAP, as a content-filtered writer does.
+     *
+     * References:
+     * - OMG DDSI-RTPS 2.5 §8.3.7.4 (GAP), §8.7.3 (writer-side filtering)
+     * - OMG DDS-RPC 1.0 §7.8.2 (request and reply correlation)
+     */
+    bool addressed_elsewhere(const HistoryChange& change, const ReaderProxy& proxy) const noexcept;
+
+    /// @brief Sequence numbers below `below` and above what `proxy` acknowledged
+    ///   that this reply writer will never send it: replies addressed elsewhere,
+    ///   and changes already released. Empty on a writer that is not a reply writer.
+    SequenceNumberSet replies_elsewhere(const ReaderProxy& proxy,
+                                        const SequenceNumber& below) const noexcept;
 
     /// @brief True when `reply` names a requester whose matched readers are
     ///   all done with it (ReaderProxy::is_done_with(), as each is served), at

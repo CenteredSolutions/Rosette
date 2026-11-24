@@ -352,12 +352,21 @@ void StatefulWriter::heartbeat_range(SequenceNumber& first, SequenceNumber& last
 }
 
 void StatefulWriter::send_heartbeat_to(const EntityId& reader_id, const Locator& dest,
-                                       bool final_flag) noexcept {
+                                       bool final_flag,
+                                       const SequenceNumberSet& irrelevant) noexcept {
     SequenceNumber fsn{};
     SequenceNumber lsn{};
     heartbeat_range(fsn, lsn);
-    if (!builder_.begin(guid_.prefix)) return;
-    if (builder_.append_heartbeat(reader_id, guid_.entityId, fsn, lsn, heartbeatCount_, final_flag)) {
+    SequenceNumber    gap_start{};
+    SequenceNumberSet gap_list{};
+    const bool        gap = encode_gap(irrelevant, gap_start, gap_list);
+    if (!builder_.begin(guid_.prefix)) {
+        return;
+    }
+
+    if ((!gap || builder_.append_gap(reader_id, guid_.entityId, gap_start, gap_list))
+        && builder_.append_heartbeat(reader_id, guid_.entityId, fsn, lsn, heartbeatCount_,
+                                     final_flag)) {
         BufRef buf = builder_.finish();
         send_counted(buf, dest);
         buf.reset();
@@ -602,7 +611,11 @@ uint32_t StatefulWriter::tick(uint32_t now_ms) noexcept {
                 continue;
             }
 
-            send_heartbeat_to(entity_id::UNKNOWN, dest, /*final=*/false);
+            // A reply writer's GAP for the replies it addressed elsewhere
+            // rides with the periodic HEARTBEAT, one message however many
+            // replies went by, so the reader acknowledges past them.
+            send_heartbeat_to(entity_id::UNKNOWN, dest, /*final=*/false,
+                              replies_elsewhere(proxy, nextSN_));
         }
     }
 
@@ -699,7 +712,8 @@ void StatefulWriter::answer_nack(ReaderProxy& proxy, const SequenceNumberSet& re
             return;
         }
 
-        if (proxy.is_relevant(sn) && writer_cache_.get_change(sn)) {
+        const HistoryChange* ch = writer_cache_.get_change(sn);
+        if (proxy.is_relevant(sn) && ch != nullptr && !addressed_elsewhere(*ch, proxy)) {
             (void)repairable.add(sn);
         } else {
             (void)irrelevant.add(sn);
@@ -755,6 +769,21 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
         sizeof(RTPSMessageHeader) + sizeof(SubmessageHeader) + sizeof(DataSubmessageFixed)
         + inline_qos_size + (ch.preframed ? 0u : kEncapsulationSize) + ch.payload.size);
     const uint32_t limit = transport_.max_datagram_size();
+
+    // A reply's requester first hears that the replies to other requesters
+    // before it are irrelevant: its reader delivers in order and would hold
+    // this reply until those were resolved. The GAP goes in the same message.
+    SequenceNumber gap_start{};
+    SequenceNumberSet gap_list{};
+    const bool gap = encode_gap(replies_elsewhere(proxy, ch.sequenceNumber), gap_start, gap_list);
+    const uint32_t gap_size = gap ? sizeof(SubmessageHeader) + sizeof(GapSubmessageFixed)
+                                        + sn_set_serialised_size(gap_list.numBits)
+                                  : 0u;
+    if (gap && data_datagram + gap_size > limit) {
+        send_gap(proxy, replies_elsewhere(proxy, ch.sequenceNumber));
+    }
+
+    const bool gap_inline = gap && data_datagram + gap_size <= limit;
     if (data_datagram > limit) {
         return send_fragments_to(ch, proxy, dest, heartbeat, only_fragments);
     }
@@ -767,28 +796,33 @@ ReaderProxy* StatefulWriter::find_proxy(const Guid& g) noexcept {
     // padding (DDS-XTypes 1.3 §7.6.3.1.2). Either way the message must fit
     // the datagram limit; otherwise the HEARTBEAT goes in a datagram of its
     // own.
-    const bool in_place = ch.payload.valid()
-                       && ch.payload.headroom_available() >= kRtpsDataHeadroom + inline_qos_size;
+    const bool in_place = !gap_inline && ch.payload.valid()
+                          && ch.payload.headroom_available() >= kRtpsDataHeadroom + inline_qos_size;
     const bool     aligned = (ch.payload.size & 3u) == 0u;
     const uint32_t pad = in_place || ch.preframed ? 0u : (4u - (ch.payload.size & 3u)) & 3u;
     const bool     framable =
         in_place ? aligned && ch.payload.capacity() - ch.payload.size >= kRtpsHeartbeatTailroom
                      : aligned || !ch.preframed;
-    const bool inline_hb = heartbeat && framable
-                        && data_datagram + pad + kRtpsHeartbeatTailroom <= limit;
+    const uint32_t gap_bytes = gap_inline ? gap_size : 0u;
+    const bool inline_hb =
+        heartbeat && framable && data_datagram + gap_bytes + pad + kRtpsHeartbeatTailroom <= limit;
 
     bool sent = false;
     if (in_place) {
         sent = send_data_in_place(ch, proxy, dest, inline_hb);
-    } else if (builder_.begin(guid_.prefix,
-                              data_datagram + (inline_hb ? pad + kRtpsHeartbeatTailroom : 0u))) {
+    } else if (builder_.begin(
+                   guid_.prefix,
+                   data_datagram + gap_bytes + (inline_hb ? pad + kRtpsHeartbeatTailroom : 0u))) {
         SequenceNumber first{};
         SequenceNumber last{};
         heartbeat_range(first, last);
         const bool ok =
-            builder_.append_data(proxy.remoteReaderGuid.entityId, guid_.entityId, ch.sequenceNumber,
-                                 ch.payload, ch.kind != ChangeKind::ALIVE, ch.inlineQos,
-                                 /*pad_to_boundary=*/inline_hb, ch.preframed)
+            (!gap_inline
+             || builder_.append_gap(proxy.remoteReaderGuid.entityId, guid_.entityId, gap_start,
+                                    gap_list))
+            && builder_.append_data(proxy.remoteReaderGuid.entityId, guid_.entityId,
+                                    ch.sequenceNumber, ch.payload, ch.kind != ChangeKind::ALIVE,
+                                    ch.inlineQos, /*pad_to_boundary=*/inline_hb, ch.preframed)
             && (!inline_hb
                 || builder_.append_heartbeat(proxy.remoteReaderGuid.entityId, guid_.entityId, first,
                                              last, heartbeatCount_, /*final=*/false));
@@ -998,9 +1032,14 @@ void StatefulWriter::send_unsent_changes(bool with_heartbeat) noexcept {
         while (true) {
             const SequenceNumber sn = proxy.next_unsent_change(writer_cache_);
             if (sn == SEQUENCENUMBER_UNKNOWN) break;
+
             proxy.mark_sent(sn);
-            send_data_to(*writer_cache_.get_change(sn), proxy,
-                         with_heartbeat && sn == newest && serves_reliably(proxy));
+            const HistoryChange& ch = *writer_cache_.get_change(sn);
+            if (addressed_elsewhere(ch, proxy)) {
+                continue;
+            }
+
+            send_data_to(ch, proxy, with_heartbeat && sn == newest && serves_reliably(proxy));
         }
     }
 
@@ -1141,6 +1180,43 @@ bool StatefulWriter::reply_delivered(const HistoryChange& reply) const noexcept 
     // A reader still waiting for a proxy will bind and need the reply, and the
     // matched readers' acknowledgments say nothing about it.
     return requester_matched && !requester_has_waiting_reader(requester);
+}
+
+bool StatefulWriter::addressed_elsewhere(const HistoryChange& change,
+                                         const ReaderProxy& proxy) const noexcept {
+    return releaseRepliesOnDelivery_ && change.inlineQos.hasRelatedSampleIdentity
+           && change.inlineQos.relatedSampleIdentity.writerGuid.prefix
+                  != proxy.remoteReaderGuid.prefix;
+}
+
+SequenceNumberSet StatefulWriter::replies_elsewhere(const ReaderProxy& proxy,
+                                                    const SequenceNumber& below) const noexcept {
+    SequenceNumberSet set{};
+    if (!releaseRepliesOnDelivery_ || !serves_reliably(proxy)) {
+        return set;
+    }
+
+    // The reader expects every number above its acknowledgment; the oldest
+    // the HEARTBEAT announces is the history's lowest, so the GAP need not
+    // reach below it, and one GAP bitmap holds at most kMaxBits numbers.
+    SequenceNumber from = proxy.highestAckedSN + 1;
+    const SequenceNumber oldest = writer_cache_.get_seq_num_min();
+    if (oldest != SEQUENCENUMBER_UNKNOWN && from < oldest) {
+        from = oldest;
+    }
+
+    if (below.to_int64() - from.to_int64() > SequenceNumberSet::kMaxBits) {
+        from = below + -int64_t{SequenceNumberSet::kMaxBits};
+    }
+
+    for (SequenceNumber sn = from; sn < below; sn += 1) {
+        const HistoryChange* ch = writer_cache_.get_change(sn);
+        if (ch == nullptr || addressed_elsewhere(*ch, proxy)) {
+            (void)set.add(sn);
+        }
+    }
+
+    return set;
 }
 
 bool StatefulWriter::requester_has_waiting_reader(const GuidPrefix& requester) const noexcept {
