@@ -79,6 +79,7 @@ void deliver(StatefulWriter& w, const Guid& reader, const ParsedAckNack& ack) {
 
 /// The GAPs and HEARTBEATs in every captured message, keeping the last of each.
 struct Seen {
+    int datas = 0;
     int gaps = 0;
     int heartbeats = 0;
     ParsedGap gap{};
@@ -88,6 +89,9 @@ struct Seen {
 Seen inspect(const CaptureTransport& tx) {
     Seen seen{};
     ParseOps ops{};
+    ops.on_data = [](const ParseContext& c, const ParsedData&) noexcept {
+        ++static_cast<Seen*>(c.user_data)->datas;
+    };
     ops.on_gap = [](const ParseContext& c, const ParsedGap& g) noexcept {
         auto* out = static_cast<Seen*>(c.user_data);
         ++out->gaps;
@@ -274,7 +278,9 @@ static bool tc_swr_8_4_7_007(std::string& err) {
         w.cache().get_change(SequenceNumber::from_int64(1))->payload.block;
 
     const Seen sent = inspect(tx);
-    CHECK(sent.heartbeats == 4, "every write carries a HEARTBEAT to each reader");
+    CHECK(sent.datas == 3, "the reply reaches only A; the other change reaches both");
+    CHECK(sent.heartbeats == 3, "every DATA carries a HEARTBEAT");
+    CHECK(sent.gaps == 1, "B hears that A's reply is irrelevant to it");
     CHECK(!sent.heartbeat.finalFlag, "asking for the acknowledgement at once");
 
     deliver(w, b_reader, acknack(b_reader, writer, 3, {}, 1));
@@ -488,6 +494,52 @@ static bool tc_swr_8_4_7_013(std::string& err) {
     return true;
 }
 
+// DDS-RPC 1.0 §7.8.2, DDSI-RTPS 2.5 §8.3.7.4: a reply goes only to its
+// requester. A requester hears, in the message carrying its own reply, a GAP
+// for the replies addressed elsewhere before it, and a NACK for another
+// client's reply is answered with GAP, not DATA.
+static bool tc_swr_8_4_7_014(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer = make_guid(0xB1u, make_entity(1u, 2u, 3u, 0x02u));
+    const Guid a_reader = make_guid(0xB2u, make_entity(4u, 5u, 6u, 0x07u));
+    const Guid a_request_writer = make_guid(0xB2u, make_entity(7u, 8u, 9u, 0x03u));
+    const Guid b_reader = make_guid(0xB3u, make_entity(4u, 5u, 6u, 0x07u));
+    const Guid b_request_writer = make_guid(0xB3u, make_entity(7u, 8u, 9u, 0x03u));
+    StatefulWriterStorage<8, 2> w(writer, ReliabilityKind::RELIABLE,
+                                  DurabilityKind::TRANSIENT_LOCAL, tx, 5u, 1000u);
+    w.release_replies_on_delivery(true);
+    CHECK(w.matched_reader_add(a_reader, &kLocA, 1u, false), "match A");
+    CHECK(w.matched_reader_add(b_reader, &kLocB, 1u, false), "match B");
+
+    CHECK(w.write_async(ChangeKind::ALIVE, kPayload, 4u, reply_to(a_request_writer)),
+          "reply 1 to A");
+    Seen seen = inspect(tx);
+    CHECK(tx.unicast_msgs.size() == 1u && seen.datas == 1 && seen.gaps == 0,
+          "reply 1 is one message, to A alone, with no GAP");
+
+    tx.unicast_msgs.clear();
+    CHECK(w.write_async(ChangeKind::ALIVE, kPayload, 4u, reply_to(b_request_writer)),
+          "reply 2 to B");
+    seen = inspect(tx);
+    CHECK(tx.unicast_msgs.size() == 1u && seen.datas == 1 && seen.heartbeats == 1,
+          "reply 2 is one message, to B alone, carrying its HEARTBEAT");
+    CHECK(seen.gaps == 1 && seen.gap.gapStart == SequenceNumber::from_int64(1)
+              && gap_run_end(seen.gap.gapStart, seen.gap.gapList) == SequenceNumber::from_int64(2),
+          "and a GAP naming exactly A's reply 1");
+
+    tx.unicast_msgs.clear();
+    g_stateful_writer_test_now_ms = 100u;
+    deliver(w, b_reader, acknack(b_reader, writer, 1, {1}, 2));
+    w.tick(200u);
+    seen = inspect(tx);
+    CHECK(seen.datas == 0 && seen.gaps >= 1 && seen.gap.gapStart == SequenceNumber::from_int64(1),
+          "B's NACK for A's reply is answered with GAP, not DATA");
+
+    deliver(w, a_reader, acknack(a_reader, writer, 2, {}, 1));
+    CHECK(!holds(w, 1) && holds(w, 2), "A's acknowledgement releases only reply 1");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.7-003",
                      "§8.4.7.1/§8.7.2.2.1: a RELIABLE VOLATILE writer releases a change, and its "
@@ -534,6 +586,10 @@ void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& 
                      "DDS-RPC §7.8.2/§8.4.7.2: releasing the newest reply leaves an older pending "
                      "reply as the highest sequence number, still advertised by HEARTBEAT.",
                      tc_swr_8_4_7_013});
+    tests.push_back({"TC-SWR-8.4.7-014",
+                     "DDS-RPC §7.8.2/§8.3.7.4: a reply goes only to its requester; another "
+                     "client hears a GAP for it, with its own reply or in answer to a NACK.",
+                     tc_swr_8_4_7_014});
 }
 
 }  // namespace spec_test
