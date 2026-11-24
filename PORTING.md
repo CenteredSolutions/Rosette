@@ -43,10 +43,11 @@ Three choices follow from this layout:
   when `ports/chip/foo/port.cmake` exists (also searched in `ROSETTE_PORT_DIRS`), and the same for `ROSETTE_OS`
   and `ROSETTE_NET_STACK`, so an out-of-tree port needs no edit to Rosette. A chip port's `port.cmake` may define
   `rosette_chip_add_image_outputs(target)`, which `rosette_add_image_outputs(target)` calls (the rp2 port: .uf2
-  files and USB stdio), so the root CMakeLists and the examples name no chip SDK function. An OS port's `port.cmake` may
-  define `rosette_os_add_image_outputs(target)`, called first, to change how the image links (FreeRTOS on the
-  RP2040 kernel port: `rp2_kernel_ram_placement.cmake` rewrites the linker script so the kernel's interrupt path
-  runs from RAM). An application that sets its own linker script does so before `rosette_add_image_outputs()`.
+  files and USB stdio), so the root CMakeLists and the examples name no chip SDK function. An OS port's
+  `port.cmake` may define `rosette_os_add_image_outputs(target)`, called first, to change how the image links
+  (FreeRTOS on the RP2040 kernel port: `rp2_kernel_ram_placement.cmake` rewrites the linker script so the
+  kernel's interrupt path runs from RAM). An application that sets its own linker script does so before
+  `rosette_add_image_outputs()`.
 
 ## Rules
 
