@@ -162,6 +162,72 @@ static bool tc_hc_8_3_1_007(std::string& err) {
     return true;
 }
 
+static bool max_is(const HistoryCache& cache, int64_t sn) {
+    return cache.get_seq_num_max().to_int64() == sn;
+}
+
+static bool tc_hc_8_3_1_008(std::string& err) {
+    HistoryCacheStorage<3> cache{};
+    CHECK(cache.add_change(make_change(7, 0x17u)) != nullptr, "add_change SN 7 should succeed");
+    CHECK(cache.add_change(make_change(4, 0x14u)) != nullptr, "add_change SN 4 should succeed");
+    CHECK(max_is(cache, 7), "a lower SN added later should leave the maximum at 7");
+    CHECK(cache.add_change(make_change(9, 0x19u)) != nullptr, "add_change SN 9 should succeed");
+    CHECK(max_is(cache, 9), "a higher SN should become the maximum");
+
+    // Full: SN 4 is evicted; the maximum is the change just added.
+    CHECK(cache.add_change(make_change(12, 0x1Cu)) != nullptr, "add_change SN 12 should evict");
+    CHECK(max_is(cache, 12), "the change that evicted the oldest should be the maximum");
+
+    CHECK(cache.remove_change(SequenceNumber::from_int64(12)), "remove_change of the newest");
+    CHECK(max_is(cache, 9), "removing the newest should expose the next highest SN");
+    CHECK(cache.remove_change(SequenceNumber::from_int64(7)), "remove_change of an older SN");
+    CHECK(max_is(cache, 9), "removing an older SN should leave the maximum unchanged");
+    CHECK(cache.remove_change(SequenceNumber::from_int64(9)), "remove_change of the last change");
+    CHECK(cache.get_seq_num_max() == SEQUENCENUMBER_UNKNOWN,
+          "an emptied cache should report an UNKNOWN maximum");
+
+    CHECK(cache.add_change(make_change(2, 0x12u)) != nullptr, "add_change after emptying");
+    CHECK(max_is(cache, 2), "the first change after emptying should be the maximum");
+    cache.clear_all();
+    CHECK(cache.get_seq_num_max() == SEQUENCENUMBER_UNKNOWN, "clear_all should reset the maximum");
+
+    // One slot: every insertion evicts the newest change itself.
+    HistoryCacheStorage<1> single{};
+    CHECK(single.add_change(make_change(5, 0x25u)) != nullptr, "add_change SN 5 to one slot");
+    CHECK(single.add_change(make_change(3, 0x23u)) != nullptr, "add_change SN 3 evicts SN 5");
+    CHECK(max_is(single, 3), "the maximum should follow the only change held");
+    return true;
+}
+
+// A writer releases delivered replies and finished volatile changes by
+// clearing them in place through the mutable traversal, not remove_change().
+static bool tc_hc_8_3_1_009(std::string& err) {
+    HistoryCacheStorage<3> cache{};
+    CHECK(cache.add_change(make_change(1, 0x31u)) != nullptr, "add_change SN 1 should succeed");
+    CHECK(cache.add_change(make_change(2, 0x32u)) != nullptr, "add_change SN 2 should succeed");
+    CHECK(cache.add_change(make_change(3, 0x33u)) != nullptr, "add_change SN 3 should succeed");
+
+    auto clear_sn = [&cache](int64_t sn) {
+        cache.for_each_change([sn](HistoryChange& c) noexcept {
+            if (c.sequenceNumber == SequenceNumber::from_int64(sn)) {
+                c.clear();
+            }
+        });
+    };
+
+    clear_sn(1);
+    CHECK(max_is(cache, 3), "clearing an older change should leave the maximum at 3");
+    clear_sn(3);
+    CHECK(max_is(cache, 2), "clearing the newest change should expose SN 2");
+    CHECK(cache.add_change(make_change(4, 0x34u)) != nullptr, "add_change SN 4 should succeed");
+    CHECK(max_is(cache, 4), "a change added after the traversal should become the maximum");
+
+    cache.for_each_change([](HistoryChange& c) noexcept { c.clear(); });
+    CHECK(cache.get_seq_num_max() == SEQUENCENUMBER_UNKNOWN,
+          "clearing every change should report an UNKNOWN maximum");
+    return true;
+}
+
 void append_history_cache_tests_8_2_2_8_3_1(std::vector<TestCase>& tests) {
     tests.push_back({"TC-HC-8.3.1-001",
                      "§8.3.1: add_change/get_change/get_seq_num_min/get_seq_num_max/is_empty/size expose expected HistoryCache state transitions.",
@@ -188,6 +254,14 @@ void append_history_cache_tests_8_2_2_8_3_1(std::vector<TestCase>& tests) {
                      "§8.3.1: clear_all removes all HistoryChange entries and resets empty/min/max "
                      "observable state.",
                      tc_hc_8_3_1_007});
+    tests.push_back({"TC-HC-8.3.1-005",
+                     "§8.3.1: get_seq_num_max follows insertions in any order, KEEP_LAST "
+                     "eviction, removal of the newest and of older changes, and clear_all.",
+                     tc_hc_8_3_1_008});
+    tests.push_back({"TC-HC-8.3.1-006",
+                     "§8.3.1: get_seq_num_max follows changes cleared in place by the mutable "
+                     "for_each_change, including the newest.",
+                     tc_hc_8_3_1_009});
 }
 
 } // namespace spec_test

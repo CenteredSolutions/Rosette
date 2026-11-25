@@ -107,6 +107,16 @@
  *   topic or type changed, or it was forgotten); the owner tells graph
  *   observers to re-query.
  *
+ * Order
+ * -----
+ * The table keeps no order. Endpoints take whatever slot is free, and a
+ * displaced or forgotten endpoint frees its slot for the next one; pair
+ * records are packed, and removing one moves the last record into its place.
+ * So the order in which on_match and on_unmatch report pairs, including the
+ * pairs one call reports or dissolves together, is unspecified, and an owner
+ * must not depend on it. The one promise is the binding order of waiting
+ * pairs, which follows their tickets (see Waiting matches).
+ *
  * Waiting matches
  * ---------------
  * The owner binds a proxy from a fixed pool for every local half of a pair
@@ -475,6 +485,10 @@ public:
     /// again. `topic` is the topic name of the pair's local endpoint, valid
     /// for the call. Returns `true` when every local endpoint of the pair
     /// holds a proxy for its partner, `false` when the pair waits for one.
+    /// The pair is already recorded, and counts as matched and not waiting,
+    /// while the callback runs. The callback must not add or remove endpoints
+    /// or pairs in this table: the table holds the pair's record across the
+    /// call, and removing a pair moves records.
     using OnMatch = bool (*)(const MatchedEndpoint& writer, const MatchedEndpoint& reader,
                              const char* topic, void* user_data) noexcept;
 
@@ -1011,8 +1025,7 @@ private:
         /// Drawn from next_ticket_ when the pair was reported; orders waiting pairs.
         uint16_t ticket = 0u;
         /// The owner could not bind a proxy for some local half of the pair.
-        bool waiting = false;
-        bool active() const noexcept { return writer_guid != GUID_UNKNOWN; }
+        bool     waiting = false;
     };
 
     static constexpr uint32_t kMaxMatches = RTPS_MAX_MATCH_RECORDS;
@@ -1280,7 +1293,7 @@ private:
     bool report_reader_pairs(const LocalEndpoint& r, bool stop_at_bind) noexcept;
 
     /// @brief Describes a recorded pair as report() described it; false when
-    /// either endpoint is no longer stored, which no active record allows:
+    /// either endpoint is no longer stored, which no live record allows:
     /// every path that forgets an endpoint dissolves its pairs first, and
     /// displacement spares an endpoint in any record, waiting or not.
     bool describe(const MatchRecord& m, MatchedEndpoint& writer, MatchedEndpoint& reader,
@@ -1307,8 +1320,9 @@ private:
      * - OMG DDSI-RTPS 2.5 §8.5.5.1 (endpoint matching)
      */
     void renumber_waiting_tickets() noexcept;
-    /// Forgets one recorded pair and reports it through on_unmatch.
-    void drop_pair(MatchRecord& m) noexcept;
+    /// Forgets the pair in record `i` and reports it through on_unmatch. The
+    /// last live record moves into slot `i`, so a scan that drops visits `i` again.
+    void drop_pair(uint32_t i) noexcept;
 
     /// Reports every recorded pair involving `guid` as dissolved and forgets it.
     void dissolve(const Guid& guid, bool is_writer) noexcept;
@@ -1377,6 +1391,13 @@ private:
     GuidPrefix local_prefix_ = {};
     /// Next ticket to issue; below kRenumberTicketsAt after every report().
     uint16_t next_ticket_ = 0u;
+    /// Records [0, live_) of matches_ hold pairs and the rest are free, so a
+    /// scan costs the pairs that exist rather than the table's capacity, and
+    /// a new pair takes record live_.
+    uint32_t            live_ = 0u;
+    /// Records marked waiting. Bounds the waiting limit, and lets every scan
+    /// for a waiting record end at once in the common case of none.
+    uint32_t            waiting_count_ = 0u;
     /// A pair found no record since the last complete rescan.
     bool turned_away_ = false;
     /// A record was dissolved or a waiting pair bound since the last complete rescan.

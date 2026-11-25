@@ -19,17 +19,13 @@ ContinuationIndentWidth: 4
 AccessModifierOffset: -4
 ColumnLimit: 100
 
+# Column alignment of consecutive declarations and trailing comments is the
+# author's choice: clang-format collapses it to one space, and
+# tools/style/check_clang_format.py accepts either form.
+
 # Wrapped expressions start each continuation line with the operator.
 BreakBeforeBinaryOperators: NonAssignment
 BreakBeforeTernaryOperators: true
-
-# Consecutive declarations put their names in one column: struct members,
-# wrapped parameter lists, and runs of variables. A comment line between
-# members does not break the run; a blank line does.
-AlignConsecutiveDeclarations:
-  Enabled: true
-  AcrossEmptyLines: false
-  AcrossComments: true
 
 # Every control-statement body sits on its own line, inside braces.
 InsertBraces: true

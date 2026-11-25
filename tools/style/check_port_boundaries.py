@@ -11,7 +11,8 @@ Architecture:
     a host OS lives under ports/<axis>/<name>/; everything else in the tree is
     portable and reaches the port only through the contracts in
     include/rosette/platform and include/rosette/net
-    (PORTING.md, "Rules").
+    (PORTING.md, "Rules"). The layout follows the FreeRTOS kernel's
+    fixed-name per-port header (portable/<compiler>/<arch>/portmacro.h).
 
     This check reads every C and C++ file in the tree and reports three kinds
     of violation:
@@ -38,18 +39,6 @@ Usage:
     tools/style/check_port_boundaries.py --all            list every violation
     tools/style/check_port_boundaries.py --write-baseline record the current violations
 
-Verification:
-    Correct means: exit status 1 when a file has a violation that is not in
-    the baseline, and 0 otherwise; stale baseline entries are reported but do
-    not fail the check. Checked by running it on the tree (passes against the
-    committed baseline), and after adding `#include "hardware/gpio.h"` to
-    src/rtps/participant.cpp (fails, naming that file and family).
-
-References:
-    PORTING.md, "Rules" (the zone table mirrored below).
-    AGENTS.md, "Architecture Direction".
-    FreeRTOS kernel, portable/<compiler>/<arch>/portmacro.h: the fixed-name
-    per-port header pattern this layout follows.
 """
 
 import argparse

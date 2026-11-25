@@ -19,15 +19,6 @@ Architecture:
 Usage:
     tools/style/check_blank_after_brace.py --base origin/main
 
-Verification:
-    Correct means: exit status 1 and one `path:line` report per violation when
-    a changed `}` line (or the changed line after it) breaks the rule, and
-    exit status 0 otherwise. Checked against the AGENTS.md examples: the
-    `for` loop example passes, and removing its blank line before `return`
-    is reported.
-
-References:
-    AGENTS.md, "Coding Style" > "Blocks and vertical whitespace".
 """
 
 import argparse

@@ -127,10 +127,8 @@ SequenceNumber ReaderProxy::next_unsent_change(const HistoryCache& history) cons
     return best;
 }
 
-bool ReaderProxy::is_announcing(const HistoryCache& history) const noexcept {
-    const SequenceNumber newest = history.get_seq_num_max();
-    if (newest == SEQUENCENUMBER_UNKNOWN) return false;
-    return is_relevant(newest) && highestAckedSN < newest;
+bool ReaderProxy::is_announcing(const SequenceNumber& newest) const noexcept {
+    return newest != SEQUENCENUMBER_UNKNOWN && is_relevant(newest) && highestAckedSN < newest;
 }
 
 SequenceNumber ReaderProxy::next_requested_change() const noexcept {

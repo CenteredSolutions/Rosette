@@ -453,6 +453,41 @@ static bool tc_swr_8_4_7_012(std::string& err) {
     return true;
 }
 
+// DDS-RPC 1.0 §7.8.2, §8.4.7.2: when the newest reply is released while an
+// older one still waits for its requester, the history's highest sequence
+// number is the older reply, and the periodic HEARTBEAT keeps advertising it.
+static bool tc_swr_8_4_7_013(std::string& err) {
+    CaptureTransport tx{};
+    const Guid writer = make_guid(0x9Au, make_entity(1u, 2u, 3u, 0x02u));
+    const Guid a_reader = make_guid(0xABu, make_entity(4u, 5u, 6u, 0x07u));
+    const Guid a_request_writer = make_guid(0xABu, make_entity(7u, 8u, 9u, 0x03u));
+    const Guid b_reader = make_guid(0xBCu, make_entity(4u, 5u, 6u, 0x07u));
+    const Guid b_request_writer = make_guid(0xBCu, make_entity(7u, 8u, 9u, 0x03u));
+    StatefulWriterStorage<4, 2> w(writer, ReliabilityKind::RELIABLE,
+                                  DurabilityKind::TRANSIENT_LOCAL, tx, 5u, 1000u);
+    w.release_replies_on_delivery(true);
+    CHECK(w.matched_reader_add(a_reader, &kLocA, 1u, false), "match A");
+    CHECK(w.matched_reader_add(b_reader, &kLocB, 1u, false), "match B");
+    CHECK(w.write_async(ChangeKind::ALIVE, kPayload, 4u, reply_to(a_request_writer)), "reply to A");
+    CHECK(w.write_async(ChangeKind::ALIVE, kPayload, 4u, reply_to(b_request_writer)), "reply to B");
+
+    deliver(w, b_reader, acknack(b_reader, writer, 3, {}, 1));
+    CHECK(!holds(w, 2), "B's acknowledgement releases the newest reply");
+    CHECK(holds(w, 1), "A's reply stays");
+    CHECK(w.cache().get_seq_num_max() == SequenceNumber::from_int64(1),
+          "the history's highest sequence number is A's reply");
+
+    tx.unicast_msgs.clear();
+    g_stateful_writer_test_now_ms = 5000u;
+    w.tick(5000u);
+    const Seen seen = inspect(tx);
+    CHECK(seen.heartbeats >= 1, "the periodic HEARTBEAT still goes to A");
+    CHECK(seen.heartbeat.firstSN == SequenceNumber::from_int64(1)
+              && seen.heartbeat.lastSN == SequenceNumber::from_int64(1),
+          "and advertises A's reply");
+    return true;
+}
+
 void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& tests) {
     tests.push_back({"TC-SWR-8.4.7-003",
                      "§8.4.7.1/§8.7.2.2.1: a RELIABLE VOLATILE writer releases a change, and its "
@@ -495,6 +530,10 @@ void append_stateful_writer_tests_8_4_7_release_finished(std::vector<TestCase>& 
                      "DDS-RPC §7.8.2/§8.7.2.2: a reply kept only by a waiting reader is released "
                      "when that reader dissolves and the bound readers have acknowledged it.",
                      tc_swr_8_4_7_012});
+    tests.push_back({"TC-SWR-8.4.7-013",
+                     "DDS-RPC §7.8.2/§8.4.7.2: releasing the newest reply leaves an older pending "
+                     "reply as the highest sequence number, still advertised by HEARTBEAT.",
+                     tc_swr_8_4_7_013});
 }
 
 }  // namespace spec_test

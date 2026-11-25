@@ -400,20 +400,25 @@ public:
      * non-empty, and "idle" otherwise. unacked_changes() is every change not
      * ACKNOWLEDGED, so a change still UNSENT counts too.
      *
-     * @param[in] history The writer's history.
-     * @return `true` when the history's newest change is relevant to this
-     *   reader and above highestAckedSN.
+     * The writer passes its history's newest sequence number, read once for
+     * all its proxies: a writer with many readers asks this of each one on
+     * every tick.
+     *
+     * @param[in] newest The writer history's get_seq_num_max(), or
+     *   SEQUENCENUMBER_UNKNOWN when the history is empty.
+     * @return `true` when `newest` is relevant to this reader and above
+     *   highestAckedSN.
      *
      * Verification:
-     * - Correct means: a proxy that has acknowledged the history's newest
-     *   change, or to which no change in it is relevant, is idle; otherwise
-     *   it is announcing.
+     * - Correct means: with an empty history, or once the proxy has
+     *   acknowledged `newest`, or when `newest` is not relevant to it, the
+     *   proxy is idle; otherwise it is announcing.
      * - Covered by: TC-SWR-8.4.9-004, TC-SWR-8.2.2-002.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.9.2 (transitions T5-T7), §8.4.7.5 (unacked_changes)
      */
-    bool is_announcing(const HistoryCache& history) const noexcept;
+    bool is_announcing(const SequenceNumber& newest) const noexcept;
 
     /// @brief True when some change is REQUESTED (§8.4.6 requested_changes()).
     bool has_requested_changes() const noexcept { return requestedBits_ != 0u; }

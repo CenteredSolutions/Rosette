@@ -5,7 +5,9 @@
 #
 # Formatting and the blank-line rule apply to lines changed since the merge
 # base with BASE_REF (default origin/main), including uncommitted edits, so
-# untouched code is held to them once it is edited. The function-length check
+# untouched code is held to them once it is edited. Column alignment of
+# declarations and trailing comments is the author's choice (check_clang_format.py).
+# The function-length check
 # covers the whole tree against tools/style/function_length_baseline.txt, and the
 # port-boundary check against tools/style/port_boundary_baseline.txt. `reuse lint`
 # requires every file to name its copyright holder and license (REUSE.toml).
@@ -21,10 +23,7 @@ base_sha="$(git merge-base "$base_ref" HEAD)" || exit 2
 status=0
 
 echo "== clang-format (lines changed since ${base_sha:0:12})"
-if ! git clang-format --diff --extensions c,cc,cpp,h,hpp "$base_sha"; then
-    echo "Run: git clang-format --extensions c,cc,cpp,h,hpp $base_sha"
-    status=1
-fi
+python3 "$here/check_clang_format.py" --base "$base_sha" || status=1
 
 echo "== blank line after closing brace"
 python3 "$here/check_blank_after_brace.py" --base "$base_sha" || status=1
