@@ -13,6 +13,7 @@ void append_tests_9_4_2(std::vector<TestCase>& tests);
 void append_tests_9_4_5_1(std::vector<TestCase>& tests);
 void append_tests_9_4_5_3(std::vector<TestCase>& tests);
 void append_tests_9_4_5_4(std::vector<TestCase>& tests);
+void append_tests_9_4_5_5(std::vector<TestCase>& tests);
 void append_tests_9_4_5_7(std::vector<TestCase>& tests);
 void append_tests_9_4_5_9(std::vector<TestCase>& tests);
 void append_tests_9_4_5_11(std::vector<TestCase>& tests);

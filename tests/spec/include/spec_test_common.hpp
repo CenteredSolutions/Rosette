@@ -16,10 +16,12 @@ struct TestCapture {
     int data_calls = 0;
     int data_frag_calls = 0;
     int gap_calls = 0;
+    int                heartbeat_calls = 0;
     int unknown_calls = 0;
     ParsedData data{};
     ParsedDataFrag data_frag{};
     ParsedGap gap{};
+    ParsedHeartbeat    heartbeat{};
     ParseContext data_ctx{};
     std::vector<Octet> data_payload{};
     uint16_t unknown_raw_len = 0;

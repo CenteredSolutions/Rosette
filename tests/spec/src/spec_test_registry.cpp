@@ -10,6 +10,7 @@ void register_all_parser_tests(std::vector<TestCase>& tests) {
     append_tests_9_4_5_1(tests);
     append_tests_9_4_5_3(tests);
     append_tests_9_4_5_4(tests);
+    append_tests_9_4_5_5(tests);
     append_tests_9_4_5_7(tests);
     append_tests_9_4_5_9(tests);
     append_tests_9_4_5_11(tests);
