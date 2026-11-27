@@ -455,22 +455,29 @@ static bool tc_srr_8_4_8_004(std::string& err) {
 
 // §8.4.12.1: on an unrestricted link the ACKNACK lists every missing change,
 // and a repair does not trigger another ACKNACK before the next HEARTBEAT.
+// A host's 65500-octet limit (Fast DDS's message size) is unrestricted too.
 static bool tc_srr_8_4_7_002(std::string& err) {
-    CaptureTransport tx{};
-    const Guid reader_guid = make_guid(0x91u, 0x92u, 0x93u, make_entity(7u, 7u, 7u, 0x04u));
-    const Guid writer_guid = make_guid(0xA1u, 0xA2u, 0xA3u, make_entity(8u, 8u, 8u, 0x03u));
-    const Locator loc = make_udpv4_locator(0xC0A80155u, 7411u);
-    DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 0u);
-    CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
-    tx.unicast_msgs.clear();  // drop the preemptive ACKNACK (TC-SRR-8.4.7.4-002)
+    for (const uint32_t limit : {kMaxUdpDatagram, kLargestPeerRepairDatagram}) {
+        CaptureTransport tx{};
+        tx.limit = limit;
+        const Guid reader_guid = make_guid(0x91u, 0x92u, 0x93u, make_entity(7u, 7u, 7u, 0x04u));
+        const Guid writer_guid = make_guid(0xA1u, 0xA2u, 0xA3u, make_entity(8u, 8u, 8u, 0x03u));
+        const Locator loc = make_udpv4_locator(0xC0A80155u, 7411u);
+        DefaultStatefulReader r(reader_guid, ReliabilityKind::RELIABLE, tx, nullptr, nullptr, 0u);
+        CHECK(r.matched_writer_add(writer_guid, &loc, 1u), "matched_writer_add should succeed");
+        tx.unicast_msgs.clear();  // drop the preemptive ACKNACK (TC-SRR-8.4.7.4-002)
 
-    heartbeat(r, reader_guid, writer_guid, 4, 1);
-    ParsedAckNack ack{};
-    CHECK(tx.unicast_msgs.size() == 1u && last_acknack(tx, ack), "HEARTBEAT is answered");
-    CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(1) &&
-          ack.readerSNState.numBits == 4u, "all four missing changes are requested");
-    deliver(r, reader_guid, writer_guid, 1);
-    CHECK(tx.unicast_msgs.size() == 1u, "a repair alone sends nothing on an unrestricted link");
+        heartbeat(r, reader_guid, writer_guid, 4, 1);
+        ParsedAckNack ack{};
+        CHECK(tx.unicast_msgs.size() == 1u && last_acknack(tx, ack), "HEARTBEAT is answered");
+        CHECK(ack.readerSNState.bitmapBase == SequenceNumber::from_int64(1)
+                  && ack.readerSNState.numBits == 4u,
+              "all four missing changes are requested");
+
+        deliver(r, reader_guid, writer_guid, 1);
+        CHECK(tx.unicast_msgs.size() == 1u, "a repair alone sends nothing on an unrestricted link");
+    }
+
     return true;
 }
 
@@ -554,8 +561,8 @@ void append_stateful_reader_tests_8_4_8_8_4_9(std::vector<TestCase>& tests) {
                      "changes still MISSING.",
                      tc_srr_8_4_7_001});
     tests.push_back({"TC-SRR-8.4.7-002",
-                     "§8.4.12.1: on an unrestricted link an ACKNACK requests every missing change; "
-                     "repairs wait for the next HEARTBEAT.",
+                     "§8.4.12.1: on an unrestricted link, including a host's 65500-octet limit, an "
+                     "ACKNACK requests every missing change; repairs wait for the next HEARTBEAT.",
                      tc_srr_8_4_7_002});
     tests.push_back({"TC-SRR-8.4.7-003",
                      "§8.4.12.1: on a datagram-limited link an ACKNACK requests only the lowest "

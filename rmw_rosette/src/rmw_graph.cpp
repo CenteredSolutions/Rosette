@@ -15,9 +15,9 @@
  * ParticipantEntitiesInfo messages each participant publishes on
  * `ros_discovery_info`. Topic, service, and node listings need names the
  * table does not keep: a hosted build answers them from the GraphCache
- * (rmw_graph_names.cpp, rmw_graph_node_names.cpp), and a build without the
- * cache returns RMW_RET_UNSUPPORTED here. The per-node and per-topic detail
- * queries and enclave listings return RMW_RET_UNSUPPORTED on every build.
+ * (rmw_graph_names.cpp, rmw_graph_node_names.cpp, rmw_graph_endpoint_info.cpp),
+ * and a build without the cache returns RMW_RET_UNSUPPORTED here for every
+ * listing, per-node query, and per-topic endpoint query.
  *
  * Every query takes the context lock: the tables it reads are updated by
  * the thread driving the participant.
@@ -175,6 +175,7 @@ rmw_ret_t rmw_count_services(const rmw_node_t* node, const char* service_name, s
 }
 #endif
 
+#if !RMW_ROSETTE_GRAPH_CACHE
 /// @brief Returns RMW_RET_UNSUPPORTED (see the file comment).
 rmw_ret_t rmw_get_node_names_with_enclaves(const rmw_node_t* node,
                                            rcutils_string_array_t* node_names,
@@ -244,5 +245,6 @@ rmw_ret_t rmw_get_subscriptions_info_by_topic(const rmw_node_t* node,
     (void)node; (void)allocator; (void)topic_name; (void)no_mangle; (void)subscriptions_info;
     return RMW_RET_UNSUPPORTED;
 }
+#endif  // !RMW_ROSETTE_GRAPH_CACHE
 
 }  // extern "C"

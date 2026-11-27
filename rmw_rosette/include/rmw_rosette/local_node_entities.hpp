@@ -158,6 +158,19 @@ public:
     /// @brief Returns the node at `index`, which must be below node_count().
     const Node& node(uint32_t index) const noexcept { return *nodes_[index]; }
 
+    /// @brief One endpoint associated with a node.
+    struct EndpointEntry {
+        const Node* node = nullptr;
+        rosette::rtps::Guid guid{};
+        bool is_reader = false;
+    };
+
+    /// @brief Number of endpoints associated with a node.
+    uint32_t endpoint_count() const noexcept { return endpoint_count_; }
+
+    /// @brief Returns the endpoint at `index`, which must be below endpoint_count().
+    const EndpointEntry& endpoint(uint32_t index) const noexcept { return endpoints_[index]; }
+
 private:
     /**
      * @brief Writes the ParticipantEntitiesInfo body that encode() documents.
@@ -166,12 +179,6 @@ private:
      * @param[in,out] cdr         Writer over the destination, or a measuring writer.
      */
     void write(const rosette::rtps::Guid& participant, CdrWriter& cdr) const noexcept;
-
-    struct EndpointEntry {
-        const Node* node      = nullptr;
-        rosette::rtps::Guid guid{};
-        bool        is_reader = false;
-    };
 
     static constexpr uint32_t kMaxEndpoints = kRtpsWriterCapacity + kRtpsReaderCapacity;
 

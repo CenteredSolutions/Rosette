@@ -127,6 +127,10 @@ struct Context {
     GraphCache*            graph_cache = nullptr;  ///< placement-new'd into graph_cache_storage
     /// Feeds other participants' nodes into graph_cache.
     RosDiscoveryInfoReader discovery_info_reader;
+    /// The init options' enclave, which rmw_get_node_names_with_enclaves()
+    /// reports for this context's nodes; rcl validates it to at most 255
+    /// characters. Empty for a null enclave.
+    char enclave[256] = {};
 #endif
     /// Triggered whenever the participant's view of the ROS graph changes
     /// (a peer, endpoint, or local node comes or goes). One per context,

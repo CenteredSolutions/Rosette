@@ -8,7 +8,8 @@
  * SEDP announces endpoints and says nothing about ROS nodes. Each participant
  * therefore publishes its nodes as a `rmw_dds_common/msg/ParticipantEntitiesInfo`
  * on `ros_discovery_info` (RosDiscoveryInfoWriter), and this reader stores what
- * peers publish in the GraphCache so that `ros2 node list` can show them.
+ * peers publish in the GraphCache so that `ros2 node list` can show them and
+ * `ros2 node info` and `ros2 topic info -v` can name each endpoint's node.
  *
  * A message replaces everything known about its participant. The reader is
  * RELIABLE and TRANSIENT_LOCAL, so a peer's current message arrives however
@@ -37,11 +38,11 @@
 namespace rmw_rosette {
 
 /**
- * @brief Decodes the node names of one serialized ParticipantEntitiesInfo.
+ * @brief Decodes the nodes of one serialized ParticipantEntitiesInfo, with their endpoints.
  *
  * Every length comes from a remote peer, so each is checked against the bytes
- * that remain before anything is read or stored. The endpoint GID sequences
- * are skipped, because node listings do not use them.
+ * that remain before anything is read or stored. Each node's reader and writer
+ * GIDs are kept as the endpoint GUIDs they begin with.
  *
  * @param[in]  payload Serialized payload, starting at the CDR encapsulation header.
  * @param[in]  size    Length of `payload` in octets.
@@ -52,7 +53,8 @@ namespace rmw_rosette {
  *
  * Verification:
  * - Correct means: a message LocalNodeEntities encodes decodes to the same
- *   names, and a message cut at any length is refused without a read past its end.
+ *   names and endpoint GUIDs, and a message cut at any length is refused
+ *   without a read past its end.
  * - Covered by: rmw_rosette/test/test_graph_cache.cpp (DecodesNodeNames,
  *   RefusesTruncatedNodeMessages).
  *
@@ -60,8 +62,8 @@ namespace rmw_rosette {
  * - rmw_dds_common/msg/ParticipantEntitiesInfo.msg, NodeEntitiesInfo.msg (Humble, Jazzy)
  * - OMG CDR 3.1, CORBA 3.4 Part 2 §9.3 (primitive alignment, strings, sequences)
  */
-bool decode_participant_node_names(const uint8_t* payload, size_t size,
-                                   std::vector<NodeName>& nodes);
+bool decode_participant_nodes(const uint8_t* payload, size_t size,
+                              std::vector<NodeEntities>& nodes);
 
 /**
  * @brief The context's `ros_discovery_info` reader, feeding its GraphCache.

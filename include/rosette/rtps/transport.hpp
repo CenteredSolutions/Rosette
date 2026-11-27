@@ -45,9 +45,12 @@ struct ITransport {
     virtual uint16_t local_default_unicast_port() const noexcept { return 0u; }
 };
 
-/// Largest IPv4 UDP payload (65535 - 20 IP - 8 UDP); a transport limited
-/// below this sits on a link that cannot deliver IP-fragmented datagrams.
+/// Largest IPv4 UDP payload (65535 - 20 IP - 8 UDP).
 constexpr uint32_t kMaxUdpDatagram = 65507u;
+
+/// Largest datagram a stock peer packs repairs into: Fast DDS's maximum
+/// message size, which hosted builds also take as their own datagram limit.
+constexpr uint32_t kLargestPeerRepairDatagram = 65500u;
 
 /**
  * @brief True when a reliable reader must request repairs one change at a time.
@@ -60,16 +63,19 @@ constexpr uint32_t kMaxUdpDatagram = 65507u;
  * arrives; each repair is then a single DATA.
  *
  * @param[in] transport Transport the reader sends and receives on.
- * @return `true` when the transport's datagram limit is below kMaxUdpDatagram.
+ * @return `true` when the transport's datagram limit is below
+ *   kLargestPeerRepairDatagram; `false` on a host, whose limit is 65500.
  *
  * Verification:
  * - Correct means: stock Fast DDS (default message size) completes discovery
- *   with a participant whose link drops datagrams above 1472 octets.
- * - Covered by: TC-SRR-8.4.7-003, TC-SEDP-8.5.4-010,
+ *   with a participant whose link drops datagrams above 1472 octets, and a
+ *   reader on a transport that carries 65500-octet datagrams requests every
+ *   missing change in one ACKNACK.
+ * - Covered by: TC-SRR-8.4.7-002, TC-SRR-8.4.7-003, TC-SEDP-8.5.4-010,
  *   tests/ros2/run_rmw_frag_loopback.sh (stock peer).
  */
 inline bool repairs_must_fit_datagram(const ITransport& transport) noexcept {
-    return transport.max_datagram_size() < kMaxUdpDatagram;
+    return transport.max_datagram_size() < kLargestPeerRepairDatagram;
 }
 
 struct ITransportRuntime {

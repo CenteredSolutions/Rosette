@@ -12,8 +12,10 @@
  * table's GraphEndpointObserver and keeps a copy of each name.
  *
  * Node names travel in no SEDP message. RosDiscoveryInfoReader stores each
- * peer's `ros_discovery_info` node list here; the context's own nodes come from
- * its LocalNodeEntities table instead (rmw_graph_node_names.cpp).
+ * peer's `ros_discovery_info` node list here, with the GUIDs of the endpoints
+ * each node owns; the context's own nodes come from its LocalNodeEntities
+ * table instead. Per-node listings and endpoint details join the two: an
+ * endpoint's names and QoS come from SEDP, its owner from `ros_discovery_info`.
  *
  * The cache lives on the heap and grows with the network, unlike the table,
  * and is therefore compiled only into builds with `RMW_ROSETTE_GRAPH_CACHE=1`,
@@ -67,6 +69,34 @@ struct NodeName {
     bool operator==(const NodeName& other) const {
         return namespace_ == other.namespace_ && name == other.name;
     }
+};
+
+/// @brief One remote ROS node and the endpoints `ros_discovery_info` says it owns.
+struct NodeEntities {
+    NodeName node;
+    /// GUIDs of its readers and writers: the first 16 octets of each GID.
+    std::vector<rosette::rtps::Guid> endpoints;
+
+    /// @brief Whether both describe the same node with the same endpoints.
+    bool operator==(const NodeEntities& other) const {
+        return node == other.node && endpoints == other.endpoints;
+    }
+};
+
+/// @brief Which endpoints a per-node listing selects, and how it names them.
+enum class EndpointRole {
+    publisher,     ///< Writers on `rt/` topics.
+    subscription,  ///< Readers on `rt/` topics.
+    server,        ///< Readers on `rq/<service>Request` topics.
+    client,        ///< Readers on `rr/<service>Reply` topics.
+};
+
+/// @brief One endpoint on a topic, as rmw_get_publishers_info_by_topic() reports it.
+struct TopicEndpoint {
+    rosette::rtps::Guid guid;
+    std::string type;  ///< Demangled unless the query asked for raw names.
+    rosette::rtps::ReliabilityKind reliability;
+    rosette::rtps::DurabilityKind durability;
 };
 
 /**
@@ -130,17 +160,20 @@ public:
      * @param[in] topic     DDS topic name, NUL-terminated; copied.
      * @param[in] type      DDS type name, NUL-terminated; copied.
      * @param[in] is_writer `true` for a writer; `false` for a reader.
+     * @param[in] reliability Reliability the announcement offers or requests.
+     * @param[in] durability  Durability the announcement offers or requests.
      * An endpoint already recorded is confirmed (see begin_refresh()) before
      * its new names are copied, so a refresh never forgets an endpoint its
      * replay announced, even when the copy fails.
      *
      * @return `true`, after the change callback ran, when the endpoint is new or
-     *   its names or kind differ from the recorded ones; `false` for a repeated
+     *   its names, kind, or QoS differ from the recorded ones; `false` for a repeated
      *   identical announcement.
      * @throws std::bad_alloc when the heap is exhausted; a new endpoint is not
      *   recorded, and one already recorded keeps its previous names, confirmed.
      */
-    bool add(const rosette::rtps::Guid& guid, const char* topic, const char* type, bool is_writer);
+    bool add(const rosette::rtps::Guid& guid, const char* topic, const char* type, bool is_writer,
+             rosette::rtps::ReliabilityKind reliability, rosette::rtps::DurabilityKind durability);
 
     /// @brief Forgets one endpoint; `true`, after the change callback ran, when it was recorded.
     bool remove(const rosette::rtps::Guid& guid) noexcept;
@@ -228,7 +261,7 @@ public:
      * list, so an empty list means it hosts no node.
      *
      * @param[in] prefix Participant the list came from.
-     * @param[in] nodes  Its complete node list.
+     * @param[in] nodes  Its complete node list, with each node's endpoints.
      * @return `true`, after the change callback ran, when the list differs from
      *   the recorded one; `false` for a repeated identical list.
      * @throws std::bad_alloc when the heap is exhausted.
@@ -236,14 +269,14 @@ public:
      * Verification:
      * - Correct means: a later list replaces an earlier one, the nodes last until
      *   replaced or until their participant leaves, and the change callback fires
-     *   exactly when node_names() could differ.
+     *   exactly when node_names() or a per-node listing could differ.
      * - Covered by: rmw_rosette/test/test_graph_cache.cpp (ReplacesAndForgetsNodes).
      *
      * References:
      * - rmw_dds_common/graph_cache.hpp (Humble), `update_participant_entities`
      */
     bool set_participant_nodes(const rosette::rtps::GuidPrefix& prefix,
-                               std::vector<NodeName>            nodes);
+                               std::vector<NodeEntities> nodes);
 
     /**
      * @brief Lists the nodes of every other participant.
@@ -252,6 +285,73 @@ public:
      * @throws std::bad_alloc when the heap is exhausted.
      */
     std::vector<NodeName> node_names() const;
+
+    /**
+     * @brief Finds a remote node by name.
+     *
+     * @param[in] node Namespace and name to look for.
+     * @return The first participant's record of that node, or null when no
+     *   participant lists it. Valid until the cache next changes.
+     */
+    const NodeEntities* find_node(const NodeName& node) const noexcept;
+
+    /**
+     * @brief Names the remote node that owns an endpoint.
+     *
+     * @param[in] guid Endpoint GUID.
+     * @return The node whose `ros_discovery_info` entry lists `guid`, or null
+     *   when its participant lists it under no node. Valid until the cache next changes.
+     */
+    const NodeName* owner_of(const rosette::rtps::Guid& guid) const noexcept;
+
+    /**
+     * @brief Lists the topics or services of a node's endpoints in one role.
+     *
+     * The per-node counterpart of topic_names_and_types() and
+     * service_names_and_types(). An endpoint the node lists that SEDP has not
+     * announced is skipped, as stock rmws skip one their graph cache lacks.
+     *
+     * @param[in] endpoints   The node's endpoint GUIDs, local or remote.
+     * @param[in] role        Which endpoints to list.
+     * @param[in] no_demangle `true` to list raw DDS names; honored for
+     *   publishers and subscriptions only, as rmw.h defines.
+     * @return Names with their types.
+     * @throws std::bad_alloc when the heap is exhausted.
+     *
+     * Verification:
+     * - Correct means: names and types equal what rmw_fastrtps_cpp reports from
+     *   rmw_get_{publisher,subscriber,service,client}_names_and_types_by_node()
+     *   for the same node: a server is a reader on its request topic, a client a
+     *   reader on its reply topic.
+     * - Covered by: rmw_rosette/test/test_graph_cache.cpp (ListsByNode).
+     *
+     * References:
+     * - rmw_dds_common/graph_cache.hpp (Humble, Jazzy), `get_writer_names_and_types_by_node`,
+     *   `get_reader_names_and_types_by_node`
+     * - rmw_fastrtps_shared_cpp/src/rmw_node_info_and_types.cpp (Humble, Jazzy)
+     */
+    NamesAndTypes names_and_types_of(const std::vector<rosette::rtps::Guid>& endpoints,
+                                     EndpointRole role, bool no_demangle) const;
+
+    /**
+     * @brief Lists the writers or readers on one DDS topic, with their QoS.
+     *
+     * @param[in] topic       DDS topic name, such as `rt/chatter`; NUL-terminated.
+     * @param[in] is_writer   `true` for writers; `false` for readers.
+     * @param[in] no_demangle `true` to report types as announced; otherwise a
+     *   ROS 2 message type is demangled to `pkg/msg/Name`.
+     * @return One entry per endpoint, in GUID order.
+     * @throws std::bad_alloc when the heap is exhausted.
+     *
+     * Verification:
+     * - Correct means: the entries are exactly the endpoints count() counts.
+     * - Covered by: rmw_rosette/test/test_graph_cache.cpp (ListsEndpointsOnTopic).
+     *
+     * References:
+     * - rmw_dds_common/graph_cache.hpp (Humble, Jazzy), `get_writers_info_by_topic`
+     */
+    std::vector<TopicEndpoint> endpoints_on(const char* topic, bool is_writer,
+                                            bool no_demangle) const;
 
     /**
      * @brief Counts the writers or readers recorded on one DDS topic.
@@ -282,6 +382,8 @@ private:
         std::string topic;
         std::string type;
         bool        is_writer = false;
+        rosette::rtps::ReliabilityKind reliability = rosette::rtps::ReliabilityKind::BEST_EFFORT;
+        rosette::rtps::DurabilityKind durability = rosette::rtps::DurabilityKind::VOLATILE;
         /// Cleared by begin_refresh(), set again when the endpoint is announced.
         bool        confirmed = true;
     };
@@ -302,7 +404,7 @@ private:
     void changed() const noexcept;
 
     Endpoints                                    endpoints_;
-    std::map<PrefixBytes, std::vector<NodeName>> nodes_;
+    std::map<PrefixBytes, std::vector<NodeEntities>> nodes_;
     rosette::rtps::GraphEndpointObserver         observer_{};
     OnChange                                     on_change_ = nullptr;
     void*                                        on_change_user_ = nullptr;

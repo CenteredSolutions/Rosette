@@ -608,7 +608,8 @@ static bool tc_sedp_8_5_5_1_017(std::string& err) {
         &obs, [](void* u) noexcept { static_cast<ReleaseObs*>(u)->changes++; });
     GraphEndpointObserver observer{};
     observer.user = &obs;
-    observer.on_endpoint = [](void*, const Guid&, const char*, const char*, bool) noexcept {
+    observer.on_endpoint = [](void*, const Guid&, const char*, const char*, bool, ReliabilityKind,
+                              DurabilityKind) noexcept {
     };
     observer.on_endpoint_gone = [](void* u, const Guid&) noexcept {
         static_cast<ReleaseObs*>(u)->observer_calls++;

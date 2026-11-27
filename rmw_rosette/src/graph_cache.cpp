@@ -79,33 +79,39 @@ std::string demangle_service_type(const std::string& type) {
     return {};
 }
 
-/// @brief Demangles `rq/<name>Request` or `rr/<name>Reply`; empty for any other topic.
-std::string demangle_service_topic(const std::string& topic) {
-    const char* suffix = nullptr;
-    if (starts_with(topic, kRequestPrefix)) {
-        suffix = kRequestSuffix;
-    } else if (starts_with(topic, kReplyPrefix)) {
-        suffix = kReplySuffix;
-    }
+/// @brief Demangles a message type, or keeps a type that is not a ROS 2 message type as
+/// announced, as rmw_fastrtps_cpp's `_demangle_if_ros_type` does.
+std::string demangle_if_ros_type(const std::string& type) {
+    std::string demangled = demangle_message_type(type);
+    return demangled.empty() ? type : demangled;
+}
 
-    if (suffix == nullptr || !ends_with(topic, suffix)) {
-        return {};
-    }
-
-    const size_t prefix_len = std::strlen(kRequestPrefix);
+/// @brief Demangles `<prefix><name><suffix>` to `/<name>`; empty for any other topic.
+std::string demangle_service_topic(const std::string& topic, const char* prefix,
+                                   const char* suffix) {
+    const size_t prefix_len = std::strlen(prefix);
     const size_t suffix_len = std::strlen(suffix);
-    if (topic.size() <= prefix_len + suffix_len) {
+    if (!starts_with(topic, prefix) || !ends_with(topic, suffix)
+        || topic.size() <= prefix_len + suffix_len) {
         return {};
     }
 
     return "/" + topic.substr(prefix_len, topic.size() - prefix_len - suffix_len);
 }
 
+/// @brief Demangles `rq/<name>Request` or `rr/<name>Reply`; empty for any other topic.
+std::string demangle_service_topic(const std::string& topic) {
+    std::string name = demangle_service_topic(topic, kRequestPrefix, kRequestSuffix);
+    return name.empty() ? demangle_service_topic(topic, kReplyPrefix, kReplySuffix) : name;
+}
+
 void on_endpoint_observed(void* self, const rtps::Guid& guid, const char* topic, const char* type,
-                          bool is_writer) noexcept {
+                          bool is_writer, rtps::ReliabilityKind reliability,
+                          rtps::DurabilityKind durability) noexcept {
     // An endpoint that cannot be stored stays out of the listing; discovery goes on.
     try {
-        (void)static_cast<GraphCache*>(self)->add(guid, topic, type, is_writer);
+        (void)static_cast<GraphCache*>(self)->add(guid, topic, type, is_writer, reliability,
+                                                  durability);
     } catch (const std::bad_alloc&) {
         return;
     }
@@ -156,16 +162,18 @@ void GraphCache::changed() const noexcept {
     }
 }
 
-bool GraphCache::add(const rtps::Guid& guid, const char* topic, const char* type, bool is_writer) {
+bool GraphCache::add(const rtps::Guid& guid, const char* topic, const char* type, bool is_writer,
+                     rtps::ReliabilityKind reliability, rtps::DurabilityKind durability) {
     const GuidBytes key = key_of(guid);
     const auto      found = endpoints_.find(key);
     if (found != endpoints_.end()) {
         // Confirmed before the copy below, which may throw: an endpoint the
         // replay announced is never forgotten by end_refresh(), even when
         // its new names could not be stored.
+        const Endpoint& known = found->second;
         found->second.confirmed = true;
-        if (found->second.is_writer == is_writer && found->second.topic == topic
-            && found->second.type == type) {
+        if (known.is_writer == is_writer && known.topic == topic && known.type == type
+            && known.reliability == reliability && known.durability == durability) {
             return false;
         }
     }
@@ -174,6 +182,8 @@ bool GraphCache::add(const rtps::Guid& guid, const char* topic, const char* type
     endpoint.topic = topic;
     endpoint.type = type;
     endpoint.is_writer = is_writer;
+    endpoint.reliability = reliability;
+    endpoint.durability = durability;
     endpoints_[key] = std::move(endpoint);
     changed();
     return true;
@@ -247,7 +257,7 @@ bool GraphCache::end_refresh(const rtps::GuidPrefix& prefix) noexcept {
 }
 
 bool GraphCache::set_participant_nodes(const rtps::GuidPrefix& prefix,
-                                       std::vector<NodeName>   nodes) {
+                                       std::vector<NodeEntities> nodes) {
     const PrefixBytes key = key_of(prefix);
     const auto        found = nodes_.find(key);
     if (found == nodes_.end() ? nodes.empty() : found->second == nodes) {
@@ -267,7 +277,93 @@ bool GraphCache::set_participant_nodes(const rtps::GuidPrefix& prefix,
 std::vector<NodeName> GraphCache::node_names() const {
     std::vector<NodeName> out;
     for (const auto& participant : nodes_) {
-        out.insert(out.end(), participant.second.begin(), participant.second.end());
+        for (const NodeEntities& entities : participant.second) {
+            out.push_back(entities.node);
+        }
+    }
+
+    return out;
+}
+
+const NodeEntities* GraphCache::find_node(const NodeName& node) const noexcept {
+    for (const auto& participant : nodes_) {
+        for (const NodeEntities& entities : participant.second) {
+            if (entities.node == node) {
+                return &entities;
+            }
+        }
+    }
+
+    return nullptr;
+}
+
+const NodeName* GraphCache::owner_of(const rtps::Guid& guid) const noexcept {
+    // A participant lists only its own endpoints, so only its entry is searched.
+    const auto participant = nodes_.find(key_of(guid.prefix));
+    if (participant == nodes_.end()) {
+        return nullptr;
+    }
+
+    for (const NodeEntities& entities : participant->second) {
+        for (const rtps::Guid& endpoint : entities.endpoints) {
+            if (endpoint == guid) {
+                return &entities.node;
+            }
+        }
+    }
+
+    return nullptr;
+}
+
+NamesAndTypes GraphCache::names_and_types_of(const std::vector<rtps::Guid>& endpoints,
+                                             EndpointRole role, bool no_demangle) const {
+    const bool is_writer = role == EndpointRole::publisher;
+    NamesAndTypes out;
+    for (const rtps::Guid& guid : endpoints) {
+        const auto found = endpoints_.find(key_of(guid));
+        if (found == endpoints_.end() || found->second.is_writer != is_writer) {
+            continue;
+        }
+
+        const Endpoint& endpoint = found->second;
+        std::string name;
+        std::string type;
+        if (role == EndpointRole::server || role == EndpointRole::client) {
+            name = role == EndpointRole::server
+                       ? demangle_service_topic(endpoint.topic, kRequestPrefix, kRequestSuffix)
+                       : demangle_service_topic(endpoint.topic, kReplyPrefix, kReplySuffix);
+            type = demangle_service_type(endpoint.type);
+        } else if (no_demangle) {
+            name = endpoint.topic;
+            type = endpoint.type;
+        } else if (starts_with(endpoint.topic, kTopicPrefix)) {
+            name = endpoint.topic.substr(2);
+            type = demangle_if_ros_type(endpoint.type);
+        }
+
+        if (!name.empty() && !type.empty()) {
+            out[name].insert(type);
+        }
+    }
+
+    return out;
+}
+
+std::vector<TopicEndpoint> GraphCache::endpoints_on(const char* topic, bool is_writer,
+                                                    bool no_demangle) const {
+    std::vector<TopicEndpoint> out;
+    for (const auto& entry : endpoints_) {
+        const Endpoint& endpoint = entry.second;
+        if (endpoint.is_writer != is_writer || endpoint.topic != topic) {
+            continue;
+        }
+
+        TopicEndpoint info;
+        std::memcpy(&info.guid, entry.first.data(), entry.first.size());
+        info.type = no_demangle ? endpoint.type : demangle_if_ros_type(endpoint.type);
+        info.reliability = endpoint.reliability;
+        info.durability = endpoint.durability;
+        out.push_back(std::move(info));
     }
 
     return out;
@@ -286,10 +382,7 @@ NamesAndTypes GraphCache::topic_names_and_types(bool no_demangle) const {
             continue;
         }
 
-        // A type that is not a ROS 2 message type is listed as announced,
-        // as rmw_fastrtps_cpp's _demangle_if_ros_type does.
-        const std::string type = demangle_message_type(endpoint.type);
-        out[endpoint.topic.substr(2)].insert(type.empty() ? endpoint.type : type);
+        out[endpoint.topic.substr(2)].insert(demangle_if_ros_type(endpoint.type));
     }
 
     return out;

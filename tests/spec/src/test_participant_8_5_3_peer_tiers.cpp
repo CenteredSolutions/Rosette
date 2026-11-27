@@ -247,7 +247,8 @@ struct GraphLog {
 
     GraphLog() {
         observer.user = this;
-        observer.on_endpoint = [](void* u, const Guid& g, const char*, const char*, bool) noexcept {
+        observer.on_endpoint = [](void* u, const Guid& g, const char*, const char*, bool,
+                                  ReliabilityKind, DurabilityKind) noexcept {
             static_cast<GraphLog*>(u)->listed[g] = true;
         };
         observer.on_endpoint_gone = [](void* u, const Guid& g) noexcept {

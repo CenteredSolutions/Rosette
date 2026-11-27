@@ -447,7 +447,8 @@ struct MatchedEndpoint {
  * its endpoints once the peer is first activated.
  *
  * - `on_endpoint` fires for every valid local or remote endpoint, including
- *   one the table has no room for, and again for a repeated announcement.
+ *   one the table has no room for, and again for a repeated announcement. It
+ *   carries the reliability and durability the announcement offers or requests.
  * - `on_endpoint_gone` fires for each endpoint its participant withdraws.
  * - `on_participant_gone` is the one notice that a participant left, for all
  *   of its endpoints.
@@ -464,7 +465,8 @@ struct MatchedEndpoint {
 struct GraphEndpointObserver {
     void* user = nullptr;
     void (*on_endpoint)(void* user, const Guid& guid, const char* topic, const char* type,
-                        bool is_writer) noexcept = nullptr;
+                        bool is_writer, ReliabilityKind reliability,
+                        DurabilityKind durability) noexcept = nullptr;
     void (*on_endpoint_gone)(void* user, const Guid& guid) noexcept = nullptr;
     void (*on_participant_gone)(void* user, const GuidPrefix& prefix) noexcept = nullptr;
     void (*on_participant_refreshing)(void* user, const GuidPrefix& prefix) noexcept = nullptr;
