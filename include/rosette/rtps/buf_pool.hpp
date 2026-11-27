@@ -484,8 +484,8 @@ public:
     /// Initialise the free list.  class_idx is stored in every block header.
     void init(uint8_t class_idx) noexcept {
         free_head_ = nullptr;
-        for (int8_t i = static_cast<int8_t>(BlockCount) - 1; i >= 0; --i) {
-            BufBlock* b     = &slots_[i].hdr;
+        for (uint8_t i = BlockCount; i > 0u; --i) {
+            BufBlock* b     = &slots_[i - 1u].hdr;
             b->refcount     = 0;
             b->block_cap    = BlockSize;
             b->size_class   = class_idx;

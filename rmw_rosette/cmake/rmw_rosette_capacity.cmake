@@ -45,6 +45,21 @@
 # include/rmw_rosette/capacity.hpp states the same relationships and
 # static_asserts them, so an inconsistent override fails to compile.
 
+# Each rmw context is a whole RTPS participant, so it is the largest pool
+# entry. A microcontroller runs one. The ros2 CLI and launch open a second
+# context alongside a running daemon or node, so a hosted build keeps four;
+# Linux pages in only the contexts a process initializes. A hosted build also
+# keeps sixteen clients: rclpy's AsyncParameterClient (`ros2 param` on Jazzy)
+# opens all six parameter clients of the node it queries at once.
+if(ROSETTE_OS STREQUAL "posix")
+  set(_rr_contexts_default 4)
+  set(_rr_clients_default 16)
+else()
+  set(_rr_contexts_default 1)
+  set(_rr_clients_default 4)
+endif()
+set(RMW_ROSETTE_MAX_CONTEXTS ${_rr_contexts_default} CACHE STRING
+    "rmw contexts (RTPS participants) per process")
 set(RMW_ROSETTE_MAX_NODES 4 CACHE STRING
     "Nodes per process")
 set(RMW_ROSETTE_MAX_PUBLISHERS 16 CACHE STRING
@@ -53,7 +68,7 @@ set(RMW_ROSETTE_MAX_SUBSCRIPTIONS 16 CACHE STRING
     "Application subscriptions")
 set(RMW_ROSETTE_MAX_SERVICES 4 CACHE STRING
     "Application services, excluding per-node parameter services")
-set(RMW_ROSETTE_MAX_CLIENTS 4 CACHE STRING
+set(RMW_ROSETTE_MAX_CLIENTS ${_rr_clients_default} CACHE STRING
     "Application service clients")
 set(RMW_ROSETTE_PARAMETER_SERVICES_PER_NODE 6 CACHE STRING
     "Parameter services each node creates (6 for rclcpp/rclpy; 0 for rclc without a parameter server)")
@@ -376,6 +391,7 @@ they, too, change the layout of rmw_rosette::Context, which the tests include.
 ]]
 function(rmw_rosette_apply_capacity target)
   target_compile_definitions(${target} PRIVATE
+    RMW_ROSETTE_MAX_CONTEXTS=${RMW_ROSETTE_MAX_CONTEXTS}
     RMW_ROSETTE_MAX_NODES=${RMW_ROSETTE_MAX_NODES}
     RMW_ROSETTE_MAX_PUBLISHERS=${RMW_ROSETTE_MAX_PUBLISHERS}
     RMW_ROSETTE_MAX_SUBSCRIPTIONS=${RMW_ROSETTE_MAX_SUBSCRIPTIONS}

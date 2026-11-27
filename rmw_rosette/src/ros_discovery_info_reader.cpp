@@ -46,21 +46,35 @@ std::string get_string(CdrReader& cdr) {
     return std::string(reinterpret_cast<const char*>(text), length - 1u);
 }
 
-/// @brief Consumes one sequence of GIDs, failing the stream when it overruns.
-void skip_gid_sequence(CdrReader& cdr) {
+/**
+ * @brief Reads one sequence of GIDs, appending the GUID each one carries.
+ *
+ * A GID holds the endpoint's 16-octet GUID first; the octets after it, which
+ * Humble's 24-octet GIDs carry, are padding.
+ *
+ * @param[in,out] cdr    Stream positioned at the sequence; failed when it overruns.
+ * @param[in,out] guids  Receives the GUIDs.
+ */
+void get_gid_sequence(CdrReader& cdr, std::vector<rtps::Guid>& guids) {
+    static_assert(kGidSize >= sizeof(rtps::Guid), "a GID begins with the 16-octet GUID");
     const uint32_t count = cdr.get<uint32_t>();
     if (!cdr.ok() || count > cdr.remaining() / kGidSize) {
         cdr.fail();
         return;
     }
 
-    (void)cdr.take_view(count * size_t{kGidSize});
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint8_t* gid = cdr.take_view(kGidSize);
+        rtps::Guid guid;
+        std::memcpy(&guid, gid, sizeof(guid));
+        guids.push_back(guid);
+    }
 }
 
 }  // namespace
 
-bool decode_participant_node_names(const uint8_t* payload, size_t size,
-                                   std::vector<NodeName>& nodes) {
+bool decode_participant_nodes(const uint8_t* payload, size_t size,
+                              std::vector<NodeEntities>& nodes) {
     // Stock rmw implementations serialize this topic as little-endian plain CDR.
     if (payload == nullptr || size < kRtpsEncapsulationHeaderSize || payload[0] != 0x00u
         || payload[1] != 0x01u) {
@@ -71,13 +85,13 @@ bool decode_participant_node_names(const uint8_t* payload, size_t size,
     (void)cdr.take_view(kGidSize);  // The participant, known from the writer's GUID.
 
     const uint32_t        count = cdr.get<uint32_t>();
-    std::vector<NodeName> decoded;
+    std::vector<NodeEntities> decoded;
     for (uint32_t i = 0; i < count && cdr.ok(); ++i) {
-        NodeName node;
-        node.namespace_ = get_string(cdr);
-        node.name = get_string(cdr);
-        skip_gid_sequence(cdr);  // reader_gid_seq
-        skip_gid_sequence(cdr);  // writer_gid_seq
+        NodeEntities node;
+        node.node.namespace_ = get_string(cdr);
+        node.node.name = get_string(cdr);
+        get_gid_sequence(cdr, node.endpoints);  // reader_gid_seq
+        get_gid_sequence(cdr, node.endpoints);  // writer_gid_seq
         if (cdr.ok()) {
             decoded.push_back(std::move(node));
         }
@@ -117,8 +131,8 @@ void RosDiscoveryInfoReader::on_change(const rtps::CacheChange& change, void* se
 
     // A node that cannot be stored stays out of the listing; discovery goes on.
     try {
-        std::vector<NodeName> nodes;
-        if (!decode_participant_node_names(change.payload.data, change.payload.size, nodes)) {
+        std::vector<NodeEntities> nodes;
+        if (!decode_participant_nodes(change.payload.data, change.payload.size, nodes)) {
             return;
         }
 

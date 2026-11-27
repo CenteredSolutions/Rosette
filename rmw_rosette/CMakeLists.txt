@@ -114,8 +114,9 @@ target_link_libraries(rmw_rosette PRIVATE rosette_platform)
 option(RMW_ROSETTE_PUMP_THREAD "Run the participant on a pump thread" ${_rr_hosted_default})
 
 if(RMW_ROSETTE_GRAPH_CACHE)
-  target_sources(rmw_rosette PRIVATE src/graph_cache.cpp src/rmw_graph_names.cpp
-                 src/rmw_graph_node_names.cpp src/ros_discovery_info_reader.cpp)
+  target_sources(rmw_rosette PRIVATE src/graph_cache.cpp src/rmw_graph_endpoint_info.cpp
+                 src/rmw_graph_names.cpp src/rmw_graph_node_names.cpp
+                 src/ros_discovery_info_reader.cpp)
 endif()
 
 # RTPS log levels (rosette/rtps/log.hpp): 0 none, 1 error, 2 warning,

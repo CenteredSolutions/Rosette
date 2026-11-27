@@ -397,8 +397,8 @@ rmw_ret_t check_discovery_options(const rmw_discovery_options_t& options) noexce
  * micro-ROS builds rcl with RCL_COMMAND_LINE_ENABLED off, which compiles
  * that step out, so on firmware every rclc program reaches rmw_init() with a
  * null enclave; the firmware build defines RMW_ROSETTE_RCL_WITHOUT_COMMAND_LINE
- * and the enclave is then optional. rmw_rosette reads the enclave nowhere
- * else, and a null one is copied and finalized as absent.
+ * and the enclave is then optional. A hosted build keeps a copy for
+ * rmw_get_node_names_with_enclaves(), and a null one is reported as empty.
  *
  * @param[in] options The init options; may be null.
  * @param[in] context The context to initialize; may be null.
@@ -788,6 +788,10 @@ rmw_ret_t rmw_init(const rmw_init_options_t* options, rmw_context_t* context) {
 
     rmw_rosette::Context& ctx = impl->rosette_context;
     ctx.domain_id = domain_id;
+#if RMW_ROSETTE_GRAPH_CACHE
+    (void)std::snprintf(ctx.enclave, sizeof(ctx.enclave), "%s",
+                        options->enclave != nullptr ? options->enclave : "");
+#endif
     ctx.provider = &rmw_rosette::network_socket_provider();
     uint8_t participant_id = 0;
     if (!open_transport_on_free_ports(ctx, address, participant_id)) {

@@ -13,10 +13,13 @@
 #include <gtest/gtest.h>
 
 #include <rcutils/types/string_array.h>
+#include <rmw/get_node_info_and_types.h>
 #include <rmw/get_service_names_and_types.h>
+#include <rmw/get_topic_endpoint_info.h>
 #include <rmw/get_topic_names_and_types.h>
 #include <rmw/names_and_types.h>
 #include <rmw/rmw.h>
+#include <rmw/topic_endpoint_info_array.h>
 
 #include <std_msgs/msg/string.h>
 
@@ -44,6 +47,27 @@ rtps::Guid make_guid(uint8_t participant, uint8_t entity) {
 }
 
 constexpr char kStringType[] = "std_msgs::msg::dds_::String_";
+
+/// @brief Records an endpoint with the QoS a test names, best-effort volatile by default.
+bool add(rmw_rosette::GraphCache& cache, const rtps::Guid& guid, const char* topic,
+         const char* type, bool is_writer,
+         rtps::ReliabilityKind reliability = rtps::ReliabilityKind::BEST_EFFORT,
+         rtps::DurabilityKind durability = rtps::DurabilityKind::VOLATILE) {
+    return cache.add(guid, topic, type, is_writer, reliability, durability);
+}
+
+/// @brief The GUID a GID of `kGidSize` octets of `fill` carries.
+rtps::Guid filled_guid(uint8_t fill) {
+    rtps::Guid guid{};
+    std::memset(&guid, fill, sizeof(guid));
+    return guid;
+}
+
+/// @brief One remote node owning `endpoints`.
+rmw_rosette::NodeEntities node_with(const char* namespace_, const char* name,
+                                    std::vector<rtps::Guid> endpoints = {}) {
+    return {{namespace_, name}, std::move(endpoints)};
+}
 
 /// @brief Counts the listed nodes with this name and namespace; SIZE_MAX when the query or its
 /// cleanup fails.
@@ -74,10 +98,10 @@ size_t count_nodes(const rmw_node_t* node, const char* name, const char* namespa
 
 TEST(GraphCache, DemanglesRosTopics) {
     rmw_rosette::GraphCache cache;
-    cache.add(make_guid(1, 1), "rt/chatter", kStringType, true);
-    cache.add(make_guid(2, 1), "rt/chatter", kStringType, false);
-    cache.add(make_guid(1, 2), "ros_discovery_info", "rmw_dds_common::msg::dds_::Info_", true);
-    cache.add(make_guid(1, 3), "rq/addRequest", "pkg::srv::dds_::Add_Request_", false);
+    add(cache, make_guid(1, 1), "rt/chatter", kStringType, true);
+    add(cache, make_guid(2, 1), "rt/chatter", kStringType, false);
+    add(cache, make_guid(1, 2), "ros_discovery_info", "rmw_dds_common::msg::dds_::Info_", true);
+    add(cache, make_guid(1, 3), "rq/addRequest", "pkg::srv::dds_::Add_Request_", false);
 
     const auto topics = cache.topic_names_and_types(false);
     ASSERT_EQ(topics.size(), 1u);
@@ -91,9 +115,9 @@ TEST(GraphCache, DemanglesRosTopics) {
 
 TEST(GraphCache, DemanglesServices) {
     rmw_rosette::GraphCache cache;
-    cache.add(make_guid(1, 1), "rq/ns/addRequest", "pkg::srv::dds_::Add_Request_", false);
-    cache.add(make_guid(1, 2), "rr/ns/addReply", "pkg::srv::dds_::Add_Response_", true);
-    cache.add(make_guid(1, 3), "rt/not_a_service", kStringType, true);
+    add(cache, make_guid(1, 1), "rq/ns/addRequest", "pkg::srv::dds_::Add_Request_", false);
+    add(cache, make_guid(1, 2), "rr/ns/addReply", "pkg::srv::dds_::Add_Response_", true);
+    add(cache, make_guid(1, 3), "rt/not_a_service", kStringType, true);
 
     const auto services = cache.service_names_and_types();
     ASSERT_EQ(services.size(), 1u);
@@ -105,8 +129,8 @@ TEST(GraphCache, DemanglesServices) {
 // announced, as rmw_fastrtps_cpp's _demangle_if_ros_type leaves it.
 TEST(GraphCache, KeepsForeignTypesOnRosTopics) {
     rmw_rosette::GraphCache cache;
-    cache.add(make_guid(1, 1), "rt/foo", "MyModule::MyType", true);
-    cache.add(make_guid(2, 1), "rt/foo", kStringType, false);
+    add(cache, make_guid(1, 1), "rt/foo", "MyModule::MyType", true);
+    add(cache, make_guid(2, 1), "rt/foo", kStringType, false);
 
     const auto topics = cache.topic_names_and_types(false);
     ASSERT_EQ(topics.count("/foo"), 1u);
@@ -119,10 +143,10 @@ TEST(GraphCache, KeepsForeignTypesOnRosTopics) {
 // until its replay completes without them.
 TEST(GraphCache, CountsMatchListings) {
     rmw_rosette::GraphCache cache;
-    cache.add(make_guid(1, 1), "rt/chatter", kStringType, true);
-    cache.add(make_guid(2, 1), "rt/chatter", "MyModule::MyType", true);
-    cache.add(make_guid(2, 2), "rt/chatter", kStringType, false);
-    cache.add(make_guid(2, 3), "rr/addReply", "pkg::srv::dds_::Add_Response_", true);
+    add(cache, make_guid(1, 1), "rt/chatter", kStringType, true);
+    add(cache, make_guid(2, 1), "rt/chatter", "MyModule::MyType", true);
+    add(cache, make_guid(2, 2), "rt/chatter", kStringType, false);
+    add(cache, make_guid(2, 3), "rr/addReply", "pkg::srv::dds_::Add_Response_", true);
 
     EXPECT_EQ(cache.count("rt/chatter", true), 2u);
     EXPECT_EQ(cache.count("rt/chatter", false), 1u);
@@ -140,8 +164,8 @@ TEST(GraphCache, CountsMatchListings) {
 TEST(GraphCache, RepeatedAnnouncementIsIdempotentAndRemovalForgets) {
     rmw_rosette::GraphCache cache;
     const rtps::Guid        guid = make_guid(1, 1);
-    cache.add(guid, "rt/a", kStringType, true);
-    cache.add(guid, "rt/a", kStringType, true);
+    add(cache, guid, "rt/a", kStringType, true);
+    add(cache, guid, "rt/a", kStringType, true);
     EXPECT_EQ(cache.topic_names_and_types(false).size(), 1u);
 
     cache.remove(guid);
@@ -150,9 +174,9 @@ TEST(GraphCache, RepeatedAnnouncementIsIdempotentAndRemovalForgets) {
 
 TEST(GraphCache, RemovesOnlyTheDepartedParticipant) {
     rmw_rosette::GraphCache cache;
-    cache.add(make_guid(1, 1), "rt/a", kStringType, true);
-    cache.add(make_guid(1, 2), "rt/b", kStringType, true);
-    cache.add(make_guid(2, 1), "rt/c", kStringType, true);
+    add(cache, make_guid(1, 1), "rt/a", kStringType, true);
+    add(cache, make_guid(1, 2), "rt/b", kStringType, true);
+    add(cache, make_guid(2, 1), "rt/c", kStringType, true);
 
     cache.remove_participant(make_guid(1, 0).prefix);
 
@@ -169,21 +193,21 @@ TEST(GraphCache, ReportsEveryChangeAndNothingElse) {
     cache.set_on_change([](void* user) noexcept { ++*static_cast<int*>(user); }, &changes);
     const rtps::Guid guid = make_guid(1, 1);
 
-    EXPECT_TRUE(cache.add(guid, "rt/a", kStringType, true));
-    EXPECT_FALSE(cache.add(guid, "rt/a", kStringType, true));
+    EXPECT_TRUE(add(cache, guid, "rt/a", kStringType, true));
+    EXPECT_FALSE(add(cache, guid, "rt/a", kStringType, true));
     EXPECT_EQ(changes, 1);
 
-    EXPECT_TRUE(cache.add(guid, "rt/a", "std_msgs::msg::dds_::Int32_", true));
-    EXPECT_TRUE(cache.add(guid, "rt/b", "std_msgs::msg::dds_::Int32_", true));
-    EXPECT_TRUE(cache.add(guid, "rt/b", "std_msgs::msg::dds_::Int32_", false));
+    EXPECT_TRUE(add(cache, guid, "rt/a", "std_msgs::msg::dds_::Int32_", true));
+    EXPECT_TRUE(add(cache, guid, "rt/b", "std_msgs::msg::dds_::Int32_", true));
+    EXPECT_TRUE(add(cache, guid, "rt/b", "std_msgs::msg::dds_::Int32_", false));
     EXPECT_EQ(changes, 4);
 
     EXPECT_TRUE(cache.remove(guid));
     EXPECT_FALSE(cache.remove(guid));
     EXPECT_EQ(changes, 5);
 
-    cache.add(make_guid(2, 1), "rt/c", kStringType, true);
-    cache.add(make_guid(2, 2), "rt/d", kStringType, true);
+    add(cache, make_guid(2, 1), "rt/c", kStringType, true);
+    add(cache, make_guid(2, 2), "rt/d", kStringType, true);
     EXPECT_EQ(changes, 7);
     EXPECT_TRUE(cache.remove_participant(make_guid(2, 0).prefix));
     EXPECT_FALSE(cache.remove_participant(make_guid(2, 0).prefix));
@@ -196,16 +220,16 @@ TEST(GraphCache, ReportsEveryChangeAndNothingElse) {
 TEST(GraphCache, RefreshForgetsOnlyUnconfirmed) {
     rmw_rosette::GraphCache cache;
     int                     changes = 0;
-    cache.add(make_guid(1, 1), "rt/replayed", kStringType, true);
-    cache.add(make_guid(1, 2), "rt/withdrawn", kStringType, true);
-    cache.add(make_guid(2, 1), "rt/other_participant", kStringType, true);
+    add(cache, make_guid(1, 1), "rt/replayed", kStringType, true);
+    add(cache, make_guid(1, 2), "rt/withdrawn", kStringType, true);
+    add(cache, make_guid(2, 1), "rt/other_participant", kStringType, true);
     cache.set_on_change([](void* user) noexcept { ++*static_cast<int*>(user); }, &changes);
 
     const rtps::GuidPrefix refreshed = make_guid(1, 0).prefix;
     cache.begin_refresh(refreshed);
     EXPECT_EQ(cache.topic_names_and_types(false).size(), 3u);
-    EXPECT_FALSE(cache.add(make_guid(1, 1), "rt/replayed", kStringType, true));
-    EXPECT_TRUE(cache.add(make_guid(1, 3), "rt/new", kStringType, true));
+    EXPECT_FALSE(add(cache, make_guid(1, 1), "rt/replayed", kStringType, true));
+    EXPECT_TRUE(add(cache, make_guid(1, 3), "rt/new", kStringType, true));
     EXPECT_EQ(changes, 1);
 
     EXPECT_TRUE(cache.end_refresh(refreshed));
@@ -230,9 +254,14 @@ TEST(GraphCache, ObserverForwardsToTheCache) {
     const rtps::Guid                   guid = make_guid(3, 1);
     cache.set_on_change([](void* user) noexcept { ++*static_cast<int*>(user); }, &changes);
 
-    observer.on_endpoint(observer.user, guid, "rt/seen", kStringType, true);
+    observer.on_endpoint(observer.user, guid, "rt/seen", kStringType, true,
+                         rtps::ReliabilityKind::RELIABLE, rtps::DurabilityKind::TRANSIENT_LOCAL);
     EXPECT_EQ(cache.topic_names_and_types(false).count("/seen"), 1u);
     EXPECT_EQ(changes, 1);
+    const std::vector<rmw_rosette::TopicEndpoint> seen = cache.endpoints_on("rt/seen", true, false);
+    ASSERT_EQ(seen.size(), 1u);
+    EXPECT_EQ(seen[0].reliability, rtps::ReliabilityKind::RELIABLE);
+    EXPECT_EQ(seen[0].durability, rtps::DurabilityKind::TRANSIENT_LOCAL);
 
     observer.on_endpoint_gone(observer.user, guid);
     EXPECT_TRUE(cache.topic_names_and_types(false).empty());
@@ -301,10 +330,10 @@ TEST(GraphCache, ReplacesAndForgetsNodes) {
     const rtps::GuidPrefix peer = make_guid(1, 0).prefix;
     const rtps::GuidPrefix other = make_guid(2, 0).prefix;
 
-    EXPECT_TRUE(cache.set_participant_nodes(peer, {{"/", "first"}}));
-    EXPECT_TRUE(cache.set_participant_nodes(other, {{"/robot", "kept"}}));
-    EXPECT_FALSE(cache.set_participant_nodes(other, {{"/robot", "kept"}}));
-    EXPECT_TRUE(cache.set_participant_nodes(peer, {{"/", "second"}}));
+    EXPECT_TRUE(cache.set_participant_nodes(peer, {node_with("/", "first")}));
+    EXPECT_TRUE(cache.set_participant_nodes(other, {node_with("/robot", "kept")}));
+    EXPECT_FALSE(cache.set_participant_nodes(other, {node_with("/robot", "kept")}));
+    EXPECT_TRUE(cache.set_participant_nodes(peer, {node_with("/", "second")}));
     EXPECT_FALSE(cache.set_participant_nodes(make_guid(3, 0).prefix, {}));
     ASSERT_EQ(cache.node_names().size(), 2u);
     EXPECT_EQ(changes, 3);
@@ -322,26 +351,109 @@ TEST(GraphCache, ReplacesAndForgetsNodes) {
     EXPECT_EQ(changes, 5);
 }
 
+// A node's endpoints are found through the GUIDs its participant's ros_discovery_info
+// lists, and each list answers only for its own role; a GUID no node lists has no owner.
+TEST(GraphCache, ListsByNode) {
+    rmw_rosette::GraphCache cache;
+    const rtps::Guid pub = make_guid(2, 1);
+    const rtps::Guid sub = make_guid(2, 2);
+    const rtps::Guid server = make_guid(2, 3);
+    const rtps::Guid client = make_guid(2, 4);
+    add(cache, pub, "rt/chatter", kStringType, true);
+    add(cache, sub, "rt/cmd", kStringType, false);
+    add(cache, server, "rq/addRequest", "pkg::srv::dds_::Add_Request_", false);
+    add(cache, client, "rr/subReply", "pkg::srv::dds_::Sub_Response_", false);
+    add(cache, make_guid(2, 9), "rt/unowned", kStringType, true);
+    cache.set_participant_nodes(pub.prefix,
+                                {node_with("/robot", "talker", {pub, sub, server, client})});
+
+    const rmw_rosette::NodeEntities* talker = cache.find_node({"/robot", "talker"});
+    ASSERT_NE(talker, nullptr);
+    EXPECT_EQ(cache.find_node({"/", "talker"}), nullptr);
+    const std::vector<rtps::Guid>& owned = talker->endpoints;
+
+    using Role = rmw_rosette::EndpointRole;
+    using Listing = rmw_rosette::NamesAndTypes;
+    EXPECT_EQ(cache.names_and_types_of(owned, Role::publisher, false),
+              (Listing{{"/chatter", {"std_msgs/msg/String"}}}));
+    EXPECT_EQ(cache.names_and_types_of(owned, Role::publisher, true),
+              (Listing{{"rt/chatter", {kStringType}}}));
+    EXPECT_EQ(cache.names_and_types_of(owned, Role::subscription, false),
+              (Listing{{"/cmd", {"std_msgs/msg/String"}}}));
+    EXPECT_EQ(cache.names_and_types_of(owned, Role::server, false),
+              (Listing{{"/add", {"pkg/srv/Add"}}}));
+    EXPECT_EQ(cache.names_and_types_of(owned, Role::client, false),
+              (Listing{{"/sub", {"pkg/srv/Sub"}}}));
+
+    ASSERT_NE(cache.owner_of(server), nullptr);
+    EXPECT_EQ(cache.owner_of(server)->name, "talker");
+    EXPECT_EQ(cache.owner_of(make_guid(2, 9)), nullptr);
+    EXPECT_EQ(cache.owner_of(make_guid(3, 1)), nullptr);
+}
+
+// rmw_get_publishers_info_by_topic() reports each endpoint with its GUID and the
+// QoS its announcement carried, and the type demangled unless raw names are asked for.
+TEST(GraphCache, ListsEndpointsOnTopic) {
+    rmw_rosette::GraphCache cache;
+    add(cache, make_guid(1, 1), "rt/chatter", kStringType, true, rtps::ReliabilityKind::RELIABLE,
+        rtps::DurabilityKind::TRANSIENT_LOCAL);
+    add(cache, make_guid(2, 1), "rt/chatter", kStringType, true);
+    add(cache, make_guid(2, 2), "rt/chatter", kStringType, false);
+    add(cache, make_guid(2, 3), "rt/other", kStringType, true);
+
+    std::vector<rmw_rosette::TopicEndpoint> writers = cache.endpoints_on("rt/chatter", true, false);
+    ASSERT_EQ(writers.size(), 2u);
+    if (writers[0].guid != make_guid(1, 1)) {
+        std::swap(writers[0], writers[1]);
+    }
+
+    EXPECT_EQ(writers[0].guid, make_guid(1, 1));
+    EXPECT_EQ(writers[0].type, "std_msgs/msg/String");
+    EXPECT_EQ(writers[0].reliability, rtps::ReliabilityKind::RELIABLE);
+    EXPECT_EQ(writers[0].durability, rtps::DurabilityKind::TRANSIENT_LOCAL);
+    EXPECT_EQ(writers[1].guid, make_guid(2, 1));
+    EXPECT_EQ(writers[1].reliability, rtps::ReliabilityKind::BEST_EFFORT);
+    EXPECT_EQ(writers[1].durability, rtps::DurabilityKind::VOLATILE);
+
+    const std::vector<rmw_rosette::TopicEndpoint> raw =
+        cache.endpoints_on("rt/chatter", false, true);
+    ASSERT_EQ(raw.size(), 1u);
+    EXPECT_EQ(raw[0].guid, make_guid(2, 2));
+    EXPECT_EQ(raw[0].type, kStringType);
+    EXPECT_TRUE(cache.endpoints_on("/chatter", true, false).empty());
+}
+
+// A QoS change in a repeated announcement is a graph change, so the listings refresh.
+TEST(GraphCache, ReportsQosChanges) {
+    rmw_rosette::GraphCache cache;
+    const rtps::Guid guid = make_guid(1, 1);
+    EXPECT_TRUE(add(cache, guid, "rt/a", kStringType, true));
+    EXPECT_FALSE(add(cache, guid, "rt/a", kStringType, true));
+    EXPECT_TRUE(add(cache, guid, "rt/a", kStringType, true, rtps::ReliabilityKind::RELIABLE));
+    EXPECT_EQ(cache.endpoints_on("rt/a", true, false).at(0).reliability,
+              rtps::ReliabilityKind::RELIABLE);
+}
+
 TEST(GraphCache, DecodesNodeNames) {
     const std::vector<uint8_t> bytes = encode_nodes({{"/", "talker"}, {"/robot", "listener"}});
 
-    std::vector<rmw_rosette::NodeName> nodes;
-    ASSERT_TRUE(rmw_rosette::decode_participant_node_names(bytes.data(), bytes.size(), nodes));
+    std::vector<rmw_rosette::NodeEntities> nodes;
+    ASSERT_TRUE(rmw_rosette::decode_participant_nodes(bytes.data(), bytes.size(), nodes));
     ASSERT_EQ(nodes.size(), 2u);
-    EXPECT_EQ(nodes[0].namespace_, "/");
-    EXPECT_EQ(nodes[0].name, "talker");
-    EXPECT_EQ(nodes[1].namespace_, "/robot");
-    EXPECT_EQ(nodes[1].name, "listener");
+    EXPECT_EQ(nodes[0].node.namespace_, "/");
+    EXPECT_EQ(nodes[0].node.name, "talker");
+    EXPECT_EQ(nodes[1].node.namespace_, "/robot");
+    EXPECT_EQ(nodes[1].node.name, "listener");
 }
 
 TEST(GraphCache, RefusesTruncatedNodeMessages) {
     const std::vector<uint8_t> bytes = encode_nodes({{"/", "talker"}});
 
     for (size_t size = 0; size < bytes.size(); ++size) {
-        std::vector<rmw_rosette::NodeName> nodes = {{"/", "unchanged"}};
-        EXPECT_FALSE(rmw_rosette::decode_participant_node_names(bytes.data(), size, nodes)) << size;
+        std::vector<rmw_rosette::NodeEntities> nodes = {node_with("/", "unchanged")};
+        EXPECT_FALSE(rmw_rosette::decode_participant_nodes(bytes.data(), size, nodes)) << size;
         ASSERT_EQ(nodes.size(), 1u);
-        EXPECT_EQ(nodes[0].name, "unchanged");
+        EXPECT_EQ(nodes[0].node.name, "unchanged");
     }
 }
 
@@ -349,16 +461,16 @@ TEST(GraphCache, RefusesBigEndianAndHugeCounts) {
     std::vector<uint8_t> big_endian = encode_nodes({{"/", "talker"}});
     big_endian[1] = 0x00u;
 
-    std::vector<rmw_rosette::NodeName> nodes;
+    std::vector<rmw_rosette::NodeEntities> nodes;
     EXPECT_FALSE(
-        rmw_rosette::decode_participant_node_names(big_endian.data(), big_endian.size(), nodes));
+        rmw_rosette::decode_participant_nodes(big_endian.data(), big_endian.size(), nodes));
 
     std::vector<uint8_t> huge = encode_nodes({});
     for (size_t i = huge.size() - 4u; i < huge.size(); ++i) {
         huge[i] = 0xFFu;
     }
 
-    EXPECT_FALSE(rmw_rosette::decode_participant_node_names(huge.data(), huge.size(), nodes));
+    EXPECT_FALSE(rmw_rosette::decode_participant_nodes(huge.data(), huge.size(), nodes));
 }
 
 // Stock nodes own endpoints (a /rosout writer, parameter services), so a real sample
@@ -368,15 +480,28 @@ TEST(GraphCache, DecodesNodeNamesPastEndpointGids) {
         encode_nodes({{"/", "talker"}, {"/robot", "listener"}, {"/robot", "params"}},
                      {{2u, 3u}, {0u, 1u}, {4u, 0u}});
 
-    std::vector<rmw_rosette::NodeName> nodes;
-    ASSERT_TRUE(rmw_rosette::decode_participant_node_names(bytes.data(), bytes.size(), nodes));
+    std::vector<rmw_rosette::NodeEntities> nodes;
+    ASSERT_TRUE(rmw_rosette::decode_participant_nodes(bytes.data(), bytes.size(), nodes));
     ASSERT_EQ(nodes.size(), 3u);
-    EXPECT_EQ(nodes[0].namespace_, "/");
-    EXPECT_EQ(nodes[0].name, "talker");
-    EXPECT_EQ(nodes[1].namespace_, "/robot");
-    EXPECT_EQ(nodes[1].name, "listener");
-    EXPECT_EQ(nodes[2].namespace_, "/robot");
-    EXPECT_EQ(nodes[2].name, "params");
+    EXPECT_EQ(nodes[0].node.namespace_, "/");
+    EXPECT_EQ(nodes[0].node.name, "talker");
+    EXPECT_EQ(nodes[1].node.namespace_, "/robot");
+    EXPECT_EQ(nodes[1].node.name, "listener");
+    EXPECT_EQ(nodes[2].node.namespace_, "/robot");
+    EXPECT_EQ(nodes[2].node.name, "params");
+}
+
+// Each node keeps the GUIDs its reader and writer GIDs carry, readers first, in sample order.
+TEST(GraphCache, DecodesEndpointGids) {
+    const std::vector<uint8_t> bytes =
+        encode_nodes({{"/", "talker"}, {"/robot", "listener"}}, {{1u, 2u}, {0u, 1u}});
+
+    std::vector<rmw_rosette::NodeEntities> nodes;
+    ASSERT_TRUE(rmw_rosette::decode_participant_nodes(bytes.data(), bytes.size(), nodes));
+    ASSERT_EQ(nodes.size(), 2u);
+    EXPECT_EQ(nodes[0].endpoints, (std::vector<rtps::Guid>{filled_guid(0x40u), filled_guid(0x41u),
+                                                           filled_guid(0x42u)}));
+    EXPECT_EQ(nodes[1].endpoints, (std::vector<rtps::Guid>{filled_guid(0x43u)}));
 }
 
 // A sample cut anywhere, including inside a GID, is refused and leaves the output alone.
@@ -385,10 +510,10 @@ TEST(GraphCache, RefusesNodeMessagesTruncatedInsideGids) {
         encode_nodes({{"/", "talker"}, {"/robot", "listener"}}, {{2u, 1u}, {1u, 2u}});
 
     for (size_t size = 0; size < bytes.size(); ++size) {
-        std::vector<rmw_rosette::NodeName> nodes = {{"/", "unchanged"}};
-        EXPECT_FALSE(rmw_rosette::decode_participant_node_names(bytes.data(), size, nodes)) << size;
+        std::vector<rmw_rosette::NodeEntities> nodes = {node_with("/", "unchanged")};
+        EXPECT_FALSE(rmw_rosette::decode_participant_nodes(bytes.data(), size, nodes)) << size;
         ASSERT_EQ(nodes.size(), 1u);
-        EXPECT_EQ(nodes[0].name, "unchanged");
+        EXPECT_EQ(nodes[0].node.name, "unchanged");
     }
 }
 
@@ -408,19 +533,19 @@ TEST(GraphCache, BoundsGidCountsBySampleSize) {
     // The last count's octet total wraps a 32-bit size_t to a few octets, as on a microcontroller.
     for (const uint32_t count : {1u, 0xFFFFFFFFu, 0xFFFFFFFFu / rmw_rosette::kGidSize + 1u}) {
         const std::vector<uint8_t>         bytes = with_writer_count(count);
-        std::vector<rmw_rosette::NodeName> nodes = {{"/", "unchanged"}};
-        EXPECT_FALSE(rmw_rosette::decode_participant_node_names(bytes.data(), bytes.size(), nodes))
+        std::vector<rmw_rosette::NodeEntities> nodes = {node_with("/", "unchanged")};
+        EXPECT_FALSE(rmw_rosette::decode_participant_nodes(bytes.data(), bytes.size(), nodes))
             << count;
         ASSERT_EQ(nodes.size(), 1u);
-        EXPECT_EQ(nodes[0].name, "unchanged");
+        EXPECT_EQ(nodes[0].node.name, "unchanged");
     }
 
     std::vector<uint8_t> exact = with_writer_count(1u);
     exact.insert(exact.end(), rmw_rosette::kGidSize, 0x7Fu);
-    std::vector<rmw_rosette::NodeName> nodes;
-    ASSERT_TRUE(rmw_rosette::decode_participant_node_names(exact.data(), exact.size(), nodes));
+    std::vector<rmw_rosette::NodeEntities> nodes;
+    ASSERT_TRUE(rmw_rosette::decode_participant_nodes(exact.data(), exact.size(), nodes));
     ASSERT_EQ(nodes.size(), 1u);
-    EXPECT_EQ(nodes[0].name, "talker");
+    EXPECT_EQ(nodes[0].node.name, "talker");
 }
 
 TEST(RmwGraphNames, ListsALocalPublisherAndForgetsItWhenDestroyed) {
@@ -536,4 +661,134 @@ TEST(RmwNodeNames, ListsALocalNodeOnceAfterItsSampleIsSent) {
     ASSERT_EQ(rmw_destroy_node(node), RMW_RET_OK);
     ASSERT_EQ(rmw_shutdown(&context), RMW_RET_OK);
     ASSERT_EQ(rmw_context_fini(&context), RMW_RET_OK);
+}
+
+/// @brief A context with one node, torn down in reverse; the enclave is rcl's default "/".
+class RmwGraphQueries : public ::testing::Test {
+protected:
+    void SetUp() override {
+        rmw_init_options_t init_options = rmw_get_zero_initialized_init_options();
+        ASSERT_EQ(rmw_rosette_test::init_options_as_rcl(&init_options), RMW_RET_OK);
+        ASSERT_EQ(rmw_init(&init_options, &context_), RMW_RET_OK);
+        ASSERT_EQ(rmw_init_options_fini(&init_options), RMW_RET_OK);
+        node_ = rmw_create_node(&context_, "graph_query_node", "/robot");
+        ASSERT_NE(node_, nullptr);
+    }
+
+    void TearDown() override {
+        if (node_ != nullptr) {
+            EXPECT_EQ(rmw_destroy_node(node_), RMW_RET_OK);
+        }
+
+        EXPECT_EQ(rmw_shutdown(&context_), RMW_RET_OK);
+        EXPECT_EQ(rmw_context_fini(&context_), RMW_RET_OK);
+    }
+
+    rmw_context_t context_ = rmw_get_zero_initialized_context();
+    rmw_node_t* node_ = nullptr;
+    rcutils_allocator_t allocator_ = rcutils_get_default_allocator();
+};
+
+TEST_F(RmwGraphQueries, ListsTheLocalEnclave) {
+    rcutils_string_array_t names = rcutils_get_zero_initialized_string_array();
+    rcutils_string_array_t namespaces = rcutils_get_zero_initialized_string_array();
+    rcutils_string_array_t enclaves = rcutils_get_zero_initialized_string_array();
+    ASSERT_EQ(rmw_get_node_names_with_enclaves(node_, &names, &namespaces, &enclaves), RMW_RET_OK);
+    ASSERT_EQ(names.size, enclaves.size);
+
+    size_t found = 0;
+    for (size_t i = 0; i < names.size; ++i) {
+        if (std::strcmp(names.data[i], "graph_query_node") == 0) {
+            ++found;
+            EXPECT_STREQ(namespaces.data[i], "/robot");
+            EXPECT_STREQ(enclaves.data[i], "/");
+        }
+    }
+
+    EXPECT_EQ(found, 1u);
+    EXPECT_EQ(rcutils_string_array_fini(&names), RCUTILS_RET_OK);
+    EXPECT_EQ(rcutils_string_array_fini(&namespaces), RCUTILS_RET_OK);
+    EXPECT_EQ(rcutils_string_array_fini(&enclaves), RCUTILS_RET_OK);
+}
+
+// `ros2 node info` lists a local node's publisher under its publishers only, and a
+// node the graph does not hold is refused with the code rcl turns into "Node not found".
+TEST_F(RmwGraphQueries, ListsALocalNodesPublisher) {
+    rmw_publisher_options_t options = rmw_get_default_publisher_options();
+    rmw_publisher_t* pub =
+        rmw_create_publisher(node_, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+                             "/graph_query_topic", &rmw_qos_profile_default, &options);
+    ASSERT_NE(pub, nullptr);
+
+    rmw_names_and_types_t listing = rmw_get_zero_initialized_names_and_types();
+    ASSERT_EQ(rmw_get_publisher_names_and_types_by_node(node_, &allocator_, "graph_query_node",
+                                                        "/robot", false, &listing),
+              RMW_RET_OK);
+    bool found = false;
+    for (size_t i = 0; i < listing.names.size; ++i) {
+        if (std::strcmp(listing.names.data[i], "/graph_query_topic") == 0) {
+            found = true;
+            ASSERT_EQ(listing.types[i].size, 1u);
+            EXPECT_STREQ(listing.types[i].data[0], "std_msgs/msg/String");
+        }
+    }
+
+    EXPECT_TRUE(found);
+    EXPECT_EQ(rmw_names_and_types_fini(&listing), RMW_RET_OK);
+
+    listing = rmw_get_zero_initialized_names_and_types();
+    ASSERT_EQ(rmw_get_subscriber_names_and_types_by_node(node_, &allocator_, "graph_query_node",
+                                                         "/robot", false, &listing),
+              RMW_RET_OK);
+    for (size_t i = 0; i < listing.names.size; ++i) {
+        EXPECT_STRNE(listing.names.data[i], "/graph_query_topic");
+    }
+
+    EXPECT_EQ(rmw_names_and_types_fini(&listing), RMW_RET_OK);
+
+    listing = rmw_get_zero_initialized_names_and_types();
+    EXPECT_EQ(rmw_get_publisher_names_and_types_by_node(node_, &allocator_, "no_such_node",
+                                                        "/robot", false, &listing),
+              RMW_RET_NODE_NAME_NON_EXISTENT);
+    EXPECT_EQ(rmw_names_and_types_check_zero(&listing), RMW_RET_OK);
+    rcutils_reset_error();
+
+    EXPECT_EQ(rmw_destroy_publisher(node_, pub), RMW_RET_OK);
+}
+
+// `ros2 topic info -v` and `ros2 topic echo` read the owner and QoS of every endpoint.
+TEST_F(RmwGraphQueries, ReportsALocalPublishersInfo) {
+    rmw_publisher_options_t options = rmw_get_default_publisher_options();
+    rmw_qos_profile_t qos = rmw_qos_profile_default;
+    qos.durability = RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL;
+    rmw_publisher_t* pub =
+        rmw_create_publisher(node_, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String),
+                             "/graph_info_topic", &qos, &options);
+    ASSERT_NE(pub, nullptr);
+
+    rmw_topic_endpoint_info_array_t info = rmw_get_zero_initialized_topic_endpoint_info_array();
+    ASSERT_EQ(
+        rmw_get_publishers_info_by_topic(node_, &allocator_, "/graph_info_topic", false, &info),
+        RMW_RET_OK);
+    ASSERT_EQ(info.size, 1u);
+    const rmw_topic_endpoint_info_t& row = info.info_array[0];
+    EXPECT_STREQ(row.node_name, "graph_query_node");
+    EXPECT_STREQ(row.node_namespace, "/robot");
+    EXPECT_STREQ(row.topic_type, "std_msgs/msg/String");
+    EXPECT_EQ(row.endpoint_type, RMW_ENDPOINT_PUBLISHER);
+    EXPECT_EQ(row.qos_profile.reliability, RMW_QOS_POLICY_RELIABILITY_RELIABLE);
+    EXPECT_EQ(row.qos_profile.durability, RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL);
+
+    rmw_gid_t gid{};
+    ASSERT_EQ(rmw_get_gid_for_publisher(pub, &gid), RMW_RET_OK);
+    EXPECT_EQ(std::memcmp(row.endpoint_gid, gid.data, sizeof(rtps::Guid)), 0);
+    EXPECT_EQ(rmw_topic_endpoint_info_array_fini(&info, &allocator_), RMW_RET_OK);
+
+    info = rmw_get_zero_initialized_topic_endpoint_info_array();
+    ASSERT_EQ(
+        rmw_get_subscriptions_info_by_topic(node_, &allocator_, "/graph_info_topic", false, &info),
+        RMW_RET_OK);
+    EXPECT_EQ(info.size, 0u);
+
+    EXPECT_EQ(rmw_destroy_publisher(node_, pub), RMW_RET_OK);
 }

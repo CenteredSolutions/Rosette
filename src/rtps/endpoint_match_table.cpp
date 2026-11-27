@@ -489,7 +489,7 @@ void EndpointMatchTable::add_writer(const DiscoveredWriterData& wd) noexcept
 
     if (graph_observer_) {
         graph_observer_->on_endpoint(graph_observer_->user, wd.writerGuid, wd.topicName.str,
-                                     wd.typeName.str, true);
+                                     wd.typeName.str, true, wd.reliabilityKind, wd.durabilityKind);
     }
 
     const uint32_t topic_key = name_key(wd.topicName.str);
@@ -577,7 +577,7 @@ void EndpointMatchTable::add_reader(const DiscoveredReaderData& rd) noexcept
 
     if (graph_observer_) {
         graph_observer_->on_endpoint(graph_observer_->user, rd.readerGuid, rd.topicName.str,
-                                     rd.typeName.str, false);
+                                     rd.typeName.str, false, rd.reliabilityKind, rd.durabilityKind);
     }
 
     const uint32_t topic_key = name_key(rd.topicName.str);
