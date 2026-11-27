@@ -27,6 +27,18 @@ namespace {
 /// are not preframed.
 constexpr uint16_t kEncapsulationSize = 4u;
 
+/// @brief Milliseconds from `now_ms` until `due_ms`, 0 once it has passed;
+///   compared modulo 2^32 so the clock may wrap.
+uint32_t ms_until_deadline(uint32_t now_ms, uint32_t due_ms) noexcept {
+    const int32_t left = static_cast<int32_t>(due_ms - now_ms);
+    return left > 0 ? static_cast<uint32_t>(left) : 0u;
+}
+
+/// @brief True once `now_ms` has reached `due_ms`, modulo 2^32.
+bool deadline_reached(uint32_t now_ms, uint32_t due_ms) noexcept {
+    return ms_until_deadline(now_ms, due_ms) == 0u;
+}
+
 }  // namespace
 
 StatefulWriter::StatefulWriter(const Guid& guid, ReliabilityKind reliability,
@@ -126,6 +138,8 @@ bool StatefulWriter::add_change(HistoryChange&& change) noexcept {
                static_cast<unsigned long>(inserted->payload.size), writer_cache_.size());
     if (reliability_ == ReliabilityKind::RELIABLE) {
         ++writesSinceHb_;
+        fastHbRoundsLeft_ = RTPS_FAST_HEARTBEAT_ROUNDS;
+        fastHbDueMs_ = rosette::platform::monotonic_ms() + RTPS_FAST_HEARTBEAT_DELAY_MS;
     }
 
     mark_timers_stale();
@@ -427,6 +441,12 @@ void StatefulWriter::on_acknack(const ParseContext& ctx, const ParsedAckNack& ms
     // Cumulative ACK: all SNs below bitmapBase are acknowledged.
     const bool acked_nothing_before = proxy->highestAckedSN == SEQUENCENUMBER_ZERO;
     if (msg.readerSNState.bitmapBase > SEQUENCENUMBER_ZERO) {
+        // A reader whose acknowledgment advances is taking its repairs, so
+        // its next one waits the shortest time again ("Repair backoff").
+        if (proxy->highestAckedSN < msg.readerSNState.bitmapBase - 1) {
+            proxy->repairStreak = 0u;
+        }
+
         proxy->acked_changes_set(msg.readerSNState.bitmapBase - 1);
     }
 
@@ -542,9 +562,10 @@ uint32_t StatefulWriter::tick(uint32_t now_ms) noexcept {
             any_announcing = true;
         }
 
-        if (!proxy.nack_delay_elapsed(now_ms, nack_delay_ms_)) {
+        const uint32_t delay = repair_delay(proxy);
+        if (!proxy.nack_delay_elapsed(now_ms, delay)) {
             if (proxy.nackPending) {
-                next = std::min(next, nack_delay_ms_ - (now_ms - proxy.nackPendingSinceMs));
+                next = std::min(next, delay - (now_ms - proxy.nackPendingSinceMs));
             }
 
             continue;
@@ -572,8 +593,14 @@ uint32_t StatefulWriter::tick(uint32_t now_ms) noexcept {
             fragRepair_ = FragmentRepair{};
         }
 
-        // Post-retransmit directed HEARTBEAT (F=true), §8.4.2.2.
+        // Post-retransmit directed HEARTBEAT (F=true), §8.4.2.2. The streak
+        // stops growing once the wait reaches nackResponseDelay, which also
+        // keeps the shift in repair_delay() in range.
         if (any_sent) {
+            if (repair_delay(proxy) < nack_delay_ms_) {
+                ++proxy.repairStreak;
+            }
+
             ++heartbeatCount_;
             const Locator& dest = proxy.best_locator();
             if (dest != LOCATOR_INVALID) {
@@ -582,28 +609,20 @@ uint32_t StatefulWriter::tick(uint32_t now_ms) noexcept {
         }
     }
 
-    // Phase 2: periodic HEARTBEAT to announcing readers. §8.4.9.2 T5-T7: a
-    // ReaderProxy is "announcing" only while it has unacknowledged changes,
-    // and only announcing proxies receive the periodic HEARTBEAT. A fully
-    // acknowledged reader hears nothing until the next write, so an idle
-    // link stays quiet. A reader served best-effort never acknowledges, and
-    // is never announcing (§8.4.9.1).
-    if ((now_ms - lastHbSentMs_) >= hb_period_ms_) {
-        lastHbSentMs_ = now_ms;
-        writesSinceHb_ = 0u;
-        ++heartbeatCount_;
-        for (ReaderProxy& proxy : matched()) {
-            if (!serves_reliably(proxy) || !proxy.is_announcing(newest)) {
-                continue;
-            }
+    // Phase 2: the periodic HEARTBEAT.
+    const bool periodic_due = (now_ms - lastHbSentMs_) >= hb_period_ms_;
+    if (periodic_due) {
+        send_periodic_heartbeats(now_ms, newest);
+    }
 
-            const Locator& dest = proxy.best_locator();
-            if (dest == LOCATOR_INVALID) {
-                continue;
-            }
+    // Phase 3: the HEARTBEAT schedule after a write, which ends once every
+    // reader has acknowledged the newest change.
+    if (fastHbRoundsLeft_ > 0u && !any_announcing) {
+        fastHbRoundsLeft_ = 0u;
+    }
 
-            send_heartbeat_to(entity_id::UNKNOWN, dest, /*final=*/false);
-        }
+    if (fastHbRoundsLeft_ > 0u && deadline_reached(now_ms, fastHbDueMs_)) {
+        send_fast_heartbeats(now_ms, newest, periodic_due);
     }
 
     if (replayPending_) {
@@ -612,9 +631,58 @@ uint32_t StatefulWriter::tick(uint32_t now_ms) noexcept {
 
     if (any_announcing) {
         next = std::min(next, hb_period_ms_ - (now_ms - lastHbSentMs_));
+        if (fastHbRoundsLeft_ > 0u) {
+            next = std::min(next, ms_until_deadline(now_ms, fastHbDueMs_));
+        }
     }
 
     return next;
+}
+
+void StatefulWriter::send_periodic_heartbeats(uint32_t now_ms,
+                                              const SequenceNumber& newest) noexcept {
+    // §8.4.9.2 T5-T7: a ReaderProxy is "announcing" only while it has
+    // unacknowledged changes, and only announcing proxies receive the
+    // periodic HEARTBEAT. A fully acknowledged reader hears nothing until the
+    // next write, so an idle link stays quiet. A reader served best-effort
+    // never acknowledges, and is never announcing (§8.4.9.1).
+    lastHbSentMs_ = now_ms;
+    lastAskedMs_ = now_ms;
+    writesSinceHb_ = 0u;
+    ++heartbeatCount_;
+    for (ReaderProxy& proxy : matched()) {
+        if (!serves_reliably(proxy) || !proxy.is_announcing(newest)) {
+            continue;
+        }
+
+        const Locator& dest = proxy.best_locator();
+        if (dest != LOCATOR_INVALID) {
+            send_heartbeat_to(entity_id::UNKNOWN, dest, /*final=*/false);
+        }
+    }
+}
+
+void StatefulWriter::send_fast_heartbeats(uint32_t now_ms, const SequenceNumber& newest,
+                                          bool periodic_sent) noexcept {
+    if (!periodic_sent) {
+        ++heartbeatCount_;
+        lastAskedMs_ = now_ms;
+        writesSinceHb_ = 0u;
+        for (ReaderProxy& proxy : matched()) {
+            if (!serves_reliably(proxy) || !proxy.is_announcing(newest) || proxy.nackPending
+                || proxy.replaying) {
+                continue;
+            }
+
+            const Locator& dest = proxy.best_locator();
+            if (dest != LOCATOR_INVALID) {
+                send_heartbeat_to(proxy.remoteReaderGuid.entityId, dest, /*final=*/false);
+            }
+        }
+    }
+
+    --fastHbRoundsLeft_;
+    fastHbDueMs_ = now_ms + fast_heartbeat_wait();
 }
 
 bool StatefulWriter::acknowledged_by_all() const noexcept {
@@ -658,16 +726,21 @@ uint32_t StatefulWriter::ms_until_next_timer(uint32_t now_ms) const noexcept {
         }
 
         if (proxy.nackPending) {
+            const uint32_t delay = repair_delay(proxy);
             const uint32_t elapsed = now_ms - proxy.nackPendingSinceMs;
-            const uint32_t left = elapsed >= nack_delay_ms_ ? 0u : nack_delay_ms_ - elapsed;
+            const uint32_t left = elapsed >= delay ? 0u : delay - elapsed;
             if (left < next) next = left;
         }
     }
     if (any_announcing) {
         const uint32_t elapsed = now_ms - lastHbSentMs_;
         const uint32_t left = elapsed >= hb_period_ms_ ? 0u : hb_period_ms_ - elapsed;
-        if (left < next) next = left;
+        next = std::min(next, left);
+        if (fastHbRoundsLeft_ > 0u) {
+            next = std::min(next, ms_until_deadline(now_ms, fastHbDueMs_));
+        }
     }
+
     return next;
 }
 
@@ -707,6 +780,14 @@ void StatefulWriter::answer_nack(ReaderProxy& proxy, const SequenceNumberSet& re
     });
     proxy.requested_changes_set(repairable, now_ms);
     send_gap(proxy, irrelevant);
+
+    // A reader that asks for a repair is already repairing, and the
+    // HEARTBEAT after its repair asks it again, so the next round after a
+    // write would only duplicate that (see "Heartbeats after a write").
+    if (!repairable.empty() && fastHbRoundsLeft_ > 0u
+        && ms_until_deadline(now_ms, fastHbDueMs_) < fast_heartbeat_wait()) {
+        fastHbDueMs_ = now_ms + fast_heartbeat_wait();
+    }
 }
 
 SequenceNumber StatefulWriter::first_relevant_for_new_reader() const noexcept {
@@ -987,6 +1068,7 @@ void StatefulWriter::send_unsent_changes(bool with_heartbeat) noexcept {
     if (with_heartbeat) {
         ++heartbeatCount_;
         writesSinceHb_ = 0u;
+        lastAskedMs_ = rosette::platform::monotonic_ms();
     }
 
     const SequenceNumber newest = writer_cache_.get_seq_num_max();
@@ -1017,7 +1099,9 @@ uint32_t StatefulWriter::piggyback_interval() const noexcept {
 }
 
 bool StatefulWriter::heartbeat_due() const noexcept {
-    return reliability_ == ReliabilityKind::RELIABLE && writesSinceHb_ >= piggyback_interval();
+    return reliability_ == ReliabilityKind::RELIABLE
+           && (writesSinceHb_ >= piggyback_interval()
+               || rosette::platform::monotonic_ms() - lastAskedMs_ >= RTPS_FAST_HEARTBEAT_DELAY_MS);
 }
 
 void StatefulWriter::encode_heartbeat(Octet* out, const EntityId& reader_id) const noexcept {

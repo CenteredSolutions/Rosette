@@ -3,6 +3,8 @@
 
 #include "participant_test_support.hpp"
 
+#include <algorithm>
+
 namespace spec_test {
 
 extern uint32_t g_participant_test_now_ms;
@@ -862,9 +864,18 @@ static bool tc_part_8_5_1_015(std::string& err) {
         p.match_table().add_reader(rd);
         CHECK(w->matched_reader_count() == 1u, "the remote reader is matched");
 
+        // Run out the discovery traffic the match started, including the
+        // HEARTBEAT rounds after the SEDP writes, which this peer never
+        // acknowledges.
         uint32_t now = 0u;
-        for (int i = 0; i < 16 && (i == 0 || p.ms_until_next_timer(now) == 0u); ++i) {
-            g_participant_test_now_ms = ++now;
+        for (int i = 0; i < 32; ++i) {
+            const uint32_t wait = i == 0 ? 1u : p.ms_until_next_timer(now);
+            if (i > 0 && wait > kHeartbeatMs + 2u) {
+                break;
+            }
+
+            now += std::max(wait, 1u);
+            g_participant_test_now_ms = now;
             p.tick(now);
         }
 

@@ -119,6 +119,9 @@ static bool tc_swr_8_4_15_001(std::string& err) {
                                   5u, 1000u);
     CHECK(w.matched_reader_add(reader, &kLoc, 1u, false), "match");
 
+    // All four writes fall at the writer's start, inside RTPS_FAST_HEARTBEAT_DELAY_MS,
+    // so only the write count decides which carry a HEARTBEAT.
+    g_stateful_writer_test_now_ms = 0u;
     const Octet payload[3] = {0xAAu, 0xBBu, 0xCCu};
     for (int i = 1; i <= 4; ++i) {
         CHECK(w.write_async(ChangeKind::ALIVE, payload, 3u), "write");

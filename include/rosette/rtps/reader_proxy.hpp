@@ -84,7 +84,9 @@
  * "After receiving a NACK, the Writer waits nackResponseDelay before
  *  retransmitting."  The delay is enforced in StatefulWriter::tick();
  *  ReaderProxy records nackPendingSinceMs at the moment
- *  requested_changes_set() first records a request.
+ *  requested_changes_set() first records a request, and repairStreak, from
+ *  which the writer sets how long this reader's next repair waits
+ *  (StatefulWriter, "Repair backoff").
  *
  * Spec references (all OMG formal/2022-04-01)
  * -------------------------------------------
@@ -136,6 +138,10 @@ public:
     /// write paths leave its UNSENT changes to the replay. Fills the padding
     /// after the other flags.
     bool    replaying = false;
+    /// Repairs sent to this reader since its cumulative acknowledgment last
+    /// advanced; StatefulWriter::repair_delay() doubles the wait before the
+    /// next one per repair. Fills the padding after the flags.
+    uint8_t repairStreak = 0;
 
     /// The entry of this reader's unicastLocatorList it is addressed at
     /// (§8.4.1.1), owned by the record the proxy was matched from; null

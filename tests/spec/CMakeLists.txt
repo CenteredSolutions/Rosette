@@ -288,6 +288,8 @@ add_executable(stateful_writer_spec_tests
     src/test_stateful_writer_8_4_9_irrelevant_gap.cpp
     src/test_stateful_writer_8_4_9_announcing.cpp
     src/test_stateful_writer_8_4_15_piggyback_heartbeat.cpp
+    src/test_stateful_writer_8_4_15_fast_heartbeat.cpp
+    src/test_stateful_writer_8_4_7_repair_backoff.cpp
     src/test_stateful_writer_8_4_7_release_finished.cpp
     src/test_stateful_writer_8_4_7_undelivered_eviction.cpp
     src/test_stateful_writer_8_4_9_1_best_effort_reader.cpp

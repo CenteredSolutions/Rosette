@@ -72,6 +72,8 @@ void append_stateful_writer_tests_8_4_7_undelivered_eviction(std::vector<TestCas
 void append_stateful_writer_tests_8_4_9_1_best_effort_reader(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_4_fragment_repair(std::vector<TestCase>& tests);
 void append_stateful_writer_tests_8_4_15_piggyback_heartbeat(std::vector<TestCase>& tests);
+void append_stateful_writer_tests_8_4_15_fast_heartbeat(std::vector<TestCase>& tests);
+void append_stateful_writer_tests_8_4_7_repair_backoff(std::vector<TestCase>& tests);
 void append_proxy_pool_tests(std::vector<TestCase>& tests);
 
 void register_all_stateful_writer_tests(std::vector<TestCase>& tests);
