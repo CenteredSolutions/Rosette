@@ -68,6 +68,68 @@
  * costs 32 octets rather than a datagram; only when the DATA already fills
  * the datagram limit does it go in a datagram of its own.
  *
+ * Heartbeats after a write
+ * ------------------------
+ * A reader answers only a HEARTBEAT, so a writer learns that its newest
+ * change arrived, or that it was lost, only by asking. Losing the last
+ * change of a burst leaves the reader nothing later to notice a gap by, and
+ * a writer that asks only once per heartbeatPeriod stalls that change for
+ * up to the whole period. So each write also starts a short HEARTBEAT
+ * schedule (RTPS_FAST_HEARTBEAT_DELAY_MS and RTPS_FAST_HEARTBEAT_ROUNDS):
+ *
+ * @verbatim
+ *   write          +50 ms          +150 ms          +350 ms          +750 ms
+ *     | DATA (+HB)   | HB              | HB               | HB               | HB
+ *     +--------------+-----------------+------------------+------------------+--> period
+ *           50              100               200                400        (wait)
+ *
+ *   every reliable reader ACKs the newest change  -> the schedule ends
+ *   another write                                 -> it restarts at 50 ms
+ *   a NACK or NACK_FRAG requests a repair         -> the next round moves one wait later
+ * @endverbatim
+ *
+ * - The write itself asks: its DATA carries the piggybacked HEARTBEAT when
+ *   RTPS_FAST_HEARTBEAT_DELAY_MS has passed since the writer last asked
+ *   every reader, besides every depth/2-th write. A topic slower than that
+ *   is acknowledged within a round trip of each sample, for one ACKNACK per
+ *   sample and no extra datagram from the writer, and the rounds never fire;
+ *   a faster topic asks at most once per delay.
+ * - A round sends a non-final HEARTBEAT directed to each reader served
+ *   reliably that has not acknowledged the newest change, so a reader that
+ *   is up to date receives nothing. A reader whose repair is waiting out
+ *   nackResponseDelay is skipped: the HEARTBEAT after its repair asks it.
+ * - A NACK or NACK_FRAG that requests a repair means the reader is already
+ *   repairing: the HEARTBEAT after the repair asks it, and for a NACK_FRAG
+ *   its own fragment-repair timer asks for the rest. So the request moves
+ *   the next round one wait later instead of probing that reader again.
+ *   There is one schedule per writer, so this delays the round for all its
+ *   readers.
+ * - After the last round the periodic HEARTBEAT takes over, so a reader that
+ *   has gone away costs a bounded number of HEARTBEATs.
+ *
+ * Repair backoff
+ * --------------
+ * nackResponseDelay (§8.4.1.1) lets a writer fold the NACKs of many readers
+ * into one multicast repair. This writer repairs each reader by unicast, so
+ * the delay folds only one reader's own requests, and its 200 ms default
+ * adds a fixed stall to every lost change. A reader that cannot take a
+ * repair, such as a fragmented change larger than its receive buffer,
+ * NACKs it again after each attempt, and the delay is then all that limits
+ * how fast the writer resends it. So each reader's repair waits
+ * RTPS_REPAIR_FIRST_DELAY_MS, doubled for every repair sent to it since its
+ * cumulative acknowledgment last advanced, and never more than the
+ * configured nackResponseDelay:
+ *
+ * @verbatim
+ *   NACK     repair      NACK     repair      NACK     repair    ...   NACK      repair
+ *     |-5 ms--|            |-10 ms-|            |-20 ms-|                |-200 ms-|
+ *
+ *   the reader's cumulative acknowledgment advances  -> the next repair waits 5 ms
+ * @endverbatim
+ *
+ * A single lost change is repaired 5 ms after its NACK; a change that keeps
+ * failing is resent no faster than the spec default within seven attempts.
+ *
  * Releasing finished changes
  * --------------------------
  * KEEP_LAST(depth) bounds a history; it does not keep it full. A VOLATILE
@@ -163,6 +225,30 @@ struct FragmentRepairSet {
 #  define RTPS_REPLAY_DATAGRAMS_PER_TICK 4u
 #endif
 
+/// The first wait of the HEARTBEAT schedule a write starts (StatefulWriter,
+/// "Heartbeats after a write"), and the shortest time between two HEARTBEATs
+/// the writes themselves piggyback on that account, so a fast topic draws at
+/// most one ACKNACK per reader per delay.
+#ifndef RTPS_FAST_HEARTBEAT_DELAY_MS
+#  define RTPS_FAST_HEARTBEAT_DELAY_MS 50u
+#endif
+
+/// Rounds of that schedule, each waiting twice as long as the one before; 0
+/// leaves only the periodic HEARTBEAT.
+#ifndef RTPS_FAST_HEARTBEAT_ROUNDS
+#  define RTPS_FAST_HEARTBEAT_ROUNDS 4u
+#endif
+
+/// How long a reader's first repair waits after its NACK (StatefulWriter,
+/// "Repair backoff"); each repair sent before its acknowledgment advances
+/// doubles the wait, up to the writer's nackResponseDelay.
+#ifndef RTPS_REPAIR_FIRST_DELAY_MS
+#  define RTPS_REPAIR_FIRST_DELAY_MS 5u
+#endif
+
+static_assert(RTPS_FAST_HEARTBEAT_DELAY_MS >= 1u, "RTPS_FAST_HEARTBEAT_DELAY_MS must be >= 1");
+static_assert(RTPS_FAST_HEARTBEAT_ROUNDS <= 8u, "RTPS_FAST_HEARTBEAT_ROUNDS must be 0 to 8");
+
 /// The pool a writer takes its reader proxies from.
 using ReaderProxyPool = TypedProxyPool<ReaderProxy>;
 
@@ -230,7 +316,8 @@ public:
      * that later NACKs it is sent a GAP. The added change is UNSENT on every
      * matched proxy, since each proxy's highest sent change is below it;
      * add_change() itself sends nothing. A RELIABLE writer also counts the
-     * change toward its next piggybacked HEARTBEAT (see heartbeat_due()).
+     * change toward its next piggybacked HEARTBEAT (see heartbeat_due()) and
+     * starts the HEARTBEAT schedule after a write over from its first round.
      *
      * A change whose payload would need more DATA_FRAGs over this writer's
      * transport than a reader can track (FragmentNumberSet::kMaxBits) is
@@ -573,9 +660,11 @@ public:
      * written nothing answers a non-final one with a directed final
      * HEARTBEAT, so a reader waiting to hear from it does. A plain ACK from
      * a reader that has acknowledged before gets no answer, even while the
-     * writer has written past it: the piggybacked HEARTBEATs keep such a
-     * reader current, and answering would pair every HEARTBEAT with another
-     * for as long as the writer streams.
+     * writer has written past it: the piggybacked HEARTBEATs and the
+     * schedule after each write keep such a reader current, and answering
+     * would pair every HEARTBEAT with another for as long as the writer
+     * streams. A NACK that requests a repair moves the next round of that
+     * schedule one wait later (see "Heartbeats after a write").
      *
      * A reader that acknowledges less than it did before has started over:
      * its participant lost this participant's SPDP lease, forgot this
@@ -699,6 +788,8 @@ public:
      * ones would be lost on every retry. A NACK_FRAG whose count is not above
      * the last one processed for the reader is a duplicate and is ignored, and
      * so is any NACK_FRAG from a reader served best-effort (serves_reliably()).
+     * Like a NACK, it moves the next round of the HEARTBEAT schedule after a
+     * write one wait later (see "Heartbeats after a write").
      *
      * @param[in] ctx Parse context; supplies the sender's GUID prefix.
      * @param[in] msg The decoded NACK_FRAG.
@@ -707,8 +798,10 @@ public:
      * - Correct means: after nackResponseDelay the reader receives exactly the
      *   fragments it named (the whole change when it is not fragmented, or
      *   when the request cannot be recorded), a HEARTBEAT follows, and a
-     *   repeated count sends nothing.
-     * - Covered by: TC-SWR-8.4.4-001, TC-SWR-8.4.4-002, TC-SWR-8.4.4-003.
+     *   repeated count sends nothing; a scheduled round after a write is no
+     *   sooner than one wait after the NACK_FRAG.
+     * - Covered by: TC-SWR-8.4.4-001, TC-SWR-8.4.4-002, TC-SWR-8.4.4-003,
+     *   TC-SWR-8.4.15-010.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.4, §8.3.7.7 (NACK_FRAG)
@@ -725,8 +818,12 @@ public:
      * them with a directed final HEARTBEAT. Then, once per heartbeatPeriod,
      * sends a HEARTBEAT to each reader served reliably that still has
      * unacknowledged changes, and restarts the count toward the next
-     * piggybacked HEARTBEAT. A reader served best-effort requests nothing and
-     * is never announcing, so tick() sends it nothing.
+     * piggybacked HEARTBEAT. Then, when a round of the HEARTBEAT schedule
+     * after a write is due and the periodic HEARTBEAT did not just go out,
+     * sends a non-final HEARTBEAT directed to each reader served reliably
+     * that has not acknowledged the newest change and has no repair waiting;
+     * the schedule ends once no reader is behind. A reader served best-effort
+     * requests nothing and is never announcing, so tick() sends it nothing.
      *
      * The repair pass over the matched readers also finds the next timer, so
      * the participant learns when to tick this writer again without a second
@@ -742,11 +839,11 @@ public:
      *   right after; the sends follow the order above.
      * - Covered by: TC-PART-8.5.1-016, TC-SWR-8.4.2.2-001, TC-SWR-8.4.9-004, TC-SWR-8.4.9-002,
      *   TC-SWR-8.2.2-003, TC-SWR-8.4.4-001, TC-SWR-8.4.9.1-001,
-     *   TC-SWR-8.4.1.4-003, TC-SWR-8.4.1.4-010.
+     *   TC-SWR-8.4.1.4-003, TC-SWR-8.4.1.4-010, TC-SWR-8.4.15-006 to TC-SWR-8.4.15-009.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.1.1 (nackResponseDelay, heartbeatPeriod), §8.4.9.2,
-     *   §8.4.9.1
+     *   §8.4.9.1, §8.4.15.4
      */
     uint32_t tick(uint32_t now_ms) noexcept;
 
@@ -755,7 +852,10 @@ public:
     DurabilityKind  durability()  const noexcept { return durability_; }
     const HistoryCache& cache()   const noexcept { return writer_cache_; }
 
-    /// nack_response_delay() — §8.4.1.1, p. 104.
+    /// @brief nackResponseDelay (§8.4.1.1): the longest a repair waits after its NACK.
+    ///
+    /// A reader's first repair waits RTPS_REPAIR_FIRST_DELAY_MS, or this value
+    /// when it is shorter; see "Repair backoff" in the file comment.
     uint32_t nack_response_delay() const noexcept { return nack_delay_ms_; }
 
     void nack_response_delay(uint32_t ms) noexcept {
@@ -939,10 +1039,11 @@ public:
      * @brief Milliseconds tick() can be deferred at `now_ms`.
      *
      * 0 while a TRANSIENT_LOCAL replay is pending, so the next tick() goes on
-     * with it; otherwise the sooner of the next periodic HEARTBEAT (only
-     * while some matched reader has unacknowledged changes) and the end of
-     * any pending nackResponseDelay; UINT32_MAX when neither applies, so an
-     * idle writer never wakes the CPU.
+     * with it; otherwise the soonest of the next periodic HEARTBEAT and the
+     * next round of the HEARTBEAT schedule after a write (both only while
+     * some matched reader has unacknowledged changes) and the end of any
+     * pending nackResponseDelay; UINT32_MAX when none applies, so an idle
+     * writer never wakes the CPU.
      *
      * @param[in] now_ms Current rosette::platform::monotonic_ms().
      * @return Delay in milliseconds; 0 when overdue.
@@ -1274,8 +1375,10 @@ private:
      * - Correct means: every UNSENT change is attempted once per reader and
      *   leaves UNSENT whether or not the send succeeds; a HEARTBEAT reaches
      *   every matched reader with the piggyback_interval()-th write since the
-     *   last HEARTBEAT, and with no write before it.
-     * - Covered by: TC-SWR-8.4.9-005, TC-SWR-8.4.15-001, TC-SWR-8.4.15-002.
+     *   last HEARTBEAT, or with the first write RTPS_FAST_HEARTBEAT_DELAY_MS
+     *   after one, and with no write before it.
+     * - Covered by: TC-SWR-8.4.9-005, TC-SWR-8.4.15-001, TC-SWR-8.4.15-002,
+     *   TC-SWR-8.4.15-009.
      *
      * References:
      * - OMG DDSI-RTPS 2.5 §8.4.9.2 (reliable StatefulWriter, UNSENT ->
@@ -1432,8 +1535,35 @@ private:
     uint32_t piggyback_interval() const noexcept;
 
     /// @brief True when a RELIABLE writer has made piggyback_interval() writes
-    ///   since its last HEARTBEAT, so the next send should carry one.
+    ///   since its last HEARTBEAT, or last asked every reader at least
+    ///   RTPS_FAST_HEARTBEAT_DELAY_MS ago, so the next send should carry one.
     bool heartbeat_due() const noexcept;
+
+    /// @brief The wait before the next round of the schedule after a write:
+    ///   RTPS_FAST_HEARTBEAT_DELAY_MS doubled once per round already sent.
+    uint32_t fast_heartbeat_wait() const noexcept {
+        return static_cast<uint32_t>(RTPS_FAST_HEARTBEAT_DELAY_MS)
+               << (RTPS_FAST_HEARTBEAT_ROUNDS - fastHbRoundsLeft_);
+    }
+
+    /// @brief How long `proxy`'s pending repair waits after its NACK ("Repair backoff").
+    uint32_t repair_delay(const ReaderProxy& proxy) const noexcept {
+        const uint32_t backoff = static_cast<uint32_t>(RTPS_REPAIR_FIRST_DELAY_MS)
+                                 << proxy.repairStreak;
+        return backoff < nack_delay_ms_ ? backoff : nack_delay_ms_;
+    }
+
+    /// @brief Sends the periodic non-final HEARTBEAT to every announcing reader (tick() phase 2).
+    void send_periodic_heartbeats(uint32_t now_ms, const SequenceNumber& newest) noexcept;
+
+    /**
+     * @brief Spends one round of the schedule after a write (tick() phase 3).
+     *
+     * @param[in] newest        The newest change; readers that acknowledged it are not asked.
+     * @param[in] periodic_sent The periodic HEARTBEAT went out this tick and already asked them.
+     */
+    void send_fast_heartbeats(uint32_t now_ms, const SequenceNumber& newest,
+                              bool periodic_sent) noexcept;
 
     /// @brief Fills `out` (kRtpsHeartbeatTailroom octets) with a non-final
     ///   HEARTBEAT to `reader_id` for the current range and heartbeatCount_.
@@ -1533,7 +1663,10 @@ private:
     uint32_t       hb_period_ms_;
     uint32_t       lastHbSentMs_   = 0;
     uint32_t       writesSinceHb_  = 0;  ///< RELIABLE writes since any HEARTBEAT.
+    uint32_t lastAskedMs_ = 0;           ///< When a HEARTBEAT last asked every behind reader.
+    uint32_t fastHbDueMs_ = 0;           ///< When the next round after a write is due.
     bool           releaseRepliesOnDelivery_ = false;  ///< Service reply writer.
+    uint8_t fastHbRoundsLeft_ = 0;  ///< Rounds left after the last write; 0 = none.
     uint32_t       evictedUnacknowledged_ = 0;         ///< See evicted_unacknowledged().
     FragmentRepair fragRepair_{};                      ///< Pending NACK_FRAG repair.
     bool           replayPending_ = false;  ///< Some proxy is replaying (drain_replays()).

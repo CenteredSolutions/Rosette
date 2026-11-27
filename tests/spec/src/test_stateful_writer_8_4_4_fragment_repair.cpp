@@ -164,7 +164,8 @@ static bool tc_swr_8_4_4_003(std::string& err) {
     tx.unicast_msgs.clear();
     deliver(w, reader, nack_frag(reader, writer, 1, {2u}, 1), 300u);
     w.tick(306u);
-    CHECK(tx.unicast_msgs.empty(), "a repeated NACK_FRAG count is ignored");
+    sent = inspect(tx);
+    CHECK(sent.fragments.empty() && sent.gaps == 0, "a repeated NACK_FRAG count is ignored");
 
     CHECK(w.write_async(ChangeKind::ALIVE, payload.data(), 400u), "write SN 2, evicting SN 1");
     tx.unicast_msgs.clear();

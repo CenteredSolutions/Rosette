@@ -30,6 +30,7 @@ void ReaderProxy::init(const Guid& reader_guid, const Locator* unicast_locs, uin
 
 void ReaderProxy::restart(const SequenceNumber& first_relevant_sn) noexcept {
     replaying = false;
+    repairStreak = 0u;
     highestAckedSN = SEQUENCENUMBER_ZERO;
     lastAcknackCount = kNoCount;
     lastNackFragCount = kNoCount;
@@ -48,6 +49,7 @@ void ReaderProxy::clear() noexcept {
     unicastLocator = nullptr;
     isReliable = true;
     replaying = false;
+    repairStreak = 0u;
     highestAckedSN      = SEQUENCENUMBER_ZERO;
     lastAcknackCount = kNoCount;
     lastNackFragCount = kNoCount;

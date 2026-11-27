@@ -363,8 +363,9 @@ static bool tc_swr_8_4_7_002(std::string& err) {
     const Guid writer_guid = make_guid(0xC1u, 0xC2u, 0xC3u, make_entity(1u, 1u, 1u, 0x03u));
     const Guid reader_guid = make_guid(0xD1u, 0xD2u, 0xD3u, make_entity(2u, 2u, 2u, 0x04u));
     const Locator loc = make_udpv4_locator(0xC0A80147u, 7411u);
-    StatefulWriterStorage<2, 1> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE, tx,
-                           /*nack_delay_ms=*/200u, /*hb_period_ms=*/2000u);
+    StatefulWriterStorage<2, 1> w(writer_guid, ReliabilityKind::RELIABLE, DurabilityKind::VOLATILE,
+                                  tx,
+                                  /*nack_delay_ms=*/20u, /*hb_period_ms=*/2000u);
     CHECK(w.ms_until_next_timer(500u) == UINT32_MAX,
           "without matched readers there is nothing to heartbeat or repair");
     CHECK(w.matched_reader_add(reader_guid, &loc, 1u, false), "matched_reader_add should succeed");
@@ -372,6 +373,7 @@ static bool tc_swr_8_4_7_002(std::string& err) {
           "a matched reader with nothing unacknowledged is idle: no HEARTBEAT timer");
 
     const Octet payload[1] = {0x42u};
+    g_stateful_writer_test_now_ms = 500u;
     CHECK(w.write_async(ChangeKind::ALIVE, payload, 1u), "write_async should succeed");
     CHECK(w.ms_until_next_timer(500u) <= 2000u,
           "an unacknowledged change makes the reader announcing: the HEARTBEAT timer runs");
@@ -386,8 +388,9 @@ static bool tc_swr_8_4_7_002(std::string& err) {
     nack.count = 1;
     g_stateful_writer_test_now_ms = 600u;
     w.on_acknack(ctx, nack);
-    CHECK(w.ms_until_next_timer(600u) == 200u, "a NACK arms nackResponseDelay, the sooner timer");
-    CHECK(w.ms_until_next_timer(900u) == 0u, "an overdue repair reports zero");
+    CHECK(w.ms_until_next_timer(600u) == RTPS_REPAIR_FIRST_DELAY_MS,
+          "a NACK arms the first repair wait, shorter than nackResponseDelay, the sooner timer");
+    CHECK(w.ms_until_next_timer(640u) == 0u, "an overdue repair reports zero");
     return true;
 }
 
